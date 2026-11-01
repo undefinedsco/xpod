@@ -419,9 +419,17 @@ describe('owned installed consumer diagnostics', () => {
       const phases = [{ kind: 'module-install-phase', phase: 'archive-scan', state: 'started', elapsedMs: 0 },
         { kind: 'module-install-phase', phase: 'archive-scan', state: 'completed', elapsedMs: 1, durationMs: 1 },
         { kind: 'module-install-phase', phase: 'archive-extract', state: 'started', elapsedMs: 2 }];
-      const script = mode === 'timeout' ? `process.stderr.write(${JSON.stringify(phases.map(row => JSON.stringify(row)).join('\n') + '\n')});setInterval(()=>{},1000)` : `process.stdout.write(JSON.stringify({ok:false,code:'module_install_failed',token:'private-secret'},null,2)+'\\n');process.stderr.write('(node:123) ExperimentalWarning: SQLite is an experimental feature and might change at any time\\nnpm error code ENOSPC\\nhttps://private-secret/key\\n'+'x'.repeat(70000));process.exitCode=7;`;
+      // The timeout fixture must emit phase records before the unchanged 50ms
+      // watchdog. A Node/Bun startup delay is real startup, not lost production
+      // bytes; a minimal real shell child emits them first and then remains the
+      // long-lived child killed by the same timeout/group cleanup path.
+      const timeoutScript = `${phases.map(row => `printf '%s\\n' '${JSON.stringify(row)}' >&2`).join('; ')}; exec sleep 30`;
+      const failureScript = `process.stdout.write(JSON.stringify({ok:false,code:'module_install_failed',token:'private-secret'},null,2)+'\\n');process.stderr.write('(node:123) ExperimentalWarning: SQLite is an experimental feature and might change at any time\\nnpm error code ENOSPC\\nhttps://private-secret/key\\n'+'x'.repeat(70000));process.exitCode=7;`;
+      const script = mode === 'timeout' ? timeoutScript : failureScript;
+      const runtime = mode === 'timeout' ? '/bin/sh' : process.execPath;
+      const commandArgs = mode === 'timeout' ? ['-c', script] : ['-e', script];
       const timeoutMs = mode === 'timeout' ? 50 : 1000;
-      const result = await runOwnedInstalledConsumer(process.execPath, ['-e', script], process.env, root, timeoutMs);
+      const result = await runOwnedInstalledConsumer(runtime, commandArgs, process.env, root, timeoutMs);
       expect(result.observation.timeoutMs).toBe(timeoutMs);
       expect(result.observation.timeoutObserved).toBe(mode === 'timeout');
       expect(result.observation.closeObserved).toBe(true); expect(result.observation.groupClosed).toBe(true);

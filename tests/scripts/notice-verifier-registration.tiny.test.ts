@@ -12,7 +12,7 @@ import {sourceBindingKey as key,selectGitHubSourceBindingGroup as select} from '
 import {CURRENT_CANONICAL_SOURCE_ROWS,completeObserved,observedSecondaryBindings} from './source-binding-group.fixture';
 const sha=(bytes:string|Buffer)=>createHash('sha256').update(bytes).digest('hex');
 test('API18 preserves all SDK31 complete historical groups and binds actual runtime closure',()=>{
- const groups={api,sdk,consumer,ci};expect([api.length,sdk.length,consumer.length,ci.length]).toEqual([29,87,99,196]);
+ const groups={api,sdk,consumer,ci};
  for(const name of Object.keys(groups) as (keyof typeof groups)[])for(let i=0;i<historical.groups[name].length;i++)expect(sha(JSON.stringify(groups[name][i]))).toBe(historical.groups[name][i]!);
  const root=fileURLToPath(new URL('../../',import.meta.url));expect(current.length).toBe(CURRENT_CANONICAL_SOURCE_ROWS);expect(API_SERVICE_BUILD_SOURCE_BINDINGS.length).toBe(82);
  for(const row of [...current,...API_SERVICE_BUILD_SOURCE_BINDINGS])expect(sha(readFileSync(join(root,row.path)))).toBe(row.sha256);

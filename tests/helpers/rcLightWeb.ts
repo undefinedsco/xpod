@@ -1,16 +1,34 @@
 import { randomUUID } from 'node:crypto';
 import type { Page } from 'playwright';
 import { startBrowserExternalRp } from './browserExternalRp';
-import { boundedProbe, completeOidcLogin, normalizeAccountPath, type BrowserSolidCredentials } from './browserSolidOidc';
+import {
+  boundedProbe,
+  completeOidcLogin,
+  normalizeAccountPath,
+  type BrowserOidcTrace,
+  type BrowserSolidCredentials,
+} from './browserSolidOidc';
 import { fetchProfileStorageUrls } from '../../ui/src/utils/provision-scope';
 import { resolveAuthoritativeAccountId } from '../../ui/src/utils/safe-continuation';
 
 export type RcIdentity = { accountId: string; webId: string; storageUrl: string };
-export type RcAccountBindings = { accountId: string; bindings: Array<{ webId: string; storageUrl: string }> };
+export type RcAccountBindings = {
+  accountId: string;
+  bindings: Array<{ webId: string; storageUrl: string }>;
+  /** Cookie-authenticated Account client-credential collection control, if exposed. */
+  clientCredentials?: string;
+};
 export type RcRp = Awaited<ReturnType<typeof startBrowserExternalRp>>;
-export type RcSession = { identity: RcIdentity; authenticatedFetch: typeof fetch };
+export type RcSession = {
+  identity: RcIdentity;
+  authenticatedFetch: typeof fetch;
+  /** OIDC protocol trace, including the observed Consent screen/binding shape. */
+  trace?: BrowserOidcTrace;
+  /** Authoritative Account controls read with the same browser session. */
+  account?: RcAccountBindings;
+};
 
-class RcEvidenceError extends Error {}
+export class RcEvidenceError extends Error {}
 
 function requireEvidence(value: unknown, message: string): asserts value {
   if (!value) throw new RcEvidenceError(message);
@@ -45,6 +63,14 @@ async function readCookieAccountBindings(page: Page, baseUrl: string): Promise<R
   } };
   const accountId = resolveAuthoritativeAccountId(controls);
   requireEvidence(accountId && controls?.account?.logout && controls.account.bindings, 'RC Account Cookie did not restore an owned Account');
+  let clientCredentials: string | undefined;
+  if (controls.account.clientCredentials !== undefined) {
+    const credentialTarget = new URL(controls.account.clientCredentials, origin);
+    requireEvidence(credentialTarget.origin === origin && credentialTarget.pathname.startsWith('/.account/')
+      && !credentialTarget.search && !credentialTarget.hash && !credentialTarget.username && !credentialTarget.password,
+    'RC Account client-credential control crossed its authority');
+    clientCredentials = credentialTarget.href;
+  }
   const target = new URL(controls.account.bindings, origin);
   requireEvidence(target.origin === origin && target.pathname.startsWith('/.account/') && !target.search
     && !target.hash && !target.username && !target.password, 'RC Account binding control crossed its authority');
@@ -54,7 +80,7 @@ async function readCookieAccountBindings(page: Page, baseUrl: string): Promise<R
   requireEvidence(Array.isArray(payload.bindings) && payload.bindings.length > 0, 'RC Account has no owned storage binding');
   requireEvidence(payload.bindings.every(row => row && typeof row.webId === 'string' && typeof row.storageUrl === 'string'),
     'RC Account returned malformed storage bindings');
-  return { accountId, bindings: payload.bindings };
+  return { accountId, bindings: payload.bindings, ...(clientCredentials ? { clientCredentials } : {}) };
 }
 
 /** The deployed lightweight Account document, independent of the desktop scoped alias. */
@@ -220,13 +246,66 @@ export async function authorizeRcSession(page: Page, rp: RcRp, baseUrl: string,
     const account = await readRcAccountBindings(page, baseUrl);
     stage = 'profile';
     const identity = await verifyRcIdentity(baseUrl, account, token);
-    return { identity, authenticatedFetch: token.authenticatedFetch };
+    return { identity, authenticatedFetch: token.authenticatedFetch, trace, account };
   } catch {
     // Shared browser diagnostics may contain upstream bodies. Never publish them from this release gate.
     throw new Error(`RC ${credentials ? 'seeded' : 'reused'} OIDC failed at ${stage}`);
   } finally {
     page.off('request', observe);
   }
+}
+
+/** Decode only the cookie transport value; a malformed escape keeps the raw
+ * token rather than inventing a different credential. */
+export function decodeAccountCookieValue(value: string): string {
+  try { return decodeURIComponent(value); } catch { return value; }
+}
+
+/** Read the Account session token from the same browser context. It stays in
+ * process memory and is never logged or written to acceptance evidence. */
+export async function readRcAccountToken(page: Page, baseUrl: string): Promise<string> {
+  const cookies = await page.context().cookies(baseUrl);
+  const cookie = cookies.find(candidate => candidate.name === 'css-account'
+    && (candidate.expires === -1 || candidate.expires * 1000 > Date.now()));
+  requireEvidence(cookie?.value, 'RC browser login did not retain an Account session cookie');
+  const token = decodeAccountCookieValue(cookie.value);
+  requireEvidence(token.length > 0 && !/[\r\n]/u.test(token), 'RC Account session cookie is empty or invalid');
+  return token;
+}
+
+/** Prove the fresh login painted exactly one Consent screen and offered
+ * exactly one WebID/storage binding, and that the binding matches the token
+ * identity. Counts and fixed tokens only; no page copy or credential material. */
+export function verifyRcConsentBinding(session: RcSession): {
+  consentScreenCount: number;
+  consentBindingCount: number;
+} {
+  const trace = session.trace;
+  requireEvidence(trace, 'RC browser login returned no OIDC protocol trace');
+  requireEvidence(trace.authorizationRequestSeen && trace.authCodeChallengeMethodS256
+    && trace.callbackHasCode && trace.callbackHasState,
+  'RC browser login did not complete the real PKCE authorization/callback');
+  const consentScreenCount = trace.consentSurfaceCount ?? 0;
+  requireEvidence(consentScreenCount === 1,
+    `RC browser login observed ${consentScreenCount} visible consent screen(s); expected exactly one`);
+  const consentBindingCount = trace.consentBindingOptionCount ?? (trace.consentSingleBindingOffered ? 1 : 0);
+  requireEvidence(consentBindingCount === 1,
+    `RC consent offered ${consentBindingCount} WebID/storage binding(s); expected exactly one`);
+  const exactBinding = trace.storageBindingSelected
+    ? trace.storageBindingSelected.webId === session.identity.webId
+      && trace.storageBindingSelected.podUrl === session.identity.storageUrl
+    : trace.consentWebIdSelected
+      ? trace.consentWebIdSelected === session.identity.webId
+      : trace.consentSingleBindingOffered === true
+        // The no-chooser shape is not binding evidence by itself. The rendered
+        // full WebID must match the authenticated token. When the product also
+        // renders a storage URL, it must match too; otherwise the Account's
+        // unique binding for this WebID is the runtime storage proof.
+        && trace.consentSingleBindingOfferedBinding?.webId === session.identity.webId
+        && (trace.consentSingleBindingOfferedBinding.storageUrl === undefined
+          || trace.consentSingleBindingOfferedBinding.storageUrl === session.identity.storageUrl);
+  requireEvidence(exactBinding, 'RC consent binding did not match the authenticated WebID/storage pair');
+  return { consentScreenCount, consentBindingCount };
 }
 
 /** Exact private data proof for each owner; neither different URLs nor public Profile reads suffice. */

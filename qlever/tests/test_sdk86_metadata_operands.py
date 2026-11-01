@@ -55,6 +55,9 @@ class Observer:
         self.rows = []
         self._seq = 100
         self._paths = paths
+        # The real owned-input generation hook is absent in these focused
+        # old-hook fixtures; keep the production None disabled-generation shape.
+        self.owned_input_generations = None
 
     # --- stubs -----------------------------------------------------------
     def barrier(self):
@@ -79,6 +82,7 @@ class Observer:
     settle_absent_link_operand = backend.Observer.settle_absent_link_operand
     pending_captures_original = backend.Observer.pending_captures_original
     resume_original = backend.Observer.resume_original
+    read_frame_any = backend.Observer.read_frame_any
     close_terminal_authorities = backend.Observer.close_terminal_authorities
     args_original = backend.Observer.args_original
 

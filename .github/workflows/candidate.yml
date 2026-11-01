@@ -1017,6 +1017,38 @@ jobs:
           node scripts/assert-rc-authenticated-smoke.cjs "${RUNNER_TEMP}/acceptance/xpod-light-settings-acceptance.json"
           printf '%s\n' '{ "authenticated-pod": "passed" }' > "${RUNNER_TEMP}/authenticated-check.json"
 
+      - name: RC user-flow acceptance
+        run: |
+          set -euo pipefail
+          # Runs against the already deployed RC with the prepared Alice/Bob
+          # seeds. No local server, manual sk, provider key, or mock is used.
+          env -u XPOD_LIVE_PROVIDER_API_KEY_CONFIG -u XPOD_AI_PROXY_URL \
+            bun scripts/accept-rc-user-flows.ts \
+            --base-url "$XPOD_SETTINGS_E2E_BASE_URL" \
+            --seed-config "${RUNNER_TEMP}/xpod-rc-seed.json" \
+            --output-dir "${RUNNER_TEMP}/rc-user-flows"
+          cp "${RUNNER_TEMP}/rc-user-flows/evidence.json" "${RUNNER_TEMP}/rc-user-flows.json"
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const evidence = JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'rc-user-flows.json'), 'utf8'));
+          const required = [
+            'rc-pod-sparql',
+            'rc-builtin-models-chat',
+            'rc-matrix-collaboration',
+            'rc-browser-consent',
+          ];
+          const checks = {};
+          for (const name of required) {
+            const check = evidence.checks?.[name];
+            if (check?.ok !== true) {
+              throw new Error(`${name} did not pass: ${check?.detail || 'missing evidence'}`);
+            }
+            checks[name] = 'passed';
+          }
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'rc-user-flows-checks.json'), `${JSON.stringify(checks, null, 2)}\n`);
+          NODE
+
       - name: Live Gateway login and Chat acceptance
         run: |
           set -euo pipefail
@@ -1119,6 +1151,7 @@ jobs:
             ...JSON.parse(fs.readFileSync(path.join(temp, 'secret-isolation-check.json'), 'utf8')),
             ...JSON.parse(fs.readFileSync(path.join(temp, 'public-checks.json'), 'utf8')),
             ...JSON.parse(fs.readFileSync(path.join(temp, 'authenticated-check.json'), 'utf8')),
+            ...JSON.parse(fs.readFileSync(path.join(temp, 'rc-user-flows-checks.json'), 'utf8')),
             ...JSON.parse(fs.readFileSync(path.join(temp, 'live-gateway-checks.json'), 'utf8')),
           };
           fs.writeFileSync(path.join(temp, 'checks.json'), `${JSON.stringify(checks, null, 2)}\n`);
@@ -1129,7 +1162,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: release-service-acceptance-${{ github.sha }}
-          path: ${{ runner.temp }}/checks.json
+          path: |
+            ${{ runner.temp }}/checks.json
+            ${{ runner.temp }}/rc-user-flows.json
           if-no-files-found: error
 
       - &task_safe_evidence_projection
@@ -1880,6 +1915,8 @@ jobs:
             --checks-file "${RUNNER_TEMP}/checks.json" > "${RUNNER_TEMP}/release-acceptance.json"
           mkdir "${RUNNER_TEMP}/accepted-release"
           cp "${RUNNER_TEMP}/release-acceptance.json" "${RUNNER_TEMP}/accepted-release/release-acceptance.json"
+          test -s "${RUNNER_TEMP}/service-acceptance/rc-user-flows.json"
+          cp "${RUNNER_TEMP}/service-acceptance/rc-user-flows.json" "${RUNNER_TEMP}/accepted-release/rc-user-flows.json"
           cp -R "${RUNNER_TEMP}/legacy-root-compat" "${RUNNER_TEMP}/accepted-release/compat"
           cp -R "${RUNNER_TEMP}/service-image-modes" "${RUNNER_TEMP}/accepted-release/mode-matrix"
           cp -R "${RUNNER_TEMP}/service-image-mode-authority" "${RUNNER_TEMP}/accepted-release/mode-authority"

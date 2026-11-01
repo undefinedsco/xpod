@@ -20,6 +20,13 @@ import {
   requiredSdkControllerHelperGroup,
   requiredSdkControllerHelperNames,
 } from '../../scripts/lib/independent-admission/sdk-controller-helper-groups';
+import {CURRENT_HELPER_GROUP_COUNTS, CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
+import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as api} from '../../scripts/lib/independent-admission/github-origin';
+import {QLEVER_SDK_EXECUTION_GROUPS as sdk, QLEVER_LINUX_EXECUTION_GROUPS as linux} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
+import {CONSUMER_SOURCE_GROUPS as consumer, CI_CONSUMER_SOURCE_GROUPS as ci} from '../../scripts/lib/independent-admission/consumer-observer-policy';
+import {CLI_SOURCE_VERSION_GROUPS as cli} from '../../scripts/lib/independent-admission/source-rules';
+import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
+
 
 const ROOT = path.resolve(import.meta.dir, '../..');
 const LIB = path.join(ROOT, 'scripts/lib/independent-admission');
@@ -84,8 +91,8 @@ test('appended CURRENT catalogues add exactly one fresh tail tuple', () => {
   // NEXT catalogues stay at 30/33 and are never rewritten to force a +1.
   const c = localConst('qlever-sdk-generation.ts', 'REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT');
   const f = localConst('qlever-sdk-fetchcontent.ts', 'REVIEWED_HELPER_GROUPS_CURRENT');
-  expect(c.length).toBe(37);
-  expect(f.length).toBe(40);
+  expect(c.length).toBe(CURRENT_HELPER_GROUP_COUNTS.controller);
+  expect(f.length).toBe(CURRENT_HELPER_GROUP_COUNTS.fetch);
   const cur = '778fdaad5802df943c8e7e96e4de79a32845508947c9ae436e742248b2e7aa1a';
   const waitDigests = (groups: any[]) => groups.map(g => {
     const rows = Array.isArray(g) ? g : Object.entries(g);
@@ -187,10 +194,10 @@ function productionCallCatalog(file: string, callee: string): {arg: string; cata
   return {arg: found, catalog: localConst(file, found)};
 }
 
-test('the PRODUCTION controller caller uses the name plan over CURRENT37', () => {
+test('the PRODUCTION controller caller uses the name plan over CURRENT controller catalogue', () => {
   const plan = productionCallCatalog('qlever-sdk-generation.ts', 'requiredSdkControllerHelperNames');
   expect(plan.arg).toBe('REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT');
-  expect(plan.catalog.length).toBe(37);
+  expect(plan.catalog.length).toBe(CURRENT_HELPER_GROUP_COUNTS.controller);
   const exact = productionCallCatalog('qlever-sdk-generation.ts', 'selectSdkControllerHelperGroup');
   expect(exact.arg).toBe('REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT');
   const src = readFileSync(path.join(LIB, 'qlever-sdk-generation.ts'), 'utf8');
@@ -198,17 +205,17 @@ test('the PRODUCTION controller caller uses the name plan over CURRENT37', () =>
   expect(src).toContain('for(const name of requiredSdkControllerHelperNames(');
 });
 
-test('the PRODUCTION fetch caller uses the name plan over CURRENT40', () => {
+test('the PRODUCTION fetch caller uses the name plan over CURRENT fetch catalogue', () => {
   const plan = productionCallCatalog('qlever-sdk-fetchcontent.ts', 'requiredSdkControllerHelperNames');
   expect(plan.arg).toBe('REVIEWED_HELPER_GROUPS_CURRENT');
-  expect(plan.catalog.length).toBe(40);
+  expect(plan.catalog.length).toBe(CURRENT_HELPER_GROUP_COUNTS.fetch);
   const exact = productionCallCatalog('qlever-sdk-fetchcontent.ts', 'selectSdkControllerHelperGroup');
   expect(exact.arg).toBe('REVIEWED_HELPER_GROUPS_CURRENT');
 });
 
-test('the declared VERSION bound is exactly 40, enforced as a count not as ambiguity', () => {
-  // 40 declared groups is the genuine maximum (fetch CURRENT after the PR124
-  // strict absent-link append). Exactly ONE of them matches the observed roles/digests.
+test('the declared VERSION bound is the explicit CURRENT maximum, enforced as a count not as ambiguity', () => {
+  // The explicit CURRENT maximum is the fetch catalogue size. Exactly ONE of
+  // them matches the observed roles/digests.
   const base: readonly (readonly [string, string])[] = [
     ['a.py', 'a'.repeat(64)], ['b.py', 'b'.repeat(64)],
   ];
@@ -217,14 +224,14 @@ test('the declared VERSION bound is exactly 40, enforced as a count not as ambig
     ['b.py', createHash('sha256').update(`variant-${i}`).digest('hex')],
   ];
   const observed = new Map(base);
-  const atLimit = [base, ...Array.from({length: 39}, (_, i) => distinctGroup(i))];
-  expect(atLimit).toHaveLength(40);
+  const atLimit = [base, ...Array.from({length: CURRENT_HELPER_GROUP_COUNTS.maximum - 1}, (_, i) => distinctGroup(i))];
+  expect(atLimit).toHaveLength(CURRENT_HELPER_GROUP_COUNTS.maximum);
   // exactly one full match => the at-limit catalogue is accepted
   expect(selectSdkControllerHelperGroup(atLimit, observed)).toBe(base);
-  // 41 declared groups, still only ONE full match: the COUNT bound alone refuses,
+  // At the explicit CURRENT maximum, still only ONE full match: the COUNT bound alone refuses,
   // proving the refusal is not merely an ambiguity/uniqueness result
   const overLimit = [...atLimit, distinctGroup(999)];
-  expect(overLimit).toHaveLength(41);
+  expect(overLimit).toHaveLength(CURRENT_HELPER_GROUP_COUNTS.maximum + 1);
   expect(() => selectSdkControllerHelperGroup(overLimit, observed)).toThrow('SDK controller complete helper group differs');
   expect(() => requiredSdkControllerHelperGroup(overLimit, ['a.py', 'b.py'], observed)).toThrow('SDK controller complete helper group differs');
   // the observed PER-TUPLE role bound stays 32 and is still enforced
@@ -236,8 +243,8 @@ test('the declared VERSION bound is exactly 40, enforced as a count not as ambig
 test('the REAL production-called catalogs admit end to end on actual helper bytes', () => {
   const sha = (n: string) => createHash('sha256').update(readFileSync(path.join(ROOT, 'qlever/scripts', n))).digest('hex');
   const cases: readonly [string, readonly string[], number][] = [
-    ['qlever-sdk-generation.ts', ['sdk-zip-originals.py', 'sdk-generation-multiprocess-bindings.py', 'sdk-execution-originals-util.py', 'sdk-generated-source-originals.py', 'sdk-tool-provider-originals.py', 'sdk-generated-vma-originals.py', 'sdk-coordinated-wait.py', 'sdk-original-chunk-store.py', 'sdk-raw-wire-reader.py', 'sdk-executable-memory-policy.py'], 37],
-    ['qlever-sdk-fetchcontent.ts', ['sdk-fetchcontent-source-observer.py', 'sdk-fetchcontent-source-bindings.py', 'sdk-zip-originals.py', 'sdk-git-source-bindings.py', 'sdk-debian-binary-originals.py', 'sdk-debian-index-bindings.py', 'sdk-generation-multiprocess-bindings.py', 'sdk-execution-originals-util.py', 'sdk-tool-provider-originals.py', 'sdk-generated-vma-originals.py', 'sdk-coordinated-wait.py', 'sdk-original-chunk-store.py', 'sdk-raw-wire-reader.py', 'sdk-executable-memory-policy.py'], 40],
+    ['qlever-sdk-generation.ts', ['sdk-zip-originals.py', 'sdk-generation-multiprocess-bindings.py', 'sdk-execution-originals-util.py', 'sdk-generated-source-originals.py', 'sdk-tool-provider-originals.py', 'sdk-generated-vma-originals.py', 'sdk-coordinated-wait.py', 'sdk-original-chunk-store.py', 'sdk-raw-wire-reader.py', 'sdk-executable-memory-policy.py'], CURRENT_HELPER_GROUP_COUNTS.controller],
+    ['qlever-sdk-fetchcontent.ts', ['sdk-fetchcontent-source-observer.py', 'sdk-fetchcontent-source-bindings.py', 'sdk-zip-originals.py', 'sdk-git-source-bindings.py', 'sdk-debian-binary-originals.py', 'sdk-debian-index-bindings.py', 'sdk-generation-multiprocess-bindings.py', 'sdk-execution-originals-util.py', 'sdk-tool-provider-originals.py', 'sdk-generated-vma-originals.py', 'sdk-coordinated-wait.py', 'sdk-original-chunk-store.py', 'sdk-raw-wire-reader.py', 'sdk-executable-memory-policy.py'], CURRENT_HELPER_GROUP_COUNTS.fetch],
   ];
   for (const [file, names, expectedGroups] of cases) {
     // bind the catalogs the PRODUCTION CALL SITES actually pass
@@ -251,4 +258,24 @@ test('the REAL production-called catalogs admit end to end on actual helper byte
     expect(selectSdkControllerHelperGroup(exactSite.catalog, observed as any))
       .toBe(exactSite.catalog[exactSite.catalog.length - 1]);
   }
+});
+
+test('CURRENT source catalogue counts and actual declared bindings close independently', () => {
+  const groups = {api, sdk, consumer, ci, linux, cli} as const;
+  expect([api.length, sdk.length, consumer.length, ci.length, linux.length, cli.length, current.length]).toEqual([
+    CURRENT_SOURCE_GROUP_COUNTS.api, CURRENT_SOURCE_GROUP_COUNTS.sdk,
+    CURRENT_SOURCE_GROUP_COUNTS.consumer, CURRENT_SOURCE_GROUP_COUNTS.ci,
+    CURRENT_SOURCE_GROUP_COUNTS.linux, CURRENT_SOURCE_GROUP_COUNTS.cli,
+    CURRENT_SOURCE_GROUP_COUNTS.current,
+  ]);
+  const digest = (name: string) => createHash('sha256').update(readFileSync(path.join(ROOT, name))).digest('hex');
+  for (const rows of Object.values(groups)) {
+    const group = rows[rows.length - 1]!;
+    const g = group as any;
+    for (const row of [...(g.selectors ?? []), ...(g.secondarySelectors ?? []),
+      ...(g.secondarySelectorStages ?? []).flat(), ...(g.sourceBindings ?? [])]) {
+      expect(digest(row.path)).toBe(row.sha256);
+    }
+  }
+  for (const row of current) expect(digest(row.path)).toBe(row.sha256);
 });

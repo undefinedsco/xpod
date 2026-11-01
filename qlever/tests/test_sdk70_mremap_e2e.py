@@ -105,6 +105,37 @@ int main(void){
 }
 '''
 
+CHILD_RENAME_C = r"""
+/* A real generated temporary output: create a fresh file under the caller's
+   build root, write it, map it writable, unmap the whole range (the production
+   checkpoint), close the FD, then rename the checkpoint to its final name.
+   The final read/close proves the target path is usable after the rename. */
+#define _GNU_SOURCE
+#include <fcntl.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+  if (argc < 3) return 1;
+  int fd = open(argv[1], O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+  if (fd < 0) return 2;
+  char page = 'R';
+  if (write(fd, &page, 1) != 1) return 3;
+  void *p = mmap(NULL, 1, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_NORESERVE, fd, 0);
+  if (p == MAP_FAILED) return 4;
+  if (munmap(p, 1) != 0) return 5;
+  if (rename(argv[1], argv[2]) != 0) return 6;
+  if (close(fd) != 0) return 7;
+  int target = open(argv[2], O_RDONLY | O_CLOEXEC);
+  if (target < 0) return 8;
+  char byte;
+  if (read(target, &byte, 1) != 1 || byte != 'R') return 9;
+  if (close(target) != 0) return 10;
+  return 0;
+}
+"""
+
 CHILD_FORK_C = r"""
 /* Independent ADDRESS SPACE: fork() gives the child its own MM (no CLONE_VM),
    the child is alive across the parent's mremap, and the parent waits it out. */
@@ -242,13 +273,16 @@ def build(source, directory, name):
     return str(binary)
 
 
-def make_observer(originals, trusted_root):
+def make_observer(originals, trusted_root, *, phase_parent=False, maximum_bytes=256 * 1024 * 1024):
     """Real base Observer + the SDK's own native lease DI decision.
 
     `SdkExecutionObserver` is the single place that selects the native backend
     (`lifetime_leases_class = SdkLeaseSet`). We reuse exactly that class
     attribute rather than constructing SdkExecutionObserver (whose phase()
     pins a fixed build argv) or faking a backend.
+
+    `phase_parent=True` selects the producer's canonical phase-parent policy
+    instead of the legacy default; it is used only by the v9 rename regression.
     """
     # Canonical profile, loaded through the SAME factory production uses:
     # maximum_file_bytes is the profile's shardBytes, never a fixture-local copy.
@@ -256,7 +290,7 @@ def make_observer(originals, trusted_root):
     observer = obs.Observer(
         originals, ROOT, trusted_root,
         deadline_monotonic=time.monotonic() + 120,
-        maximum_bytes=256 * 1024 * 1024,
+        maximum_bytes=maximum_bytes,
         maximum_file_bytes=limits['shardBytes'],
         maximum_stdio_bytes=2 * 1024 * 1024,
         selected_names=None,
@@ -279,7 +313,8 @@ def make_observer(originals, trusted_root):
         indexed_raw_records=True,
         compressed_raw=True,
         generated_build_root=trusted_root,
-        deny_optional_io_uring=True)
+        deny_optional_io_uring=True,
+        **(dict(phase_budget_policy_version=obs.budget_policy_module.PHASE_PARENT_BUDGET_POLICY.version) if phase_parent else {}))
     observer.lifetime_leases_class = obs.SdkExecutionObserver.lifetime_leases_class
     return observer
 
@@ -381,7 +416,7 @@ class EndToEnd(unittest.TestCase):
         self.readonly_inputs = []
         EndToEnd._all_receipts.append(self.receipts)
 
-    def _run_phase(self, binary, label, *, keep=True, args=()):
+    def _run_phase(self, binary, label, *, keep=True, args=(), phase_parent=False):
         """One REAL observer phase. All SDK-normal options; explicit trusted root.
 
         The caller-owned build root is passed EXPLICITLY to the constructor; the
@@ -396,7 +431,7 @@ class EndToEnd(unittest.TestCase):
         build_dir.mkdir()
         trusted_root = str(build_dir.resolve())     # explicit canonical absolute
         self.trusted_roots[label] = trusted_root
-        observer = make_observer(originals, trusted_root)
+        observer = make_observer(originals, trusted_root, phase_parent=phase_parent)
         phase = None
         error = None
         try:
@@ -584,6 +619,47 @@ class EndToEnd(unittest.TestCase):
     def _kinds(self, shards, label):
         _decoder, rows = self._decode_rows(shards, label)
         return [row.get('kind') for _path, row in rows]
+
+    def test_v9_rename_checkpoint_from_real_mmap_unmap_rename_close_is_replayed(self):
+        """REAL v9: a generated temp output is mapped, unmapped, renamed, then read.
+
+        The checkpoint is produced by the real generated-VMA runtime at a real
+        `munmap`; the rename is a real kernel rename of that retained inode and the
+        target is a real read/close. On the old v8-only checkpoint guard this phase
+        fails with `rename lacks a verified producer`.
+        """
+        binary = build(CHILD_RENAME_C, self.root / 'bin', 'rename-v9')
+        temp = self.root / 'rename-v9' / 'build' / 'generated-temp'
+        final = self.root / 'rename-v9' / 'build' / 'generated-final'
+        originals, shards, phase = self._run_phase(
+            binary, 'rename-v9', args=(str(temp), str(final)), phase_parent=True)
+        self.assertEqual(phase['commandReceipt']['exit'], 0,
+                         'real mmap/unmap/rename/read child did not exit 0')
+        _decoder, rows = self._decode_rows(shards, 'rename-v9')
+        kinds = [row.get('kind') for _path, row in rows]
+        self.assertIn('generated-vma-operation-exit', kinds)
+        self.assertIn('actual-rename-window', kinds)
+        self.assertIn('actual-rename-transition', kinds)
+        window = next(row for _path, row in rows
+                      if row.get('kind') == 'actual-rename-window'
+                      and row.get('fromPath') == str(temp)
+                      and row.get('toPath') == str(final))
+        transition = next(row for _path, row in rows
+                          if row.get('kind') == 'actual-rename-transition'
+                          and row.get('windowSequence') == window['sequence'])
+        producer = next(row for _path, row in rows
+                        if row.get('kind') == 'generated-vma-operation-exit'
+                        and row.get('operation') == 'unmap')
+        consumer = next(row for _path, row in rows
+                        if row.get('kind') == 'fd-capture'
+                        and row.get('path') == str(final))
+        self.assertEqual(window.get('generatedCheckpointSequence'), producer['sequence'])
+        self.assertEqual(transition.get('afterIdentity'), consumer['identity'])
+        self.assertEqual(consumer.get('path'), str(final))
+        self.assertTrue(bindings.retained_metadata_chain(producer, consumer,
+                                                        [(window, transition)]))
+        report = self._replay(shards, originals, label='rename-v9')
+        self.assertIsNotNone(report)
 
     def test_real_moved_mremap_is_accepted_by_the_real_verifier(self):
         binary = build(CHILD_MOVED_C, self.root / 'bin', 'moved')

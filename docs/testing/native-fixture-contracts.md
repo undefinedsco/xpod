@@ -9,6 +9,12 @@
 - 生产接口变化时，接口实现、夹具和对应编译测试必须在同一提交中更新。缺少接口应在快速编译门禁失败，不能在产品代码里增加 fallback 来迁就旧夹具。
 - ABI 夹具必须使用生产协议头中的 `abi_version`、`struct_size`、字段顺序和函数指针签名。禁止复制一份独立结构定义。
 
+## 阶段派生观察预算
+
+SDK 的预算策略必须显式版本化，并与实际执行源一起冻结。`legacy-fixed-v1` 保留历史的 1 秒 VMA 观察窗口和 1800 秒 configure cap，已发布的旧 SDK 继续使用其历史字节，不得被重新解释。
+
+`phase-parent-v1` 是当前策略：configure 只使用已授权的全局 deadline 减去既有 4200 秒下游 reserve，不创建新的固定 cap；VMA 窗口使用当前 phase 的同一绝对 parent deadline，不得在进入、嵌套、重试或 closing 时重算、重置或延长。窗口记录必须带精确 policy declaration；缺失、未知、被伪造或与 parent/ownership 不一致的记录必须拒绝。两种策略都不通过环境变量或 CLI 选择。
+
 ## 行为与语义
 
 - mock 返回成功时必须产生该能力约定的副作用或结果；不允许“无条件成功”的空实现。

@@ -15,6 +15,9 @@ _transport_spec=importlib.util.spec_from_file_location('sdk_generated_producer_t
 generated_transport=importlib.util.module_from_spec(_transport_spec);_transport_spec.loader.exec_module(generated_transport)
 import json
 import re
+from types import SimpleNamespace
+_owned_input_spec=importlib.util.spec_from_file_location('sdk_owned_input_generation_replay',Path(__file__).with_name('sdk-owned-input-generation.py'))
+owned_input_module=importlib.util.module_from_spec(_owned_input_spec);_owned_input_spec.loader.exec_module(owned_input_module)
 import struct
 import stat
 import shlex
@@ -259,18 +262,106 @@ def metadata_chain_diagnostic(producer, consumer, current, path, references):
     except BaseException:
         return _METADATA_CHAIN_DIAGNOSTIC_FALLBACK
 
-def retained_metadata_chain(producer,consumer,states):
+def retained_metadata_chain(producer,consumer,states,identity_only=False):
     """Join only independently verified operation endpoints; never infer a gap.
 
     Callers must validate each window/exit/lease/original first. This helper
     only composes their exact endpoints and grants no authority by itself.
     """
-    current=producer['identity'];path=producer['path'];references=[];previous=producer['sequence']
+    current=producer['identity'];references=[];previous=producer['sequence']
     need(len(current)==6 and producer['sequence']<consumer['sequence'],'retained metadata chain endpoints/order')
+    if not identity_only:
+        # LEGACY DEFAULT PATH IS MANDATORY. `identity_only=False` composes an owned
+        # NAMESPACE chain, so a missing endpoint path is a malformed stream and must
+        # be refused explicitly -- not merely caught later by a branch that happens
+        # to use it. This keeps the legacy contract exactly as strict as before.
+        need('path' in producer and 'path' in consumer,
+             'retained metadata chain requires endpoint paths')
+    path=producer['path'] if not identity_only else None
+    if identity_only:
+        # A held LEASE token is identified by its inode tuple alone; the acquisition
+        # records a /proc pseudo path that is never path authority. Compose the same
+        # verified endpoints with the identical before-continuity and per-kind effect
+        # rules, and prove the final identity only.
+        need('path' not in producer and 'path' not in consumer,
+             'identity-only chain must not carry a path')
+        for window,change in states:
+            sequence=change['sequence']
+            if not (producer['sequence']<sequence<consumer['sequence']):continue
+            before=window['beforeIdentity'];after=change['afterIdentity']
+            # UNIQUENESS, checked before dispatch: source-before and replacementBefore
+            # are the two independently verified inodes of ONE real rename. If they
+            # name the SAME inode the row is ambiguous -- neither a distinct displaced
+            # inode nor a trustworthy source claim -- so the chain refuses outright
+            # instead of silently composing one side.
+            replacement=window.get('replacementBefore')
+            if isinstance(replacement,dict) and isinstance(replacement.get('identity'),list):
+                displaced_identity=replacement['identity']
+                if (len(displaced_identity)==6
+                        and displaced_identity[:2]==window['beforeIdentity'][:2]):
+                    need(False,'retained displaced rename inode is not distinct from the source')
+            if before[:2]!=producer['identity'][:2]:
+                # A rename ALSO overwrites a DESTINATION inode, which the observer
+                # advances in the same transaction. Its endpoints are the SAME real
+                # rename row's already-validated `replacementBefore` ->
+                # `replacementAfter` (shape, distinct single-link inode, sealed
+                # bytes and nlink==0 are all verified by the replay rename branch).
+                # This selects the displaced endpoint ONLY for that distinct inode;
+                # it invents no link state, grants no path authority, and never
+                # matches a source endpoint.
+                if window.get('kind')!='actual-rename-window':
+                    continue
+                replacement=window.get('replacementBefore')
+                displaced=change.get('replacementAfter')
+                if not (isinstance(replacement,dict) and isinstance(displaced,dict)):
+                    continue
+                target_before=replacement.get('identity');target_after=displaced.get('identity')
+                if not (isinstance(target_before,list) and isinstance(target_after,list)
+                        and len(target_before)==len(target_after)==6):
+                    continue
+                # (uniqueness is enforced for every window at the top of this loop)
+                if target_before[:2]!=producer['identity'][:2]:
+                    continue
+                if displaced.get('links')!=0:
+                    continue
+                before=target_before;after=target_after
+                need(previous<sequence and before==current,
+                     'retained metadata chain gap/order')
+                need(after[:5]==before[:5] and after!=before,
+                     'retained displaced rename changed more than ctime')
+                current=after;previous=sequence;references.append(sequence)
+                continue
+            need(previous<sequence and len(before)==len(after)==6 and before==current,
+                 'retained metadata chain gap/order')
+            if window['kind']=='actual-link-window':
+                need(after[:5]==before[:5],'retained link changed inode/mode/size/mtime')
+            elif window['kind']=='actual-timestamp-window':
+                need(after[:4]==before[:4] and stat.S_IMODE(after[2])==stat.S_IMODE(before[2]),
+                     'retained timestamp changed inode/mode/size')
+            elif window['kind']=='actual-rename-window':
+                need(after[:5]==before[:5],'retained rename changed inode/mode/size/mtime')
+            else:
+                need(window['kind']=='actual-mode-window' and after[:2]==before[:2]
+                     and after[3:5]==before[3:5],'retained metadata chain unknown operation/changed bytes')
+            current=after;previous=sequence;references.append(sequence)
+        if current!=consumer['identity']:
+            raise ValueError('multi-process generation originals: retained metadata chain final full identity differs; '+
+                metadata_chain_diagnostic(producer,consumer,current,None,references))
+        return references
     for window,change in states:
         sequence=change['sequence']
         if not (producer['sequence']<sequence<consumer['sequence']):continue
         before=window['beforeIdentity'];after=change['afterIdentity']
+        # A replacement that names the SOURCE inode is ambiguous regardless of which
+        # side we are composing, so check it before dispatching on the source match.
+        replacement=window.get('replacementBefore')
+        if isinstance(replacement,dict) and isinstance(replacement.get('identity'),list):
+            displaced_identity=replacement['identity']
+            if len(displaced_identity)==6 and displaced_identity[:2]==window['beforeIdentity'][:2]:
+                # The rename names the SAME inode as both source and displaced target.
+                # That is ambiguous: it can be neither a distinct displaced inode nor
+                # a trustworthy source claim, so the chain refuses outright.
+                need(False,'retained displaced rename inode is not distinct from the source')
         if before[:2]!=producer['identity'][:2]:continue
         # FULL six-field BEFORE continuity for EVERY admitted operation. A timestamp
         # writes afterIdentity (mtime/ctime); it never justifies a mismatched BEFORE.
@@ -882,7 +973,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
     # a rejection, so a forged row cannot drop "regular" or invent authority.
     ABSENT_ENTRY_KEYS=frozenset(['kind','phase','sequence','observedUnixNs','pid','entrySequence','form','arch','nr','resolved','regular','reason'])
     ABSENT_CONFIRMED_KEYS=frozenset(['kind','phase','sequence','observedUnixNs','pid','entrySequence','exitSequence','form','errnoValue','newPathHex','oldPathHex','scope'])
-    append_obligations={};append_completed={};append_dirty={};append_checkpoints={};append_hashes={};write_projections={};write_windows={};closed_write_windows=set();write_transitions={};write_consumers=[];write_read_exits={}
+    append_obligations={};append_completed={};append_dirty={};append_checkpoints={};append_hashes={};write_projections={};write_windows={};closed_write_windows=set();write_transitions={};generation_truncates={};write_consumers=[];write_read_exits={}
     empty_windows={};empty_eofs=set();dependency_roots={};dependency_reads=0;dependency_cache=None;dependency_expected_names=None;dependency_collection_identity=None
     reused_originals={};prepared={};prepared_consumers=[];prepared_digest=hashlib.sha256();prepared_count=0;prepared_sealed=False;prepared_paths={}
     def capture_data(ref):
@@ -1119,13 +1210,22 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
         need(list(derived.values())==aliases,'writable aliases differ from complete stopped FD census')
         return aliases
     lifetime_verified_phases=[];verified_file_mmap_keys=set()
+    def generation_original_bytes(reference):
+        capture_data(reference)
+        return b''.join(read_reference(reference))
+    def generation_metadata_chain(producer,consumer):
+        states=sorted([*rename_transitions.values(),*link_transitions.values(),*mode_transitions.values(),*timestamp_transitions.values()],key=lambda item:item[1]['sequence'])
+        return retained_metadata_chain(producer,consumer,states)
+    input_generations=owned_input_module.Replay(SimpleNamespace(need=need,policy=policy,read_form=read_form,parse_proc_maps=parse_proc_maps,maximum_file=maximum_file,digest_blocks=digest_blocks,segment_blocks=segment_blocks,original_blocks=read_reference,write_alias_inventory=write_alias_inventory,owner_table=lambda pid:owners.get(pid,{}).get('fdTable'),build_root=generated_build_root),capture_data,generation_original_bytes,generation_metadata_chain,maximum_members)
     validated_mmap_operations={}
     for phase,lines in phase_lines:
+        input_generations.phase()
         need(not live,'prior actual process tree has not closed');phase_capture_sequences.clear();roots=[];waits=[];raw_decoder=raw_records.RawRecordDecoder();lease_model=None;lease_tokens={};lease_closed=[];memory_missing=False;memory_shared_entries=set();memory_released_entries=set();pending_provider_operations=set();pending_source_provider_paths={};lease_pids=[];lease_terminal=False;memory_mode=None;bti_mode=None;bti_required=set();bti_originals={};bti_completed=set();approved_rx={};clone3_mode=None;clone3_originals={};clone3_consumed=set();clone3_events={};memory_checker=executable_memory_policy();memory_writes={};remap_mode=None;remap_required=set();remap_originals={};remap_consumed=set()
         for raw in lines:
             check();total+=len(raw);need(total<=maximum_raw and len(raw)<=65536,'tiny raw aggregate/record bound');row=raw_decoder.feed(raw)
             if row is None:continue
             need(row['sequence']==last+1 and row['phase']==phase,'phase/raw sequence differs');last=row['sequence'];kind=row['kind']
+            input_generations.record(row)
             if isinstance(row.get('original'),dict) and 'storage' in row['original']:
                 need((not chunk_storage_initialized or chunk_storage_model=='chunk-original-v1') and (kind=='write-original' or original_reader.logical.get(row['original']['path'])==row['original']),'chunk original requires declared write or earlier exact reference')
             if record_observer is not None:record_observer(phase,row)
@@ -1202,7 +1302,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need(row.get('taskOwnershipModel') in [None,'all-tracked-tids-shared-fd-v1'],'unknown task ownership model');shared_mode=row.get('taskOwnershipModel') is not None;owners={}
                 need(not denied_operations,'unclosed explicit syscall denial at new root');denial=row.get('optionalIoUringModel');need(denial in [None,'explicit-kernel-enosys-denial-v1','explicit-kernel-enosys-denial-v2'],'unknown optional syscall denial model');denial_mode=denial is not None
                 generated_model=row.get('generatedVmaModel')
-                metadata_model=row.get('generatedVmaMetadataModel');need(metadata_model in [None,'actual-closed-generated-transaction-retained-metadata-v1']and(metadata_model is None or generated_model=='actual-generated-file-vma-stopped-mm-cohort-parked-universe-wait-v8'),'unknown generated metadata accounting model')
+                metadata_model=row.get('generatedVmaMetadataModel');need(metadata_model in [None,'actual-closed-generated-transaction-retained-metadata-v1']and(metadata_model is None or generated_model in ['actual-generated-file-vma-stopped-mm-cohort-parked-universe-wait-v8','actual-generated-file-vma-stopped-mm-cohort-phase-parent-budget-v9']),'unknown generated metadata accounting model')
                 if generated_model is not None:
                     if generated_module is None:
                         import importlib.util
@@ -1243,6 +1343,13 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need(row['pid'] not in vfork_holds,'held vfork parent ended without child release');wait_rows[row['sequence']]=row
                 if process_interval is not None:process_interval.wait(row['pid'],row if terminal_mode else None)
                 need(row['pid'] in live,'wait on unknown process');live.remove(row['pid']);root_codes[row['pid']]=row['returnCode'];waits.append(dict(pid=row['pid'],sequence=row['sequence'],returnCode=row['returnCode'],phase=phase))
+            elif kind in ('owned-input-generation-peer','owned-input-generation-retired','owned-input-generation-opened','owned-input-generation-acquired','owned-input-generation-truncate-window','owned-input-generation-truncated'):
+                if kind in ('owned-input-generation-retired','owned-input-generation-truncate-window'):retained_entries.add(row['entrySequence'])
+                if kind=='owned-input-generation-truncated':
+                    generation_truncates[row['sequence']]=row
+                    key=tuple(row['afterIdentity'][:2]);write_projections[key]=(row['sequence'],input_generations.active[key]['truncateSegments'])
+            elif kind in ('exclusive-owned-input-generation-resume','exclusive-owned-input-truncate-resume'):
+                need(exclusive is None,'owned generation open overlaps exclusive operation');exclusive=(row['pid'],row['entrySequence'])
             elif kind=='all-stop-barrier':
                 terminal_peers=process_interval.terminal_peers(row)if process_interval is not None else set();need(process_interval is not None or 'terminalPeers'not in row,'terminal peers lack owned process interval')
                 need(row['pids']==sorted(live-terminal_peers) and row['osStates']==['t']*len(live-terminal_peers),'potential writer not in actual complete tracing-stop barrier')
@@ -1267,7 +1374,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 entry=entries.get(row['entrySequence']);barrier=barriers.get(row['barrierSequence'])
                 generated_checkpoint=row.get('generatedCheckpointSequence')
                 if generated_checkpoint is not None:
-                    need(generated_verifier is not None and generated_verifier.model==generated_module.PARKED_WAIT_MODEL and 'producerCaptureSequence'not in row,'generated rename requires explicit v8 checkpoint')
+                    need(generated_verifier is not None and generated_verifier.model in generated_module.PARKED_WAIT_MODELS and 'producerCaptureSequence'not in row,'generated rename requires explicit v8 checkpoint')
                     checkpoint=generated_verifier.checkpoints.get(generated_checkpoint);producer=(checkpoint,checkpoint['data'])if checkpoint else None
                 else:producer=caps.get(row['producerCaptureSequence'])
                 need(entry and barrier and producer and row['pid']==entry['pid'] and exclusive is None and row['pid'] in barrier['pids'] and entry['sequence']<barrier['sequence'] and latest_execution_sequence<=barrier['sequence'] and entry['nr'] in policy(entry['arch'])['renameOps'],'retained rename entry/barrier/producer missing')
@@ -1306,7 +1413,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             elif kind.startswith('generated-kernel-wait-'):
                 need(generated_verifier is not None and generated_verifier.model in generated_module.COORDINATED_WAIT_MODELS,'coordinated wait requires explicit model')
                 need(kind in ['generated-kernel-wait-window','generated-kernel-wait-waiter-resume','generated-kernel-wait-quiescent','generated-kernel-wait-peer-resume','generated-kernel-wait-peer-stopped','generated-kernel-wait-wake-window','generated-kernel-wait-waker-resume','generated-kernel-wait-closed','generated-kernel-wait-side-wait-window','generated-kernel-wait-side-wait-resume','generated-kernel-wait-side-wait-closed','generated-kernel-wait-side-wait-deferred','generated-kernel-wait-peer-entry-selected'],'unknown coordinated wait record')
-                if kind.startswith('generated-kernel-wait-side-'):need(generated_verifier.model==generated_module.PARKED_WAIT_MODEL,'peer side wait requires v8 parked model')
+                if kind.startswith('generated-kernel-wait-side-'):need(generated_verifier.model in generated_module.PARKED_WAIT_MODELS,'peer side wait requires a parked-wait model')
                 if kind=='generated-kernel-wait-side-wait-resume':
                     need(exclusive is None,'peer mismatch crossed an exclusive operation');exclusive=(row['pid'],row['entrySequence'])
                 if kind=='generated-kernel-wait-window':
@@ -1448,7 +1555,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 entry=entries.get(row['entrySequence']);barrier=barriers.get(row['barrierSequence'])
                 need(entry and barrier and entry['pid']==row['pid'] and row['pid'] in barrier['pids'] and entry['nr']==policy(entry['arch'])['write'] and entry['args'][0]==row['fd'],'actual write entry/barrier differs')
                 need(all(type(row[key]) is int and 0<=row[key]<=maximum_file for key in ['position','offset']) and type(entry['args'][2]) is int and 0<=entry['args'][2]<=maximum_file and row['offset']+entry['args'][2]<=maximum_file,'exact bounded write position/offset/count required')
-                need(row['flags']&3==2 and row['writers']==[dict(pid=row['pid'],fd=row['fd'])] and row['offset']==(row['beforeIdentity'][3] if row['flags']&1024 else row['position']),'actual write has another alias or offset differs')
+                need((row['flags']&3==2 or input_generations.mode==owned_input_module.MODEL and tuple(row['beforeIdentity'][:2]) in input_generations.active and row['flags']&3==1) and row['writers']==[dict(pid=row['pid'],fd=row['fd'])] and row['offset']==(row['beforeIdentity'][3] if row['flags']&1024 else row['position']),'actual write has another alias or offset differs')
                 if stopped_alias_mode:
                     need(barrier['pids']==sorted(live) and barrier['osStates']==['t']*len(live),'alias write lacks complete stopped universe')
                     write_alias_inventory(row.get('stoppedAliasInventory'),row['beforeIdentity'],row['pid'],row['fd'])
@@ -1457,8 +1564,8 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 before=(row['before']['bytes'],row['before']['sha256']) if delta else capture_data(row['before']);buffer=capture_data(row['buffer']);need(before[0]==row['beforeIdentity'][3] and buffer[0]==entry['args'][2],'write originals differ from actual dimensions')
                 baseline=row['baseline']
                 if baseline=='empty':need(before[0]==0,'nonempty write preimage has no original authority')
-                elif baseline in write_transitions:
-                    prior=write_transitions[baseline];need(prior['afterIdentity']==row['beforeIdentity'] and ((prior['after']['bytes'],prior['after']['sha256']) if 'path' not in prior['after'] else capture_data(prior['after']))==before,'write preimage differs from previous actual transition')
+                elif baseline in write_transitions or baseline in generation_truncates:
+                    prior=write_transitions.get(baseline) or generation_truncates[baseline];need(prior['afterIdentity']==row['beforeIdentity'] and ((prior['after']['bytes'],prior['after']['sha256']) if 'path' not in prior['after'] else capture_data(prior['after']))==before,'write preimage differs from previous actual transition')
                 elif generated_verifier is not None and generated_verifier.model in [generated_module.MODEL,*generated_module.COORDINATED_WAIT_MODELS] and baseline in generated_verifier.origins:
                     generated_verifier.write_baseline(row,before)
                 else:
@@ -1467,7 +1574,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                         previous=exits.get(prior[0]['entrySequence']);need(prior[0]['role']=='producer-close' and previous and not previous['isError'] and previous['result']==0,'write baseline lacks actual producer close')
                 if delta:
                     key=tuple(row['beforeIdentity'][:2])
-                    if baseline in write_transitions:
+                    if baseline in write_transitions or baseline in generation_truncates:
                         projection=write_projections.get(key);need(projection and projection[0]==baseline,'delta preimage is not latest actual transition');segments=projection[1]
                     else:
                         initial=row['initialBefore'];need(capture_data(initial)==before,'initial write delta preimage differs');segments=[(initial,0,before[0])] if before[0] else []
@@ -1738,7 +1845,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                     # One canonical byte original per stable protected inode. It is
                     # NOT an observed tool path and grants no source origin; the
                     # separate regular-input-observation rows carry the read facts.
-                    need(row.get('regularInputOriginalModel')=='once-per-stable-protected-inode-v1','unknown regular input original model')
+                    need(row.get('regularInputOriginalModel')=='once-per-stable-protected-inode-v1' or input_generations.mode==owned_input_module.MODEL and row.get('regularInputOriginalModel')==owned_input_module.MODEL,'unknown regular input original model')
                     need(len(row['identity'])==6 and row['identity'][3]==data[0] and stat.S_ISREG(row['identity'][2]),'regular input original identity/bytes differ')
                     input_read_originals[tool_original_key(row['original'])]=dict(data=data,row=row,identity=row['identity'],original=row['original'],entity=row.get('originalEntityIdentity'))
                 else:need(data[0]<=4*1024**2 and type(row.get('observedPid')) is int and row['observedPid'] in live,'bounded live tracee metadata original')
@@ -2216,13 +2323,34 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             elif kind=='toolchain-lease-closed-token':
                 need(lease_model==row.get('model')=='kernel-held-read-lease-v1' and not live and not lease_terminal and not lease_pids,'lease token close before actual waits/after closure')
                 value={key:row.get(key) for key in ['leaseId','identity','acquisitionSequence']}
-                current=lease_tokens.get(len(lease_closed)+1)
-                need(current is not None and value=={key:current[key] for key in ['leaseId','identity','acquisitionSequence']},'lease closed token sequence/identity differs');lease_closed.append(value)
+                active_tokens=[value for token,value in lease_tokens.items() if token not in input_generations.retired]
+                current=active_tokens[len(lease_closed)] if len(lease_closed)<len(active_tokens) else None
+                need(current is not None and value['leaseId']==current['leaseId'] and value['acquisitionSequence']==current['acquisitionSequence'],'lease closed token sequence/identity differs')
+                # ACQUISITION IDENTITY IS IMMUTABLE. The closing token may carry a
+                # DIFFERENT identity ONLY where an already-witnessed owned metadata
+                # transition bridges acquisition -> current, using the SAME
+                # `retained_metadata_chain` authorizer the rename/link/mode paths
+                # already use (six-field BEFORE == composed current, exact AFTER,
+                # per-kind effect rules, final full-identity match). No ctime ignore,
+                # no dropped field, no loose equality, and the operation string is
+                # never authority by itself: the chain composes only independently
+                # verified endpoints and refuses any gap.
+                closing=list(value['identity'])
+                if closing!=list(current['identity']):
+                    producer=dict(sequence=current['acquisitionSequence'],
+                                  identity=list(current['identity']))
+                    consumer=dict(sequence=row['sequence'],identity=closing)
+                    states=sorted([*rename_transitions.values(),*link_transitions.values(),
+                                   *mode_transitions.values(),*timestamp_transitions.values()],
+                                  key=lambda item:item[1]['sequence'])
+                    retained_metadata_chain(producer,consumer,states,identity_only=True)
+                lease_closed.append(value)
             elif kind=='toolchain-lease-closed-pids':
-                need(lease_model==row.get('model')=='kernel-held-read-lease-v1' and not live and not lease_terminal and len(lease_closed)==len(lease_tokens),'lease PID close before token/wait closure')
+                need(lease_model==row.get('model')=='kernel-held-read-lease-v1' and not live and not lease_terminal and len(lease_closed)==len(lease_tokens)-len(input_generations.retired),'lease PID close before token/wait closure')
                 values=row.get('actualClosedPids');need(isinstance(values,list) and 0<len(values)<=256 and row.get('offset')==len(lease_pids),'bounded sequential closed PID chunk required');lease_pids.extend(values)
             elif kind=='toolchain-leases-closed':
-                need(lease_model==row.get('model')=='kernel-held-read-lease-v1' and not live and not lease_terminal and len(lease_closed)==len(lease_tokens),'lease terminal closure incomplete')
+                if input_generations.mode is not None:need(row.get('ownedInputRetiredTokenCount')==len(input_generations.retired),'owned generation retirement terminal count differs')
+                need(lease_model==row.get('model')=='kernel-held-read-lease-v1' and not live and not lease_terminal and len(lease_closed)==len(lease_tokens)-len(input_generations.retired),'lease terminal closure incomplete')
                 digest=hashlib.sha256()
                 for value in lease_closed:digest.update(json.dumps(value,sort_keys=True,separators=(',',':')).encode()+b'\n')
                 need(row.get('tokenCount')==len(lease_closed) and row.get('tokensSha256')==digest.hexdigest() and row.get('actualClosedPidCount')==len(lease_pids) and lease_pids==sorted(wait['pid'] for wait in waits) and row.get('allTrackedWaitsClosed') is True,'lease terminal count/hash/actual waits differ')
@@ -2334,6 +2462,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             value=state['value'];operation_phase=value[1] if isinstance(value,list) else value['phase']
             if operation_phase==phase:
                 phase_mapping_complete=phase_mapping_complete and (all(state['expected'].values()) if isinstance(value,list) else set(state['expected'])==state['seen'])
+        input_generations.finish()
         phase_lifetime_complete=bool(memory_mode and lease_model and lease_terminal and lease_tokens and not memory_missing and memory_shared_entries<=memory_released_entries and phase_mapping_complete)
         lifetime_verified_phases.append(phase_lifetime_complete)
         # ONE-TIME per-phase indexes. The previous shape scanned the whole edge
@@ -2810,7 +2939,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
         sorted(read_custody.values(),key=lambda r:(r['leaseSequence'],r['identity'])),
         sorted(read_source_class.values(),key=lambda r:(r['leaseSequence'],r['identity'])))
 
-    return dict(**(dict(observedGeneratedRetainedMetadata=dict(model=generated_module.RETAINED_METADATA_MODEL,maximumBytes=4*1024**2,peakBytes=generated_verifier.metadata_high_water))if generated_verifier is not None and generated_verifier.retained_metadata else {}),**(dict(verifiedCoordinatedWaitIntervals=list(getattr(generated_verifier,'coordinated_waits',[]))) if generated_verifier is not None and generated_verifier.model in generated_module.COORDINATED_WAIT_MODELS else {}),**(dict(verifiedPrivateWakeEntrySequences=list(generated_verifier.private_wakes),**(dict(verifiedPrivateWaitMismatchEntrySequences=list(generated_verifier.private_waits)) if generated_verifier.model in generated_module.PRIVATE_WAIT_MODELS else {})) if generated_verifier is not None and generated_verifier.model in generated_module.WAKE_MODELS else {}),schemaVersion=1,kind='all-stop-CMake-generated-byte-mechanics',observedGeneratedWritableMapCheckpoints=len(generated_verifier.checkpoints) if generated_verifier is not None else 0,generatedMappedConsumerByteCustodyVerified=bool(mapped_outputs),selectedGeneratedConsumerByteCustodyVerified=not pending,outputs=sorted(covered.values(),key=lambda row:row['path']),observedSourceReadCaptures=len(source_reads),observedPreparedDependencyReadCaptures=dependency_reads,preparedDependencySourceAuthorityVerified=False,preparedDependencyPending=(['independent-FetchContent-dependency-stage-and-Git-or-URL-source-authority-unverified'] if dependency_roots else []),pending=pending,overallSdkSourceVerified=False,
+    return dict(**(dict(observedOwnedInputGenerations=input_generations.total_completed,ownedInputGenerationModel=owned_input_module.MODEL,ownedInputGenerationScope='exact protected consumed generations and complete observed mutation byte effects; no global host-writer absence between generations') if input_generations.total_completed else {}),**(dict(observedGeneratedRetainedMetadata=dict(model=generated_module.RETAINED_METADATA_MODEL,maximumBytes=4*1024**2,peakBytes=generated_verifier.metadata_high_water))if generated_verifier is not None and generated_verifier.retained_metadata else {}),**(dict(verifiedCoordinatedWaitIntervals=list(getattr(generated_verifier,'coordinated_waits',[]))) if generated_verifier is not None and generated_verifier.model in generated_module.COORDINATED_WAIT_MODELS else {}),**(dict(verifiedPrivateWakeEntrySequences=list(generated_verifier.private_wakes),**(dict(verifiedPrivateWaitMismatchEntrySequences=list(generated_verifier.private_waits)) if generated_verifier.model in generated_module.PRIVATE_WAIT_MODELS else {})) if generated_verifier is not None and generated_verifier.model in generated_module.WAKE_MODELS else {}),schemaVersion=1,kind='all-stop-CMake-generated-byte-mechanics',observedGeneratedWritableMapCheckpoints=len(generated_verifier.checkpoints) if generated_verifier is not None else 0,generatedMappedConsumerByteCustodyVerified=bool(mapped_outputs),selectedGeneratedConsumerByteCustodyVerified=not pending,outputs=sorted(covered.values(),key=lambda row:row['path']),observedSourceReadCaptures=len(source_reads),observedPreparedDependencyReadCaptures=dependency_reads,preparedDependencySourceAuthorityVerified=False,preparedDependencyPending=(['independent-FetchContent-dependency-stage-and-Git-or-URL-source-authority-unverified'] if dependency_roots else []),pending=pending,overallSdkSourceVerified=False,
                 observedAliasOnlyCloses=len(alias_close_exits),observedActualModeTransitions=len(mode_transitions),observedNamedRetainedFdBindings=len(namespaces),observedActualWriteTransitions=len(write_transitions),observedEmptyReadEofWindows=len(empty_eofs),toolchainProcessAuthorityIntervals=process_intervals,toolchainProcessAuthorityIntervalVerified=bool(process_intervals) and all(row.get('model') is not None for row in process_intervals),toolchainProcessAuthorityPending=['toolchain-provider-namespace-external-writer-and-backing-snapshot-authority-unverified']+([] if process_intervals and all(row.get('model') is not None for row in process_intervals) else ['toolchain-owned-process-authority-interval-originals-unavailable']),toolchainFileSnapshots=list(tool_files.values()),toolchainOperationCoverage=tool_coverage.finish(sorted(tool_pending),sorted(tool_provider_pending)),toolchainActualExecImages=tool_execs,toolchainActualFileMappings=tool_mappings,verifiedFileMappedMmapKeys=sorted(list(key) for key in verified_file_mmap_keys),
 
     verifiedGeneratedProducerTransport=verified_generated_producer_transport,

@@ -85,7 +85,14 @@ def run(identity,deadline,out,context_originals,kernel_probe_only=False):
             primary=sys.exc_info()[1]
             try:
                 cleanup=dict(builder=builder,deadlineUnix=deadline,originals=str(out));save('cleanup.plan.json',cleanup,0)
-                outer.commands.capture('remove-owned-builder',['/usr/bin/python3','-I','-S','-B',str(HERE/'sdk-readonly-result-context.py'),'remove-builder','--plan',str(out/'cleanup.plan.json')],out,Path.cwd(),timeout=budget.timeout(30),resource_profile='cleanup')
+                # The cleanup capture has NO private 30s authority: the inner
+                # child derives BOTH of its waits from this same authenticated
+                # ExecutionBudget, so a smaller outer cap would kill the child
+                # while it still had legitimate remaining budget and BEFORE the
+                # after-listing could prove absence. Pass the real remaining
+                # window (timeout() already returns min(cap,remaining-reserve) and
+                # raises on exhaustion, so the global deadline is never extended).
+                outer.commands.capture('remove-owned-builder',['/usr/bin/python3','-I','-S','-B',str(HERE/'sdk-readonly-result-context.py'),'remove-builder','--plan',str(out/'cleanup.plan.json')],out,Path.cwd(),timeout=budget.timeout(budget.remaining()),resource_profile='cleanup')
             except BaseException as cleanup_error:
                 if primary is None:raise
                 if hasattr(primary,'add_note'):primary.add_note('Owned builder cleanup failed: '+type(cleanup_error).__name__)

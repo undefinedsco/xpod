@@ -256,7 +256,18 @@ class VmaHarness:
         self.phase_progress_ns = obs.Observer.phase_progress_ns.__get__(self)
         self.window_summary = obs.Observer.window_summary.__get__(self)
         self.owned_window_state = obs.Observer.owned_window_state.__get__(self)
-        self.waiter = type('W', (), {'restore': lambda _self, token: self.restored.append(token)})()
+        # Real production lifecycle method: Runtime.finish closes the owned outer
+        # window immediately before waiter.restore(). Binding the REAL method keeps
+        # the harness on the actual Observer interface instead of a no-op shim.
+        self.close_outer_lease_window = obs.Observer.close_outer_lease_window.__get__(self)
+        self._outer_lease_coalesce = None
+        def _restore(_self, token):
+            # Causal ordering probe: the owned outer window must already be closed
+            # when production restores the waiter.
+            self.restore_saw_claim = getattr(self, '_outer_lease_coalesce', 'missing')
+            self.restored.append(token)
+        self.restore_saw_claim = 'not-restored'
+        self.waiter = type('W', (), {'restore': _restore})()
 
     def tool_maps(self, pid):
         # "established absent mappings": the original's backing is gone
@@ -301,6 +312,12 @@ class UnmapBranch(unittest.TestCase):
         self.backend = VmaHarness(self.p, vma.identity(__import__('os').fstat(probe.fileno())), self.ref)
         self.addCleanup(self.backend._tmp.close)
         self.identity = vma.identity(__import__('os').fstat(self.backend._real_fd))
+        # Populate synthetic coalescing state because this fixture drives finish
+        # directly. The real close method must clear it before waiter.restore;
+        # a no-op close must fail the ordering assertion.
+        self.backend._outer_lease_coalesce = dict(
+            waiter=self.backend.waiter, thread=__import__('threading').get_ident(),
+            phase=self.backend.current_phase, parent=1, local=1)
         self.backend.identity_row = self.identity
         self.r = make_runtime(self.backend)
         self.r.active = {'sequence': 5, 'token': 'tok-1'}
@@ -323,6 +340,9 @@ class UnmapBranch(unittest.TestCase):
         # ordering preserved: emit happened, then restore, then pending popped
         self.assertEqual(len(self.backend.emitted), 1)
         self.assertEqual(self.backend.restored, ['tok-1'])
+        # the owned outer window is closed BEFORE the waiter is restored
+        self.assertIsNone(self.backend.restore_saw_claim,
+                          'close_outer_lease_window must precede waiter.restore')
         self.assertIsNone(self.r.active)
         self.assertNotIn(4242, self.r.pending)
 
@@ -335,6 +355,8 @@ class UnmapBranch(unittest.TestCase):
         # the span still records (finally), and NOTHING after emit ran
         self.assertEqual(self.p.substeps['generated_vma_finish_emit'][0], 1)
         self.assertEqual(self.backend.restored, [], 'restore must NOT run after a failed emit')
+        self.assertEqual(self.backend.restore_saw_claim, 'not-restored',
+                         'no waiter restore may occur on a failed emit')
         self.assertIsNotNone(self.r.active, 'active must remain on failure')
         self.assertIn(4242, self.r.pending, 'pending must remain on failure')
 

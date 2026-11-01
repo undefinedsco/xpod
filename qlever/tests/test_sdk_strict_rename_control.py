@@ -1,5 +1,5 @@
 """Real regular-file lease/control flow, simulated stops; no ptrace/native run."""
-import ast,errno,hashlib,importlib.util,os,stat,sys,tempfile,types,unittest
+import ast,errno,hashlib,importlib.util,os,stat,sys,tempfile,time,types,unittest
 from unittest import mock
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2];source=ROOT/'qlever/scripts/sdk-ptrace-execution.py';tree=ast.parse(source.read_text());observer=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='Observer')
@@ -12,8 +12,11 @@ ROOT=Path(__file__).resolve().parents[2];source=ROOT/'qlever/scripts/sdk-ptrace-
 import importlib.util as _importlib_util
 _spec=_importlib_util.spec_from_file_location('rename_backend',source)
 _backend=_importlib_util.module_from_spec(_spec);_spec.loader.exec_module(_backend)
-_method_names=['capture_rename','complete_rename','snapshot_write_original','close_rename_leases',
-               'next_capture_name','register_capture_entity','capture_entity_identity','verify_capture_entity']
+_method_names=['capture_rename','complete_rename','snapshot_write_original','close_rename_leases','advance_witnessed_lease','advance_pending_owned_transitions',
+               'next_capture_name','register_capture_entity','capture_entity_identity','verify_capture_entity',
+               'read_body','read_frame_any','new_read_body_claim','install_read_body_claim',
+               'clear_own_read_body_claim','owned_window_state',
+               'check_full','check_nonlease','check_lifetime_leases','instrument','phase_progress']
 Control=type('Control',(_backend.CapturesMixin,),
              {name:getattr(_backend.Observer,name) for name in _method_names})
 retained_rename_path_absent=_backend.retained_rename_path_absent
@@ -22,7 +25,11 @@ def identity(s):return [s.st_dev,s.st_ino,s.st_mode,s.st_size,s.st_mtime_ns,s.st
 class Tests(unittest.TestCase):
  def setUp(self):
   parent=ROOT/'.test-data/strict-rename';parent.mkdir(parents=True,exist_ok=True);self.tmp=tempfile.TemporaryDirectory(dir=parent);self.addCleanup(self.tmp.cleanup);self.root=Path(self.tmp.name).resolve();self.old=self.root/'old';self.new=self.root/'new';self.old.write_bytes(b'actual held regular producer');self.held=os.open(self.old,os.O_RDONLY);self.addCleanup(os.close,self.held)
-  c=self.c=Control();c.build=str(self.root);c.seq=10;c.maximum_file_bytes=1024;c.capture_dir=self.root/'captures';c.capture_dir.mkdir();c.capture_bytes=0;
+  c=self.c=Control();c.current_phase='rename-control';c.build=str(self.root);c.seq=10;c.maximum_file_bytes=1024;c.capture_dir=self.root/'captures';c.capture_dir.mkdir();c.capture_bytes=0;
+  # Match the real Observer closing interface, including live lease validation.
+  # This fixture supplies the constructor's budget callback as a recorded oracle;
+  # deadline/stdio guards and LeaseSet.check remain the real production methods.
+  c.guard_checks=[];c.check_budget=lambda:c.guard_checks.append('budget');c.pump_errors=[];c.deadline=time.monotonic()+30;c.lifetime_leases=None
   c.initialize_capture_state();c.capture_entities={};c.retained=set();c.budget_context={};c.metadata_states=[];c.check=lambda:None;c.claim=lambda *a,**kw:None;c.barrier=lambda:dict(sequence=c.seq);c.tasks={11:dict(rename=(str(self.old),str(self.new)),entry=dict(sequence=8))};c.exclusive=(11,8);self.producer=dict(sequence=1,path=str(self.old),identity=identity(os.fstat(self.held)));c.producers={tuple(self.producer['identity'][:2]):(self.producer,self.held,(self.old.stat().st_size,hashlib.sha256(self.old.read_bytes()).hexdigest()))}
   def emit(row):c.seq+=1;row.update(sequence=c.seq);return row
   c.emit=emit
@@ -53,7 +60,198 @@ class Tests(unittest.TestCase):
    with self.assertRaises(OSError):self.c.close_rename_leases(first,second)
   self.assertEqual(seen,[first,second]);self.assertIn(first,self.c.retained);self.assertNotIn(second,self.c.retained)
  def test_actual_methods_capture_same_lease_before_and_after_move(self):
-  window=self.c.capture_rename(11);self.assertEqual(window['beforeIdentity'],self.producer['identity']);os.rename(self.old,self.new);self.c.complete_rename(11,dict(sequence=8),dict(sequence=20,result=0,isError=False));self.assertEqual(len(self.c.metadata_states),1);before,after=self.c.metadata_states[0];self.assertEqual(before['beforeOriginal']['sha256'],after['afterOriginal']['sha256']);self.assertEqual(after['afterIdentity'],identity(self.new.stat()));self.assertEqual(self.c.retained,set())
+  window=self.c.capture_rename(11);self.assertEqual(window['beforeIdentity'],self.producer['identity']);os.rename(self.old,self.new);self.c.complete_rename(11,dict(sequence=8),dict(sequence=20,result=0,isError=False));self.assertEqual(len(self.c.metadata_states),1);before,after=self.c.metadata_states[0];self.assertEqual(before['beforeOriginal']['sha256'],after['afterOriginal']['sha256']);self.assertEqual(after['afterIdentity'],identity(self.new.stat()));self.assertEqual(self.c.retained,set());self.assertGreaterEqual(self.c.guard_checks.count('budget'),2,'each snapshot reaches its real complete closing audit')
+ def test_displaced_destination_token_advances_with_source_in_one_transaction(self):
+  """N1: the OVERWRITTEN destination inode is leased too, and must advance.
+
+  The rename drops the destination's last link, which moves its ctime. Its frozen
+  PRE token would otherwise be rejected by the first emit after the rename. Both
+  inodes are real kernel-leased here; the destination is a DIFFERENT inode and
+  must be advanced on its own endpoints, never merged into the source's.
+  """
+  leases=_backend.lifetime_leases.LeaseSet()
+  self.addCleanup(leases.close)
+  destination=self.new
+  destination.write_bytes(b'previous owned cache generation')
+  source_fd=self.held
+  destination_fd=os.open(destination,os.O_RDONLY)
+  self.addCleanup(os.close,destination_fd)
+  source_token=leases.acquire(source_fd)
+  destination_token=leases.acquire(destination_fd)
+  self.assertNotEqual(tuple(source_token['identity'][:2]),
+                      tuple(destination_token['identity'][:2]),
+                      'fixture must lease two DISTINCT inodes')
+  self.c.lifetime_leases=leases
+  self.c.lifetime_by_identity={
+      tuple(source_token['identity']):dict(token=source_token,sequence=1),
+      tuple(destination_token['identity']):dict(token=destination_token,sequence=2),
+      }
+  self.c.lifetime_acquired={
+      tuple(source_token['identity'][:2]):dict(token=dict(source_token),sequence=1,
+                                               identity=list(source_token['identity'])),
+      tuple(destination_token['identity'][:2]):dict(token=dict(destination_token),sequence=2,
+                                                    identity=list(destination_token['identity'])),
+      }
+  destination_before=list(destination_token['identity'])
+  self.c.capture_rename(11)
+  os.rename(self.old,self.new)            # atomically replaces the destination
+  # Production advances at the witnessed syscall EXIT, before the kernel row is
+  # emitted. Drive that same helper here, then the local completion.
+  self.c.advance_pending_owned_transitions(11,dict(op='exit',result=0,isError=False))
+  self.c.complete_rename(11,dict(sequence=8),dict(sequence=20,result=0,isError=False))
+  # The destination inode's ctime moved (last link dropped) and its token followed.
+  destination_after=list(_backend.lifetime_leases.identity(destination_fd))
+  self.assertEqual(destination_after[:5],destination_before[:5])
+  self.assertNotEqual(destination_after[5],destination_before[5])
+  # `advance()` advances the LeaseSet's OWN stored token; the caller's earlier
+  # copy is correctly stale (a filtered check on it must refuse). Assert the live
+  # expectation the sweep actually uses.
+  live={tuple(row['token']['identity'][:2]):row for row in
+        [dict(token=t) for t in leases.complete()]}
+  self.assertEqual(list(live[tuple(destination_before[:2])]['token']['identity']),
+                   destination_after,
+                   'destination expectation must carry its real postimage')
+  # Both inodes advanced; one clean sweep accepts the whole set.
+  leases.check()
+  self.assertIsNone(leases._failure)
+  for row in leases.complete():
+   self.assertIsNotNone(row['identity'])
+
+ def test_prepublish_advance_happens_before_the_exit_row_is_emitted(self):
+  """The rename advance must precede the exit `kernel-syscall` emit.
+
+  ROOT's separate-process evidence showed the exit row's `emit` runs the full
+  lease sweep BEFORE `complete_rename`, so any advance placed only inside
+  `complete_rename` still latched. This pins the actual ordering: the sweep run
+  here (standing in for that emit) must already see the ADVANCED expectation.
+  """
+  leases=_backend.lifetime_leases.LeaseSet()
+  self.addCleanup(leases.close)
+  destination=self.new
+  destination.write_bytes(b'prior cache generation bytes')
+  destination_fd=os.open(destination,os.O_RDONLY)
+  self.addCleanup(os.close,destination_fd)
+  source_token=leases.acquire(self.held)
+  destination_token=leases.acquire(destination_fd)
+  self.c.lifetime_leases=leases
+  self.c.lifetime_by_identity={
+      tuple(source_token['identity']):dict(token=source_token,sequence=1),
+      tuple(destination_token['identity']):dict(token=destination_token,sequence=2)}
+  self.c.lifetime_acquired={
+      tuple(source_token['identity'][:2]):dict(token=dict(source_token),sequence=1,
+                                               identity=list(source_token['identity'])),
+      tuple(destination_token['identity'][:2]):dict(token=dict(destination_token),sequence=2,
+                                                    identity=list(destination_token['identity']))}
+  self.c.capture_rename(11)
+  os.rename(self.old,self.new)
+  # The witnessed exit: production advances here, BEFORE the kernel row emit.
+  self.c.advance_pending_owned_transitions(11,dict(op='exit',result=0,isError=False))
+  # Standing in for that emit's sweep: it must ALREADY be clean.
+  leases.check()
+  self.assertIsNone(leases._failure,'the pre-publication sweep must not latch')
+  # and only then does the metadata completion publish its transition
+  self.c.complete_rename(11,dict(sequence=8),dict(sequence=20,result=0,isError=False))
+  self.assertEqual(len(self.c.metadata_states),1)
+
+ def test_failed_rename_exit_does_not_advance_the_token(self):
+  """A FAILED/unknown exit must keep the strict before-state and propagate."""
+  leases=_backend.lifetime_leases.LeaseSet()
+  self.addCleanup(leases.close)
+  source_token=leases.acquire(self.held)
+  self.c.lifetime_leases=leases
+  self.c.lifetime_by_identity={tuple(source_token['identity']):dict(token=source_token,sequence=1)}
+  self.c.lifetime_acquired={tuple(source_token['identity'][:2]):dict(
+      token=dict(source_token),sequence=1,identity=list(source_token['identity']))}
+  self.c.capture_rename(11)
+  # Snapshotting the preimage legitimately moves ctime, so the state the helper
+  # must NOT exceed is whatever is frozen on the token at call time.
+  frozen_before=list(leases.duplicate_reader(source_token) and source_token['identity'])
+  stored_before=[list(row['token']['identity']) for row in self.c.lifetime_by_identity.values()]
+  os.rename(self.old,self.new)
+  # a FAILED exit must not advance anything
+  self.c.advance_pending_owned_transitions(11,dict(op='exit',result=-13,isError=True))
+  stored_after=[list(row['token']['identity']) for row in self.c.lifetime_by_identity.values()]
+  self.assertEqual(stored_after,stored_before,
+                   'a failed exit must not move any frozen token')
+  self.assertIsNone(leases._failure)
+
+ def test_exit_contract_rejects_missing_none_or_nonbool_iserror(self):
+  """ONLY an exact `result==0 (int)` + `isError is False` exit may advance.
+
+  Downstream `complete_rename` asserts `exit['isError'] is False`, so accepting a
+  MISSING or None isError here would let this API claim a refusal it never made.
+  """
+  leases=_backend.lifetime_leases.LeaseSet()
+  self.addCleanup(leases.close)
+  destination=self.new
+  destination.write_bytes(b'prior cache generation bytes')
+  destination_fd=os.open(destination,os.O_RDONLY)
+  self.addCleanup(os.close,destination_fd)
+  source_token=leases.acquire(self.held)
+  destination_token=leases.acquire(destination_fd)
+  self.c.lifetime_leases=leases
+  self.c.lifetime_by_identity={
+      tuple(source_token['identity']):dict(token=source_token,sequence=1),
+      tuple(destination_token['identity']):dict(token=destination_token,sequence=2)}
+  self.c.lifetime_acquired={
+      tuple(source_token['identity'][:2]):dict(token=dict(source_token),sequence=1,
+                                               identity=list(source_token['identity'])),
+      tuple(destination_token['identity'][:2]):dict(token=dict(destination_token),sequence=2,
+                                                    identity=list(destination_token['identity']))}
+  self.c.capture_rename(11)
+  os.rename(self.old,self.new)
+  frozen=[list(row['token']['identity']) for row in self.c.lifetime_by_identity.values()]
+  for bad in (dict(op='exit',result=0),                       # missing isError
+              dict(op='exit',result=0,isError=None),          # None is not False
+              dict(op='exit',result=0,isError=0),             # 0 is not False by identity
+              dict(op='exit',result=False,isError=False),     # bool result
+              dict(op='exit',result=0.0,isError=False),       # float result
+              dict(op='exit',result=-13,isError=False)):      # real failure
+   self.c.advance_pending_owned_transitions(11,bad)
+   now=[list(row['token']['identity']) for row in self.c.lifetime_by_identity.values()]
+   self.assertEqual(now,frozen,'no advance for %r' % (bad,))
+  # and the EXACT contract still advances both inodes
+  self.c.advance_pending_owned_transitions(11,dict(op='exit',result=0,isError=False))
+  after=[list(row['token']['identity']) for row in self.c.lifetime_by_identity.values()]
+  self.assertNotEqual(after,frozen,'the exact successful exit must advance')
+  self.assertIsNone(leases._failure)
+
+ def test_mode_and_timestamp_windows_are_not_advanced_here(self):
+  """A non-link metadata window must be left to its own handler, untouched.
+
+  A mode window's `meta` is a plain tuple, and a timestamp window is not an
+  inode-effect link op; neither may be labelled owned-temp-unlink nor raise here.
+  """
+  leases=_backend.lifetime_leases.LeaseSet()
+  self.addCleanup(leases.close)
+  source_token=leases.acquire(self.held)
+  self.c.lifetime_leases=leases
+  self.c.lifetime_by_identity={tuple(source_token['identity']):dict(token=source_token,sequence=1)}
+  self.c.lifetime_acquired={tuple(source_token['identity'][:2]):dict(
+      token=dict(source_token),sequence=1,identity=list(source_token['identity']))}
+  frozen=list(source_token['identity'])
+  # The window must hold the SAME inode the lease covers, otherwise a loose
+  # implementation has nothing to compare and the test cannot catch it.
+  held=os.dup(self.held)
+  self.addCleanup(os.close,held)
+  for kind,meta in (('actual-mode-window',('/x','/proc/11/fd/3',0o644)),
+                    ('actual-timestamp-window',dict(form='path',entryArch=0,entryNr=0)),
+                    ('actual-link-window',dict(form='chmod',entryArch=0,entryNr=0))):
+   self.c.tasks[11]['metadataWindow']=(dict(kind=kind,model=_backend.LINK_MODEL,
+                                            beforeIdentity=list(frozen),
+                                            form=meta['form'] if isinstance(meta,dict) else 'chmod'),
+                                       held,'/x',meta)
+   # Force a real ctime move on the LEASED inode so a loose any-window
+   # implementation would actually advance and be caught. `fchmod` is a reliable
+   # ctime mover on this platform (utime on an fd is not).
+   os.fchmod(held,0o640)
+   # must neither raise (a mode window's meta is a tuple) nor advance
+   self.c.advance_pending_owned_transitions(11,dict(op='exit',result=0,isError=False))
+   self.assertEqual(list(self.c.lifetime_by_identity[
+       tuple(source_token['identity'])]['token']['identity']),frozen,
+       '%s must not be advanced as an unlink' % kind)
+  self.assertIsNone(leases._failure)
+
  def test_terminal_close_after_barrier_requires_new_actual_barrier(self):
   calls=[]
   def barrier():

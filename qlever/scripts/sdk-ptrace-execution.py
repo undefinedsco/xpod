@@ -34,6 +34,8 @@ chunk_store=load('sdk_chunk_originals',ROOT/'qlever/scripts/sdk-original-chunk-s
 lifetime_leases=load('sdk_tool_lifetime_leases',ROOT/'qlever/scripts/sdk-tool-lifetime-leases.py')
 raw_wire_codec=load('sdk_raw_wire_codec',ROOT/'qlever/scripts/sdk-raw-wire-codec.py')
 memory_policy=load('sdk_executable_memory_policy',ROOT/'qlever/scripts/sdk-executable-memory-policy.py')
+budget_policy_module=load('sdk_execution_budget_policy',ROOT/'qlever/scripts/sdk-execution-budget.py')
+owned_input_module=load('sdk_owned_input_generation',ROOT/'qlever/scripts/sdk-owned-input-generation.py')
 LIFETIME_MODEL='kernel-held-read-lease-v1'
 LIFETIME_MAXIMUM_DEPTH=8
 PHASE_PROGRESS_INTERVAL=60.0
@@ -88,6 +90,166 @@ PHASE_SYSCALL_DOMAINS, PHASE_SYSCALL_ROLE_LABELS = _phase_syscall_domains()
 PHASE_SYSCALL_OTHER = 'other'
 PHASE_SYSCALL_TOP = 8
 
+
+
+def held_owned_window_state(waiter):
+    """Pure held-state read. Callers retain their own original fault boundary."""
+    if waiter is None:return (False,None,None)
+    deadline=getattr(waiter,'deadline',None);parent=getattr(waiter,'parent_deadline',None)
+    active=bool(getattr(waiter,'active',False))
+    def ns(value):return None if value is None else int(value*1e9)
+    return (active,ns(deadline),ns(parent))
+
+def held_outer_lease_context_matches(observer,waiter,claim,active,deadline,parent,policy=None):
+    """One pure comparison shared by policy and optional diagnostic projection."""
+    if not active or deadline is None or parent is None:return False
+    policy=policy or getattr(observer,'phase_budget_policy',None) or budget_policy_module.LEGACY_PHASE_BUDGET_POLICY
+    equal_parent=policy.observation_window=='phase-parent'
+    if deadline>parent or (deadline==parent and not equal_parent) or claim is None:return False
+    if equal_parent and claim.get('policyVersion')!=policy.version:return False
+    return (claim['waiter'] is waiter
+            and claim['thread']==threading.get_ident()
+            and claim['phase']==getattr(observer,'current_phase',None)
+            and claim['parent']==parent
+            and claim['local']==deadline)
+
+# Diagnostic roles are a closed set; no observed name can grow a table.
+AUDIT_BODY_ROLES=('writable_aliases','snapshot_raw','read_capture_fd','tool_original','legacy_tool_maps')
+AUDIT_BODY_CALLBACKS=('Observer.writable_aliases.<locals>.read_aliases','Observer.snapshot_write_original.<locals>.body','Observer.read_capture_fd.<locals>.body','Observer.tool_original.<locals>.body','Observer.tool_maps.<locals>.body')
+AUDIT_SNAPSHOT_SITES=('observer-leading','scan','check','publish-chunks','stage-manifest','cleanup','manifest-read')
+# Fixed parent buckets for the same-window `otherNative` residual.  The bucket
+# is the nearest enclosing instrument() name at the sweep's start; this is
+# already held state, not a stack walk.  Unknown names never become keys.
+AUDIT_NATIVE_PARENT_BUCKETS=(*PHASE_PROGRESS_BUCKETS,'none','unknown')
+_AUDIT_NATIVE_PARENT_INDEX={name:index for index,name in enumerate(AUDIT_NATIVE_PARENT_BUCKETS)}
+AUDIT_NATIVE_PARENT_NONE=_AUDIT_NATIVE_PARENT_INDEX['none']
+AUDIT_NATIVE_PARENT_UNKNOWN=_AUDIT_NATIVE_PARENT_INDEX['unknown']
+AUDIT_NATIVE_PARENT_COLUMNS=['bucket','calls','errors','elapsedNs']
+AUDIT_SITE_PREFIX='SDK_OWNED_WINDOW_AUDIT_SITES '
+AUDIT_SITE_MAXIMUM_BYTES=6144
+AUDIT_COUNTER_MAXIMUM=(1<<63)-1
+
+class OwnedWindowAuditSites:
+    """Optional attribution only: never consulted by an acceptance decision."""
+    def __init__(self,observer,deadline,parent):
+        self.phase=observer.current_phase;self.deadline=deadline;self.parent=parent
+        self.arm=observer._window_diag;self.waiter=observer.waiter
+        self.window=getattr(self.waiter,'window',None)
+        self.arm_events=min(AUDIT_COUNTER_MAXIMUM,max(0,self.arm['armedSeq']))
+        self.thread=threading.get_ident();self.tag=None;self.active=None;self.first_failed=None
+        self.bodies=[[0]*10 for _ in AUDIT_BODY_ROLES]
+        self.snapshots=[[0]*4 for _ in AUDIT_SNAPSHOT_SITES]
+        self.other=[0]*3;self.crossed=[0]*3;self.clock_misses=0
+        self.nativeParents=[[0,0,0] for _ in AUDIT_NATIVE_PARENT_BUCKETS]
+    @staticmethod
+    def add(row,index,value=1):row[index]=min(AUDIT_COUNTER_MAXIMUM,row[index]+max(0,value))
+    def valid(self,observer):
+        if self.thread!=threading.get_ident() or observer.current_phase!=self.phase:return False
+        if getattr(observer,'_window_diag',None) is not self.arm or observer.waiter is not self.waiter:return False
+        if self.window is None or getattr(self.waiter,'window',None) is not self.window:return False
+        active,deadline,parent=held_owned_window_state(observer.waiter)
+        return active and deadline==self.deadline and parent==self.parent and deadline<parent
+    def ticket(self,kind,index):return [self,kind,index,None,self.tag,False]
+    def body_ticket(self,observer,body):
+        if not self.valid(observer):return None
+        # Names of these five observer-owned closures only; not a stack walk or
+        # an authorization label. Unknown callbacks remain the fixed other bucket.
+        name=getattr(body,'__qualname__',None)
+        index=AUDIT_BODY_CALLBACKS.index(name) if name in AUDIT_BODY_CALLBACKS else -1
+        # A regular snapshot keeps its existing seven-site attribution bracket.
+        if index<0 and self.tag is not None and self.tag[0] is self and self.tag[1]=='snapshot':return None
+        return self.ticket('body',index)
+    def snapshot_ticket(self,observer):
+        if not self.valid(observer):return None
+        return self.ticket('snapshot',0)
+    def install(self,observer,ticket):
+        if ticket is None or ticket[0] is not self or not self.valid(observer):return
+        if ticket[1]=='body' and ticket[2]>=0:
+            row=self.bodies[ticket[2]];self.add(row,0)
+            if held_outer_lease_context_matches(observer,observer.waiter,getattr(observer,'_outer_lease_coalesce',None),*held_owned_window_state(observer.waiter),getattr(observer,'phase_budget_policy',None)):self.add(row,1)
+        self.tag=ticket
+    def bind_claim(self,observer,ticket,claim):
+        if ticket is not None and ticket[0] is self:ticket[3]=claim
+    def body_finished(self,observer,ticket):
+        if ticket is not None and ticket[0] is self:ticket[5]=True
+    def snapshot_stage(self,observer,ticket,telemetry):
+        self.snapshot_site(observer,ticket,telemetry.get('stage'))
+    def snapshot_site(self,observer,ticket,site):
+        if ticket is None or self.tag is not ticket or not self.valid(observer):return
+        ticket[2]=AUDIT_SNAPSHOT_SITES.index(site) if site in AUDIT_SNAPSHOT_SITES else -1
+        if ticket[2]>=0:self.add(self.snapshots[ticket[2]],0)
+    def remove(self,observer,ticket,started=False,returned=False):
+        if ticket is None or ticket[0] is not self:return
+        if ticket[1]=='body' and ticket[2]>=0 and started and self.valid(observer):
+            self.add(self.bodies[ticket[2]],2 if returned else 3)
+        if self.tag is ticket:self.tag=ticket[4]
+    def native_begin(self,observer,started,parent=None):
+        if not self.valid(observer):return None
+        tag=self.tag;kind='other';index=-1;boundary=-1
+        if tag is not None and tag[0] is self:
+            kind,index=tag[1:3]
+            if kind=='body':
+                boundary=0 if tag[3] is None else 2 if tag[5] else 1
+        if parent is None:parent_index=AUDIT_NATIVE_PARENT_NONE
+        elif type(parent) is str and parent in PHASE_PROGRESS_BUCKETS:parent_index=_AUDIT_NATIVE_PARENT_INDEX[parent]
+        else:parent_index=AUDIT_NATIVE_PARENT_UNKNOWN
+        value=[self,kind,index,boundary,started,self.active,parent_index]
+        self.active=value;return value
+    def native_end(self,observer,ticket,ended,error):
+        if ticket is None or ticket[0] is not self:return
+        try:
+            current=getattr(observer,'_audit_sites',None)
+            same=current is self and self.valid(observer)
+            target=self if same else current
+            if target is None or target.thread!=threading.get_ident():return
+            started=ticket[4]
+            if type(started) is int and type(ended) is int and ended>=started:elapsed=ended-started
+            else:elapsed=0;target.clock_misses=min(AUDIT_COUNTER_MAXIMUM,target.clock_misses+1)
+            if not same:
+                self.add(target.crossed,0);self.add(target.crossed,1,int(error is not None));self.add(target.crossed,2,elapsed)
+            elif ticket[1]=='body' and 0<=ticket[2]<len(self.bodies):
+                row=self.bodies[ticket[2]];at=4+2*ticket[3];self.add(row,at);self.add(row,at+1,elapsed)
+            elif ticket[1]=='snapshot' and 0<=ticket[2]<len(self.snapshots):
+                row=self.snapshots[ticket[2]];self.add(row,1);self.add(row,2,int(error is not None));self.add(row,3,elapsed)
+            else:
+                self.add(self.other,0);self.add(self.other,1,int(error is not None));self.add(self.other,2,elapsed)
+                parent_index=ticket[6] if len(ticket)>6 and type(ticket[6]) is int else AUDIT_NATIVE_PARENT_UNKNOWN
+                if not 0<=parent_index<len(self.nativeParents):parent_index=AUDIT_NATIVE_PARENT_UNKNOWN
+                row=self.nativeParents[parent_index]
+                self.add(row,0);self.add(row,1,int(error is not None));self.add(row,2,elapsed)
+            if error is not None and target.first_failed is None:
+                target.first_failed=(ticket[1],ticket[2],ticket[3],started,True)
+        finally:
+            if self.active is ticket:self.active=ticket[5]
+    @staticmethod
+    def slot(value):
+        if value is None:return None
+        kind,index,boundary,started,failed=value
+        return [kind,index,boundary,None if type(started) is not int else min(AUDIT_COUNTER_MAXIMUM,max(0,started)),failed]
+    def summary(self,observer):
+        if not self.valid(observer):return None
+        active=None if self.active is None else (*self.active[1:5],False)
+        result=dict(model='owned-window-audit-sites-v1',authorityVerified=False,phase=self.phase,armedEventCount=self.arm_events,windowDeadlineNs=str(min(AUDIT_COUNTER_MAXIMUM,self.deadline)),parentDeadlineNs=str(min(AUDIT_COUNTER_MAXIMUM,self.parent)),
+            bodyColumns=['entries','exactOuterEligibleEntries','bodyReturns','bodyErrors','entryLeaseAttempts','entryLeaseNs','innerLeaseAttempts','innerLeaseNs','closingLeaseAttempts','closingLeaseNs'],
+            readBodies={role:list(row) for role,row in zip(AUDIT_BODY_ROLES,self.bodies)},
+            snapshotColumns=['checkCallbacks','leaseAttempts','leaseErrors','leaseNs'],
+            regularSnapshot={site:list(row) for site,row in zip(AUDIT_SNAPSHOT_SITES,self.snapshots)},
+            otherNative=list(self.other),crossedWindowNative=list(self.crossed),clockMisses=self.clock_misses,
+            active=self.slot(active),firstFailed=self.slot(self.first_failed),
+            semantics='lease-attempt wall time only; failed attempts can be partial; crossed-window time separate; never add to inclusive parent buckets')
+        if len((AUDIT_SITE_PREFIX+json.dumps(result,separators=(',',':'))+'\n').encode())>AUDIT_SITE_MAXIMUM_BYTES:return None
+        # Optional split of the same-window otherNative residual.  The old
+        # result is already serialized above; if this field does not fit, return
+        # that old result unchanged rather than dropping the whole summary.
+        parents=[[name,*row] for name,row in zip(AUDIT_NATIVE_PARENT_BUCKETS,self.nativeParents)]
+        enriched=dict(result,
+            otherNativeParentColumns=list(AUDIT_NATIVE_PARENT_COLUMNS),
+            otherNativeParents=parents,
+            otherNativeParentSemantics=('same-window otherNative only; bucket is the nearest enclosing instrument() '
+                'at sweep start; calls/errors reconcile absent saturation; body/snapshot and crossedWindowNative are separate; '
+                'per-attempt elapsed is already in otherNative and may overlap nested attempts; failures may be partial'))
+        if len((AUDIT_SITE_PREFIX+json.dumps(enriched,separators=(',',':'))+'\n').encode())<=AUDIT_SITE_MAXIMUM_BYTES:return enriched
+        return result
 
 
 class PhaseProgress:
@@ -711,7 +873,8 @@ class CapturesMixin:
 class Observer(CapturesMixin):
     # Base host observer: pure-Python lease checking, exactly as before.
     lifetime_leases_class = lifetime_leases.LeaseSet
-    def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None,shared_tasks=False,capture_toolchain=False,deny_optional_io_uring=False,verified_setresuid_noop=False,verified_identity_noop=False,terminal_exit_evidence=False,generated_vma_output=False,generated_vma_shared_mm=False,generated_vma_private_wake=False,generated_vma_private_wait_mismatch=False,capture_content_entities=False,queued_identity_noop=False,stopped_writer_aliases=False,generated_vma_coordinated_wait=False,generated_vma_parked_wait=False,io_uring_enosys_v2=False,serialize_terminal_syscalls=False,capture_maps_content_entities=False,retained_generated_metadata=False,indexed_raw_records=False,compressed_raw=False,generated_build_root=generated_vma_module.BUILD_ROOT):
+    owned_input_generations = None
+    def __init__(self,out,source,build,*,deadline_monotonic=None,check_budget=lambda:None,maximum_bytes=32*1024**2,maximum_file_bytes=1024**2,selected_names=SELECTED,maximum_processes=128,shard_bytes=None,require_success=True,maximum_stdio_bytes=None,shared_tasks=False,capture_toolchain=False,deny_optional_io_uring=False,verified_setresuid_noop=False,verified_identity_noop=False,terminal_exit_evidence=False,generated_vma_output=False,generated_vma_shared_mm=False,generated_vma_private_wake=False,generated_vma_private_wait_mismatch=False,capture_content_entities=False,queued_identity_noop=False,stopped_writer_aliases=False,generated_vma_coordinated_wait=False,generated_vma_parked_wait=False,io_uring_enosys_v2=False,serialize_terminal_syscalls=False,capture_maps_content_entities=False,retained_generated_metadata=False,indexed_raw_records=False,compressed_raw=False,phase_budget_policy_version=None,generated_build_root=generated_vma_module.BUILD_ROOT,owned_input_generations=False):
         assert type(indexed_raw_records) is bool
         self.indexed_raw_records=indexed_raw_records
         self.prepared_dependency_plan=None;self.dependency_roots={};self.dependency_cache=None
@@ -750,8 +913,13 @@ class Observer(CapturesMixin):
         self.input_read_cache={};self.input_generation={};self.current_gate=None;self.tool_metadata_bytes=json.loads((ROOT/'scripts/lib/module-artifact-limits.json').read_text())['metadataBytes']
         self.prepared_inputs={};self.prepared_sealed=False;self.domain_bytes=0;self.claim_bytes=dict.fromkeys(('raw-wire','capture-body','stdio','provider-other'),0);self.domain_lock=threading.Lock();self.pump_errors=[];self.maximum_stdio_bytes=maximum_stdio_bytes if maximum_stdio_bytes is not None else maximum_file_bytes
         self.compressed_raw=compressed_raw;self.logical_raw_bytes=0;self.raw_logical_limit=json.loads((ROOT/'scripts/lib/module-artifact-limits.json').read_text())['sourceMaterialBytes'];self.require_success=require_success;self.raw_bytes_completed=0;self.maximum_processes=maximum_processes;self.shard_bytes=shard_bytes
+        if phase_budget_policy_version is None:phase_budget_policy=budget_policy_module.LEGACY_PHASE_BUDGET_POLICY
+        else:phase_budget_policy=budget_policy_module.policy_for_version(phase_budget_policy_version)
+        self.phase_budget_policy=phase_budget_policy
         self.deadline_monotonic=deadline_monotonic;self.check_budget=check_budget;self.maximum_bytes=maximum_bytes;self.maximum_file_bytes=maximum_file_bytes;self.selected_names=selected_names
         self.out=Path(out);self.capture_dir=self.out;self.source=str(source);self.build=str(build);self.tasks={};self.seq=0;self.records=[];self.initialize_capture_state();self.retained=set();self.producers={};self.write_states={};self.write_projections={};self.append_chains={};self.budget_context={};self.metadata_states=[];self.timespec_originals={};self.rename_records=[];self.consumers=[];self.raw=None;self.deadline=0;self.pausing=False;self.root=None;self.root_code=None;self.failures=[];self.current_phase=None;self.unknown_stops={};self.capture_bytes=0;self.capture_entities={};self.content_capture_pool={};self.snapshot_telemetry=None;self.snapshot_telemetry_completed=None;self.snapshot_telemetry_failure=None;self.mremap_proof_active=False;self.mremap_barriers=0;self.mremapDeferred=None;self.exclusive=None;self.wait_references=[]
+        assert type(owned_input_generations) is bool and (not owned_input_generations or shared_tasks and capture_toolchain and stopped_writer_aliases),'owned generations require existing complete task/FD/write custody'
+        self.owned_input_generations=owned_input_module.Runtime(self,SimpleNamespace(probe=probe,bindings=bindings,memory_policy=memory_policy,profile=profile,path_argument=path_argument,descriptor_flags=descriptor_flags)) if owned_input_generations else None
         self.lifetime_leases=None;self.lifetime_phase=None;self.lifetime_acquired={};self.lifetime_by_identity={};self.authority_observed=set()
         assert type(generated_vma_output) is bool and (not generated_vma_output or shared_tasks and capture_toolchain),'generated VMA requires existing actual shared-task/tool observation'
         self.generated_build_root=generated_vma_module.validated_build_root(generated_build_root)
@@ -909,16 +1077,24 @@ class Observer(CapturesMixin):
     def generated_fd_path(self,pid,fd):return fdpath(pid,fd)
     def emit(self,row):
         progress=self.phase_progress()
-        if progress is None:return self.emit_original(row)
-        return self.instrument('emit',self.emit_original,row)
+        result=self.emit_original(row) if progress is None else self.instrument('emit',self.emit_original,row)
+        if self.owned_input_generations is not None:self.owned_input_generations.record(result)
+        return result
     def emit_original(self,row):
+        assert not self.read_frame_any(),'record publication is forbidden inside an owned read-only body'
+        assert getattr(self,'owned_maps_frame',None) is None,'record publication is forbidden inside a maps body'
+        assert getattr(self,'owned_emit_record_frame',None) is None,'record publication is forbidden inside a record callback'
         # One complete live validation brackets this single record publication.
         # Encoding/compression/write of this same already-captured row is pure
         # local work: it pays only the cheap deadline/stdio refusal per
         # iteration (record_check). The trailing check runs on success AND on
         # every exception, so an altered lease/source/ownership state can never
         # let a row escape; no validated state is reused across records.
-        self.check()
+        # Inside ONE owned outer window the redundant per-record native lease
+        # sweep is coalesced (every non-lease check still runs per record); the
+        # mandatory full sweep at the closing/acceptance boundary is unchanged.
+        self.check_emit()
+        primary=None
         try:
             self.seq+=1;row=dict(row,sequence=self.seq,phase=self.current_phase,observedUnixNs=str(time.time_ns()),**(dict(observedMonotonicNs=str(time.monotonic_ns())) if getattr(self,'generated_vma_output',False) else {}));data=None
             if row.get('original',{}).get('storage'):
@@ -945,14 +1121,34 @@ class Observer(CapturesMixin):
                 if isinstance(self.raw,EncodedShardedRaw):self.raw.write(data,bracketed=True)
                 else:self.raw.write(data)
             self.raw.flush()
-            if self.generated_vma:self.generated_vma.record(row)
+            if self.generated_vma:
+                owner=self.generated_vma;claim=None
+                # This claim can only be installed INSIDE this already-armed
+                # complete emit finally. No separate callable wrapper can return
+                # a coalesced callback result without the full closing audit.
+                if self.outer_lease_window_owned() and getattr(owner,'active',None) is not None:
+                    claim=self.new_emit_record_claim(owner,row)
+                try:
+                    if claim is not None:self.install_emit_record_claim(claim)
+                    owner.record(row)
+                    if claim is not None:
+                        assert getattr(self,'owned_emit_record_frame',None) is claim,'record callback claim ownership changed'
+                finally:
+                    if claim is not None:self.clear_own_emit_record_claim(claim)
             if getattr(self,'capture_content_entities',False) and row.get('kind') in ['fd-capture','prepared-build-input-original','write-original','toolchain-original'] and 'original' in row and 'originalReuse' not in row and 'storage' not in row['original']:
                 ref=row['original'];scope=('maps',)if getattr(self,'capture_maps_content_entities',False)and row.get('captureKind')=='maps'else ()
                 self.content_capture_pool.setdefault((self.current_phase,*scope,ref['bytes'],ref['sha256']),row)
             progress=self.phase_progress()
             if progress is not None:progress.observe_boundary(row)
+        except BaseException as error:
+            primary=error
+            raise
         finally:
-            self.check()
+            # This COMPLETE per-record trailing audit is never coalesced.
+            # A closing failure must not replace an earlier body/callback error.
+            try:self.check()
+            except BaseException:
+                if primary is None:raise
         return row
     def wait_one(self):
         progress=self.phase_progress()
@@ -964,11 +1160,129 @@ class Observer(CapturesMixin):
         return result
     def wait_one_original(self):
         return self.waiter.wait_one()
+    def check_lifetime_leases(self):
+        if self.lifetime_leases is not None:
+            self.instrument('lifetime_lease_check',self.lifetime_leases.check)
+    def check_full(self):
+        """A complete closing audit that no diagnostic frame can suppress."""
+        self.check_nonlease()
+        self.check_lifetime_leases()
     def check(self):
+        self.check_nonlease()
+        if self.lifetime_leases is not None and not (self.owned_maps_frame_active() or self.read_body_frame_active()):
+            self.check_lifetime_leases()
+    def emit_record_frame_active(self,owner,row):
+        """Only the exact synchronous callback of this one owned emitted row."""
+        frame=getattr(self,'owned_emit_record_frame',None)
+        if frame is None:return False
+        if frame['owner'] is not owner or frame['row'] is not row:return False
+        if getattr(self,'generated_vma',None) is not owner:return False
+        if frame['sequence']!=self.seq or row.get('sequence')!=frame['sequence']:return False
+        if frame['outer'] is not getattr(self,'_outer_lease_coalesce',None):return False
+        if frame['active'] is not getattr(owner,'active',None):return False
+        if frame['round'] is not getattr(owner,'round',None):return False
+        if not self.outer_lease_window_owned():return False
+        # Use the existing context factory as the sole declaration of axes.
+        # Waiter equality is deliberately NEVER substituted for object identity.
+        before=frame['context'];now=self.new_read_body_claim()
+        return (before.keys()==now.keys() and before['waiter'] is now['waiter']
+                and all(before[key]==now[key] for key in before if key!='waiter'))
+    def check_record(self,owner,row):
+        """Callback entry check; every direct/unmatched invocation stays FULL.
+
+        Coalescing applies only during the core emitter's exact owned call.
+        The mandatory full emit closing check runs after its claim is cleared.
+        Generic check() does not recognize this frame and is never weakened.
+        """
+        if getattr(self,'owned_emit_record_frame',None) is not None and self.emit_record_frame_active(owner,row):self.check_nonlease()
+        else:self.check()
+    def new_emit_record_claim(self,owner,row):
+        return dict(owner=owner,row=row,sequence=self.seq,
+            context=self.new_read_body_claim(),outer=self._outer_lease_coalesce,
+            active=owner.active,round=getattr(owner,'round',None))
+    def install_emit_record_claim(self,claim):
+        assert getattr(self,'owned_emit_record_frame',None) is None,'record callback is not re-entrant'
+        assert not self.read_frame_any(),'record callback cannot open inside a read body'
+        assert getattr(self,'owned_maps_frame',None) is None,'record callback cannot open inside a maps body'
+        self.owned_emit_record_frame=claim
+    def clear_own_emit_record_claim(self,claim):
+        if getattr(self,'owned_emit_record_frame',None) is claim:self.owned_emit_record_frame=None
+    def check_nonlease(self):
+        """Every non-lease check of `check()`, in the same order.
+
+        Split out so the EMIT fast path can coalesce ONLY the redundant
+        per-record native lease sweep inside one owned outer VMA window, while
+        still performing every budget/waiter/SIGIO-safe stdio/deadline check on
+        every single record. `check()` keeps its exact previous semantics: it
+        calls this and then the full lease sweep, so no existing caller of
+        `check()` changes behaviour.
+        """
         self.check_budget()
         if hasattr(self,'waiter') and self.waiter.active:self.waiter.check()
         assert not self.pump_errors,'actual bounded stdio failed: '+str(self.pump_errors);assert time.monotonic()<self.deadline,'all-stop observer deadline'
-        if self.lifetime_leases is not None and not self.owned_maps_frame_active():self.instrument('lifetime_lease_check',self.lifetime_leases.check)
+    def outer_lease_window_owned(self):
+        """True only for the EXACT one owned window that armed the claim.
+
+        The claim records the exact LOCAL clamped deadline plus the identity of
+        the concrete waiter object that was clamped, together with thread, phase
+        and parent deadline. A nested/local re-clamp under the same parent (even
+        on the same thread and phase) therefore CANNOT inherit coalescing,
+        because either the local deadline or the waiter identity differs.
+        Reuses the existing waiter authority; there is no parallel registry.
+        """
+        waiter=getattr(self,'waiter',None)
+        if waiter is None or not getattr(waiter,'active',False):return False
+        claim=getattr(self,'_outer_lease_coalesce',None)
+        if claim is None:return False
+        try:
+            active,deadline,parent=self.owned_window_state()
+        except BaseException:
+            return False
+        return held_outer_lease_context_matches(self,waiter,claim,active,deadline,parent,getattr(self,'phase_budget_policy',None))
+    def open_outer_lease_window(self):
+        """Claim the ONE owned outer window; refuse re-entrancy and non-clamped.
+
+        Verifies a REAL clamp is armed (local deadline strictly before parent),
+        an active waiter exists and a phase is set, then records the exact
+        local deadline plus the concrete waiter identity.
+        """
+        if getattr(self,'_outer_lease_coalesce',None) is not None:
+            raise AssertionError('outer lease window is not re-entrant')
+        waiter=getattr(self,'waiter',None)
+        if waiter is None or not getattr(waiter,'active',False):
+            raise AssertionError('active owned waiter required before claiming')
+        if getattr(self,'current_phase',None) is None:
+            raise AssertionError('observer phase required before claiming')
+        active,deadline,parent=self.owned_window_state()
+        if not active or deadline is None or parent is None:
+            raise AssertionError('owned waiter window required before claiming')
+        policy=getattr(self,'phase_budget_policy',budget_policy_module.LEGACY_PHASE_BUDGET_POLICY)
+        if deadline>parent or (deadline==parent and policy.observation_window!='phase-parent'):
+            raise AssertionError('real local clamp required before claiming')
+        self._outer_lease_coalesce=dict(waiter=waiter,thread=threading.get_ident(),
+            phase=getattr(self,'current_phase',None),parent=parent,local=deadline,policyVersion=policy.version)
+    def close_outer_lease_window(self):
+        """UNCONDITIONAL reset; safe on any path and idempotent."""
+        self._outer_lease_coalesce=None
+        self._audit_sites=None
+    def check_owned_entry(self):
+        """Leading check of one body with an unconditional full closing audit.
+
+        Only the exact existing outer window may omit this leading native sweep.
+        Every budget/waiter/stdio/deadline refusal still runs. Callers must arm
+        their own complete closing check before any result can escape; generic
+        check() and all closing checks remain unchanged.
+        """
+        assert not self.read_frame_any(),'owned entry cannot inherit a read body'
+        assert getattr(self,'owned_maps_frame',None) is None,'owned entry cannot inherit a maps body'
+        assert getattr(self,'owned_emit_record_frame',None) is None,'owned entry cannot inherit a record callback'
+        if self.outer_lease_window_owned():
+            self.check_nonlease()
+            return
+        self.check()
+    def check_emit(self):
+        """The emitted record retains its complete per-record closing audit."""
+        self.check_owned_entry()
     def owned_maps_frame_active(self):
         """True only on the exact thread/phase that opened the private maps frame.
 
@@ -978,13 +1292,155 @@ class Observer(CapturesMixin):
         """
         frame=getattr(self,'owned_maps_frame',None)
         return frame is not None and frame[0]==threading.get_ident() and frame[1]==self.current_phase
-    def open_owned_maps_frame(self):
-        """Open the single private maps frame; refuse if any frame already exists."""
+    def install_owned_maps_frame(self,frame):
+        """Install one preallocated maps claim; refuse every nested frame."""
         assert getattr(self,'owned_maps_frame',None) is None,'owned maps frame is not re-entrant'
-        self.owned_maps_frame=(threading.get_ident(),self.current_phase)
+        assert getattr(self,'owned_read_body_frame',None) is None,'maps frame cannot open inside a read body'
+        assert getattr(self,'owned_emit_record_frame',None) is None,'maps frame cannot open inside a record callback'
+        self.owned_maps_frame=frame
+    def open_owned_maps_frame(self):
+        """Open the single private maps frame; refuse if ANY frame already exists."""
+        self.install_owned_maps_frame((threading.get_ident(),self.current_phase))
+    def clear_own_maps_frame(self,frame):
+        """Drop only this invocation's claim, including an interrupted install."""
+        if getattr(self,'owned_maps_frame',None) is frame:self.owned_maps_frame=None
     def close_owned_maps_frame(self):
         """Unconditionally drop the frame, whatever the caller observed."""
         self.owned_maps_frame=None
+    def reset_owned_frames(self):
+        """Idempotent global reset of observer-owned diagnostic frames.
+
+        Used on explicit destruction (close/abort) and at phase entry, so a
+        claim abandoned by an interrupted arm can never coalesce a later phase.
+        Deliberately does NOT touch foreign state: these private attributes are
+        owned by this observer alone.
+        """
+        self.owned_read_body_frame=None
+        self.owned_maps_frame=None
+        self.owned_emit_record_frame=None
+        self._audit_sites=None
+    def read_frame_any(self):
+        """True if ANY read-body frame exists, regardless of who owns it."""
+        return getattr(self,'owned_read_body_frame',None) is not None
+    def read_body_frame_active(self):
+        """True only for the EXACT context that opened this read body.
+
+        Bound to the concrete waiter OBJECT, the observer deadline, the thread,
+        the phase and (when a window is armed) the exact local/parent deadlines.
+        Two distinct waiters with identical numeric deadlines therefore CANNOT
+        inherit each other's claim, and a swapped/None waiter fails closed.
+        """
+        frame=getattr(self,'owned_read_body_frame',None)
+        if frame is None:return False
+        if frame['thread']!=threading.get_ident():return False
+        if frame['phase']!=self.current_phase:return False
+        if frame['observerDeadline']!=getattr(self,'deadline',None):return False
+        if frame['waiter'] is not getattr(self,'waiter',None):return False
+        active,deadline,parent=self.owned_window_state()
+        if frame['windowActive']:
+            if not active:return False
+            if deadline!=frame['windowDeadline'] or parent!=frame['windowParent']:return False
+        elif active:
+            return False
+        return True
+    def new_read_body_claim(self):
+        """Allocate an UNINSTALLED claim describing this exact context.
+
+        Allocation never touches `owned_read_body_frame`, so a caller that is
+        interrupted before installing it leaves no trace for anyone to clear.
+        """
+        active,deadline,parent=self.owned_window_state()
+        return dict(thread=threading.get_ident(),
+            phase=self.current_phase,waiter=getattr(self,'waiter',None),
+            observerDeadline=getattr(self,'deadline',None),
+            windowActive=bool(active),
+            windowDeadline=None if deadline is None else int(deadline),
+            windowParent=None if parent is None else int(parent))
+    def install_read_body_claim(self,claim):
+        """Install a preallocated claim; refuse nesting in EITHER direction."""
+        assert isinstance(claim,dict),'preallocated read body claim required'
+        assert getattr(self,'owned_emit_record_frame',None) is None,'read body cannot open inside a record callback'
+        assert getattr(self,'owned_read_body_frame',None) is None,'owned read body is not re-entrant'
+        assert getattr(self,'owned_maps_frame',None) is None,'read body cannot nest inside an owned maps frame'
+        self.owned_read_body_frame=claim
+    def open_read_body_frame(self):
+        """Claim the ONE private read body; refuse nesting in EITHER direction."""
+        self.install_read_body_claim(self.new_read_body_claim())
+    def close_read_body_frame(self):
+        """UNCONDITIONAL reset of THIS read frame; safe and idempotent."""
+        self.owned_read_body_frame=None
+    def clear_own_read_body_claim(self,claim):
+        """Reset ONLY the claim we installed; never a foreign or pre-existing one."""
+        if getattr(self,'owned_read_body_frame',None) is claim:
+            self.owned_read_body_frame=None
+    def read_body(self,body):
+        """Run ONE pure synchronous read-only body with a COMPLETE closing audit.
+
+        Contract (STRENGTHENS the previous behaviour):
+
+          * the ORIGINAL `self.check()` runs at entry and `self.check_full()` at
+            the closing boundary, so every non-lease check (budget, waiter,
+            SIGIO-safe stdio, deadline)
+            still runs there in the original order, and a wrong thread/phase/
+            waiter/window context falls back to the FULL native lease audit;
+          * only the redundant PER-BLOCK inner lease sweep is suppressed, by
+            letting `check()` detect this frame -- the converted loops keep
+            calling `self.check()`, never `check_deadline()`;
+          * a pre-existing read OR maps frame is refused BEFORE entry, and this
+            invocation closes only the frame it actually opened;
+          * the FIRST primary exception (entry/open/body) wins; the closing audit
+            runs only for a body that actually started, and can never replace an
+            already-raised primary object;
+          * `emit_original`/`resume_original` fail closed whenever ANY read frame
+            exists, so the trailing audit cannot become a no-op.
+
+        The body MUST be a plain synchronous function. It may write budgeted
+        observer-private capture originals, but it must not mutate tracee state,
+        publish a record, resume a tracee, or accept a result; those entry points
+        fail closed while any read frame exists. Retained writes are not accepted
+        until the closing audit succeeds.
+        """
+        assert not self.read_frame_any(),'owned read body is not re-entrant'
+        assert getattr(self,'owned_emit_record_frame',None) is None,'read body cannot open inside a record callback'
+        assert getattr(self,'owned_maps_frame',None) is None,'read body cannot nest inside an owned maps frame'
+        claim=None
+        primary=None
+        started=False;returned=False;ticket=None
+        try:
+            sites=getattr(self,'_audit_sites',None)
+            if sites is not None:
+                ticket=self.audit_site(sites,'body_ticket',body)
+                self.audit_site(sites,'install',ticket)
+            self.check()
+            # Preallocate BEFORE installing: if this raises, nothing was claimed.
+            claim=self.new_read_body_claim()
+            if ticket is not None:self.audit_site(ticket[0],'bind_claim',ticket,claim)
+            self.install_read_body_claim(claim)
+            started=True
+            try:
+                result=body();returned=True
+                if ticket is not None:self.audit_site(ticket[0],'body_finished',ticket)
+                return result
+            except BaseException as error:
+                primary=error
+                if ticket is not None:self.audit_site(ticket[0],'body_finished',ticket,primary=error)
+                raise
+        except BaseException as error:
+            if primary is None:primary=error
+            raise
+        finally:
+            # Identity-owned reset: clears the claim ONLY if it is still ours,
+            # so an interrupted arm or a foreign owner is never stolen, and a
+            # successful arm is always released even if install raised midway.
+            try:
+                if claim is not None:self.clear_own_read_body_claim(claim)
+                if started:
+                    try:
+                        self.check_full()
+                    except BaseException:
+                        if primary is None:raise
+            finally:
+                if ticket is not None:self.audit_site(ticket[0],'remove',ticket,started,returned,primary=sys.exc_info()[1])
     def check_deadline(self):
         """Per-iteration fast refusal: deadline/stdio/budget only, no lease sweep.
 
@@ -1008,7 +1464,8 @@ class Observer(CapturesMixin):
         # its 1024-slot cap still run for every owner below, at the original point.
         counts={}
         for row in live.values():counts[row['fdTable']]=counts.get(row['fdTable'],0)+1
-        self.check()
+        self.check_owned_entry()
+        primary=None
         try:
             for pid,row in sorted(live.items()):
                 self.check_deadline();tgid=self.actual_tgid(pid);assert tgid==row['tgid'],'actual TGID differs from kernel clone binding';groups.setdefault(tgid,[]).append(pid)
@@ -1019,7 +1476,7 @@ class Observer(CapturesMixin):
                 shared=counts[row['fdTable']]>1
                 descriptors=[] if shared else None
                 # This whole live cohort is already bracketed by the entry and
-                # finally self.check() below, so each member's read-only FD name
+                # finally self.check_full() below, so each member's read-only FD name
                 # scan pays only the cheap deadline/stdio refusal. Standalone
                 # bounded_fd_slots keeps its full entry/finally guards.
                 for value in bounded_fd_slot_names(pid,self.check_deadline):
@@ -1029,8 +1486,13 @@ class Observer(CapturesMixin):
                 if shared:
                     prior=tables.setdefault(table,descriptors);assert prior==descriptors,'CLONE_FILES table differs between stopped owners'
                 ownership.append(dict(tid=pid,tgid=tgid,fdTable=table))
+        except BaseException as error:
+            primary=error
+            raise
         finally:
-            self.check()
+            try:self.check_full()
+            except BaseException:
+                if primary is None:raise
         for tgid,tids in groups.items():assert sorted(int(value) for value in os.listdir('/proc/'+str(tgid)+'/task'))==sorted(tids+[pid for pid in excluded if self.tasks[pid]['tgid']==tgid]),'unregistered or missing actual TGID task'
         return ownership
     def bounded_fd_slots(self,pid):
@@ -1041,8 +1503,7 @@ class Observer(CapturesMixin):
             self.check()
     def writable_aliases(self,identity,target_pid=None,target_fd=None):
         result={}
-        self.check()
-        try:
+        def read_aliases():
             for pid,row in sorted(self.tasks.items()):
                 if row['exited']:continue
                 for value in self.bounded_fd_slots(pid):
@@ -1055,9 +1516,8 @@ class Observer(CapturesMixin):
                     actual=dict(pid=pid,fd=fd,flags=flags,accessMode=flags&os.O_ACCMODE)
                     if pid==target_pid and fd==target_fd:result[key]=actual
                     else:result.setdefault(key,actual)
-        finally:
-            self.check()
-        return list(result.values())
+            return list(result.values())
+        return self.read_body(read_aliases)
     def barrier(self):
         return self.instrument('barrier',self.barrier_original)
     def barrier_original(self):
@@ -1289,6 +1749,14 @@ class Observer(CapturesMixin):
                     try:os.stat(row.get('removedPath') or os.fsdecode(bytes.fromhex(operand['newPathHex'])))
                     except FileNotFoundError:pass
                     else:raise AssertionError('actual unlink left the removed pathname present')
+                    # Carry a held READ LEASE across a witnessed UNLINK of the same
+                    # inode, BEFORE the transition row is emitted (every emit sweeps).
+                    # `identity` was already proven above to be this inode with only
+                    # ctime/nlink moved, and the nlink effect was checked against the
+                    # real held FD, so this is the same strictly-witnessed class as the
+                    # rename path: not a path or filename warrant.
+                    if meta['form'] not in ('link','linkat') and getattr(self,'lifetime_leases',None) is not None:
+                        self.advance_witnessed_lease(before,identity,'owned-temp-unlink')
                 change=self.emit(dict(kind='actual-link-transition',model=LINK_MODEL,pid=pid,entrySequence=entry['sequence'],windowSequence=row['sequence'],exitSequence=exit['sequence'],afterIdentity=identity,afterLinks=want,result=exit['result'],isError=exit['isError']))
                 self.metadata_states.append((row,change));return
             if 'model' not in meta:
@@ -1334,12 +1802,31 @@ class Observer(CapturesMixin):
             held_path=old_target
         else:
             held_path=new_target
+        external_held_identity=None
         if not (held_path and held_path.startswith(self.build+'/')):
-            self.emit(dict(kind='link-metadata-unobserved',pid=pid,entrySequence=task['entry']['sequence'],
-                           form=meta['form'],resolved=bool(held_path),
-                           underBuild=bool(held_path and held_path.startswith(self.build+'/')),
-                           reason='operand inode is absent or outside the observed generated build root'))
-            return None
+            # Outside the generated build root, this operand is witnessable only
+            # when it already resolves to an inode this observer holds a read
+            # lease on. The preliminary probe must use the SAME follow semantics
+            # as the real operation below, or linkat AT_SYMLINK_FOLLOW and unlink
+            # would be evaluated against a different inode.
+            probe_follow=bool(meta['flags']&0x400) if meta['form'] in ('link','linkat') else False
+            already_held=False
+            if held_path:
+                try:
+                    # Absence is the only expected outcome here; any other errno,
+                    # and a caller-owned SIGALRM (errno None, a TimeoutError),
+                    # must propagate unchanged rather than be absorbed as absent.
+                    candidate_identity=probe.identity(os.stat(held_path,follow_symlinks=probe_follow))
+                except OSError as error:
+                    if not expected_oserror(error,[errno.ENOENT]):raise
+                else:
+                    already_held=self.lifetime_by_identity.get(tuple(candidate_identity)) is not None
+            if not already_held:
+                self.emit(dict(kind='link-metadata-unobserved',pid=pid,entrySequence=task['entry']['sequence'],
+                               form=meta['form'],resolved=bool(held_path),underBuild=False,
+                               reason='operand inode is absent, outside the observed generated build root, or not an already-held read lease'))
+                return None
+            external_held_identity=tuple(candidate_identity)
         # link/linkat name the SOURCE inode (followed only under AT_SYMLINK_FOLLOW);
         # unlink/unlinkat remove the NAMED inode - never the symlink target. A
         # non-regular operand (directory removal, symlink unlink) changes no
@@ -1377,6 +1864,7 @@ class Observer(CapturesMixin):
         try:
             identity=probe.identity(os.fstat(held));assert stat.S_ISREG(identity[2])
             assert operand==identity,'held operand path does not resolve to the held inode'
+            assert external_held_identity is None or tuple(identity)==external_held_identity,'external operand differs from the already-held read lease'
             links=os.fstat(held).st_nlink
         except BaseException:
             os.close(held);raise
@@ -1423,7 +1911,7 @@ class Observer(CapturesMixin):
         if key in self.producers:
             producer,retained,expected=self.producers[key];producer_reference=dict(producerCaptureSequence=producer['sequence'])
         else:
-            assert generated and generated.model==generated_vma_module.PARKED_WAIT_MODEL and generated.active is None and key in generated.checkpoints,'rename lacks a verified producer'
+            assert generated and generated.model in generated_vma_module.PARKED_WAIT_MODELS and generated.active is None and key in generated.checkpoints,'rename lacks a verified producer'
             producer=generated.checkpoints[key];origin=generated.origins[key];retained=origin['held'];expected=(producer['original']['bytes'],producer['original']['sha256']);producer_reference=dict(generatedCheckpointSequence=producer['sequence'])
         held=os.dup(retained);self.retained.add(held)
         destination=None
@@ -1451,12 +1939,31 @@ class Observer(CapturesMixin):
         try:
             assert self.exclusive==(pid,entry['sequence']) and exit['result']==0 and exit['isError'] is False,'retained rename lacks actual exclusive successful exit'
             after=probe.identity(os.fstat(held));assert after[:5]==row['beforeIdentity'][:5] and after==probe.identity(os.stat(row['toPath'],follow_symlinks=False)) and retained_rename_path_absent(row['fromPath']),'retained rename post namespace/identity differs'
-            original=self.snapshot_write_original(held,after[3]);assert (original['bytes'],original['sha256'])==expected,'retained rename changed producer bytes'
-            assert after==probe.identity(os.fstat(held))==probe.identity(os.stat(row['toPath'],follow_symlinks=False)) and retained_rename_path_absent(row['fromPath']),'retained rename postimage changed during capture'
+            # ADVANCE BEFORE ANY FURTHER EMIT. Every emit() runs a full lease sweep,
+            # and by now the owned rename has already moved ctime, so the frozen PRE
+            # token would be rejected by the FIRST emit below (the source snapshot's
+            # `write-original`, and equally the displaced destination's). `after` is
+            # already proven here against BOTH the retained FD and the new pathname,
+            # so this is the earliest correct point: the transition is carried
+            # across using the very endpoints this rename just verified.
+            # (already advanced at the witnessed exit, before any emit)
+            # GATHER the displaced destination's REAL post-state before any emitting
+            # snapshot below, and advance its token first. Overwriting dropped this
+            # inode's last link, so its ctime moved; if it was already leased from an
+            # earlier read, its frozen PRE token would be rejected by the very first
+            # emit. Endpoints are validated against the held destination FD and the
+            # window's own prior identity/links, so this is the same witnessed-
+            # endpoint discipline as the source -- not a waiver, and never merged
+            # into the source's advance: the destination is a DIFFERENT inode.
             replacement_after=None
+            displaced_identity=None
             if destination is not None:
                 displaced=os.fstat(destination);displaced_identity=probe.identity(displaced);prior=row['replacementBefore']
                 assert displaced.st_nlink==0 and displaced_identity[:5]==prior['identity'][:5],'rename replacement displaced target identity/link changed'
+                # (already advanced at the witnessed exit, before any emit)
+            original=self.snapshot_write_original(held,after[3]);assert (original['bytes'],original['sha256'])==expected,'retained rename changed producer bytes'
+            assert after==probe.identity(os.fstat(held))==probe.identity(os.stat(row['toPath'],follow_symlinks=False)) and retained_rename_path_absent(row['fromPath']),'retained rename postimage changed during capture'
+            if displaced_identity is not None:
                 displaced_original=self.snapshot_write_original(destination,displaced_identity[3])
                 assert (displaced_original['bytes'],displaced_original['sha256'])==(prior['original']['bytes'],prior['original']['sha256']) and displaced_identity==probe.identity(os.fstat(destination)) and os.fstat(destination).st_nlink==0,'rename replacement displaced bytes changed'
                 assert after==probe.identity(os.fstat(held))==probe.identity(os.stat(row['toPath'],follow_symlinks=False)) and retained_rename_path_absent(row['fromPath']),'rename replacement namespace changed during displaced capture'
@@ -1464,6 +1971,174 @@ class Observer(CapturesMixin):
             change=self.emit(dict(kind='actual-rename-transition',pid=pid,entrySequence=entry['sequence'],windowSequence=row['sequence'],leaseSequence=row['leaseSequence'],exitSequence=exit['sequence'],afterIdentity=after,namedIdentity=after,afterOriginal=original,oldPathAbsent=True,oldPathAbsenceErrno=errno.ENOENT,result=exit['result'],isError=exit['isError'],**({} if replacement_after is None else {'replacementAfter':replacement_after})))
             self.metadata_states.append((row,change))
         finally:self.close_rename_leases(held,destination)
+    FATAL_WINDOW_KINDS=('actual-mode-window','actual-timestamp-window','actual-link-window','actual-rename-window')
+    FATAL_WINDOW_FORMS=('link','linkat','unlink','unlinkat','path','fd')
+    def record_failed_kernel_stop(self,pid,kernel,task=None):
+        """Snapshot the failed kernel stop without claiming whether it was written.
+
+        Fatal path only, and only after the row already failed, so it can never
+        change admission or create authority. Every value is an exact int inside
+        a per-field range, an exact bool, or a fixed whitelisted enum; anything
+        else becomes the fixed string 'unavailable'. No paths, argv, env, bodies
+        or key material are ever copied.
+        """
+        def unsigned(value,bits):
+            return value if type(value) is int and 0<=value<(1<<bits) else 'unavailable'
+        def signed(value,bits):
+            low=-(1<<(bits-1))
+            return value if type(value) is int and low<=value<(1<<(bits-1)) else 'unavailable'
+        try:
+            if type(kernel) is not dict:
+                # Not a kernel stop at all: record nothing rather than a frame
+                # composed entirely of 'unavailable'.
+                self.fatal_stop=None
+                return
+            row=kernel
+            task=task if type(task) is dict else {}
+            entry=task.get('entry') or {}
+            op=row.get('op')
+            stop=dict(pid=unsigned(pid,31),
+                      op=op if op in ('entry','exit') else 'unavailable',
+                      # an EXIT row carries no nr/arch: fall back to the
+                      # authoritative SAME-TASK entry the observer recorded.
+                      nr=unsigned(row.get('nr'),32),
+                      arch=unsigned(row.get('arch'),32))
+            if stop['nr']=='unavailable':stop['nr']=unsigned(entry.get('nr'),32)
+            if stop['arch']=='unavailable':stop['arch']=unsigned(entry.get('arch'),32)
+            seq=row.get('entrySequence')
+            if type(seq) is not int:seq=entry.get('sequence')
+            stop['entrySequence']=unsigned(seq,32)
+            stop['result']=signed(row.get('result'),64)
+            is_error=row.get('isError')
+            stop['isError']=is_error if type(is_error) is bool else 'unavailable'
+            pending=[]
+            for name in ('metadataWindow','renameWindow'):
+                window=task.get(name)
+                if window is None:continue
+                window_row=window[0] if isinstance(window,(tuple,list)) and window else {}
+                if type(window_row) is not dict:continue
+                kind=window_row.get('kind')
+                form=window_row.get('form')
+                pending.append(dict(
+                    kind=kind if kind in self.FATAL_WINDOW_KINDS else 'unavailable',
+                    form=form if form in self.FATAL_WINDOW_FORMS else 'unavailable',
+                    sequence=unsigned(window_row.get('sequence'),32)))
+            # exclusive ownership needs BOTH the pid AND the live task entry
+            exclusive=self.exclusive
+            stop_sequence=stop['entrySequence']
+            owned=bool(exclusive is not None and len(exclusive)==2
+                       and exclusive[0]==pid
+                       and type(exclusive[1]) is int
+                       and stop_sequence!='unavailable'
+                       and exclusive[1]==stop_sequence)
+            # Target token identity ONLY from already-held own state.
+            target=None
+            try:
+                held=getattr(self,'lifetime_by_identity',None)
+                if held is not None:
+                    for name in ('metadataWindow','renameWindow'):
+                        window=task.get(name)
+                        if window is None:continue
+                        window_row=window[0] if isinstance(window,(tuple,list)) and window else {}
+                        before=window_row.get('beforeIdentity') if type(window_row) is dict else None
+                        if type(before) is not list or len(before)!=6:continue
+                        found=held.get(tuple(before))
+                        if found is None:continue
+                        candidate=[signed(v,64) for v in (found.get('token') or {}).get('identity') or []]
+                        if len(candidate)==6 and signed(candidate[0],64)!='unavailable':target=candidate
+                        break
+            except BaseException:
+                target=None
+            # A trailing check can fail after the raw row was written. Report
+            # rejection without claiming that the raw stream was untouched.
+            self.fatal_stop=dict(kind='failed-kernel-stop',accepted=False,stop=stop,
+                                 pendingWindows=pending[:2],exclusiveOwned=owned,
+                                 pendingTargetIdentity=target)
+        except BaseException:
+            self.fatal_stop=None
+    def advance_pending_owned_transitions(self,pid,kernel):
+        """Advance every legitimately affected held inode for a witnessed owned op.
+
+        Called at the raw syscall EXIT of a successful owned operation, BEFORE the
+        kernel row is emitted. The kernel has already applied the effect, so every
+        retained FD here reports its real post-state. Endpoints are read from the
+        observer's own retained FDs (never from a path), and each inode is advanced
+        on its own tuple: an unrelated token is never touched, and a missing lease
+        is a no-op. A refused advance propagates -- it is never absorbed.
+        """
+        # EXACT kernel contract, matching what the downstream handlers require.
+        # `complete_rename` demands `result==0 and isError is False`; accepting a
+        # MISSING/None isError, or `result=False`/a bool, would let this API claim a
+        # refusal it did not actually make. Only an exact successful exit advances.
+        if type(kernel) is not dict or kernel.get('op')!='exit':
+            return
+        if not (type(kernel.get('result')) is int and kernel['result']==0):
+            return
+        if kernel.get('isError') is not False:
+            return
+        task=self.tasks.get(pid,{})
+        metadata=task.get('metadataWindow')
+        if metadata is not None:
+            # Only the EXISTING supported link/unlink inode-effect model is advanced
+            # here -- never a mode/timestamp/unknown window. Those carry different
+            # shapes entirely (a mode window's `meta` is a plain tuple), so keying on
+            # the emitted window kind is both safer and the actual contract.
+            m_row,m_held,_m_access,m_meta=metadata
+            if m_row.get('kind')=='actual-link-window' and m_row.get('model')==LINK_MODEL:
+                form=m_row.get('form')
+                if form in ('link','linkat','unlink','unlinkat'):
+                    m_before=m_row['beforeIdentity']
+                    m_after=probe.identity(os.fstat(m_held))
+                    if m_after[:5]==m_before[:5] and m_after!=m_before:
+                        operation=('owned-rename-over-destination' if form in ('link','linkat')
+                                   else 'owned-temp-unlink')
+                        self.advance_witnessed_lease(m_before,m_after,operation)
+        window=task.get('renameWindow')
+        if window is None:
+            return
+        row,held,expected,destination=window
+        before_source=row['beforeIdentity']
+        after_source=probe.identity(os.fstat(held))
+        # Only a real same-inode ctime move is advanced here; anything else is left
+        # for `complete_rename` to reject with its own precise message.
+        if after_source[:5]==before_source[:5] and after_source!=before_source:
+            self.advance_witnessed_lease(before_source,after_source,'owned-rename-over-destination')
+        replacement=row.get('replacementBefore')
+        if destination is not None and replacement is not None:
+            before_target=replacement['identity']
+            after_target=probe.identity(os.fstat(destination))
+            if after_target[:5]==before_target[:5] and after_target!=before_target:
+                self.advance_witnessed_lease(before_target,after_target,'owned-rename-over-destination')
+
+    def advance_witnessed_lease(self,before,after,operation='owned-rename-over-destination'):
+        """Advance a held lease token across an ALREADY-VALIDATED owned transition.
+
+        Looks the token up by the PRE-transition identity (the key `acquire`
+        fixed), calls the guarded `LeaseSet.advance`, then rekeys the observer's
+        own identity maps so later lookups use the advanced tuple. Absent lease
+        is a no-op: such an inode is simply not leased.
+        """
+        if self.lifetime_leases is None:
+            return
+        key=tuple(before)
+        held=self.lifetime_by_identity.get(key)
+        if held is None:
+            return
+        token=held['token']
+        try:
+            self.lifetime_leases.advance(token,list(before),list(after),operation)
+        except BaseException:
+            # A refused advance is a REAL failure (stale baseline, replaced inode,
+            # foreign move). It must propagate: never absorb it here.
+            raise
+        advanced=dict(token,identity=list(after))
+        sequence=held['sequence']
+        del self.lifetime_by_identity[key]
+        self.lifetime_by_identity[tuple(after)]=dict(token=advanced,sequence=sequence)
+        slot=self.lifetime_acquired.get(tuple(before[:2]))
+        if slot is not None:
+            slot['identity']=list(after)
+            slot['token']=dict(advanced)
     def chunk_identity(self,reference):
         storage=reference['storage'];assert storage['model']=='chunk-original-v1'
         ref=storage['manifest'];value=os.stat(self.capture_dir/ref['path'],follow_symlinks=False)
@@ -1473,31 +2148,55 @@ class Observer(CapturesMixin):
         assert 0<=size<=self.maximum_file_bytes,'write original byte bound'
         source=os.fstat(reader)
         if getattr(self,'capture_content_entities',False) and offset==0 and stat.S_ISREG(source.st_mode) and source.st_size==size:
-            self.check();number=len(self.captures);ledger=CaptureReservation(self)
-            # Out-of-band counter sink. It is updated in place by the chunk store
-            # BEFORE each fsync it counts, so a deadline raised inside the manifest
-            # fsync still leaves the exact counters at the failure point in
-            # self.snapshot_telemetry for the existing phase-failure diagnostic.
-            # It is never a proof field, never in the manifest or the receipt.
-            telemetry=dict();self.snapshot_telemetry=telemetry
+            sites=getattr(self,'_audit_sites',None);ticket=None
             try:
-                manifest=chunk_store.snapshot(self.capture_dir,reader,number,ledger,self.check,telemetry=telemetry)
-            except BaseException:
-                self.snapshot_telemetry_failure=chunk_store.bounded_snapshot_telemetry(telemetry)
-                raise
-            data=chunk_store.read_manifest(self.capture_dir,manifest,self.check)
-            reference=dict(path='capture-'+str(number).zfill(4)+'.original',bytes=data['bytes'],sha256=data['sha256'],storage=dict(model='chunk-original-v1',manifest=manifest))
-            physical_bytes=ledger.committed_bytes
-            row=self.emit(dict(kind='write-original',original=reference))
-            self.append_capture(row);self.capture_bytes+=physical_bytes
-            self.snapshot_telemetry_completed=chunk_store.bounded_snapshot_telemetry(telemetry)
-            return reference
+                if sites is not None:
+                    ticket=self.audit_site(sites,'snapshot_ticket')
+                    self.audit_site(sites,'install',ticket)
+                self.audit_site(sites,'snapshot_site',ticket,'observer-leading') if ticket is not None else None
+                def regular_snapshot_body():
+                    number=len(self.captures);ledger=CaptureReservation(self)
+                    # Out-of-band counter sink. It is updated in place by the chunk store
+                    # BEFORE each fsync it counts, so a deadline raised inside the manifest
+                    # fsync still leaves the exact counters at the failure point in
+                    # self.snapshot_telemetry for the existing phase-failure diagnostic.
+                    # It is never a proof field, never in the manifest or the receipt.
+                    telemetry=dict();self.snapshot_telemetry=telemetry
+                    try:
+                        check=self.check if ticket is None else lambda:self.audit_snapshot_check(ticket,telemetry)
+                        manifest=chunk_store.snapshot(self.capture_dir,reader,number,ledger,check,telemetry=telemetry)
+                    except BaseException:
+                        self.snapshot_telemetry_failure=chunk_store.bounded_snapshot_telemetry(telemetry)
+                        raise
+                    self.audit_site(sites,'snapshot_site',ticket,'manifest-read') if ticket is not None else None
+                    data=chunk_store.read_manifest(self.capture_dir,manifest,self.check)
+                    reference=dict(path='capture-'+str(number).zfill(4)+'.original',bytes=data['bytes'],sha256=data['sha256'],storage=dict(model='chunk-original-v1',manifest=manifest))
+                    physical_bytes=ledger.committed_bytes
+                    self.audit_site(sites,'snapshot_site',ticket,None) if ticket is not None else None
+                    return reference,physical_bytes,telemetry
+                # Only the exact owned outer window shares the existing read-body
+                # bracket; record publication remains after its complete closing.
+                if self.outer_lease_window_owned():
+                    reference,physical_bytes,telemetry=self.read_body(regular_snapshot_body)
+                else:
+                    self.check()
+                    reference,physical_bytes,telemetry=regular_snapshot_body()
+                row=self.emit(dict(kind='write-original',original=reference))
+                self.append_capture(row);self.capture_bytes+=physical_bytes
+                self.snapshot_telemetry_completed=chunk_store.bounded_snapshot_telemetry(telemetry)
+                return reference
+            finally:
+                if ticket is not None:self.audit_site(ticket[0],'remove',ticket,primary=sys.exc_info()[1])
         name=self.next_capture_name();count=0;digest=hashlib.sha256()
-        with (self.capture_dir/name).open('xb') as output:
-            while count<size:
-                self.check();block=os.pread(reader,min(65536,size-count),offset+count);assert block,'short actual write original'
-                self.claim(len(block),category='capture-body',context=self.budget_context);output.write(block);count+=len(block);digest.update(block)
-            output.flush();os.fsync(output.fileno())
+        def body():
+            nonlocal count
+            with (self.capture_dir/name).open('xb') as output:
+                while count<size:
+                    self.check();block=os.pread(reader,min(65536,size-count),offset+count);assert block,'short actual write original'
+                    self.claim(len(block),category='capture-body',context=self.budget_context);output.write(block);count+=len(block);digest.update(block)
+                output.flush();os.fsync(output.fileno())
+            return count
+        self.read_body(body)
         row=self.emit(dict(kind='write-original',original=dict(path=name,bytes=count,sha256=digest.hexdigest())))
         self.append_capture(row);self.capture_bytes+=count;return row['original']
     def fd_blocks(self,reader,size):
@@ -1516,12 +2215,18 @@ class Observer(CapturesMixin):
                 self.check_deadline();block=stream.read(65536)
                 if not block:break
                 yield block
+    def bindings_retained_generation(self,producer,identity,path):
+        return bindings.retained_metadata_chain(producer,dict(sequence=self.seq+1,identity=identity,path=path),self.metadata_states)
+    def bindings_digest_fd(self,held,identity):
+        result=bindings.digest_blocks(self.fd_blocks(held,identity[3]),self.maximum_file_bytes,self.check)
+        assert identity==probe.identity(os.fstat(held)),'generated held FD changed during digest'
+        return (result['bytes'],result['sha256'])
     def capture_write(self,pid,fd):
         barrier=self.barrier();entry=self.tasks[pid]['entry'];path=fdpath(pid,fd);reader=os.open('/proc/'+str(pid)+'/fd/'+str(fd),os.O_RDONLY|os.O_CLOEXEC)
         try:
             identity=probe.identity(os.fstat(reader));assert stat.S_ISREG(identity[2]) and identity[3]<=self.maximum_file_bytes
             alias_inventory=self.stopped_write_alias_inventory(pid,fd,identity) if getattr(self,'stopped_writer_aliases',False) else None
-            writers=[dict(pid=pid,fd=fd)] if alias_inventory else self.sole_writer(pid,fd,identity);flags=descriptor_flags(pid,fd);assert flags&os.O_ACCMODE==os.O_RDWR
+            writers=[dict(pid=pid,fd=fd)] if alias_inventory else self.sole_writer(pid,fd,identity);flags=descriptor_flags(pid,fd);assert flags&os.O_ACCMODE==os.O_RDWR or self.owned_input_generations is not None and tuple(identity[:2]) in self.owned_input_generations.active and flags&os.O_ACCMODE==os.O_WRONLY
             position=descriptor_position(pid,fd);offset=identity[3] if flags&os.O_APPEND else position;count=entry['args'][2]
             assert count<=self.maximum_file_bytes and offset+count<=self.maximum_file_bytes,'bounded actual write range'
             self.budget_context=dict(path=path[:4096],pathTruncated=len(path)>4096,pathSha256=hashlib.sha256(os.fsencode(path)).hexdigest(),role='write-before',pid=pid,fd=fd,identity=identity,writeCount=count,writeOffset=offset)
@@ -1678,14 +2383,16 @@ class Observer(CapturesMixin):
                 if primary is None:raise
             else:self.retained.remove(reader)
     def read_capture_fd(self,reader,output,*,context=None):
-        offset=0;digest=hashlib.sha256()
-        while True:
-            self.check();block=os.pread(reader,65536,offset)
-            if not block:break
-            offset+=len(block);assert offset<=self.maximum_file_bytes,'bounded actual capture FD required'
-            if output is not None:self.claim(len(block),category='capture-body',context=dict(context or {},captureOffset=offset-len(block),capturePrefixSHA256=digest.copy().hexdigest()));output.write(block)
-            digest.update(block)
-        return offset,digest.hexdigest()
+        def body():
+            offset=0;digest=hashlib.sha256()
+            while True:
+                self.check();block=os.pread(reader,65536,offset)
+                if not block:break
+                offset+=len(block);assert offset<=self.maximum_file_bytes,'bounded actual capture FD required'
+                if output is not None:self.claim(len(block),category='capture-body',context=dict(context or {},captureOffset=offset-len(block),capturePrefixSHA256=digest.copy().hexdigest()));output.write(block)
+                digest.update(block)
+            return offset,digest.hexdigest()
+        return self.read_body(body)
     def prior_content_entity(self,data,*,scope=()):
         prior=self.content_capture_pool.get((self.current_phase,*scope,*data))
         if prior is None:return None
@@ -2111,13 +2818,19 @@ class Observer(CapturesMixin):
         self.exclusive=None
         return base
 
-    def lifetime_open(self,pid,path):
+    def lifetime_open(self,pid,path,*,metadata_only=False):
         """Open the actual lexical target through the tracee's own root.
 
         Existing process authority must already have sampled this pid. Binding
         the opened root re-validates its six-field identity, so a root swap
         between the authority barrier and this open refuses the lease.
+
+        `metadata_only=True` is the narrow classification probe: identical
+        root/path resolution, but O_PATH instead of a real read open, so a
+        character device or other non-regular target is never opened with its
+        device semantics. The default path and flags are unchanged.
         """
+        assert type(metadata_only) is bool,'metadata_only must be an explicit bool'
         assert isinstance(path,str) and path.startswith('/') and '\x00' not in path,'absolute actual lexical target required'
         assert pid in self.authority_observed,'lifetime target requires an existing actual process authority sample'
         root=os.open('/proc/'+str(pid)+'/root',os.O_PATH|os.O_DIRECTORY|os.O_CLOEXEC)
@@ -2128,7 +2841,8 @@ class Observer(CapturesMixin):
             # Linux openat2 RESOLVE_IN_ROOT also confines absolute symlink
             # targets. A relative openat alone would still escape via symlinks.
             assert os.uname().machine in ['x86_64','aarch64'],'supported openat2 ABI required'
-            how=(ctypes.c_uint64*3)(os.O_RDONLY|os.O_CLOEXEC|os.O_NONBLOCK,0,0x10|0x02)
+            open_flags=os.O_PATH|os.O_CLOEXEC if metadata_only else os.O_RDONLY|os.O_CLOEXEC|os.O_NONBLOCK
+            how=(ctypes.c_uint64*3)(open_flags,0,0x10|0x02)
             libc=ctypes.CDLL(None,use_errno=True);libc.syscall.restype=ctypes.c_long
             descriptor=libc.syscall(ctypes.c_long(437),ctypes.c_int(root),ctypes.c_char_p(os.fsencode(path)),ctypes.byref(how),ctypes.c_size_t(ctypes.sizeof(how)))
             if descriptor<0:raise OSError(ctypes.get_errno(),'root-contained lifetime open failed',path)
@@ -2596,18 +3310,21 @@ class Observer(CapturesMixin):
         before=probe.identity(os.fstat(reader));assert stat.S_ISREG(before[2]) and before[3]<=self.maximum_file_bytes,'bounded regular tool FD required'
         cached=self.tool_original_cache.get(tuple(before))
         if cached:return cached
-        name=self.next_capture_name();offset=0;digest=hashlib.sha256()
-        with (self.capture_dir/name).open('xb') as output:
-            while True:
-                self.check();block=os.pread(reader,65536,offset)
-                if not block:break
-                offset+=len(block);assert offset<=before[3] and offset<=self.maximum_file_bytes,'tool FD grew during bounded capture'
-                self.claim(len(block),category='capture-body');output.write(block);digest.update(block)
-            output.flush();os.fsync(output.fileno())
-        assert offset==before[3] and before==probe.identity(os.fstat(reader)),'tool FD changed during capture'
-        original=dict(path=name,bytes=offset,sha256=digest.hexdigest())
+        name=self.next_capture_name()
+        def body():
+            offset=0;digest=hashlib.sha256()
+            with (self.capture_dir/name).open('xb') as output:
+                while True:
+                    self.check();block=os.pread(reader,65536,offset)
+                    if not block:break
+                    offset+=len(block);assert offset<=before[3] and offset<=self.maximum_file_bytes,'tool FD grew during bounded capture'
+                    self.claim(len(block),category='capture-body');output.write(block);digest.update(block)
+                output.flush();os.fsync(output.fileno())
+            assert offset==before[3] and before==probe.identity(os.fstat(reader)),'tool FD changed during capture'
+            return dict(path=name,bytes=offset,sha256=digest.hexdigest())
+        original=self.read_body(body)
         row=self.emit(dict(kind='toolchain-original',captureKind='file',observedPath=observed_path,identity=before,original=original))
-        self.append_capture(row);self.capture_bytes+=offset;self.tool_original_cache[tuple(before)]=row
+        self.append_capture(row);self.capture_bytes+=original['bytes'];self.tool_original_cache[tuple(before)]=row
         return row
     def tool_mountinfo_original(self,pid,namespace_identity,data):
         digest=hashlib.sha256(data).hexdigest();key=(tuple(namespace_identity),digest)
@@ -2672,15 +3389,19 @@ class Observer(CapturesMixin):
         emission happens after the frame is gone so it pays its own full sweeps.
         Every fresh read, digest and identity assertion is unchanged.
         """
+        assert getattr(self,'owned_maps_frame',None) is None,'owned maps frame is not re-entrant'
+        assert not self.read_frame_any(),'maps frame cannot open inside a read body'
+        assert getattr(self,'owned_emit_record_frame',None) is None,'maps frame cannot open inside a record callback'
         path='/proc/'+str(pid)+'/maps';name=self.next_capture_name();data=bytearray();digest=hashlib.sha256()
         def identity(value):return [*probe.identity(value),value.st_nlink]
         with open(path,'rb')as source:
             before=identity(os.fstat(source.fileno()));named=identity(os.stat(path,follow_symlinks=False))
             assert stat.S_ISREG(before[2])and before[3]==0 and before[6]==1 and before==named,'actual proc maps descriptor/named identity differs'
-            self.check()
+            self.check_owned_entry()
             pending=None;failure=None
-            self.open_owned_maps_frame()
+            frame=(threading.get_ident(),self.current_phase)
             try:
+                self.install_owned_maps_frame(frame)
                 while True:
                     self.check_deadline();block=source.read(65536)
                     if not block:break
@@ -2701,14 +3422,15 @@ class Observer(CapturesMixin):
                 assert before==identity(os.fstat(source.fileno()))==identity(os.stat(path,follow_symlinks=False)),'maps FD/named identity changed during physical original verification'
                 ref=dict(ref,observationSequence=self.seq+1)
                 pending=dict(kind='toolchain-original',captureKind='maps',observedPid=pid,original=ref,mapsWindowIdentity=before,mapsWindowAfterIdentity=after,mapsNamedWindowIdentity=named,mapsNamedWindowAfterIdentity=identity(os.stat(path,follow_symlinks=False)),**extra)
+                assert getattr(self,'owned_maps_frame',None) is frame,'maps claim ownership changed'
             except BaseException as error:
                 failure=error
             finally:
                 # Unconditional reset, then a COMPLETE validation that cannot be
                 # suppressed by any frame. A broken lease refuses the result even
                 # when the body bytes and digests were complete.
-                self.close_owned_maps_frame()
-                try:self.check()
+                self.clear_own_maps_frame(frame)
+                try:self.check_full()
                 except BaseException as error:
                     failure=error if failure is None else failure
             if failure is not None:raise failure
@@ -2719,15 +3441,18 @@ class Observer(CapturesMixin):
     def tool_maps(self,pid):
         if getattr(self,'capture_maps_content_entities',False):return self.content_tool_maps(pid)
         # Read only while all registered potential writers are at OS stops.
-        name=self.next_capture_name();data=bytearray();digest=hashlib.sha256()
-        with open('/proc/'+str(pid)+'/maps','rb') as source,(self.capture_dir/name).open('xb') as output:
-            while True:
-                self.check();block=source.read(65536)
-                if not block:break
-                assert len(data)+len(block)<=self.tool_metadata_bytes,'bounded actual maps required'
-                self.claim(len(block),category='capture-body');output.write(block);data.extend(block);digest.update(block)
-            output.flush();os.fsync(output.fileno())
-        original=dict(path=name,bytes=len(data),sha256=digest.hexdigest())
+        name=self.next_capture_name();data=bytearray()
+        def body():
+            digest=hashlib.sha256()
+            with open('/proc/'+str(pid)+'/maps','rb') as source,(self.capture_dir/name).open('xb') as output:
+                while True:
+                    self.check();block=source.read(65536)
+                    if not block:break
+                    assert len(data)+len(block)<=self.tool_metadata_bytes,'bounded actual maps required'
+                    self.claim(len(block),category='capture-body');output.write(block);data.extend(block);digest.update(block)
+                output.flush();os.fsync(output.fileno())
+            return dict(path=name,bytes=len(data),sha256=digest.hexdigest())
+        original=self.read_body(body)
         row=self.emit(dict(kind='toolchain-original',captureKind='maps',observedPid=pid,original=original));self.append_capture(row);self.capture_bytes+=len(data)
         mappings=bindings.parse_proc_maps(bytes(data));memory_policy.validate_mappings(mappings)
         return row,mappings
@@ -2896,6 +3621,8 @@ class Observer(CapturesMixin):
         if progress is None:return self.resume_original()
         return self.instrument('resume',self.resume_original)
     def resume_original(self):
+        assert not self.read_frame_any(),'tracee resume is forbidden inside an owned read-only body'
+        assert getattr(self,'owned_emit_record_frame',None) is None,'tracee resume is forbidden inside a record callback'
         if self.generated_vma and getattr(self.generated_vma,'round',None) is not None:return self.generated_vma.drive()
         focus=getattr(self,'terminal_focus',None)
         if focus is not None and self.tasks[focus].get('terminalAuthority',{}).get('closed')and state(focus)=='Z':self.terminal_focus=None
@@ -3043,6 +3770,20 @@ class Observer(CapturesMixin):
     #     untouched: only ordinary diagnostic-internal faults are suppressed.
     WINDOW_METHOD_KEYS=PHASE_PROGRESS_BUCKETS
 
+    def audit_site(self,state,action,*args,primary=None):
+        """An optional diagnostic fault cannot block the original operation."""
+        if state is None:return None
+        try:return getattr(state,action)(self,*args)
+        except (TimeoutError,KeyboardInterrupt,SystemExit):
+            if primary is None:raise
+            if getattr(self,'_audit_sites',None) is state:self._audit_sites=None
+        except BaseException:
+            if getattr(self,'_audit_sites',None) is state:self._audit_sites=None
+        return None
+    def audit_snapshot_check(self,ticket,telemetry):
+        self.audit_site(ticket[0],'snapshot_stage',ticket,telemetry)
+        return self.check()
+
     def window_arm(self,deadline_ns):
         """Record a bounded baseline for the window being armed right now.
 
@@ -3050,7 +3791,7 @@ class Observer(CapturesMixin):
         A previous baseline is dropped first, so a failed arm cannot leave stale
         data behind for the next window.
         """
-        self._window_diag=None
+        self._window_diag=None;self._audit_sites=None
         try:
             progress=self.phase_progress()
             if progress is None:return None
@@ -3061,10 +3802,16 @@ class Observer(CapturesMixin):
                                    baseline=baseline,
                                    activeAtArm=getattr(progress,'active',None),
                                    armedSeq=getattr(progress,'events',0))
+            try:
+                active,local,parent=held_owned_window_state(getattr(self,'waiter',None))
+                if active and local==int(deadline_ns) and parent is not None and local<parent:
+                    self._audit_sites=OwnedWindowAuditSites(self,local,parent)
+            except (TimeoutError,KeyboardInterrupt,SystemExit):raise
+            except BaseException:self._audit_sites=None # keep the original baseline intact
         except (TimeoutError,KeyboardInterrupt,SystemExit):
             raise                      # an owned deadline must never be hidden here
         except BaseException:
-            self._window_diag=None     # ordinary diagnostic fault: stay inert
+            self._window_diag=None;self._audit_sites=None # ordinary diagnostic fault: stay inert
         return None
 
     def window_summary(self):
@@ -3118,17 +3865,26 @@ class Observer(CapturesMixin):
         started=self.phase_progress_ns(progress);previous=(progress.active,progress.active_started)
         progress.active=name;progress.active_started=started
         if previous[0] is None:progress.failed=None;progress.failed_started=None
-        try:return function(*arguments,**keywords)
-        except BaseException:
+        ticket=None;failure=None
+        try:
+            sites=getattr(self,'_audit_sites',None)
+            if name=='lifetime_lease_check' and sites is not None:ticket=self.audit_site(sites,'native_begin',started,previous[0])
+            return function(*arguments,**keywords)
+        except BaseException as error:
+            failure=error
             try:
                 if progress.failed is None:progress.failed=name;progress.failed_started=started
             except BaseException:pass
             raise
         finally:
+            ended=None
             try:
                 ended=self.phase_progress_ns(progress)
                 if started is not None and ended is not None:progress.record(name,ended-started)
-            finally:progress.active,progress.active_started=previous
+            finally:
+                try:
+                    if ticket is not None:self.audit_site(ticket[0],'native_end',ticket,ended,failure,primary=sys.exc_info()[1])
+                finally:progress.active,progress.active_started=previous
     def owned_window_state(self):
         """Held waiter window metadata only; issues no syscall and never arms.
 
@@ -3139,13 +3895,7 @@ class Observer(CapturesMixin):
         """
         waiter=getattr(self,'waiter',None)
         if waiter is None:return (False,None,None)
-        try:
-            deadline=getattr(waiter,'deadline',None)
-            parent=getattr(waiter,'parent_deadline',None)
-            active=bool(getattr(waiter,'active',False))
-            def ns(value):
-                return None if value is None else int(value*1e9)
-            return (active,ns(deadline),ns(parent))
+        try:return held_owned_window_state(waiter)
         except BaseException:
             return (False,None,None)
     def instrument_substep(self,name,function,*arguments,**keywords):
@@ -3193,6 +3943,143 @@ class Observer(CapturesMixin):
         if now-progress.last_snapshot<PHASE_PROGRESS_INTERVAL:return False
         if progress.snapshots>=PHASE_PROGRESS_MAXIMUM_SNAPSHOTS:return False
         progress.last_snapshot=now;return True
+    def resource_call(self,operation,*args,primary=None):
+        try:return operation(*args)
+        except BaseException as error:
+            if self.resource_control(error) and primary is None:raise
+            return None
+    @staticmethod
+    def resource_control(error):
+        return isinstance(error,(TimeoutError,KeyboardInterrupt,SystemExit)) or (isinstance(error,OSError) and error.errno is None)
+    @staticmethod
+    def resource_uint(value):
+        if not isinstance(value,bytes) or not re.fullmatch(rb'(?:0|[1-9][0-9]{0,19})',value):raise ValueError('counter')
+        number=int(value)
+        if number>(1<<64)-1:raise ValueError('counter')
+        return number
+    def resource_read(self,path,maximum):
+        fd=None
+        try:
+            fd=os.open(path,os.O_RDONLY|os.O_CLOEXEC|os.O_NOFOLLOW|os.O_NONBLOCK)
+            value=os.read(fd,maximum+1);info=os.fstat(fd)
+            if len(value)>maximum or not value.endswith(b'\n'):raise ValueError('bounded endpoint')
+            return value,(info.st_dev,info.st_ino)
+        finally:
+            first=sys.exc_info()[1]
+            if fd is not None:
+                try:os.close(fd)
+                except BaseException as error:
+                    if first is None or (self.resource_control(error) and not self.resource_control(first)):raise
+    def resource_sample(self,frame):
+        value=dict(pid=os.getpid(),tid=threading.get_native_id(),thread=threading.get_ident(),u=0,
+                   wall_clock=time.monotonic_ns,cpu_clock=time.process_time_ns)
+        def optional(operation):
+            try:return operation()
+            except BaseException as error:
+                if self.resource_control(error):raise
+                value['u']|=64
+                return None
+        value['m0']=optional(frame['wall_clock']);value['p']=optional(frame['cpu_clock'])
+        def sched():
+            raw,_=self.resource_read('/proc/self/schedstat',256)
+            parts=raw.strip().split()
+            if len(parts)!=3:raise ValueError('scheduler')
+            return [self.resource_uint(x) for x in parts]
+        value['s']=optional(sched) if value['tid']==value['pid'] else None
+        if value['s'] is None:value['u']|=4
+        def cgroup():
+            raw,_=self.resource_read('/proc/self/cgroup',4096)
+            if raw!=b'0::/\n':raise ValueError('private cgroup v2 root required')
+            return hashlib.sha256(raw).digest()
+        value['g']=optional(cgroup);value['c']=None;value['q']=None
+        if value['g'] is not None:
+            def cpu():
+                raw,identity=self.resource_read('/sys/fs/cgroup/cpu.stat',2048)
+                wanted=('usage_usec','user_usec','system_usec','nr_periods','nr_throttled','throttled_usec');result={}
+                for line in raw.splitlines():
+                    pair=line.split()
+                    if len(pair)!=2:raise ValueError('cpu stat')
+                    key=pair[0].decode('ascii')
+                    if key in wanted:
+                        if key in result:raise ValueError('duplicate cpu stat')
+                        result[key]=self.resource_uint(pair[1])
+                if set(result)!=set(wanted):raise ValueError('incomplete cpu stat')
+                return [result[k] for k in wanted],identity
+            def quota():
+                raw,identity=self.resource_read('/sys/fs/cgroup/cpu.max',128);parts=raw.strip().split()
+                if len(parts)!=2:raise ValueError('quota')
+                quota='max' if parts[0]==b'max' else self.resource_uint(parts[0]);period=self.resource_uint(parts[1])
+                if period==0 or quota==0:raise ValueError('positive quota')
+                return [quota,period],identity
+            value['c']=optional(cpu);value['q']=optional(quota)
+        if value['c'] is None:value['u']|=8
+        if value['q'] is None:value['u']|=16
+        value['m1']=optional(frame['wall_clock'])
+        return value
+    def resource_frame(self,name):
+        if getattr(self,'_phase_resources',None) is not None:return None
+        frame=dict(name=name,deadline=self.deadline,thread=threading.get_ident(),progress=None,
+                   wall_clock=time.monotonic_ns,cpu_clock=time.process_time_ns,start=None,end=None,
+                   finish_attempted=False,summary=None)
+        return frame
+    def resource_start(self,frame):
+        if frame is not None:frame['start']=self.resource_sample(frame)
+    def resource_bind(self):
+        frame=getattr(self,'_phase_resources',None)
+        if frame is not None and frame['thread']==threading.get_ident() and frame['name']==self.current_phase and frame['deadline']==self.deadline:
+            frame['progress']=self._phase_progress
+    def resource_finish(self,frame,primary=None):
+        if frame is None or frame is not getattr(self,'_phase_resources',None) or frame['finish_attempted']:return
+        frame['finish_attempted']=True
+        if frame['start'] is None:return
+        try:
+            end=self.resource_sample(frame);frame['end']=end;start=frame['start'];u=start['u']|end['u']
+            bound=(frame['progress'] is not None and frame['progress'] is getattr(self,'_phase_progress',None) and frame['name']==getattr(self,'current_phase',None)
+                   and frame['deadline']==self.deadline and frame['thread']==threading.get_ident()
+                   and all(start[k]==end[k] for k in ('pid','tid','thread')))
+            if not bound:u|=1
+            def delta(a,b):
+                nonlocal u
+                if type(a) is not int or type(b) is not int or not 0<=a<=b<1<<64:
+                    u|=32;return None
+                return str(b-a)
+            clocks=(start['wall_clock'] is end['wall_clock'] is frame['wall_clock']
+                    and start['cpu_clock'] is end['cpu_clock'] is frame['cpu_clock'])
+            clocks=clocks and all(type(x.get('m0')) is int and type(x.get('m1')) is int and x['m1']>=x['m0'] for x in (start,end))
+            w=p=s=c=q=None
+            if bound and clocks:w=delta(start['m0'],end['m0']);p=delta(start['p'],end['p'])
+            else:u|=2
+            def vector(a,b):
+                values=[delta(x,y) for x,y in zip(a,b)]
+                return values if all(x is not None for x in values) else None
+            if bound and start['s'] is not None and end['s'] is not None:s=vector(start['s'],end['s'])
+            if bound and start['g'] is not None and start['g']==end['g'] and start['c'] is not None and end['c'] is not None and start['q'] is not None and end['q'] is not None and start['c'][1]==end['c'][1] and start['q'][1]==end['q'][1]:
+                c=vector(start['c'][0],end['c'][0])
+                if start['q'][0]==end['q'][0]:q=[str(x) for x in start['q'][0]]
+                else:u|=16
+            else:u|=8|16
+            version=list(sys.version_info[:3]);cache=getattr(sys.implementation,'cache_tag',None)
+            summary=dict(v=1,pt=[start['pid'],start['tid']],w=w,p=p,s=s,c=c,q=q,u=u,py=version,authorityVerified=False)
+            if isinstance(cache,str) and len(cache)<=32 and cache.isascii():summary['ct']=cache
+            if len(json.dumps(summary,separators=(',',':')).encode())<=512:frame['summary']=summary
+        except BaseException as error:
+            frame['summary']=None
+            if self.resource_control(error) and primary is None:raise
+    def resource_summary(self):
+        frame=getattr(self,'_phase_resources',None)
+        if frame is None or frame['progress'] is None or frame['thread']!=threading.get_ident() or frame['progress'] is not getattr(self,'_phase_progress',None) or frame['name']!=getattr(self,'current_phase',None) or frame['deadline']!=getattr(self,'deadline',None):return None
+        return frame['summary']
+    def resource_line(self,line,encoded,primary=None):
+        try:
+            summary=self.resource_summary()
+            if summary is None or len(json.dumps(summary,separators=(',',':')).encode())>512:return line
+            data=json.loads(encoded);data['phaseResources']=summary
+            augmented=(PHASE_PROGRESS_PREFIX+json.dumps(data,sort_keys=True,separators=(',',':'))+'\n').encode()
+            return augmented if len(augmented)<=PHASE_PROGRESS_MAXIMUM_BYTES else line
+        except BaseException as error:
+            if self.resource_control(error) and primary is None:raise
+            return line
+
     def phase_progress_payload(self,kind,failure=False):
         progress=getattr(self,'_phase_progress',None)
         now=(progress.now() if progress is not None else time.monotonic());tasks=getattr(self,'tasks',{}) or {}
@@ -3220,6 +4107,10 @@ class Observer(CapturesMixin):
         payload_window=self.window_summary()
         payload=dict(schemaVersion=1,kind=kind,authorityVerified=False,phase=self.current_phase,phaseStartedMonotonicNs=str(started) if started is not None else None,phaseDeadlineMonotonicNs=str(deadline) if deadline is not None else None,nowMonotonicNs=str(now_ns) if now_ns is not None else None,elapsedNs=str(now_ns-started) if now_ns is not None and started is not None else None,remainingNs=str(deadline-now_ns) if deadline is not None and now_ns is not None else None,globalRawSequence=getattr(self,'seq',0),phaseTicks=getattr(progress,'ticks',0) if progress is not None else 0,eventCount=getattr(progress,'events',0) if progress is not None else 0,waitReturnCount=getattr(progress,'waits',0) if progress is not None else 0,lastBoundary=getattr(progress,'last_boundary',None) if progress is not None else None,lastWait=getattr(progress,'last_wait',None) if progress is not None else None,taskCounts=state_counts,exclusiveOwnerPid=exclusive[0] if isinstance(exclusive,tuple) and len(exclusive)==2 else None,exclusiveOwnerSequence=exclusive[1] if isinstance(exclusive,tuple) and len(exclusive)==2 else None,terminalFocusPid=terminal,generatedVmaOwner=getattr(generated,'owner',None) if generated is not None else None,lifetimeLeaseActive=lifecycle is not None,lifetimeLeaseCount=len(lifecycle.fds) if lifecycle is not None else 0,activeInclusiveMethod=getattr(progress,'active',None) if progress is not None else None,activeInclusiveMethodStartedNs=str(getattr(progress,'active_started',None)) if progress is not None and getattr(progress,'active_started',None) is not None else None,lastFailedInclusiveMethod=getattr(progress,'failed',None) if progress is not None else None,lastFailedInclusiveMethodStartedNs=str(getattr(progress,'failed_started',None)) if progress is not None and getattr(progress,'failed_started',None) is not None else None,inclusiveBuckets={name:dict(calls=value[0],totalNs=value[1],maxNs=value[2]) for name,value in (progress.buckets.items() if progress is not None else [])},pendingCaptureSubsteps={name:dict(calls=value[0],totalNs=value[1],maxNs=value[2]) for name,value in (getattr(progress,'substeps',{}) or {}).items()},pendingCaptureSubstepLast=getattr(progress,'substep_last',None),pendingCaptureSpans=list(getattr(progress,'spans',()) or ()),pendingCaptureSpansDropped=getattr(progress,'spans_dropped',0),mapsBodyBytesLast=getattr(progress,'maps_bytes_last',0),mapsBodyBytesMax=getattr(progress,'maps_bytes_max',0),mapsBodyCount=getattr(progress,'maps_bodies',0),syscallStops=getattr(progress,'syscall_summary',lambda:None)() if progress is not None else None,ownedWindowActive=owned_window[0],ownedWindowDeadlineNs=owned_window[1],ownedWindowParentNs=owned_window[2],inclusiveDurationNote='inclusive nested durations; buckets overlap by design; non-additive',failure=bool(failure))
         if payload_window is not None:payload['ownedWindowActivity']=payload_window
+        sites=getattr(self,'_audit_sites',None)
+        if sites is not None:
+            attribution=self.audit_site(sites,'summary',primary=sys.exc_info()[1])
+            if attribution is not None:payload['ownedWindowAuditSites']=attribution
         # Out-of-band chunk-store counters for the active/failed snapshot. Bounded
         # scalars only, diagnostics-only, never read by any verifier and never a
         # proof field: presence here grants no authority over captured bytes.
@@ -3237,23 +4128,33 @@ class Observer(CapturesMixin):
         except BaseException:pass
         return payload
     def publish_phase_progress(self,kind,failure=False):
-        """Bounded stderr diagnostic from held state only; never raises.
+        """Bounded stderr diagnostic from held state only; ordinary diagnostic faults cannot fail work.
 
         The attempt is counted before writing, so a failed write is never
         retried and cannot exceed 32 normal plus at most 1 failure line.
         """
+        primary=sys.exc_info()[1]
         progress=getattr(self,'_phase_progress',None)
+        failure_claimed=False
         try:
             if progress is not None:
                 if failure:
                     if progress.failure_snapshots>=1:return
-                    progress.failure_snapshots+=1
+                    progress.failure_snapshots+=1;failure_claimed=True
                 else:
                     if progress.snapshots>=PHASE_PROGRESS_MAXIMUM_SNAPSHOTS:return
                     progress.snapshots+=1
             payload=self.phase_progress_payload(kind,failure)
             encoded=json.dumps(payload,sort_keys=True,separators=(',',':'))
             line=(PHASE_PROGRESS_PREFIX+encoded+'\n').encode()
+            sidecar=None
+            if len(line)>PHASE_PROGRESS_MAXIMUM_BYTES and isinstance(payload,dict) and 'ownedWindowAuditSites' in payload:
+                # Restore the ORIGINAL payload before its original histogram
+                # fallback. New optional data must never displace an old field.
+                payload=dict(payload);attribution=payload.pop('ownedWindowAuditSites')
+                encoded=json.dumps(payload,sort_keys=True,separators=(',',':'))
+                line=(PHASE_PROGRESS_PREFIX+encoded+'\n').encode()
+                if failure_claimed:sidecar=attribution
             if len(line)>PHASE_PROGRESS_MAXIMUM_BYTES and isinstance(payload,dict) and 'syscallStops' in payload:
                 # The histogram is OPTIONAL instrumentation. It must never make a
                 # diagnostic that was previously valid become unpublishable, so on
@@ -3266,8 +4167,16 @@ class Observer(CapturesMixin):
                 encoded=json.dumps(fallback,sort_keys=True,separators=(',',':'))
                 line=(PHASE_PROGRESS_PREFIX+encoded+'\n').encode()
             assert len(line)<=PHASE_PROGRESS_MAXIMUM_BYTES,'bounded phase progress snapshot line'
+            line=self.resource_line(line,encoded,primary=primary)
             sys.stderr.write(line.decode());sys.stderr.flush()
-        except BaseException:pass
+            if sidecar is not None:
+                # Only a successfully claimed original failure attempt permits
+                # one extra bounded line; no normal sidecar, retry or new quota.
+                line=(AUDIT_SITE_PREFIX+json.dumps(sidecar,sort_keys=True,separators=(',',':'))+'\n').encode()
+                if len(line)<=AUDIT_SITE_MAXIMUM_BYTES:
+                    sys.stderr.write(line.decode());sys.stderr.flush()
+        except BaseException as error:
+            if self.resource_control(error) and primary is None:raise
     def publish_clone3_parse_refusal(self,pid,entry,barrier,size,data,refusal):
         # Exactly the already-read stopped-task struct: no pointer, argv, env or
         # additional /proc access; grants no source, ABI or process authority.
@@ -3367,6 +4276,7 @@ class Observer(CapturesMixin):
             self.instrument_substep('observe_tool_stop',self.observe_tool_stop,pid,task['toolPending'].pop(0))
         if self.instrument_substep('capture_bti_pending',self.capture_bti_pending):return
         if self.instrument_substep('capture_clone3_pending',self.capture_clone3_pending):return
+        if self.owned_input_generations is not None and self.owned_input_generations.pending():return
         # All candidate entries encountered while stopping peers are preserved;
         # process each before resuming any potential writer.
         while True:
@@ -3628,10 +4538,30 @@ class Observer(CapturesMixin):
         _kernel_row=dict(kind='kernel-syscall',pid=pid,**kernel,**(dict(waitStatus=status) if getattr(self,'verified_setresuid_noop',False) or getattr(self,'verified_identity_noop',False) else {}))
         _phase_progress=self.phase_progress()
         if _phase_progress is not None:_phase_progress.observe_syscall(_kernel_row)
-        record=self.emit(_kernel_row)
+        # ADVANCE ANY WITNESSED OWNED TRANSITION **BEFORE** THIS EMIT.
+        # `emit` runs a full lease sweep, and for a rename exit the kernel has
+        # already moved ctime on BOTH affected inodes. A frozen PRE token would
+        # therefore latch here -- before `complete_rename` is ever reached -- which
+        # is exactly the observed failure. The retained FDs held in the rename
+        # window make the real post-state available at this point, so this is the
+        # earliest correct place. Only a SUCCESSFUL exit is advanced; a failed or
+        # unknown exit is left alone and fails closed in `complete_rename`.
+        try:
+            # Advance AND emit share one boundary: the identity refusal can be
+            # raised by either, so both must be inside the recording scope.
+            if (getattr(self,'lifetime_leases',None) is not None
+                    and _kernel_row.get('op')=='exit'
+                    and not _kernel_row.get('isError') and _kernel_row.get('result')==0):
+                self.advance_pending_owned_transitions(pid,_kernel_row)
+            record=self.emit(_kernel_row)
+        except BaseException:
+            try:self.record_failed_kernel_stop(pid,_kernel_row,task)
+            except BaseException:pass  # diagnostic faults never replace the original
+            raise
         if record['op']=='entry':
             if self.capture_toolchain and record['nr']!=435 and not memory_policy.bti_candidate(record['arch'],record['nr'],record['args']):self.enforce_executable_memory(pid,record)
             assert task['entry'] is None,'syscall entry missing prior exit';task['initial']=False;task['entry']=record;nr=record['nr'];args=record['args']
+            if self.owned_input_generations is not None:self.owned_input_generations.classify(pid,record)
             identity_axis=tool_providers.identity_noop_axis(kernel['arch'],nr)
             if self.process_authority and ((getattr(self,'verified_identity_noop',False) and identity_axis is not None) or (getattr(self,'verified_setresuid_noop',False) and identity_axis=='Uid')):
                 assert self.exclusive is None,'identity entry crossed an active exclusive operation'
@@ -3725,7 +4655,7 @@ class Observer(CapturesMixin):
                 try:item=os.stat('/proc/'+str(pid)+'/fd/'+str(fd))
                 except FileNotFoundError:item=None
                 if item and stat.S_ISREG(item.st_mode):
-                    if nr==policy['write'] and selected.startswith(self.build+'/') and descriptor_flags(pid,fd)&os.O_ACCMODE==os.O_RDWR:task['capture']=(fd,'writer-before')
+                    if nr==policy['write'] and selected.startswith(self.build+'/') and (descriptor_flags(pid,fd)&os.O_ACCMODE==os.O_RDWR or self.owned_input_generations is not None and (item.st_dev,item.st_ino) in self.owned_input_generations.active):task['capture']=(fd,'writer-before')
                     elif nr==policy['close'] and selected.startswith(self.build+'/') and descriptor_flags(pid,fd)&os.O_ACCMODE in [os.O_WRONLY,os.O_RDWR]:task['capture']=(fd,'producer-close')
                     elif nr==policy['mmap'] and selected.startswith(self.build+'/') and (self.selected_names is None or Path(selected).name in self.selected_names):self.emit(dict(kind='generated-mmap-unverified',pid=pid,path=selected,entrySequence=record['sequence']))
                     # No read-role branch belongs here: the complete read family
@@ -3781,7 +4711,7 @@ class Observer(CapturesMixin):
                 if old and new and old.startswith(self.build+'/') and new.startswith(self.build+'/'):
                     try:rename_source=os.stat(old,follow_symlinks=False)
                     except FileNotFoundError:rename_source=None
-                    if rename_source and ((rename_source.st_dev,rename_source.st_ino) in self.producers or self.generated_vma and self.generated_vma.model==generated_vma_module.PARKED_WAIT_MODEL and (rename_source.st_dev,rename_source.st_ino) in self.generated_vma.checkpoints):
+                    if rename_source and ((rename_source.st_dev,rename_source.st_ino) in self.producers or self.generated_vma and self.generated_vma.model in generated_vma_module.PARKED_WAIT_MODELS and (rename_source.st_dev,rename_source.st_ino) in self.generated_vma.checkpoints):
                         assert nr!=policy.get('renameat2') or args[4]==0,'retained renameat2 flags unsupported'
                         task['capture']=(None,'rename-before')
         else:
@@ -3865,6 +4795,7 @@ class Observer(CapturesMixin):
                 if not record['isError'] and record['result']>=0 and old['nr']==rules['mmap'] and (not(old['args'][3]&0x20) or old['args'][2]&4):task.setdefault('toolPending',[]).append(('mmap',old,record))
                 if not record['isError'] and record['result']==0 and old['nr'] in rules['protect'] and old['args'][2]&4:task.setdefault('toolPending',[]).append(('protect-after',old,record))
             if task.get('renameWindow') is not None:self.complete_rename(pid,old,record)
+            if self.owned_input_generations is not None:self.owned_input_generations.exit(pid,old,record)
             if self.exclusive==(pid,old['sequence']):self.emit(dict(kind='exclusive-captured-syscall-exit',pid=pid,entrySequence=old['sequence'],result=record['result'],isError=record['isError']));self.exclusive=None
             release_fd=task.pop('releaseCaptureFd',None)
             if release_fd is not None:os.close(release_fd);self.retained.remove(release_fd)
@@ -3882,10 +4813,23 @@ class Observer(CapturesMixin):
         self.check()
         with owned_wait.BlockingOwnedWait(self.deadline,WALL) as waiter:
             self.waiter=waiter
-            return self.phase_armed(name,command,cwd,env,stdoutPath,stderrPath)
+            frame=self.resource_call(self.resource_frame,name)
+            try:
+                if frame is not None:
+                    self._phase_resources=frame
+                    self.resource_call(self.resource_start,frame)
+                return self.phase_armed(name,command,cwd,env,stdoutPath,stderrPath)
+            finally:
+                primary=sys.exc_info()[1]
+                try:self.resource_call(self.resource_finish,frame,primary,primary=primary)
+                finally:
+                    if frame is not None and getattr(self,'_phase_resources',None) is frame:self._phase_resources=None
     def phase_armed(self,name,command,cwd,env,stdoutPath,stderrPath):
+        self.reset_owned_frames()
         capture_start=len(self.captures);started_ns=time.time_ns();stdout_path=Path(stdoutPath) if stdoutPath is not None else self.out/(name+'.stdout.raw');stderr_path=Path(stderrPath) if stderrPath is not None else self.out/(name+'.stderr.raw')
-        self.wait_references=[];self.tasks={};self.unknown_stops={};self.root_code=None;self.current_phase=name;self._phase_progress=PhaseProgress(name,self.deadline);self.raw=EncodedShardedRaw(self,name,self.shard_bytes or self.maximum_file_bytes) if self.compressed_raw else ShardedRaw(self.out,name,self.shard_bytes) if self.shard_bytes else open(self.out/(name+'.syscalls.original.jsonl'),'xb')
+        self.wait_references=[];self.tasks={};self.unknown_stops={};self.root_code=None;self.current_phase=name;self._phase_progress=PhaseProgress(name,self.deadline)
+        self.resource_call(self.resource_bind)
+        self.raw=EncodedShardedRaw(self,name,self.shard_bytes or self.maximum_file_bytes) if self.compressed_raw else ShardedRaw(self.out,name,self.shard_bytes) if self.shard_bytes else open(self.out/(name+'.syscalls.original.jsonl'),'xb')
         self.raw_encoder=probe.IndexedRawEncoderV2() if self.indexed_raw_records else None
         if not self.prepared_sealed:
             try:
@@ -3945,12 +4889,13 @@ class Observer(CapturesMixin):
             # cite a token that the previous phase already closed. Reset them
             # exactly where a fresh LeaseSet is created.
             self.input_read_cache={};self.input_generation={}
+            if self.owned_input_generations is not None:self.owned_input_generations.reset_phase()
             self.lifetime_phase=name;self.lifetime_acquired={};self.lifetime_by_identity={};self.authority_observed=set()
             os.close(read_fd)
             for pump in pumps:pump.start()
             if self.process_authority:
                 os.close(ready_write);ready_write=None;self.check();remaining=max(0,self.deadline-time.monotonic());readable,_,_=select.select([ready_read],[],[],remaining);self.check();assert readable and os.read(ready_read,1)==b'R','child authority setup did not complete before release';os.close(ready_read);ready_read=None
-            self.emit(dict(kind='owned-root-binding',pid=child,command=command,**(dict(toolchainLifetimeModel=LIFETIME_MODEL,executableMemoryPolicy=memory_policy.MODEL,clone3ArgsModel='stopped-clone3-args-v1',btiHardeningModel='held-rx-bti-hardening-v1',**(dict(remapCapabilityModel=memory_policy.REMAP_MODEL) if self.generated_vma else {})) if self.capture_toolchain else {}),**(dict(rawRecordModel=probe.RAW_RECORD_MODEL_V2)if self.indexed_raw_records else {}),backend='ptrace-all-stop-process-v1',**(dict(chunkOriginalStorageModel='chunk-original-v1') if self.capture_content_entities else {}),captureOriginalEntityModel='same-phase-content-entity-v2' if self.capture_content_entities else 'same-phase-producer-original-v1',**(dict(mapsOriginalEntityModel='same-phase-maps-content-entity-v1')if getattr(self,'capture_maps_content_entities',False)else {}),**(dict(generatedVmaModel=self.generated_vma.model,**(dict(generatedVmaMetadataModel=generated_vma_module.RETAINED_METADATA_MODEL)if getattr(self,'retained_generated_metadata',False)else {}),generatedVmaBuildRoot=self.build,generatedVmaParentDeadlineMonotonicNs=str(int(self.waiter.parent_deadline*1e9))) if self.generated_vma else {}),**(dict(stoppedWriterAliasModel='all-stop-exclusive-write-aliases-v1') if getattr(self,'stopped_writer_aliases',False) else {}),**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v2' if getattr(self,'io_uring_enosys_v2',False) else 'explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(setresIdentityNoopModel='actual-stopped-setres-identity-noop-queued-v2' if getattr(self,'queued_identity_noop',False) else 'actual-stopped-setres-identity-noop-v1') if getattr(self,'verified_identity_noop',False) else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(exitAuthorityModel='actual-selected-exit-stop-held-terminal-peers-v2'if getattr(self,'serialize_terminal_syscalls',False)else 'actual-selected-exit-stop-before-peer-barrier-v1') if getattr(self,'terminal_exit_evidence',False) else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.pending_captures()
+            self.emit(dict(kind='owned-root-binding',pid=child,command=command,**(dict(ownedInputGenerationModel=owned_input_module.MODEL) if self.owned_input_generations is not None else {}),**(dict(toolchainLifetimeModel=LIFETIME_MODEL,executableMemoryPolicy=memory_policy.MODEL,clone3ArgsModel='stopped-clone3-args-v1',btiHardeningModel='held-rx-bti-hardening-v1',**(dict(remapCapabilityModel=memory_policy.REMAP_MODEL) if self.generated_vma else {})) if self.capture_toolchain else {}),**(dict(rawRecordModel=probe.RAW_RECORD_MODEL_V2)if self.indexed_raw_records else {}),backend='ptrace-all-stop-process-v1',**(dict(chunkOriginalStorageModel='chunk-original-v1') if self.capture_content_entities else {}),captureOriginalEntityModel='same-phase-content-entity-v2' if self.capture_content_entities else 'same-phase-producer-original-v1',**(dict(mapsOriginalEntityModel='same-phase-maps-content-entity-v1')if getattr(self,'capture_maps_content_entities',False)else {}),**(dict(generatedVmaModel=self.generated_vma.model,**(dict(generatedVmaMetadataModel=generated_vma_module.RETAINED_METADATA_MODEL)if getattr(self,'retained_generated_metadata',False)else {}),generatedVmaBuildRoot=self.build,generatedVmaParentDeadlineMonotonicNs=str(int(self.waiter.parent_deadline*1e9))) if self.generated_vma else {}),**(dict(stoppedWriterAliasModel='all-stop-exclusive-write-aliases-v1') if getattr(self,'stopped_writer_aliases',False) else {}),**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v2' if getattr(self,'io_uring_enosys_v2',False) else 'explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(setresIdentityNoopModel='actual-stopped-setres-identity-noop-queued-v2' if getattr(self,'queued_identity_noop',False) else 'actual-stopped-setres-identity-noop-v1') if getattr(self,'verified_identity_noop',False) else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(exitAuthorityModel='actual-selected-exit-stop-held-terminal-peers-v2'if getattr(self,'serialize_terminal_syscalls',False)else 'actual-selected-exit-stop-before-peer-barrier-v1') if getattr(self,'terminal_exit_evidence',False) else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.pending_captures()
             binding=self.emit(dict(kind='toolchain-control-gate-binding',model='observer-owned-startup-gate-v1',
                 gateSequence=gate['sequence'],pid=child,identity=gate_identity,
                 scope='the observer, not the tracee, owns the write end of this exact pipe inode'))
@@ -4001,48 +4946,63 @@ class Observer(CapturesMixin):
                 observedToolFiles=self.observed_tool_files(capture_start,name))
         finally:
             primary=sys.exc_info()[1]
-            # Exactly one failure snapshot from held state; never self.check after
-            # expiry and never let diagnostic failure replace the primary error.
-            if primary is not None:
-                # One-shot, out-of-band lease failure diagnostic. Fatal path only:
-                # it runs because the phase is already raising, so it cannot alter
-                # admission. Emission is bounded (<=8192 bytes), goes to stderr only,
-                # never enters the raw stream, and every failure inside it is
-                # swallowed so the ORIGINAL exception object still propagates.
-                if not getattr(self,'lease_failure_diagnostic_emitted',False):
-                    self.lease_failure_diagnostic_emitted=True
-                    try:
-                        leases=getattr(self,'lifetime_leases',None)
-                        if leases is not None and getattr(leases,'_failure',None):
-                            # Pass the EXISTING phase deadline; never extend it.
-                            text=leases.failure_diagnostic(deadline=getattr(self,'deadline',None))
-                            if text is not None and len(text.encode())<=8192:
-                                sys.stderr.write('SDK_READ_LEASE_FATAL '+text+'\n')
-                                sys.stderr.flush()
+            try:
+                self.resource_call(self.resource_finish,getattr(self,'_phase_resources',None),primary,primary=primary)
+                # Exactly one failure snapshot from held state; never self.check after
+                # expiry and never let diagnostic failure replace the primary error.
+                if primary is not None:
+                    # One-shot, out-of-band lease failure diagnostic. Fatal path only:
+                    # it runs because the phase is already raising, so it cannot alter
+                    # admission. Emission is bounded (<=8192 bytes), goes to stderr only,
+                    # never enters the raw stream, and every failure inside it is
+                    # swallowed so the ORIGINAL exception object still propagates.
+                    if not getattr(self,'lease_failure_diagnostic_emitted',False):
+                        self.lease_failure_diagnostic_emitted=True
+                        try:
+                            leases=getattr(self,'lifetime_leases',None)
+                            if leases is not None and getattr(leases,'_failure',None):
+                                # Pass the EXISTING phase deadline; never extend it.
+                                # ONE formatter mechanism: the decisive stop is passed
+                                # into the product formatter so its existing shrink loop
+                                # budgets it together with the rows. The stop is never a
+                                # lease row and is never popped, so it cannot be lost.
+                                text=leases.failure_diagnostic(deadline=getattr(self,'deadline',None),
+                                                               fatal_stop=getattr(self,'fatal_stop',None))
+                                if text is not None and len(text.encode())<=8192:
+                                    sys.stderr.write('SDK_READ_LEASE_FATAL '+text+'\n')
+                                    sys.stderr.flush()
+                        except BaseException:
+                            pass
+                    progress=getattr(self,'_phase_progress',None)
+                    if progress is not None and progress.failure_snapshots<1:self.publish_phase_progress('phase-failure',failure=True)
+                if primary is None and self.resource_call(self.resource_summary) is not None:
+                    self.publish_phase_progress('phase-complete')
+            except BaseException as error:
+                if primary is None:primary=error
+                raise
+            finally:
+                for control_fd in [ready_read,ready_write]:
+                    if control_fd is not None:os.close(control_fd)
+                if write_fd is not None:os.close(write_fd)
+                for pid,row in self.tasks.items():
+                    if not row['exited']:
+                        try:os.kill(pid,signal.SIGKILL)
+                        except ProcessLookupError:pass
+                self.close_outer_lease_window()
+                leases=self.lifetime_leases
+                if leases is not None:
+                    try:leases.close()
                     except BaseException:
-                        pass
-                progress=getattr(self,'_phase_progress',None)
-                if progress is not None and progress.failure_snapshots<1:self.publish_phase_progress('phase-failure',failure=True)
-            for control_fd in [ready_read,ready_write]:
-                if control_fd is not None:os.close(control_fd)
-            if write_fd is not None:os.close(write_fd)
-            for pid,row in self.tasks.items():
-                if not row['exited']:
-                    try:os.kill(pid,signal.SIGKILL)
-                    except ProcessLookupError:pass
-            leases=self.lifetime_leases
-            if leases is not None:
-                try:leases.close()
-                except BaseException:
-                    if primary is None:raise
-                finally:self.lifetime_leases=None
-            self.raw_bytes_completed+=self.raw.tell();self.raw.close()
+                        if primary is None:raise
+                    finally:self.lifetime_leases=None
+                self.raw_bytes_completed+=self.raw.tell();self.raw.close()
     def complete_lifetime_leases(self):
         """Require and emit only real closed lease tokens after all waits."""
         leases=self.lifetime_leases
         if leases is None:return None
         assert all(row['exited'] for row in self.tasks.values()),'lifetime lease closure before allTrackedWaitsClosed'
         closed_pids=sorted(pid for pid,row in self.tasks.items() if row['exited'])
+        if self.owned_input_generations is not None:self.owned_input_generations.finish()
         tokens=leases.complete()
         acquired={row['token']['leaseId']:row['sequence'] for row in self.lifetime_acquired.values()}
         assert set(acquired)=={token['leaseId'] for token in tokens} and sorted(acquired)==[token['leaseId'] for token in tokens],'lease tokens/acquisitions differ'
@@ -4055,13 +5015,15 @@ class Observer(CapturesMixin):
             self.emit(dict(kind='toolchain-lease-closed-token',model=LIFETIME_MODEL,pid=self.root,phaseName=self.lifetime_phase,**value))
         for offset in range(0,len(closed_pids),256):
             self.emit(dict(kind='toolchain-lease-closed-pids',model=LIFETIME_MODEL,pid=self.root,phaseName=self.lifetime_phase,offset=offset,actualClosedPids=closed_pids[offset:offset+256]))
-        row=self.emit(dict(kind='toolchain-leases-closed',model=LIFETIME_MODEL,pid=self.root,phaseName=self.lifetime_phase,tokenCount=len(tokens),tokensSha256=digest.hexdigest(),actualClosedPidCount=len(closed_pids),allTrackedWaitsClosed=True,scope='actual kernel-held read leases closed after all tracked waits; no source authority'))
+        row=self.emit(dict(kind='toolchain-leases-closed',model=LIFETIME_MODEL,pid=self.root,phaseName=self.lifetime_phase,tokenCount=len(tokens),**(dict(ownedInputRetiredTokenCount=len(self.owned_input_generations.retired_tokens)) if self.owned_input_generations is not None else {}),tokensSha256=digest.hexdigest(),actualClosedPidCount=len(closed_pids),allTrackedWaitsClosed=True,scope='actual kernel-held read leases closed after all tracked waits; no source authority'))
         return row
     def observed_tool_files(self,capture_start,name):
         rows=[dict(actualOriginalPath=row['observedPath'],identity=row['identity'],actualMode=row['identity'][2],sourceKind='actual-tool-file-fd-snapshot',role='observed-tool-file',phase=row['phase'],rawEventKind='toolchain-original',captureSequence=row['sequence'],original=dict(row['original'],path=str(self.capture_dir/row['original']['path']))) for row in self.captures[capture_start:] if row.get('kind')=='toolchain-original' and row.get('captureKind')=='file']
         assert all(row['phase']==name for row in rows),'tool original belongs to another phase'
         return rows
     def close(self):
+        self.reset_owned_frames()
+        self.close_outer_lease_window()
         if getattr(self,'generated_vma',None):self.generated_vma.close()
         for task in getattr(self,'tasks',{}).values():
             transition=task.pop('setresuidTransition',None)
@@ -4071,6 +5033,8 @@ class Observer(CapturesMixin):
         if hasattr(self,'authority_handles'):self.authority_handles.close()
         for fd in list(self.retained):os.close(fd);self.retained.remove(fd)
     def abort(self):
+        self.reset_owned_frames()
+        self.close_outer_lease_window()
         # Never claim whole-kernel ownership from this traced PID registry. The
         # producer must propagate failure to its existing PID1 owner, whose
         # actual wait/ECHILD cleanup closes descendants outside this registry.
@@ -4095,14 +5059,14 @@ class SdkExecutionObserver(Observer):
     .phase returns real command/tracked receipts; it does not claim a closed
     process group while this long-lived observer still retains descriptors.
     """
-    def __init__(self,out,source,build,*,deadline_monotonic,check_budget,maximum_bytes,maximum_stdio_bytes,prepared_dependencies=None):
+    def __init__(self,out,source,build,*,deadline_monotonic,check_budget,maximum_bytes,maximum_stdio_bytes,prepared_dependencies=None,phase_budget_policy_version=None):
         limits=load_sdk_execution_limits()
         assert isinstance(maximum_bytes,int) and 0<maximum_bytes<=limits['sourceMaterialBytes'],'canonical shared execution byte bound required'
         assert isinstance(maximum_stdio_bytes,int) and 0<maximum_stdio_bytes<=min(maximum_bytes,limits['shardBytes']),'existing bounded command raw limit required'
         assert Path(source)==Path('/opt/qlever-sdk/source') and Path(build)==Path('/opt/qlever-sdk/build'),'fixed SDK source/build roots required'
         assert isinstance(deadline_monotonic,(float,int)) and math.isfinite(deadline_monotonic) and time.monotonic()<deadline_monotonic,'existing live SDK deadline required'
         super().__init__(out,source,build,deadline_monotonic=deadline_monotonic,check_budget=check_budget,maximum_bytes=maximum_bytes,
-            maximum_file_bytes=limits['shardBytes'],selected_names=None,maximum_processes=limits['sourceMembers'],shard_bytes=limits['shardBytes'],require_success=False,maximum_stdio_bytes=maximum_stdio_bytes,shared_tasks=True,capture_toolchain=True,deny_optional_io_uring=True,verified_identity_noop=True,terminal_exit_evidence=True,generated_vma_output=True,generated_vma_shared_mm=True,generated_vma_private_wake=True,generated_vma_private_wait_mismatch=True,capture_content_entities=True,queued_identity_noop=True,stopped_writer_aliases=True,generated_vma_coordinated_wait=True,generated_vma_parked_wait=True,io_uring_enosys_v2=True,serialize_terminal_syscalls=True,capture_maps_content_entities=True,retained_generated_metadata=True,indexed_raw_records=True,compressed_raw=True)
+            owned_input_generations=True,maximum_file_bytes=limits['shardBytes'],phase_budget_policy_version=phase_budget_policy_version,selected_names=None,maximum_processes=limits['sourceMembers'],shard_bytes=limits['shardBytes'],require_success=False,maximum_stdio_bytes=maximum_stdio_bytes,shared_tasks=True,capture_toolchain=True,deny_optional_io_uring=True,verified_identity_noop=True,terminal_exit_evidence=True,generated_vma_output=True,generated_vma_shared_mm=True,generated_vma_private_wake=True,generated_vma_private_wait_mismatch=True,capture_content_entities=True,queued_identity_noop=True,stopped_writer_aliases=True,generated_vma_coordinated_wait=True,generated_vma_parked_wait=True,io_uring_enosys_v2=True,serialize_terminal_syscalls=True,capture_maps_content_entities=True,retained_generated_metadata=True,indexed_raw_records=True,compressed_raw=True)
         self.capture_dir=self.out/'captures';self.capture_dir.mkdir(exist_ok=False);self.sdk_phase_index=0;self.sdk_failed=False
         mounts=Path('/proc/self/mountinfo').read_bytes();assert len(mounts)<=limits['metadataBytes'],'source provider metadata bound'
         self.source_provider=probe.effective_readonly(source,mounts);self.source_provider_originals=dict(mountinfo=probe.put(self.out/'source-provider.mountinfo.raw',mounts));self.claim(len(mounts))

@@ -29,7 +29,7 @@ import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as API} from '../../scripts/lib/
 import {CLI_SOURCE_VERSION_GROUPS as CLI} from '../../scripts/lib/independent-admission/source-rules';
 import {selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import {decodeCatalog} from './sdk-helper-catalog.fixture';
-import {CURRENT_CANONICAL_SOURCE_ROWS} from './source-binding-group.fixture';
+import {CURRENT_CANONICAL_SOURCE_ROWS, CURRENT_HELPER_GROUP_COUNTS, CURRENT_OBSERVER_GROUPS, CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
 
 const ROOT=path.resolve(import.meta.dirname,'../..');
 const whole=(g:unknown)=>createHash('sha256').update(JSON.stringify(g)).digest('hex');
@@ -59,8 +59,8 @@ const prefix=(groups:readonly unknown[],hashes:readonly string[],label:string)=>
 it('every published 3739 whole prefix is byte-identical',()=>{
   // LIVE frontier (SDK84 appended): this historical slice is proven by its own
   // frozen prefix below, not by current lengths.
-  expect(SDK).toHaveLength(87);expect(LINUX).toHaveLength(88);
-  expect(CONSUMER).toHaveLength(99);expect(CI).toHaveLength(196);
+  expect(SDK).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.sdk);expect(LINUX).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.linux);
+  expect(CONSUMER).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.consumer);expect(CI).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.ci);
   expect(API).toHaveLength(29);expect(CLI).toHaveLength(12);
   prefix(SDK.slice(0,82),OLD_SDK,'sdk');
   prefix(LINUX.slice(0,83),OLD_LINUX,'linux');
@@ -76,14 +76,14 @@ it('helper and readonly registries keep every captured whole vector',()=>{
     ['qlever-sdk-fetchcontent.ts','REVIEWED_HELPER_GROUPS_CURRENT',OLD_FETCH]] as const){
     const live=decodeCatalog('scripts/lib/independent-admission/'+file,name) as readonly unknown[];
     // Frozen vector proves the historical PREFIX only; the live tuple count is
-    // the current frontier (observer 55 / controller 36 / fetch 39).
-    expect(live.length).toBe({REVIEWED_OBSERVER_GROUPS:56,REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT:37,REVIEWED_HELPER_GROUPS_CURRENT:40}[name as 'REVIEWED_OBSERVER_GROUPS']);
+    // the current frontier (observer 59 / controller 39 / fetch 42).
+    expect(live.length).toBe({REVIEWED_OBSERVER_GROUPS:CURRENT_OBSERVER_GROUPS,REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT:CURRENT_HELPER_GROUP_COUNTS.controller,REVIEWED_HELPER_GROUPS_CURRENT:CURRENT_HELPER_GROUP_COUNTS.fetch}[name as 'REVIEWED_OBSERVER_GROUPS']);
     for(let i=0;i<hashes.length;i++) expect(whole(live[i]),`${name}[${i}]`).toBe(hashes[i]);
   }
   const readonly=decodeCatalog('scripts/lib/independent-admission/qlever-sdk-readonly-executor.ts','REVIEWED_READONLY_HELPER_GROUPS') as readonly unknown[];
-  // The live frontier gained one appended current tuple (7 frozen + 1 new);
+  // The live frontier includes two appended current tuples (7 frozen + 2 new);
   // the frozen prefix vector below is what still proves the history.
-  expect(readonly).toHaveLength(8);
+  expect(readonly).toHaveLength(11);
 });
 
 it('the generic selector and budgets are untouched',()=>{
@@ -130,7 +130,7 @@ it('SDK83 whole-inherits SDK82 and re-pins only the pre-owned observer fixture',
 });
 
 it('real staged walk: old fixture selects SDK82, new selects SDK83',()=>{
-  const peers=SDK.slice(-8);   // SDK76..SDK83, the fixture owners
+  const peers=SDK.slice(75,83);   // historical SDK76..SDK83 owners; never future append tails
   const old=SDK[81]!,next=SDK[82]!;
   const owned=(g:any)=>new Set([...g.selectors,...(g.secondarySelectors??[]),...(g.secondarySelectorStages??[]).flat(),...g.sourceBindings].map((r:any)=>sourceBindingKey(r)));
   const base=new Map<string,string>();
@@ -145,7 +145,7 @@ it('real staged walk: old fixture selects SDK82, new selects SDK83',()=>{
 });
 
 it('stage-4 missing, earlier-stage missing, stale and source-only shapes are refused',()=>{
-  const peers=SDK.slice(-8);
+  const peers=SDK.slice(75,83);
   const old=SDK[81]!,next=SDK[82]!;
   const base=new Map<string,string>();
   for(const r of [...old.selectors,...(old.secondarySelectors??[]),...(old.secondarySelectorStages??[]).flat()]) base.set(sourceBindingKey(r),r.sha256);
@@ -182,7 +182,7 @@ it('the SDK83 consumer/CI tails bind the final policy and canonical bytes',()=>{
   const tails:any[]=[CONSUMER[98]!,CI[194]!,CI[195]!];
   const role=(g:any,p:string)=>[...g.sourceBindings,...(g.secondarySelectors??[])].filter((r:any)=>r.path===p).map((r:any)=>r.sha256);
   for(const group of tails){
-    expect(group.sourceBindings).toHaveLength(507);
+    expect(group.sourceBindings).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS+2);
     expect(role(group,CONSUMER_POLICY)).toEqual([sha(CONSUMER_POLICY)]);
     expect(role(group,CANONICAL_JSON)).toEqual([sha(CANONICAL_JSON)]);
     expect(role(group,FIXTURE)).toEqual([sha(FIXTURE)]);
@@ -208,4 +208,14 @@ it('production policy files keep their byte and Contents-API wire caps',()=>{
     const content=body.toString('base64').match(/.{1,60}/gu)!.join('\n')+'\n';
     expect(Buffer.byteLength(JSON.stringify({type:'file',path:file,encoding:'base64',content})),file).toBeLessThanOrEqual(2*1024**2);
   }
+});
+
+it('CURRENT last observer tuple binds r3 ptrace and the owned-input module, never stale r1',()=>{
+  const groups=decodeCatalog('scripts/lib/independent-admission/qlever-sdk-generation.ts','REVIEWED_OBSERVER_GROUPS') as Record<string,string>[];
+  expect(groups).toHaveLength(CURRENT_OBSERVER_GROUPS);
+  const last=groups.at(-1)!;
+  expect(last['qlever/scripts/sdk-ptrace-execution.py']).toBe('440e52d002a28ea187d76b99300b6724639a6c4c67aaa9ed1717b7d064ee3210');
+  expect(last['qlever/scripts/sdk-owned-input-generation.py']).toBe('ca765b358342593be9e501a019b49513a731af990291de57f5b5adeb7037f2b8');
+  expect(Object.keys(last)).toContain('qlever/scripts/sdk-owned-input-generation.py');
+  for(const [file,digest] of Object.entries(last)) expect(sha(file)).toBe(digest);
 });

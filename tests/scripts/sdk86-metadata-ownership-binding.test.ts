@@ -63,7 +63,7 @@ it('SDK86 whole-inherits SDK85 and re-pins exactly the two runtime helpers plus 
   // SDK87 moved the binder; SDK86 keeps its recorded bytes while the current
   // group's three binder roles must all match the live implementation.
   expect(SDK86_FROZEN[BINDER]).not.toBe(sha(BINDER));
-  const currentBinder = all(SDK[86]!).filter((r: any) => r.path === BINDER);
+  const currentBinder = all(SDK[SDK.length-1]!).filter((r: any) => r.path === BINDER);
   expect(currentBinder).toHaveLength(3);
   for (const row of currentBinder) expect(row.sha256).toBe(sha(BINDER));
 });

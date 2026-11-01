@@ -12,10 +12,9 @@ ptrace-stopped children with a real `setitimer(SIGALRM)`.
 This file is deliberately small and fast. It is NOT a full SDK run and makes no
 end-to-end performance claim.
 
-Strict handler-object identity is asserted by
-`test_qlever_parked_note_bracket.py`. Here the interruption may legitimately be
-either the handler object or the observer's own expired-window refusal; the two
-are reported separately and never conflated.
+The timer fires after the first real member read; its exact exception object
+must survive the full closing guard's expired-window refusal. Unexpected entry
+or closing interface errors are re-raised before the timer assertion.
 """
 import fcntl
 import importlib.util
@@ -44,6 +43,9 @@ def load(name, path):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+observer = load('repo_note_observer', ROOT / 'qlever/scripts/sdk-ptrace-execution.py')
 
 
 class _Runtime:
@@ -139,14 +141,28 @@ def detach(pids):
 
 
 class RealB:
-    """Production-shaped: full check() performs the real lease sweep."""
+    """Bind production entry/full policy around the real lease sweep."""
+
+    read_frame_any = observer.Observer.read_frame_any
+    outer_lease_window_owned = observer.Observer.outer_lease_window_owned
+    owned_maps_frame_active = observer.Observer.owned_maps_frame_active
+    read_body_frame_active = observer.Observer.read_body_frame_active
+    check_owned_entry = observer.Observer.check_owned_entry
+    check_lifetime_leases = observer.Observer.check_lifetime_leases
+    check_full = observer.Observer.check_full
+    check = observer.Observer.check
+
+    def instrument(self, name, callback, *args):
+        return callback(*args)
 
     def __init__(self, leases, window_seconds):
         self.leases = leases
+        self.lifetime_leases = leases
         self.emitted = []
         self.checks = 0
         self.deadlines = 0
-        self.window = time.monotonic() + window_seconds
+        self.window_seconds = window_seconds
+        self.window = None
         self.fired = False
         self.handler_object = TimeoutError('actual owned child observation deadline')
 
@@ -156,21 +172,27 @@ class RealB:
 
         self._on_alarm = on_alarm
         self._old = signal.signal(signal.SIGALRM, on_alarm)
-        signal.setitimer(signal.ITIMER_REAL, window_seconds)
+
+    def arm_after_first_read(self):
+        # This fixture measures a real interruption INSIDE the body. Entry may
+        # be descheduled arbitrarily before its first /proc read; that is not
+        # part of the controlled 50ms signal interval.
+        assert self.window is None, 'the fixture timer must arm exactly once'
+        self.window = time.monotonic() + self.window_seconds
+        signal.setitimer(signal.ITIMER_REAL, self.window_seconds)
 
     def close(self):
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, self._old)
 
-    def check(self):
+    def check_nonlease(self):
         self.checks += 1
-        self.leases.check()
-        if time.monotonic() >= self.window:
+        if self.window is not None and time.monotonic() >= self.window:
             raise TimeoutError('all-stop observer deadline')
 
     def check_deadline(self):
         self.deadlines += 1
-        if time.monotonic() >= self.window:
+        if self.window is not None and time.monotonic() >= self.window:
             raise TimeoutError('all-stop observer deadline')
 
     def emit(self, row):
@@ -294,9 +316,10 @@ class RealLeaseOracle(unittest.TestCase):
             cls = module.runtime_type(core)
             b = RealB(self.leases, window_seconds=0.05)
             # Deterministic interruption: after the first REAL /proc read, wait
-            # inside the body until the armed timer actually fires. This is a
+            # inside the body until the timer armed at that boundary fires. This is a
             # controlled wait on a real signal, not a guess about cohort size.
             def wait_for_alarm():
+                b.arm_after_first_read()
                 limit = time.monotonic() + 5.0
                 while time.monotonic() < limit and not b.fired:
                     pass
@@ -312,15 +335,17 @@ class RealLeaseOracle(unittest.TestCase):
                 raised = error
             finally:
                 b.close()
+            # Do not mask a stale fixture interface (or any other non-timeout
+            # error) behind the later timer assertion.
+            if raised is not None and not isinstance(raised, TimeoutError):
+                raise raised
             self.assertTrue(b.fired, 'the real timer must have fired')
-            self.assertIsNotNone(raised, 'the interruption must abort the sweep')
-            handler_object = raised is b.handler_object
-            own_check = (isinstance(raised, TimeoutError)
-                         and str(raised) == 'all-stop observer deadline')
-            self.assertTrue(handler_object or own_check,
-                            'interruption must be the handler object or the own refusal')
+            self.assertIs(raised, b.handler_object,
+                          'the exact body interruption must survive full closing')
+            self.assertEqual(b.checks, 2, 'one full entry and one full closing')
+            self.assertEqual(b.deadlines, 1, 'the first member retains its cheap check')
+            self.assertEqual(core.calls, pids[1:2], 'the first real read precedes the alarm')
             self.assertEqual(b.emitted, [], 'no row may escape')
-            self.assertGreaterEqual(len(core.calls), 1, 'a real /proc read happened')
         finally:
             detach(pids)
 

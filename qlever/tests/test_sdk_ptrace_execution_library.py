@@ -367,6 +367,62 @@ class ReadDispatchTests(unittest.TestCase):
         self.assertEqual(captures[0]['originalReuse']['originCaptureSequence'],
                          [row['sequence'] for row in rows if row['kind']=='toolchain-original'][0])
 
+    def test_advanced_lease_closing_is_bridged_by_the_shared_metadata_chain(self):
+        """N2: replay accepts a POST closing token ONLY via a validated chain.
+
+        A held read lease that follows a witnessed owned rename carries the renamed
+        inode's postimage. Replay composes the already-verified transition endpoints
+        with the SAME `retained_metadata_chain(identity_only=True)` authorizer, so
+        the acquisition row stays immutable while closing may differ by exactly the
+        witnessed ctime move. Any unbridged divergence still refuses.
+        """
+        import importlib.util
+        from pathlib import Path as _Path
+        here = _Path(__file__).resolve()
+        spec = importlib.util.spec_from_file_location(
+            'bindings_for_lease_bridge',
+            here.parents[1] / 'scripts/sdk-generation-multiprocess-bindings.py')
+        bindings = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bindings)
+        pre = [7, 9, 33188, 10767, 100, 200]
+        post = [7, 9, 33188, 10767, 100, 260]
+        rename = (dict(kind='actual-rename-window', beforeIdentity=pre),
+                  dict(sequence=500, afterIdentity=post))
+        # accepted ONLY with a witnessed transition whose BEFORE is exactly the
+        # acquisition tuple and whose AFTER is exactly the closing tuple
+        self.assertEqual(bindings.retained_metadata_chain(
+            dict(sequence=100, identity=pre), dict(sequence=900, identity=post),
+            [rename], identity_only=True), [500])
+        # no transition -> refuse (closing may never diverge unbridged)
+        with self.assertRaises(ValueError):
+            bindings.retained_metadata_chain(dict(sequence=100, identity=pre),
+                                             dict(sequence=900, identity=post),
+                                             [], identity_only=True)
+        # forged/unrelated BEFORE -> refuse
+        with self.assertRaises(ValueError):
+            bindings.retained_metadata_chain(
+                dict(sequence=100, identity=pre), dict(sequence=900, identity=post),
+                [(dict(kind='actual-rename-window',
+                       beforeIdentity=[7, 9, 33188, 10767, 100, 999]),
+                  dict(sequence=500, afterIdentity=post))], identity_only=True)
+        # wrong closing identity -> refuse
+        with self.assertRaises(ValueError):
+            bindings.retained_metadata_chain(
+                dict(sequence=100, identity=pre),
+                dict(sequence=900, identity=[7, 9, 33188, 10767, 100, 261]),
+                [rename], identity_only=True)
+        # a path-bearing endpoint is NOT admissible in the narrow mode
+        with self.assertRaises(ValueError):
+            bindings.retained_metadata_chain(
+                dict(sequence=100, path='/build/x', identity=pre),
+                dict(sequence=900, identity=post), [rename], identity_only=True)
+        # and the legacy namespace mode still REQUIRES both endpoint paths
+        with self.assertRaises(ValueError) as caught:
+            bindings.retained_metadata_chain(
+                dict(sequence=100, identity=pre),
+                dict(sequence=900, identity=post), [])
+        self.assertIn('requires endpoint paths', str(caught.exception))
+
     def test_emitted_rows_discharge_the_real_replay_completeness_gate(self):
         """The emitted pair must satisfy the REAL replay, not merely be present.
 

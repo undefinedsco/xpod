@@ -25,22 +25,48 @@ const LEAF = 'tests/scripts/candidate-producer-attempt-binding.test.ts';
 const LOCK = 'qlever/qlever.lock.json';
 const SERIES = 'qlever/patches/series';
 const BUILDER = 'qlever/scripts/build-qlever-runtime-sdk.sh';
+const PROFILE = 'qlever/scripts/qlever_compiler_profile.py';
+/** Exact helper SHA carried by the live controller closure; restored byte-exact. */
+const PROFILE_CONTROLLER_PIN = '7b9c05563e21ff05e33e3ac61641ad418fe48b5cc48e3399ca02c14beb6d248b';
 const PATCH = 'qlever/patches/qlever-antlr-scoped-pch-and-server-pch-reuse.patch';
 const LEASES = 'qlever/scripts/sdk-tool-lifetime-leases.py';
 const LEASE_EXT = 'qlever/scripts/native/lease_sweep_ext.c';
 const LEASE_BINDING = 'qlever/scripts/native/lease_sweep_binding.py';
 const EXECUTOR_BINDINGS = 'qlever/scripts/sdk-readonly-executor-bindings.py';
+/** The readonly executor itself is a CURRENT SDK87 role re-pinned to the v3 bytes. */
+const EXECUTOR = 'qlever/scripts/sdk-readonly-executor.py';
+/** Its last reviewed historical (SDK86) digest; the CURRENT one must differ. */
+const EXECUTOR_STALE = '70fe276f4e696145e9befb6b24822a6ee9f03fedb9a931ce0c02ff5215580d86';
 const KERNEL_PROBE = 'qlever/scripts/sdk-kernel-policy-probe.py';
 const READONLY_NORMAL = '.github/workflows/qlever-readonly-normal-job.yml';
 // SDK70 now uses the whole canonical limit profile, changing only its current
 // digest. Its inherited role and SDK1–86 historical values remain unchanged.
 const SDK70_E2E = 'qlever/tests/test_sdk70_mremap_e2e.py';
 const SOURCE_ORIGINALS = 'qlever/scripts/sdk-generated-source-originals.py';
+// SDK87 genuine CURRENT re-registrations appended by subsequent reviewed slices:
+// the generated-VMA originals module, the readonly normal route, the readonly
+// result context, and the generated-VMA fixtures test. Each is asserted by exact
+// path below, so the whole set stays an exact equality (no subset assertion).
+const VMA_ORIGINALS = 'qlever/scripts/sdk-generated-vma-originals.py';
+const COORDINATED_WAIT = 'qlever/scripts/sdk-coordinated-wait.py';
+const READONLY_ROUTE = 'qlever/scripts/sdk-readonly-normal-route.py';
+const READONLY_CONTEXT = 'qlever/scripts/sdk-readonly-result-context.py';
+const VMA_FIXTURE_TEST = 'qlever/tests/test_sdk_generated_vma_files.py';
 /** CURRENT CSS diagnostics producer; its PRIMARY selector advanced in this slice. */
 const CSS_PRODUCER = 'scripts/css-module-producer.py';
 const all = (g: any) => [...g.selectors, ...(g.secondarySelectors ?? []), ...(g.secondarySelectorStages ?? []).flat(), ...g.sourceBindings];
 
 /** SDK86's published bytes — HISTORICAL, never replaced with today's tree. */
+/** SDK87's immutable rows: independent base-HEAD literals, never today's disk. */
+const SDK87_FROZEN: Readonly<Record<string, string>> = Object.freeze({
+  [VMA_ORIGINALS]: '602f86ce683409ff83e6c7014c9bed82bb2fe687fdf2d42be36dc1891b4dc5d8',
+  [COORDINATED_WAIT]: '8aba97d796c2579d7d9510272decfee77b537ff12220438f04634ff1428598e1',
+  [READONLY_ROUTE]: 'c620a49809a022126007e6d4bd7470d9d86e88925f39b8a849304832300026d7',
+  [READONLY_CONTEXT]: '1fe5650b94fe13d62aea8ca55ca0a73740057fb3427f770e5768f6a276d096bb',
+  [VMA_FIXTURE_TEST]: 'df07665961e97568ea28aa06310aa3e96f2dbabf54e0feb5fdb8969d6bc68051',
+  [OBSERVER]: '41a9c03801f40d5cfa78efe5fccd6cb2c65418e1f6880bbde5f2f3f6cc35f8ed',
+  [LEAF]: '8973eb25c1e6d669e2fc2d7c05ffd80d0f040c066d32d83f0a7f24e5b375daba',
+});
 const SDK86_FROZEN: Readonly<Record<string, string>> = Object.freeze({
   [BINDER]: 'c59c84466007a7641fa69147bfb5f3301a259085f064ceea0962b04d84f23233',
   [OBSERVER]: '1bb9533e6a499b35347c2bc5d66644360cf6eff733251c9fac15d2f704e0662d',
@@ -70,7 +96,25 @@ it('SDK87 whole-inherits SDK86 and re-pins only the reviewed current roles', () 
   expect((inheritedSelectors.find(r => r.path === 'scripts/css-module-producer.py') as any)?.sha256 ?? HISTORICAL_CSS_PRODUCER)
     .toBe(HISTORICAL_CSS_PRODUCER);
   expect(JSON.stringify(next.candidateServiceRelationship)).toBe(JSON.stringify(inherited.candidateServiceRelationship));
-  expect(JSON.stringify(next.outerExecutor)).toBe(JSON.stringify(inherited.outerExecutor));
+  // CURRENT outerExecutor: the ONLY field that advances is `collector`, and it must
+  // equal the group's OWN current source binding for that exact file. Every other
+  // whole field (workflow/additionalWorkflows/uploadDomain/steps/model) stays
+  // identical to the inherited group, and the historical group keeps its own
+  // collector — so a hybrid (current bindings + old collector) cannot arise.
+  const nextOuter: any = next.outerExecutor;
+  const inheritedOuter: any = inherited.outerExecutor;
+  expect(nextOuter.collector.sha256).toBe(sha('qlever/scripts/sdk-readonly-executor.py'));
+  expect(nextOuter.collector.sha256).not.toBe(inheritedOuter.collector.sha256);
+  const ownBinding = (next.sourceBindings ?? []).find(r => r.path === nextOuter.collector.path);
+  expect(ownBinding?.sha256).toBe(nextOuter.collector.sha256);
+  expect(ownBinding?.reviewedSha256?.length ?? 0).toBe(0);
+  for (const key of ['schemaVersion', 'model', 'workflowPath', 'workflowSha256',
+    'uploadDomain', 'ownedSteps', 'allowedBeforeController'] as const) {
+    expect(JSON.stringify(nextOuter[key])).toBe(JSON.stringify(inheritedOuter[key]));
+  }
+  expect(JSON.stringify(nextOuter.additionalWorkflows)).toBe(JSON.stringify(inheritedOuter.additionalWorkflows));
+  // The historical group is untouched: it keeps its own collector value.
+  expect(inheritedOuter.collector.sha256).not.toBe(nextOuter.collector.sha256);
   // this slice adds no stage and keeps the whole stage surface
   expect((next.secondarySelectorStages ?? []).length).toBe((inherited.secondarySelectorStages ?? []).length);
   const expectedStages = (inherited.secondarySelectorStages ?? []).map(stage => stage.map(row =>
@@ -97,7 +141,19 @@ it('SDK87 whole-inherits SDK86 and re-pins only the reviewed current roles', () 
   // lock/series, the current builder documentation whose bytes changed, the
   // generated-source originals module that now emits the transport projection, and
   // the SDK70 replay fixture that now uses the whole canonical limit profile.
-  expect(new Set(moved)).toEqual(new Set([OBSERVER, LEAF, LOCK, SERIES, LEASES, LEASE_EXT, LEASE_BINDING, BUILDER, EXECUTOR_BINDINGS, READONLY_NORMAL, BINDER, KERNEL_PROBE, SOURCE_ORIGINALS, CSS_PRODUCER, SDK70_E2E]));
+  // SDK87 also re-pins the readonly executor ITSELF (2 inherited occurrences) to
+  // the reviewed v3 bytes, so that CURRENT role belongs in this exact set.
+  expect(new Set(moved)).toEqual(new Set([OBSERVER, LEAF, LOCK, SERIES, LEASES, LEASE_EXT, LEASE_BINDING, BUILDER, EXECUTOR_BINDINGS, EXECUTOR, READONLY_NORMAL, BINDER, KERNEL_PROBE, SOURCE_ORIGINALS, CSS_PRODUCER, SDK70_E2E, VMA_ORIGINALS, COORDINATED_WAIT, READONLY_ROUTE, READONLY_CONTEXT, VMA_FIXTURE_TEST]));
+  // The four appended CURRENT re-registrations must carry the REAL bytes today.
+  // VMA_ORIGINALS is bound in BOTH its selector and source row, so its real
+  // occurrence count is two; the other three are single-role bindings.
+  // The exact coordinated callback entry moved with the VMA callback; both
+  // inherited bindings must carry its current bytes as well.
+  for (const [role, occurrences] of [[VMA_ORIGINALS, 2], [COORDINATED_WAIT, 2], [READONLY_ROUTE, 1],
+    [READONLY_CONTEXT, 1], [VMA_FIXTURE_TEST, 1]] as const) {
+    expect(moved.filter(p => p === role)).toHaveLength(occurrences);
+    for (const row of all(next).filter((r: any) => r.path === role)) expect(row.sha256).toBe(SDK87_FROZEN[role]);
+  }
   expect(moved.filter(p => p === OBSERVER)).toHaveLength(4);
   expect(moved.filter(p => p === LEAF)).toHaveLength(1);
   // The filtered-lease lookup slice moves the lease implementation's CURRENT
@@ -107,9 +163,27 @@ it('SDK87 whole-inherits SDK86 and re-pins only the reviewed current roles', () 
   expect(moved.filter(p => p === LEASE_EXT)).toHaveLength(2);
   expect(moved.filter(p => p === LEASE_BINDING)).toHaveLength(2);
   expect(moved.filter(p => p === BUILDER)).toHaveLength(3);
+  // The helper is restored byte-exact to its inherited original bytes so the
+  // live controller pin remains valid. It must NOT move in this slice, but every
+  // SDK87 occurrence still binds the actual original file.
+  expect(moved).not.toContain(PROFILE);
+  for (const row of all(next).filter((r: any) => r.path === PROFILE)) expect(row.sha256).toBe(sha(PROFILE));
   // The readonly executor lane derives its parallelism from its own 4-CPU
   // allocation, so its CURRENT bytes move in both inherited occurrences.
   expect(moved.filter(p => p === EXECUTOR_BINDINGS)).toHaveLength(2);
+  // SDK87 re-pins the readonly executor ITSELF to the reviewed v3 bytes. It moves
+  // in both inherited occurrences, the CURRENT digest must equal the real working
+  // tree, and it must genuinely DIFFER from the last reviewed historical digest
+  // (a stale re-pin that copied the old value would otherwise pass unnoticed).
+  expect(moved.filter(p => p === EXECUTOR)).toHaveLength(2);
+  {
+    const current = all(next).filter(r => r.path === EXECUTOR).map(r => r.sha256);
+    const stale = all(inherited).filter(r => r.path === EXECUTOR).map(r => r.sha256);
+    expect(current).toHaveLength(2);
+    expect(new Set(current)).toEqual(new Set([sha(EXECUTOR)]));
+    expect(new Set(stale)).toEqual(new Set([EXECUTOR_STALE]));
+    expect(new Set(current)).not.toEqual(new Set(stale));
+  }
   // Its pin list follows the executor lane, so this CURRENT workflow moves once.
   expect(moved.filter(p => p === READONLY_NORMAL)).toHaveLength(1);
   // PR124 strict absent-link contract: the gate consumes the matched failed
@@ -120,22 +194,22 @@ it('SDK87 whole-inherits SDK86 and re-pins only the reviewed current roles', () 
   // SDK70 keeps its single inherited occurrence; its current digest moves once.
   expect(moved.filter(p => p === SDK70_E2E)).toHaveLength(1);
   expect(all(next).filter((r: any) => r.path === SDK70_E2E)).toHaveLength(1);
-  for (const role of [LEASES, LEASE_EXT, LEASE_BINDING, BUILDER, EXECUTOR_BINDINGS, READONLY_NORMAL, BINDER, KERNEL_PROBE, SOURCE_ORIGINALS, SDK70_E2E]) {
-    for (const row of all(next).filter((r: any) => r.path === role)) expect(row.sha256).toBe(sha(role));
+  for (const role of [LEASES, LEASE_EXT, LEASE_BINDING, BUILDER, EXECUTOR_BINDINGS, BINDER, KERNEL_PROBE, SOURCE_ORIGINALS, SDK70_E2E]) {
+    for (const row of all(SDK[SDK.length-1]).filter((r: any) => r.path === role)) expect(row.sha256).toBe(sha(role));
   }
-  for (const row of all(next).filter((r: any) => r.path === LEASES)) expect(row.sha256).toBe(sha(LEASES));
+  for (const row of all(SDK[SDK.length-1]).filter((r: any) => r.path === LEASES)) expect(row.sha256).toBe(sha(LEASES));
   // PR124 moves the binder: the gate now settles the matched failed link exits,
   // so its CURRENT bytes legitimately change in this unpublished slice.
   expect(moved).toContain(BINDER);
-  for (const row of all(next).filter((r: any) => r.path === BINDER)) expect(row.sha256).toBe(sha(BINDER));
+  for (const row of all(SDK[SDK.length-1]).filter((r: any) => r.path === BINDER)) expect(row.sha256).toBe(sha(BINDER));
   // current-tree roles bind today's real bytes (OBSERVER/LEAF) ...
-  for (const row of all(next).filter((r: any) => r.path === OBSERVER)) expect(row.sha256).toBe(sha(OBSERVER));
-  expect(next.sourceBindings.find(r => r.path === LEAF)!.sha256).toBe(sha(LEAF));
+  for (const row of all(next).filter((r: any) => r.path === OBSERVER)) expect(row.sha256).toBe(SDK87_FROZEN[OBSERVER]);
+  expect(next.sourceBindings.find(r => r.path === LEAF)!.sha256).toBe(SDK87_FROZEN[LEAF]);
   // ... while the binder still carries SDK86's frozen bytes, equal to disk today
   // SDK86's frozen bytes stay historical: they must NOT follow today's tree now
   // that PR124 legitimately moved the binder in the unpublished slice.
   expect(SDK86_FROZEN[BINDER]).not.toBe(sha(BINDER));
-  for (const row of all(next).filter((r: any) => r.path === BINDER)) expect(row.sha256).toBe(sha(BINDER));
+  for (const row of all(SDK[SDK.length-1]).filter((r: any) => r.path === BINDER)) expect(row.sha256).toBe(sha(BINDER));
 });
 
 it('historical SDK86 keeps its own frozen bytes and is not rewritten', () => {
@@ -175,6 +249,18 @@ it('generic selector resolves SDK86/current/stale against the real bytes', () =>
   }
 });
 
+
+it('live controller workflow pins match the real source files, including the exact helper', () => {
+  const workflow = readFileSync(path.join(ROOT, READONLY_NORMAL), 'utf8');
+  const matches = [...workflow.matchAll(/^\s*pins=(\{.*\})\s*$/gm)];
+  expect(matches).toHaveLength(1);
+  const pins = JSON.parse(matches[0]![1]) as Record<string, string>;
+  expect(Object.keys(pins)).toHaveLength(21);
+  expect(pins[PROFILE]).toBe(PROFILE_CONTROLLER_PIN);
+  expect(pins[PROFILE]).toBe(sha(PROFILE));
+  for (const [source, digest] of Object.entries(pins)) expect(sha(source), source).toBe(digest);
+});
+
 it('the canonical holds the current canonical physical originals matching the live tree', () => {
   const rows = JSON.parse(readFileSync(path.join(ROOT, 'scripts/lib/independent-admission/consumer-execution-current.json'), 'utf8')) as { path: string; sha256: string }[];
   expect(rows).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
@@ -190,7 +276,7 @@ it('SDK87 advances its PRIMARY selectors coherently to the current CSS producer,
   // the historical 9bc selector from SDK86, so no real observation of the live
   // tree could satisfy any reviewed group. The CURRENT identity must move on
   // EVERY axis; historical SDK0..86 stay frozen and are not touched by this.
-  const next = SDK[SDK.length - 1]!;
+  const next = SDK[86]!;
   const css = 'scripts/css-module-producer.py';
   const current = sha(css);
   const axes = [next.selectors ?? [], next.secondarySelectors ?? [],

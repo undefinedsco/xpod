@@ -49,6 +49,9 @@ def verify_frame(frame,raws):
     need(frame['mainPid']==int(service['MainPID']) and frame['service']==service,'actual service/MainPID cross-seal')
     need(frame['creatorPid']==1 and frame['creatorUid']==0 and frame['creatorExecutable']=='/usr/lib/systemd/systemd','fixed root systemd transport creator')
     need(frame['daemonExecutable']=='/usr/bin/dockerd' and re.fullmatch('[a-f0-9]{64}',frame['daemonExecutableSha256']),'exact held actual daemon executable')
+    need(type(frame.get('daemonFd')) is int and frame['daemonFd']>=0 and type(frame.get('creatorFd')) is int and frame['creatorFd']>=0,'actual initial listening FD numbers')
+    if 'currentDaemonFd' in frame or 'currentCreatorFd' in frame:
+        need(type(frame.get('currentDaemonFd')) is int and frame['currentDaemonFd']>=0 and type(frame.get('currentCreatorFd')) is int and frame['currentCreatorFd']>=0,'actual current listening FD numbers')
     for role in ['heldListenerIdentity','namedListenerIdentity','creatorListenerIdentity']:
         value=frame[role];need(isinstance(value,list) and len(value)==6 and all(type(v) is int and v>=0 for v in value) and stat.S_ISSOCK(value[2]) and value[1]==listener['inode'],'same actual held/listening socket identity')
     need(frame['heldListenerIdentity']==frame['namedListenerIdentity']==frame['creatorListenerIdentity'],'held/named/inherited listener changed')
@@ -122,10 +125,24 @@ class HeldActivatedDaemon:
                 if os.readlink(path/name)=='socket:['+str(inode)+']':matches.append(int(name))
             except FileNotFoundError:continue
         need(len(matches)==1,'unique inherited listening FD in exact actual process');return matches[0]
+    def _listener_object(self,pidfd,fd):
+        duplicate=duplicate_pidfd_listener(pidfd,fd)
+        try:return identity(os.fstat(duplicate))
+        finally:os.close(duplicate)
+    def _named_listener_object(self,pid,fd):
+        reader=os.open('/proc/'+str(pid)+'/fd/'+str(fd),os.O_PATH|os.O_CLOEXEC)
+        try:return identity(os.fstat(reader))
+        finally:os.close(reader)
     def _sample(self,service_raw,stage,unix_raw):
         self.check();poll=select.poll();poll.register(self.fds['pidfd'],select.POLLIN);need(not poll.poll(0),'held actual daemon exited')
         fields=service_fields(service_raw);need(int(fields['MainPID'])==self.main_pid,'actual service MainPID changed');listener=listener_row(unix_raw)
-        need(self._listener_fd(self.main_pid,listener['inode'])==self.daemon_fd and self._listener_fd(1,listener['inode'])==self.creator_fd,'actual listening FD changed')
+        current_daemon_fd=self._listener_fd(self.main_pid,listener['inode']);current_creator_fd=self._listener_fd(1,listener['inode'])
+        try:
+            named_listener=self._listener_object(self.fds['pidfd'],current_daemon_fd);creator_listener=self._named_listener_object(1,current_creator_fd)
+        except OSError as error:
+            need(False,'actual listening FD object unavailable: '+str(error.errno))
+        held_listener=identity(os.fstat(self.fds['listener']))
+        need(named_listener==creator_listener==held_listener,'actual listening FD object changed')
         base='/proc/'+str(self.main_pid);status=self._proc(base+'/status',16384).decode('ascii','strict');uids=[line.split()[1:] for line in status.splitlines() if line.startswith('Uid:')];nspids=[line.split()[1:] for line in status.splitlines() if line.startswith('NSpid:')]
         need(uids==[['0','0','0','0']] and nspids==[[str(self.main_pid)]],'actual root host daemon process')
         executable=os.readlink(base+'/exe');need(executable=='/usr/bin/dockerd','actual service process is not exact dockerd')
@@ -140,10 +157,9 @@ class HeldActivatedDaemon:
         namespaces={}
         for role in ['pid','mnt','user']:
             held=identity(os.fstat(self.fds[role]));need(held==identity(os.stat(base+'/ns/'+role)),'held actual daemon namespace changed');namespaces[role]=dict(link=os.readlink(base+'/ns/'+role),identity=held)
-        held_listener=identity(os.fstat(self.fds['listener']));named_listener=identity(os.stat(base+'/fd/'+str(self.daemon_fd)));creator_listener=identity(os.stat('/proc/1/fd/'+str(self.creator_fd)))
         with socket.socket(fileno=os.dup(self.fds['listener'])) as listening:
             listener_name=listening.getsockname();socket_type=listening.getsockopt(socket.SOL_SOCKET,socket.SO_TYPE);accept=listening.getsockopt(socket.SOL_SOCKET,socket.SO_ACCEPTCONN)
-        frame=dict(mainPid=self.main_pid,daemonFd=self.daemon_fd,creatorFd=self.creator_fd,service=fields,creatorPid=self.creator['pid'],creatorUid=self.creator['uid'],creatorExecutable=self.creator['executablePath'],daemonExecutable=executable,daemonExecutableIdentity=identity(before),daemonExecutableSha256=digest.hexdigest(),heldListenerIdentity=held_listener,namedListenerIdentity=named_listener,creatorListenerIdentity=creator_listener,listenerName=listener_name,socketType=socket_type,acceptConn=accept,controllerPidNamespace=pidns,daemonPidNamespace=daemonns,hostPidNamespace=hostns,controllerRootIdentity=root,daemonRootIdentity=peerroot,namespaces=namespaces)
+        frame=dict(mainPid=self.main_pid,daemonFd=self.daemon_fd,creatorFd=self.creator_fd,currentDaemonFd=current_daemon_fd,currentCreatorFd=current_creator_fd,service=fields,creatorPid=self.creator['pid'],creatorUid=self.creator['uid'],creatorExecutable=self.creator['executablePath'],daemonExecutable=executable,daemonExecutableIdentity=identity(before),daemonExecutableSha256=digest.hexdigest(),heldListenerIdentity=held_listener,namedListenerIdentity=named_listener,creatorListenerIdentity=creator_listener,listenerName=listener_name,socketType=socket_type,acceptConn=accept,controllerPidNamespace=pidns,daemonPidNamespace=daemonns,hostPidNamespace=hostns,controllerRootIdentity=root,daemonRootIdentity=peerroot,namespaces=namespaces)
         stable=verify_frame(frame,{'serviceStdout':service_raw,'procUnix':unix_raw,'status':status.encode()})
         if self.first is not None:need(stable==self.first,'actual service/daemon/listener changed during owned interval')
         index=str(len(self.frames));frame['serviceStage']=stage;frame['procUnixOriginal']=self.refs.get('proc-unix-'+index+'.original') or self._save('proc-unix-'+index+'.original',unix_raw);frame['statusOriginal']=self._save('status-'+index+'.original',status.encode());self.frames.append(frame)
@@ -172,7 +188,7 @@ def verify_collection(collection,read):
         need(registered.get(ref.get('path'))==ref and type(ref.get('bytes')) is int and 0<=ref['bytes']<=4*1024**2,'same registered activation original')
         need(isinstance(ref['path'],str) and not ref['path'].startswith('/') and all(part not in ('','.','..') for part in ref['path'].split('/')),'canonical activation ref path')
         raw=read(ref);need(len(raw)==ref['bytes'] and hashlib.sha256(raw).hexdigest()==ref['sha256'],'actual activation original bytes/SHA');used.add(ref['path']);return raw
-    request=json.loads(original(collection['listenerRequest']));need(set(request)=={'mainPid','daemonFd','creatorFd','inode','endpoint','flags'} and request['endpoint']=='/run/docker.sock' and request['flags']==0,'fixed actual listener duplication request')
+    request=json.loads(original(collection['listenerRequest']));need(set(request)=={'mainPid','daemonFd','creatorFd','inode','endpoint','flags'} and request['endpoint']=='/run/docker.sock' and request['flags']==0,'fixed actual listener duplication request');need(type(request['daemonFd']) is int and request['daemonFd']>=0 and type(request['creatorFd']) is int and request['creatorFd']>=0,'actual initial request FD numbers')
     baseline=None;windows=[]
     for index,frame in enumerate(frames):
         stage=frame['serviceStage'];need(stage['name']=='service-'+str(index),'ordered exact service observations')

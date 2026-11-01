@@ -117,12 +117,18 @@ class NinjaBranch(unittest.TestCase):
 
         class Budget:
             deadline_unix = 0
+            # Use the producer's own canonical policy; the fake budget must match
+            # the real Budget -> Session -> observer interface, not a stale shape.
+            policy = module.budget_module.PHASE_PARENT_BUDGET_POLICY
 
             def check(self, _reserve=0):
                 return None
 
             def timeout(self, a, b=0):
                 return a
+
+            def phase_timeout(self, phase, cap, reserve=0):
+                return self.policy.phase_timeout(self, phase, cap, reserve)
 
             def remaining(self):
                 return 4200

@@ -168,6 +168,17 @@ def execute(prepared_image,identity,deadline,out,network='bridge'):
         safe_role=re.sub(r'([A-Z])',lambda match:'-'+match[1].lower(),role)
         result=commands.capture(safe_role,binding.local_docker(command),out,HERE,timeout=budget.timeout(cap,reserve),resource_profile='cleanup' if cleanup else 'observation');(cleanup_stages if cleanup else stages).append(result)
         return bounded_original(out/result['stdout']['path'],binding.META,lambda:budget.check(0 if cleanup else 30))
+    def stage_dec(role,command,cap=30):
+        """Same reviewed transport as stage(), but the decisive-member read ceiling.
+
+        Used ONLY for the lease-acquisition shards, whose compressed raw records
+        are legitimately larger than the generic 4 MiB stdout/META bound. The
+        capture layer, resource profile and bounded_original reader are unchanged;
+        only the maximum passed to that reader differs for this member class.
+        """
+        safe_role=re.sub(r'([A-Z])',lambda match:'-'+match[1].lower(),role)
+        result=commands.capture(safe_role,binding.local_docker(command),out,HERE,timeout=budget.timeout(cap,0),resource_profile='observation');cleanup_stages.append(result)
+        return bounded_original(out/result['stdout']['path'],LEASE_TRACE_MEMBER_LIMIT,lambda:budget.check(0))
     def inspect(role,kind,reference,template):return save(role,json.loads(stage(role,['docker',kind,'inspect','--format',template,reference])))
     try:
         daemon=LocalDaemon(check,lambda value:save('daemonPeerDiagnostic',value),out/'daemon-activation',lambda:budget.timeout(5,60));save('daemonBefore',daemon.first)
@@ -198,6 +209,15 @@ def execute(prepared_image,identity,deadline,out,network='bridge'):
                 final=json.loads(stage('confirm-stopped',['docker','container','inspect','--format','{{json .State.Running}}',cid],10,0,True));binding.need(final is False,'owned executor still live after cleanup')
                 if primary is not None:
                     stage('failed-executor-logs',['docker','logs',cid],10,0,True)
+                    # Decisive configure + lease-acquisition context lives only
+                    # inside the stopped container; retain it now, while it is
+                    # still owned, into the caller's ABSOLUTE out (the uploaded
+                    # tree). Retention errors never replace the original.
+                    try:
+                        retain_failed_configure_evidence(stage,cid,out,stage_decisive=stage_dec)
+                    except BaseException as retention_error:
+                        if hasattr(primary,'add_note'):
+                            primary.add_note('Configure evidence retention failed: '+type(retention_error).__name__)
             except BaseException as cleanup_error:
                 if primary is None:raise
                 if hasattr(primary,'add_note'):primary.add_note('Executor cleanup failed: '+type(cleanup_error).__name__)
@@ -209,6 +229,163 @@ def execute(prepared_image,identity,deadline,out,network='bridge'):
     # Seal only after actual cleanup. Copies prevent append/self-reference loops.
     save('executorCollection',record,0)
     return record
+# Fixed container-side failure evidence: the decisive context lives only INSIDE
+# the stopped container, so it never reaches the uploaded host tree on its own.
+#
+# Two corrections over the first attempt:
+#  * the destination is the caller's ABSOLUTE `out` (the uploaded tree), never a
+#    cwd-relative path — `docker cp` executes with cwd HERE, so a relative target
+#    could materialise somewhere the workflow never uploads;
+#  * acquisition is BOUNDED BY TRANSPORT, not by deleting an oversized file after
+#    it already landed. Each member is streamed as a tar to stdout through the
+#    reviewed `stage()` capture (whose raw stream is already capped by
+#    RAW_LIMIT/resource profile), so an oversized or non-regular/parent-symlink
+#    member is refused BEFORE unbounded bytes are materialised on the runner.
+CONFIGURE_FAILURE_EVIDENCE=(
+ ('configure-trace','materials/generation/configure.trace.jsonl'),
+ ('configure-stdout','materials/generation/configure/stdout.raw'),
+ ('configure-stderr','materials/generation/configure/stderr.raw'),
+ ('configure-command-receipt','materials/generation/configure/command.receipt.json'),
+ ('cmake-error-log','build/CMakeFiles/CMakeError.log'),
+ ('cmake-output-log','build/CMakeFiles/CMakeOutput.log'),
+ ('cmake-configure-log','build/CMakeFiles/CMakeConfigureLog.yaml'),
+)
+# Acquisition evidence that can actually NAME a lease. The observer writes its raw
+# trace shards into the PRODUCER's own directory — verified from
+# sdk-toolchain-materials.Session.__init__: self.directory=self.out/'toolchain-execution'
+# and SdkExecutionObserver(self.directory, ...) — so the real container path is
+# materials/toolchain-execution/<phase>.trace-NNNN.jsonl.gz, NOT the materials root.
+#
+# The container is STOPPED at this point (we only retain after stop, to keep the
+# owned-resource lifecycle intact), and `docker exec` cannot run against a stopped
+# container. Shard names are therefore derived DETERMINISTICALLY from the producer's
+# own naming (phase name + zero-padded index) and probed with `docker cp`, which
+# reads the container filesystem through the daemon and works while stopped.
+LEASE_TRACE_DIR='materials/toolchain-execution'
+LEASE_TRACE_PHASES=('configure',)
+LEASE_TRACE_SUFFIXES=('jsonl.gz','jsonl')
+# Shard count is bounded by the producer's own rolling policy: a shard is closed at
+# shardBytes, and total retained bytes are bounded by remaining_source_bytes(out).
+# A small fixed probe window keeps acquisition bounded without a directory listing.
+LEASE_TRACE_MAX_SHARDS=4
+CONFIGURE_EVIDENCE_MEMBER_LIMIT=512*1024
+# The decisive lease-acquisition shards are COMPRESSED raw records and are
+# legitimately larger than a CMake log. The reviewed bounded reader is reused with
+# an explicit, documented ceiling instead of the 4 MiB generic stdout/META bound,
+# because refusing the decisive original would silently discard all causal data.
+# This is NOT a guard relaxation: the same single-regular-file / no-follow /
+# identity-stable reader is used, only its maximum differs for this member class.
+LEASE_TRACE_MEMBER_LIMIT=64*1024**2
+def _bounded_tar_member(payload,member,maximum):
+    """Decode ONE bounded tar stream and return (name,bytes) for a single regular member.
+
+    The tar arrives already byte-capped by the reviewed capture layer. A stream is
+    refused unless it holds exactly one regular-file member whose base name equals
+    the expected member, so a directory, symlink, hardlink or multi-member archive
+    can never be materialised as if it were the requested original.
+    """
+    import io
+    import tarfile
+    if len(payload)>maximum:raise ValueError('tar stream exceeds member cap')
+    with tarfile.open(fileobj=io.BytesIO(payload),mode='r:') as archive:
+        members=archive.getmembers()
+        if len(members)!=1:raise ValueError('exactly one archive member required')
+        entry=members[0]
+        if not entry.isreg():raise ValueError('regular file member required')
+        if Path(entry.name).name!=Path(member).name:raise ValueError('member name differs')
+        if entry.size>maximum:raise ValueError('member exceeds byte cap')
+        handle=archive.extractfile(entry)
+        if handle is None:raise ValueError('member body unreadable')
+        data=handle.read(maximum+1)
+    if len(data)!=entry.size:raise ValueError('member length differs from header')
+    if len(data)>maximum:raise ValueError('member exceeds byte cap')
+    return data
+def retain_failed_configure_evidence(stage,cid,out,root='/opt/qlever-sdk',stage_decisive=None):
+    """Best-effort bounded retention into the caller's ABSOLUTE uploaded `out`.
+
+    Runs only on the failure path, after the owned container is stopped and while
+    it is still owned. Never raises: a retention problem must not replace the
+    candidate's original failure. Every member carries an explicit status, so an
+    unavailable or truncated acquisition is never presented as complete.
+    """
+    target=Path(out).resolve()/'failed-configure-evidence';target.mkdir(parents=True,exist_ok=True)
+    rows=[]
+    def entry(name,status,**extra):
+        row=dict(member=name,status=status);row.update(extra);rows.append(row)
+    def acquire(label,member,limits=None):
+        """Stream the member as tar to stdout (transport-bounded) and materialise it."""
+        maximum=(limits or CONFIGURE_EVIDENCE_MEMBER_LIMIT)
+        run=stage if stage_decisive is None else stage_decisive
+        try:
+            payload=run('failed-evidence-'+label,
+                        ['docker','cp',cid+':'+root+'/'+member,'-'],30)
+        except BaseException as error:
+            entry(member,'absent-or-unreadable',error=type(error).__name__);return
+        try:
+            data=_bounded_tar_member(payload,member,maximum)
+        except BaseException as error:
+            entry(member,'refused-'+type(error).__name__,cap=maximum);return
+        local=target/Path(member).name
+        local.write_bytes(data)
+        entry(member,'retained',bytes=len(data),sha256=hashlib.sha256(data).hexdigest(),
+              path=str(local))
+    for label,member in CONFIGURE_FAILURE_EVIDENCE:
+        acquire(label,member)
+    # Decisive lease-acquisition shards. The container is STOPPED, so `docker exec`
+    # is impossible (`docker exec` needs a running process and exits non-zero on a
+    # stopped container — proven by the real fixture). `docker cp` reads the
+    # container filesystem through the daemon and DOES work while stopped, so each
+    # shard is probed by DETERMINISTIC name derived from the producer's own naming:
+    # <phase>.trace-<4-digit index>.jsonl.gz (compressed raw) then .jsonl (plain).
+    # The probe window is bounded; an absent shard is recorded, never guessed.
+    probes=0
+    for phase in LEASE_TRACE_PHASES:
+        for index in range(LEASE_TRACE_MAX_SHARDS):
+            stem=phase+'.trace-'+str(index).zfill(4)
+            found=False
+            for suffix in LEASE_TRACE_SUFFIXES:
+                member=LEASE_TRACE_DIR+'/'+stem+'.'+suffix
+                probes+=1
+                payload=None
+                try:
+                    payload=(stage_decisive or stage)(
+                        'failed-evidence-lease-trace-'+stem.replace('.','-')+'-'+suffix.replace('.','-'),
+                        ['docker','cp',cid+':'+root+'/'+member,'-'],30)
+                except BaseException as error:
+                    # The overwhelmingly common case: this index/suffix does not
+                    # exist. Record only the FIRST miss per stem to stay compact.
+                    if not found:
+                        entry(member,'absent-or-unreadable',error=type(error).__name__)
+                    continue
+                try:
+                    data=_bounded_tar_member(payload,member,LEASE_TRACE_MEMBER_LIMIT)
+                except BaseException as error:
+                    entry(member,'refused-'+type(error).__name__,cap=LEASE_TRACE_MEMBER_LIMIT)
+                    found=True;break
+                local=target/Path(member).name
+                local.write_bytes(data)
+                entry(member,'retained',bytes=len(data),sha256=hashlib.sha256(data).hexdigest(),
+                      path=str(local))
+                found=True
+                break
+            if not found:
+                continue
+    retained_shards=[r for r in rows if r['status']=='retained'
+                     and r['member'].startswith(LEASE_TRACE_DIR+'/')]
+    (target/'manifest.json').write_text(json.dumps(
+        dict(schemaVersion=1,kind='failed-configure-evidence',model='bounded-tar-transport-v3',
+             sourceRoot=root,leaseTraceDir=LEASE_TRACE_DIR,
+             leaseTracePhases=list(LEASE_TRACE_PHASES),
+             leaseTraceSuffixes=list(LEASE_TRACE_SUFFIXES),
+             leaseTraceShardLimit=LEASE_TRACE_MAX_SHARDS,
+             leaseTraceProbeCount=probes,
+             retainedDecisiveShards=len(retained_shards),
+             memberLimit=CONFIGURE_EVIDENCE_MEMBER_LIMIT,
+             leaseTraceMemberLimit=LEASE_TRACE_MEMBER_LIMIT,
+             decisiveEvidenceRetained=bool(retained_shards),
+             members=rows),
+        sort_keys=True,indent=1)+'\n')
+    return rows
 def rooted_collection(record):
     """Fixed transport projection only; never copies live work or issues a cap."""
     prefix='readonly-executor/'

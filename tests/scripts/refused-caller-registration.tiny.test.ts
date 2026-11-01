@@ -10,7 +10,7 @@ import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as api} from '../../scripts/lib/
 import {CLI_SOURCE_VERSION_GROUPS as cli} from '../../scripts/lib/independent-admission/source-rules';
 import {selectGitHubSourceBindingGroup as select,sourceBindingKey,secondaryGitHubSourceBindingSelectors as secondary} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
-import {CURRENT_CANONICAL_SOURCE_ROWS} from './source-binding-group.fixture';
+import {CURRENT_CANONICAL_SOURCE_ROWS, CURRENT_SOURCE_GROUP_COUNTS, completeObserved} from './source-binding-group.fixture';
 
 /** This module's ONLY authority is the actual git data at the published 9d02
  * commit plus the files on disk now. The fixture was captured from those blobs. */
@@ -59,20 +59,20 @@ test('every ACTUAL 9d02 published prefix is byte-identical and only genuine tupl
  // current manifest/lock plus the four reviewed SDK build inputs, and the
  // candidate-producer-attempt SDK81 plus its new consumer/CI current tails.
  // Each is a real appended recipe, not a rewrite.
- expect(live.length-frozen.length).toBe({sdk:15,consumer:12,ci:24,linux:15,api:1}[name as 'sdk']??0);
+ expect(live.length-frozen.length).toBe(CURRENT_SOURCE_GROUP_COUNTS[name as keyof typeof CURRENT_SOURCE_GROUP_COUNTS]-publishedCounts[name]);
  }
 });
 
 test('the appended tuples are exactly two genuine slices each and the deltas are explainable',()=>{
  // +3 SDK tuples (Linux repeats them as a superset), +3 consumer, +6 CI, and the
  // ORM 0.3.26 joint tail appends exactly one API and one CLI tuple.
- expect(sdk.length).toBe(87);
- expect(linux.length).toBe(88);
- expect(consumer.length).toBe(99);
- expect(ci.length).toBe(196);
- expect(api.length).toBe(29);
+ expect(sdk.length).toBe(CURRENT_SOURCE_GROUP_COUNTS.sdk);
+ expect(linux.length).toBe(CURRENT_SOURCE_GROUP_COUNTS.linux);
+ expect(consumer.length).toBe(CURRENT_SOURCE_GROUP_COUNTS.consumer);
+ expect(ci.length).toBe(CURRENT_SOURCE_GROUP_COUNTS.ci);
+ expect(api.length).toBe(CURRENT_SOURCE_GROUP_COUNTS.api);
  // CLI gains the ORM 0.3.26 joint tuple on top of the published 11.
- expect(cli.length).toBe(12);
+ expect(cli.length).toBe(CURRENT_SOURCE_GROUP_COUNTS.cli);
  // Linux is the same SDK catalogue with exactly one leading Linux tuple.
  expect(linux.slice(1).map(digest)).toEqual(sdk.map(digest));
  // CI is the published CI slice plus one appended pair per new consumer recipe.
@@ -163,9 +163,12 @@ test('the canonical path/hash closure still holds and the frozen 9d02 snapshot i
  // The 19fe telemetry slice appended the f803 snapshot's ORM tail plus the frozen
  // 19fe canonical snapshot; all three are genuine registered source rows.
  expect(current.slice(487).map(row=>row.path).sort()).toEqual([
+  '.github/workflows/ci.yml',
   'patches/@undefineds.co%2Fdrizzle-solid@0.3.26.patch',
   'qlever/scripts/sdk-generated-producer-transport.py',
+  'qlever/scripts/sdk-owned-input-generation.py',
   'qlever/tests/run_sdk70_mremap_gate.py',
+  'qlever/tests/run_sdk_owned_input_generation_gate.py',
   'qlever/tests/test_qlever_archive_lifecycle.py',
   'qlever/tests/test_qlever_read_lease_diagnostic.py',
   'qlever/tests/test_sdk70_mremap_barrier_e2e.py',
@@ -173,6 +176,8 @@ test('the canonical path/hash closure still holds and the frozen 9d02 snapshot i
   'qlever/tests/test_sdk70_mremap_native.py',
   'qlever/tests/test_sdk70_mremap_observer.py',
   'qlever/tests/test_sdk70_mremap_predicate.py',
+  'qlever/tests/test_sdk90_metadata_open.py',
+  'qlever/tests/test_sdk_owned_input_generation.py',
   'scripts/lib/independent-admission/consumer-execution-0d-snapshot.json',
   'scripts/lib/independent-admission/consumer-execution-19fe-snapshot.json',
   'scripts/lib/independent-admission/consumer-execution-6b-snapshot.json',
@@ -180,7 +185,7 @@ test('the canonical path/hash closure still holds and the frozen 9d02 snapshot i
   'scripts/lib/independent-admission/consumer-execution-cbb-snapshot.json',
   'scripts/lib/independent-admission/consumer-execution-dca-snapshot.json',
   'scripts/lib/independent-admission/consumer-execution-f803e9c2-snapshot.json',
-  'tests/scripts/sdk70-remap-policy.test.ts']);
+  'tests/scripts/sdk70-remap-policy.test.ts']);;
  expect(current.slice(0,483).map(row=>digest(row))).not.toEqual([]);
  // the published 483 row paths are all retained exactly once
  const live=new Set(current.map(row=>row.path));
@@ -213,9 +218,12 @@ test('published consumer binding rows are unchanged and the two new rows are exa
  // appended, and the 19fe telemetry slice then appended its frozen canonical
  // snapshot. All three are genuine registered source rows.
  expect(current.slice(487).map(row=>row.path).sort()).toEqual([
+  '.github/workflows/ci.yml',
   'patches/@undefineds.co%2Fdrizzle-solid@0.3.26.patch',
   'qlever/scripts/sdk-generated-producer-transport.py',
+  'qlever/scripts/sdk-owned-input-generation.py',
   'qlever/tests/run_sdk70_mremap_gate.py',
+  'qlever/tests/run_sdk_owned_input_generation_gate.py',
   'qlever/tests/test_qlever_archive_lifecycle.py',
   'qlever/tests/test_qlever_read_lease_diagnostic.py',
   'qlever/tests/test_sdk70_mremap_barrier_e2e.py',
@@ -223,6 +231,8 @@ test('published consumer binding rows are unchanged and the two new rows are exa
   'qlever/tests/test_sdk70_mremap_native.py',
   'qlever/tests/test_sdk70_mremap_observer.py',
   'qlever/tests/test_sdk70_mremap_predicate.py',
+  'qlever/tests/test_sdk90_metadata_open.py',
+  'qlever/tests/test_sdk_owned_input_generation.py',
   'scripts/lib/independent-admission/consumer-execution-0d-snapshot.json',
   'scripts/lib/independent-admission/consumer-execution-19fe-snapshot.json',
   'scripts/lib/independent-admission/consumer-execution-6b-snapshot.json',
@@ -230,5 +240,20 @@ test('published consumer binding rows are unchanged and the two new rows are exa
   'scripts/lib/independent-admission/consumer-execution-cbb-snapshot.json',
   'scripts/lib/independent-admission/consumer-execution-dca-snapshot.json',
   'scripts/lib/independent-admission/consumer-execution-f803e9c2-snapshot.json',
-  'tests/scripts/sdk70-remap-policy.test.ts']);
+  'tests/scripts/sdk70-remap-policy.test.ts']);;
+});
+
+test('SDK90 CURRENT owned-input helper and changed core bytes bind exactly and tamper refuses',()=>{
+ const group=sdk.at(-1)!;
+ expect(sdk.length).toBe(CURRENT_SOURCE_GROUP_COUNTS.sdk);
+ const own=new Map(group.sourceBindings.map(row=>[row.path,row]));
+ for(const file of ['qlever/scripts/sdk-owned-input-generation.py','qlever/scripts/sdk-ptrace-execution.py','qlever/scripts/sdk-generation-multiprocess-bindings.py','qlever/scripts/sdk-tool-lifetime-leases.py','qlever/scripts/sdk-toolchain-materials.py','qlever/tests/test_sdk_owned_input_generation.py','qlever/tests/run_sdk_owned_input_generation_gate.py','.github/workflows/ci.yml']){
+  const row=own.get(file);expect(row).toBeDefined();expect(row!.sha256).toBe(sha(file));
+ }
+ const values=completeObserved(sdk as any,group as any);
+ expect(select(sdk as any,values)).toBe(group);
+ for(const file of ['qlever/scripts/sdk-ptrace-execution.py']){
+  const row=own.get(file)!;const missing=new Map(values);missing.delete(sourceBindingKey(row as any));expect(()=>select(sdk as any,missing)).toThrow();
+  const mixed=new Map(values);mixed.set(sourceBindingKey(row as any),'f'.repeat(64));expect(()=>select(sdk as any,mixed)).toThrow();
+ }
 });

@@ -9,7 +9,7 @@ import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as api} from '../../scripts/lib/
 import {CLI_SOURCE_VERSION_GROUPS as cli} from '../../scripts/lib/independent-admission/source-rules';
 import {selectGitHubSourceBindingGroup as select,sourceBindingKey as key} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
-import {CURRENT_CANONICAL_SOURCE_ROWS} from './source-binding-group.fixture';
+import {CURRENT_CANONICAL_SOURCE_ROWS, CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
 
 /** Authority is the actual working tree plus the frozen f803 published fixture.
  * No serialized approval boolean is consulted anywhere in this file. */
@@ -33,9 +33,9 @@ test('every published f803 prefix stays byte-identical; only the ORM 0.3.26 tail
     // sdk +1 and linux +1 are the ORM 0.3.26 joint SDK tuple (the f803 prefix
     // above stays byte-identical); api +1, cli +1, consumer +1, CI +2 append.
     // SDK81 + the SDK82 failed-transport consumer/CI tails are appended after this slice.
-    expect(live.length - frozen.length).toBe({sdk: 13, consumer: 10, ci: 20, linux: 13, api: 1, cli: 1}[name] ?? 0);
+    expect(live.length - frozen.length).toBe(CURRENT_SOURCE_GROUP_COUNTS[name as keyof typeof CURRENT_SOURCE_GROUP_COUNTS] - f803.published[name]);
   }
-  expect([sdk.length, linux.length, consumer.length, ci.length, api.length, cli.length]).toEqual([87, 88, 99, 196, 29, 12]);
+  expect([sdk.length, linux.length, consumer.length, ci.length, api.length, cli.length]).toEqual([CURRENT_SOURCE_GROUP_COUNTS.sdk, CURRENT_SOURCE_GROUP_COUNTS.linux, CURRENT_SOURCE_GROUP_COUNTS.consumer, CURRENT_SOURCE_GROUP_COUNTS.ci, CURRENT_SOURCE_GROUP_COUNTS.api, CURRENT_SOURCE_GROUP_COUNTS.cli]);
 });
 
 test('the frozen f803 snapshot is the published canonical bytes and the moving canonical only appends', () => {
@@ -65,7 +65,12 @@ test('the frozen f803 snapshot is the published canonical bytes and the moving c
     'scripts/lib/independent-admission/consumer-execution-cbb-snapshot.json',
     'qlever/tests/test_qlever_archive_lifecycle.py',
     'scripts/lib/independent-admission/consumer-execution-dca-snapshot.json',
-    'qlever/scripts/sdk-generated-producer-transport.py']);
+    'qlever/scripts/sdk-generated-producer-transport.py',
+    'qlever/scripts/sdk-owned-input-generation.py',
+    'qlever/tests/test_sdk_owned_input_generation.py',
+    'qlever/tests/run_sdk_owned_input_generation_gate.py',
+    '.github/workflows/ci.yml',
+    'qlever/tests/test_sdk90_metadata_open.py']);
   expect(new Set(current.map(row => row.path)).size).toBe(current.length);
 });
 

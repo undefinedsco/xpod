@@ -2291,13 +2291,23 @@ const SDK87_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  // applied to selectors, secondary selectors, staged selectors AND source bindings
  // alike — otherwise the current tuple would keep naming the previous 9bc bytes.
  'scripts/css-module-producer.py':"1ba30f5eaba9070f55135936649c43b109bf7a4a83db43b512edaa6d31abc5cc",
- 'qlever/scripts/build-qlever-runtime-sdk.sh':"330d9f470dd51e72625c78d38eee0e06c0b8475bac3582c8dfd44280633f55ad",
- 'qlever/scripts/sdk-ptrace-execution.py':"e12068a7d0b01e69a101cc05d3c1118173c5682a4684834a86d1083117411f2b",
+ 'qlever/scripts/build-qlever-runtime-sdk.sh':"834204862a202c0647d10676c4235351b7df091624ec27d7a6912de116cb4925",
+ 'qlever/scripts/qlever_compiler_profile.py':"7b9c05563e21ff05e33e3ac61641ad418fe48b5cc48e3399ca02c14beb6d248b",
+ 'qlever/scripts/sdk-ptrace-execution.py':"41a9c03801f40d5cfa78efe5fccd6cb2c65418e1f6880bbde5f2f3f6cc35f8ed",
  // Filtered-lease lookup: the token-filtered check resolves its single row by the
  // (st_dev, st_ino) key instead of scanning every held row. Selection semantics,
  // the live F_GETLEASE+fstat sweep and every rejection string are unchanged, so
  // only the CURRENT (SDK87) binding moves; published tuples keep their bytes.
- 'qlever/scripts/sdk-tool-lifetime-leases.py':"85f5101f1d27644c851145818f791ca52d87dc6087b4f7df8f0d4bbf579d9b0c",
+ // The failure DIAGNOSTIC now retains the abnormal row's six-field before/after
+ // tuple and a path class; the owned-metadata generation transition now
+ // advances a held lease across one witnessed rename/unlink with full
+ // six-field before/current/postimage, the physical lease stays held and
+ // replay bridges acquisition->closing through the validated chain.
+ 'qlever/scripts/sdk-tool-lifetime-leases.py':"7a2fdf743ccf9a54fca10f578c6ea3554c19e547fca018ba472d0b1fd80d6836",
+ // The executor additionally retains a FIXED bounded set of container-side
+ // configure evidence on the failure path (exact members, size cap, no glob and
+ // no symlink follow). Admission ordering and cleanup semantics are unchanged.
+ 'qlever/scripts/sdk-readonly-executor.py':"7295ad449a9b6557d2e7baf4dbc73e94595902fe9431231d56886941a0712195",
  // Immutable registration-input plan: explicit per-instance capsule, no module
  // global. Current SDK87 binding only; published tuples keep their bytes.
  'qlever/scripts/native/lease_sweep_ext.c':"e3ca18a6d7674b60a65c483d5663308619543d09baf80d344009925f32d5a74b",
@@ -2308,16 +2318,16 @@ const SDK87_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  // PR124 strict absent-link contract: the gate now settles only matched failed
  // exits and keeps unobserved operands fatal, and the fixed probe uses ONE build
  // root authority. Both bodies move in the CURRENT unpublished slice only.
- 'qlever/scripts/sdk-generation-multiprocess-bindings.py':"e11827aa845079fc2c2f8d014085bebaeb33c49fa44ad210b6707e7c4128e90f",
- 'qlever/scripts/sdk-kernel-policy-probe.py':"e9016aed98d42f205bd3b11eedb55f956a6a855c775ccae0de2e19110b4d144c", // The readonly executor lane now DERIVES its build parallelism from its own
+ 'qlever/scripts/sdk-generation-multiprocess-bindings.py':"58d581b548de1c71a105284c0cb3b9d05017b1535edcdce1ecbdbfc10196ceec",
+ 'qlever/scripts/sdk-kernel-policy-probe.py':"53a7b0f14855a2380ac7718f8219669432e86354131b0f4ad08a0787275e7052", // The readonly executor lane now DERIVES its build parallelism from its own
  // 4-CPU allocation instead of hardcoding 2, so its current bytes move too.
  // Current SDK87 binding only; published tuples keep their bytes.
  'qlever/scripts/sdk-readonly-executor-bindings.py':"107e2dea586056c98455e89471c0d303b1c36cb11018ee5a6d67d97caefd0b1e",
  // The readonly normal job's pin list had to follow the executor lane's new
  // bytes, so this CURRENT workflow file moves too. Published tuples keep theirs.
- '.github/workflows/qlever-readonly-normal-job.yml':"3a6d5ba02bdbe13bba951c78dc6ca24755dbc5da461f26ce1ebb0a0192fb6c0d",
+ '.github/workflows/qlever-readonly-normal-job.yml':"f4d5a55ac21abb0f2531dc85cb6d0955b22d63cfeaf6ffc710dce04a8800cff2",
  'qlever/scripts/native/lease_sweep_binding.py':"7386166a878d2a1fbd5f3145759888baa072171ab541b45cd5fbc5bcea6784f8",
- 'tests/scripts/candidate-producer-attempt-binding.test.ts':"1d73b68ac5bb7f19be8bdf2af6aedf952979e91e825f276720cdde65da96d4cf",
+ 'tests/scripts/candidate-producer-attempt-binding.test.ts':"8973eb25c1e6d669e2fc2d7c05ffd80d0f040c066d32d83f0a7f24e5b375daba",
  // The scoped precompiled-header work (S2, ANTLR and the two Abseil units) moves
  // the QLever lock, whose patchSeriesSha256 is the digest of a series that
  // contains BOTH appended patch paths (qlever-s2-scoped-precompiled-headers.patch
@@ -2328,7 +2338,18 @@ const SDK87_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  'qlever/patches/series':"17d10ccafb23dcdd6564cd7691d74b7b3dbd811ce4615b0eb295a63965f48650",
  'qlever/scripts/sdk-generated-source-originals.py':"5e9ec62fe5dd341ce402e215c2ec02dfe75de365766493c80bc2eb21c3c01564",
 
-"qlever/scripts/sdk-generated-producer-transport.py":"95738800c54230715a065e3dcaaab1ba5f60f70d4ca2ca264144ee580a360a37"
+"qlever/scripts/sdk-generated-producer-transport.py":"95738800c54230715a065e3dcaaab1ba5f60f70d4ca2ca264144ee580a360a37",
+ // owned-fix registration for the CURRENT SDK87 slice
+ 'qlever/scripts/sdk-readonly-result-context.py':"1fe5650b94fe13d62aea8ca55ca0a73740057fb3427f770e5768f6a276d096bb",
+ // owned-fix registration for the CURRENT SDK87 slice
+ 'qlever/scripts/sdk-readonly-normal-route.py':"c620a49809a022126007e6d4bd7470d9d86e88925f39b8a849304832300026d7",
+ // owned-fix registration for the CURRENT SDK87 slice
+ 'qlever/scripts/sdk-generated-vma-originals.py':"602f86ce683409ff83e6c7014c9bed82bb2fe687fdf2d42be36dc1891b4dc5d8",
+ // owned-fix registration for the CURRENT SDK87 slice
+ 'qlever/tests/test_sdk_generated_vma_files.py':"df07665961e97568ea28aa06310aa3e96f2dbabf54e0feb5fdb8969d6bc68051"
+,
+ // Exact same-emission callback audit, CURRENT SDK87 only.
+ "qlever/scripts/sdk-coordinated-wait.py":"8aba97d796c2579d7d9510272decfee77b537ff12220438f04634ff1428598e1"
 });
 const rebindSdk87Rows=(rows:readonly GitHubSourceBinding[]|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:SDK87_SOURCE_HASHES[row.path]??row.sha256})));
 const SDK87_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK86_GROUP,
@@ -2347,8 +2368,76 @@ const SDK87_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK86_GROUP,
  Object.freeze({path:'qlever/patches/qlever-antlr-scoped-pch-and-server-pch-reuse.patch',
   sha256:'8e2a1234701985ae42ae3cc6d28e55b33c62a8cf36ad690de3a418e4c52a72d8'}),
 Object.freeze({path:"qlever/scripts/sdk-generated-producer-transport.py",sha256:SDK87_SOURCE_HASHES["qlever/scripts/sdk-generated-producer-transport.py"]})
-])});
-export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP,SDK78_GROUP,SDK79_GROUP,SDK80_GROUP,SDK81_GROUP,SDK82_GROUP,SDK83_GROUP,SDK84_GROUP,SDK85_GROUP,SDK86_GROUP,SDK87_GROUP]);
+]),
+ // CURRENT outer executor: the collector role is the SAME file as the CURRENT
+ // sourceBindings collector, so the group must name the current collector bytes
+ // (inspectReviewedSdkOuterExecutorOrigin rejects a group whose fixed collector
+ // differs from its own source binding). A NEW object is built rather than
+ // mutating the inherited one, so every field except `collector` is preserved
+ // and SDK1–86 keep their own historical outerExecutor untouched.
+ outerExecutor:Object.freeze({...SDK86_GROUP.outerExecutor!,
+  collector:Object.freeze({path:'qlever/scripts/sdk-readonly-executor.py',
+   sha256:SDK87_SOURCE_HASHES['qlever/scripts/sdk-readonly-executor.py']})})});
+/** SDK88 phase-derived budget policy (APPEND-ONLY, UNPUBLISHED).
+ *
+ * The historical SDK1–87 tuples retain their exact source bytes, including the
+ * legacy 1 s VMA window and 1800 s configure cap. This slice binds only the
+ * explicit current policy implementation; no SDK-id branch selects the policy.
+ */
+const SDK88_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
+ '.github/workflows/candidate.yml':"4411f065fba095c9f3bb6c3962a668cb26c869b80ea702860d50fb89397077bb",
+ 'qlever/scripts/sdk-execution-budget.py':"a66aca9e68010a80cac474cb004c58c2244efe08f772c1215c74103dae68de80",
+ '.github/workflows/qlever-readonly-normal-job.yml':"69c59abc132646596c6a370d642fc9a11a27a0e4d5bae3bc728c103483c8f39d",
+ 'qlever/scripts/sdk-inner-materials.py':"3f9c3133523f8de6e5faec7946a5145ce6a09c7a299ca6f9e738d1f9c7a403f0",
+ 'qlever/scripts/sdk-toolchain-materials.py':"ab1f10f7641c638c15f43e32db2eb7542ae5ee2fbec397bc83e35dd6a79596cc",
+ 'qlever/scripts/sdk-ptrace-execution.py':"c12b639308e9221825d87b9c4e2e48ed88265cd67555231694a618a98d4025bc",
+ 'qlever/scripts/sdk-generated-vma-originals.py':"dc7aa03908fdd1eae3bc4d474fc4045b1b09a49568c446709fb2b78a2c326c1f",
+ 'qlever/scripts/sdk-coordinated-wait.py':"9870836b5b0cb69d55495ec4923c6800046aa52cdd1741219308df4149c1281a",
+ 'tests/scripts/candidate-producer-attempt-binding.test.ts':"3e0f2ca3fdbfba54f3af985450413e45087e32cf2193470a9ba2568590612ca6",
+ 'scripts/lib/independent-admission/qlever-sdk-fetchcontent.ts':"d11535d091e18bea2b2578196f625937f5f7fcacdd6f033206c6fed5775cd071",
+});
+const rebindSdk88Rows=(rows:readonly GitHubSourceBinding[]|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:SDK88_SOURCE_HASHES[row.path]??row.sha256})));
+const SDK88_CANDIDATE_WORKFLOW='.github/workflows/candidate.yml';
+const SDK88_CANDIDATE_WORKFLOW_SHA='4411f065fba095c9f3bb6c3962a668cb26c869b80ea702860d50fb89397077bb';
+const SDK88_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK87_GROUP,
+ selectors:rebindSdk88Rows(SDK87_GROUP.selectors),
+ secondarySelectors:rebindSdk88Rows(SDK87_GROUP.secondarySelectors),
+ secondarySelectorStages:Object.freeze((SDK87_GROUP.secondarySelectorStages??[]).map(stage=>rebindSdk88Rows(stage))),
+ sourceBindings:rebindSdk88Rows(SDK87_GROUP.sourceBindings),
+ candidateServiceRelationship:Object.freeze({...SDK87_GROUP.candidateServiceRelationship!,workflowSha256:SDK88_CANDIDATE_WORKFLOW_SHA}),
+ outerExecutor:Object.freeze({...SDK87_GROUP.outerExecutor!,
+  additionalWorkflows:Object.freeze((SDK87_GROUP.outerExecutor!.additionalWorkflows??[]).map(row=>row.path===SDK88_CANDIDATE_WORKFLOW?Object.freeze({...row,sha256:SDK88_CANDIDATE_WORKFLOW_SHA}):row))})});
+/** SDK89 phase-parent v9 rename/metadata replay repair (APPEND-ONLY).
+ * Only the runtime files moved by the repair are rebound; SDK88 and every
+ * earlier whole group remain immutable historical recipes. */
+const SDK89_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
+ 'qlever/scripts/sdk-ptrace-execution.py':'26f8f3194e9e746512b54d7d4d200ce0d9b96809ffa2140aadd657dc3e9c03b6',
+ 'qlever/scripts/sdk-generated-vma-originals.py':'340b66af0944e70e99f26453e2d5f94d8dfa5d3a41e93f2a9e4448bce70b2114',
+ 'qlever/scripts/sdk-generation-multiprocess-bindings.py':'1c5f288800cc7ab37b7e01e7b5151ba64941440e68033f1f95b37b92040d807d',
+ 'qlever/tests/test_sdk70_mremap_e2e.py':'25e0030d79387d11720e4637b01cf61b77ff7088a37b14adb4f427a91c45547d',
+ 'tests/scripts/candidate-producer-attempt-binding.test.ts':'4841d3114ae5b601850d46f3b19ff3a8711084abad6ceb4354f3edc3c39da07e',
+ 'scripts/lib/independent-admission/qlever-sdk-fetchcontent.ts':'81d3b12420c71438cff4093c6be319d8a983e498c0d82bff13195a7514d2deef',
+});
+const rebindSdk89Rows=(rows:readonly GitHubSourceBinding[]|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:SDK89_SOURCE_HASHES[row.path]??row.sha256})));
+const SDK89_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK88_GROUP,
+ selectors:rebindSdk89Rows(SDK88_GROUP.selectors),
+ secondarySelectors:rebindSdk89Rows(SDK88_GROUP.secondarySelectors),
+ secondarySelectorStages:Object.freeze((SDK88_GROUP.secondarySelectorStages??[]).map(stage=>rebindSdk89Rows(stage))),
+ sourceBindings:rebindSdk89Rows(SDK88_GROUP.sourceBindings)});
+
+/** SDK90 appends the owned generated-input helper, its explicit native gate and
+ * the changed core/current sources. Every SDK89 and earlier row stays untouched. */
+const SDK90_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({'qlever/scripts/sdk-generation-multiprocess-bindings.py':'c57050171eabc0f570689c8a1e668e497a7b9e892afdd48b855eef98c8cbe370','qlever/scripts/sdk-ptrace-execution.py':'440e52d002a28ea187d76b99300b6724639a6c4c67aaa9ed1717b7d064ee3210','qlever/scripts/sdk-tool-lifetime-leases.py':'487f198140df5e09eec58d58c5861b332e82bb14725881e739b95caf8c5e9c65','qlever/scripts/sdk-toolchain-materials.py':'bd603c9ef7e81f28c840000f4812706dc1f357a7bdf99d35dd2eebd707d482c0','qlever/tests/test_sdk70_mremap_e2e.py':'1222e93234aa3b6df372ce09c26f8fb78a458d17e8fe8e41a0849190f5d52f7c','qlever/scripts/sdk-local-daemon-originals.py':'773a7d367446d8b1262780e9fecd07ec90f394ec80a63366a7ce7f39618e5694','.github/workflows/qlever-readonly-normal-job.yml':'fb4dea5b842981a3fd69224f6d99dca0f9c64bebf6f8986777c192235d3c4c60','tests/scripts/candidate-producer-attempt-binding.test.ts':'cfe0179a46d6d46b494fcf760e35406420f7a5db1b34373f5889dd812450c1e0','scripts/lib/independent-admission/qlever-sdk-readonly-executor.ts':'9cdcb47912c1f6a742bbdd90c1232cd11d94f05e5862041d09ffaaf7ee54361d'});
+const SDK90_NEW_HASHES:Readonly<Record<string,string>>=Object.freeze({'qlever/scripts/sdk-owned-input-generation.py':'ca765b358342593be9e501a019b49513a731af990291de57f5b5adeb7037f2b8','qlever/tests/test_sdk_owned_input_generation.py':'aed04979fbbb6c3eacc4b017197a993a3445bacab209a988c8dd679362351e79','qlever/tests/run_sdk_owned_input_generation_gate.py':'f35023e7a3594eb949d2e721fba6f2cdad0699428ab25103a13a4ee6c4950a9f','.github/workflows/ci.yml':'00a76942f09e85bf3c6dbc5be6ab781bb06d85af7b9c7d2edf9579442276ca6d','qlever/tests/test_sdk90_metadata_open.py':'0f9f209cd79d6e512c48bf04af1259c47fa06b1bd3891728c554bfc148cb7a77'});
+const SDK90_NEW_ROWS=Object.freeze(Object.entries(SDK90_NEW_HASHES).map(([path,sha256])=>Object.freeze({path,sha256})));
+const rebindSdk90Rows=(rows:readonly GitHubSourceBinding[]|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:SDK90_SOURCE_HASHES[row.path]??row.sha256})));
+const SDK90_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK89_GROUP,
+ selectors:rebindSdk90Rows(SDK89_GROUP.selectors),
+ secondarySelectors:rebindSdk90Rows(SDK89_GROUP.secondarySelectors),
+ secondarySelectorStages:Object.freeze((SDK89_GROUP.secondarySelectorStages??[]).map(stage=>rebindSdk90Rows(stage))),
+ sourceBindings:Object.freeze([...rebindSdk90Rows(SDK89_GROUP.sourceBindings),...SDK90_NEW_ROWS])});
+
+export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP,SDK78_GROUP,SDK79_GROUP,SDK80_GROUP,SDK81_GROUP,SDK82_GROUP,SDK83_GROUP,SDK84_GROUP,SDK85_GROUP,SDK86_GROUP,SDK87_GROUP,SDK88_GROUP,SDK89_GROUP,SDK90_GROUP]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path))},
  ...QLEVER_SDK_EXECUTION_GROUPS,

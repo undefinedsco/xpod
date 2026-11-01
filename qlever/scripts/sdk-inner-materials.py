@@ -37,7 +37,7 @@ def check_budget():
 def initialize_budget(reserve=600):
     global EXECUTION_BUDGET,EXECUTION_RESERVE
     EXECUTION_RESERVE=reserve
-    EXECUTION_BUDGET=budget_module.ExecutionBudget(os.environ['XPOD_QLEVER_SDK_DEADLINE_UNIX'])
+    EXECUTION_BUDGET=budget_module.ExecutionBudget(os.environ['XPOD_QLEVER_SDK_DEADLINE_UNIX'],policy=budget_module.PHASE_PARENT_BUDGET_POLICY)
     return EXECUTION_BUDGET
 
 
@@ -278,13 +278,13 @@ def build_materials(component,source,build,out,jobs):
         stages.append(row);return row
     def archive(files,destination,before,compile_outputs=(),metadata_originals=(),observed_after=None):
         return archive_inputs(files,destination,before,compile_outputs,metadata_originals,remaining_bytes=lambda:toolchain.remaining_source_bytes(out),observed_after=observed_after)
-    execution=toolchain.Session(out,source,build,budget,check_budget,toolchain.remaining_source_bytes(out),prepared_dependencies=prepared['dependencyCollection'])
+    execution=toolchain.Session(out,source,build,budget,check_budget,toolchain.remaining_source_bytes(out),prepared_dependencies=prepared['dependencyCollection'],phase_budget_policy_version=budget.policy.version)
     try:
         private_key='XPOD_QLEVER_UPSTREAM_MATERIALS_DIR'
         if private_key in os.environ:raise ValueError('Upstream capture directory is owned by the module producer')
         os.environ[private_key]=str(out/'upstream-source')
         try:
-            stages.append(execution.phase('configure',['bash',str(component/'scripts/build-qlever-runtime-sdk.sh'),'configure-prepared'],[commands.ref(out/'source-prepared.json',out)],1800,4200))
+            stages.append(execution.phase('configure',['bash',str(component/'scripts/build-qlever-runtime-sdk.sh'),'configure-prepared'],[commands.ref(out/'source-prepared.json',out)],None,4200))
         finally:
             del os.environ[private_key]
         generation_before=generation.snapshot(out,build,'before',archive,file_identity,check_budget)
