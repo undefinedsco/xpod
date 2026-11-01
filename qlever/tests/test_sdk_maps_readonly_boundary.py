@@ -1,7 +1,8 @@
 """Read-only maps validation boundary: real FDs, REAL emit, real canonical entity.
 
-No mocked emit: the production emit path runs, including its two full checks and
-canonical capture-entity registration. Real bytes, digests and reuse pool.
+No mocked emit: the production emit path runs its cheap sticky guard and real
+canonical capture-entity registration. Real maps source/canonical rereads and
+the one complete closing lease sweep remain; pure internal records do not sweep.
 """
 import hashlib
 import importlib.util
@@ -35,7 +36,9 @@ core = load('maps_boundary_core', 'sdk-ptrace-execution.py')
 
 
 class Counting:
-    def __init__(self): self.calls = 0; self.fail_at = None
+    def __init__(self): self.calls = 0; self.guards = 0; self.fail_at = None
+    def guard(self):
+        self.guards += 1
     def check(self):
         self.calls += 1
         if self.fail_at is not None and self.calls >= self.fail_at:
@@ -133,12 +136,9 @@ class Gain(Base):
         self.assertIn(row['original']['path'], self.observer.capture_entities,
                       'canonical capture entity not registered by real emit')
         self.assertIsNone(self.frame(), 'frame escaped')
-        self.assertTrue(self.sweeps_at_emit and self.sweeps_at_emit[0] >= 2,
-                        'emit did not pay its own full sweeps: %r' % self.sweeps_at_emit)
-        # Bounded work for ONE complete maps observation with real emit. The
-        # pre-boundary code issued 5; a bounded body must not exceed 4.
-        self.assertLessEqual(self.leases.calls, 4,
-                             'full lease sweeps for one maps body: %d' % self.leases.calls)
+        self.assertEqual(self.sweeps_at_emit, [0],
+                        'pure internal emit must not pay a full sweep: %r' % self.sweeps_at_emit)
+        self.assertEqual(self.leases.calls, 1, 'the one complete closing sweep remains')
 
     def test_second_observation_reuses_real_canonical_entity(self):
         first, _ = self.run_maps()
@@ -150,14 +150,13 @@ class Gain(Base):
         self.assertEqual(sum(self.entity_reads), len(MAPS_BODY), 'canonical entity re-read skipped')
         self.assertEqual(sum(self.source_reads), len(MAPS_BODY), 'fresh source read skipped on reuse')
         self.assertIsNone(self.frame())
-        self.assertLessEqual(self.leases.calls - before, 4,
-                             'full lease sweeps for a reused maps body: %d'
-                             % (self.leases.calls - before))
+        self.assertEqual(self.leases.calls - before, 1,
+                         'one complete closing sweep for a reused maps body')
 
 
 class Refusals(Base):
     def test_final_lease_revocation_emits_no_row(self):
-        self.leases.fail_at = 2
+        self.leases.fail_at = 1
         with self.assertRaises(AssertionError):
             self.run_maps()
         self.assertIsNone(self.frame())
@@ -210,36 +209,40 @@ class Refusals(Base):
 
 
 class ScopeSafety(Base):
-    def test_foreign_check_always_pays_sweep(self):
-        before = self.leases.calls
+    def test_foreign_check_runs_cheap_guard(self):
+        before_calls = self.leases.calls; before_guards = self.leases.guards
         self.observer.check()
-        self.assertEqual(self.leases.calls - before, 1, 'foreign check skipped sweep')
+        self.assertEqual(self.leases.calls, before_calls, 'cheap foreign check must not perform a full sweep')
+        self.assertEqual(self.leases.guards - before_guards, 1, 'cheap guard did not run')
 
     def test_foreign_thread_cannot_adopt_active_frame(self):
         self.observer.check()
         self.observer.open_owned_maps_frame()
         seen = {}
         def worker():
-            seen['before'] = self.leases.calls
+            seen['before'] = self.leases.calls; seen['guards_before'] = self.leases.guards
             self.observer.check()
-            seen['after'] = self.leases.calls
+            seen['after'] = self.leases.calls; seen['guards_after'] = self.leases.guards
             try:
                 self.observer.open_owned_maps_frame(); seen['entered'] = True
             except AssertionError:
                 seen['entered'] = False
         thread = threading.Thread(target=worker); thread.start(); thread.join()
-        self.assertEqual(seen['after'] - seen['before'], 1,
-                         'foreign thread did not pay a full sweep')
+        self.assertEqual(seen['after'], seen['before'],
+                         'foreign thread cheap check must not perform a full sweep')
+        self.assertEqual(seen['guards_after'] - seen['guards_before'], 1,
+                         'foreign thread did not run the cheap guard')
         self.assertFalse(seen['entered'], 'foreign thread adopted the frame')
         self.assertIsNotNone(self.frame(), 'owner frame was clobbered')
         self.observer.close_owned_maps_frame()
         self.assertIsNone(self.frame())
 
-    def test_post_scope_checks_full_sweeps(self):
+    def test_post_scope_checks_run_cheap_guards(self):
         self.run_maps()
-        before = self.leases.calls
+        before_calls = self.leases.calls; before_guards = self.leases.guards
         self.observer.check(); self.observer.check()
-        self.assertEqual(self.leases.calls - before, 2)
+        self.assertEqual(self.leases.calls, before_calls, 'post-scope cheap checks must not sweep')
+        self.assertEqual(self.leases.guards - before_guards, 2, 'both cheap guards must run')
 
     def test_frame_not_reentrant_and_phase_bound(self):
         self.observer.check()
@@ -247,9 +250,10 @@ class ScopeSafety(Base):
         with self.assertRaises(AssertionError):
             self.observer.open_owned_maps_frame()
         self.observer.current_phase = 'compile'
-        before = self.leases.calls
+        before_calls = self.leases.calls; before_guards = self.leases.guards
         self.observer.check()
-        self.assertEqual(self.leases.calls - before, 1, 'phase change did not restore sweep')
+        self.assertEqual(self.leases.calls, before_calls, 'phase change keeps the cheap guard, not a full sweep')
+        self.assertEqual(self.leases.guards - before_guards, 1, 'phase change did not run the cheap guard')
         self.observer.owned_maps_frame = None
 
 

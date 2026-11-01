@@ -159,16 +159,19 @@ test('the canonical path/hash closure still holds and the frozen 9d02 snapshot i
   'scripts/lib/independent-admission/consumer-execution-9d02b2d-snapshot.json',
   'qlever/tests/test_sdk_lease_input_plan.py',
   'scripts/lib/independent-admission/consumer-execution-2406eac-snapshot.json']);
- // The ORM 0.3.26 joint append only ADDS after the published 2406 tail.
- // The 19fe telemetry slice appended the f803 snapshot's ORM tail plus the frozen
- // 19fe canonical snapshot; all three are genuine registered source rows.
+ // Current append-only rows after the published 2406 tail include the ORM
+ // 0.3.26/f803/19fe slices, SDK70/SDK90 sources, and five SDK helper/PCH fixtures.
  expect(current.slice(487).map(row=>row.path).sort()).toEqual([
   '.github/workflows/ci.yml',
   'patches/@undefineds.co%2Fdrizzle-solid@0.3.26.patch',
   'qlever/scripts/sdk-generated-producer-transport.py',
   'qlever/scripts/sdk-owned-input-generation.py',
+  'qlever/tests/fixtures/pch_cmake/CMakeLists.txt',
+  'qlever/tests/fixtures/pch_cmake/main.cpp',
+  'qlever/tests/fixtures/pch_cmake/pch.hpp',
   'qlever/tests/run_sdk70_mremap_gate.py',
   'qlever/tests/run_sdk_owned_input_generation_gate.py',
+  'qlever/tests/sdk_test_paths.py',
   'qlever/tests/test_qlever_archive_lifecycle.py',
   'qlever/tests/test_qlever_read_lease_diagnostic.py',
   'qlever/tests/test_sdk70_mremap_barrier_e2e.py',
@@ -178,6 +181,7 @@ test('the canonical path/hash closure still holds and the frozen 9d02 snapshot i
   'qlever/tests/test_sdk70_mremap_predicate.py',
   'qlever/tests/test_sdk90_metadata_open.py',
   'qlever/tests/test_sdk_owned_input_generation.py',
+  'qlever/tests/test_sdk_pch_generated_private_mmap.py',
   'scripts/lib/independent-admission/consumer-execution-0d-snapshot.json',
   'scripts/lib/independent-admission/consumer-execution-19fe-snapshot.json',
   'scripts/lib/independent-admission/consumer-execution-6b-snapshot.json',
@@ -222,8 +226,12 @@ test('published consumer binding rows are unchanged and the two new rows are exa
   'patches/@undefineds.co%2Fdrizzle-solid@0.3.26.patch',
   'qlever/scripts/sdk-generated-producer-transport.py',
   'qlever/scripts/sdk-owned-input-generation.py',
+  'qlever/tests/fixtures/pch_cmake/CMakeLists.txt',
+  'qlever/tests/fixtures/pch_cmake/main.cpp',
+  'qlever/tests/fixtures/pch_cmake/pch.hpp',
   'qlever/tests/run_sdk70_mremap_gate.py',
   'qlever/tests/run_sdk_owned_input_generation_gate.py',
+  'qlever/tests/sdk_test_paths.py',
   'qlever/tests/test_qlever_archive_lifecycle.py',
   'qlever/tests/test_qlever_read_lease_diagnostic.py',
   'qlever/tests/test_sdk70_mremap_barrier_e2e.py',
@@ -233,6 +241,7 @@ test('published consumer binding rows are unchanged and the two new rows are exa
   'qlever/tests/test_sdk70_mremap_predicate.py',
   'qlever/tests/test_sdk90_metadata_open.py',
   'qlever/tests/test_sdk_owned_input_generation.py',
+  'qlever/tests/test_sdk_pch_generated_private_mmap.py',
   'scripts/lib/independent-admission/consumer-execution-0d-snapshot.json',
   'scripts/lib/independent-admission/consumer-execution-19fe-snapshot.json',
   'scripts/lib/independent-admission/consumer-execution-6b-snapshot.json',

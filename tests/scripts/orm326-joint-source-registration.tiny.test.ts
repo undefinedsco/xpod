@@ -47,8 +47,8 @@ test('the frozen f803 snapshot is the published canonical bytes and the moving c
   // The moving canonical retains every f803 row at its published position.
   expect(current.slice(0, frozenRows.length).map(row => row.path)).toEqual(frozenRows.map(row => row.path));
   expect(current.length).toBe(CURRENT_CANONICAL_SOURCE_ROWS);
-  // Two genuine appends follow the frozen f803 rows: the ORM 0.3.26 patch +
-  // f803 snapshot pair, then the SDK19 telemetry canonical snapshot.
+  // The current tail appends the ORM 0.3.26/f803/19fe rows, the SDK70 and SDK90
+  // slices, then the five genuine SDK test-helper/PCH fixture rows.
   expect(current.slice(frozenRows.length).map(row => row.path)).toEqual([PATCH_26, SNAPSHOT,
     'scripts/lib/independent-admission/consumer-execution-19fe-snapshot.json',
     'qlever/tests/test_sdk70_mremap_predicate.py',
@@ -70,7 +70,12 @@ test('the frozen f803 snapshot is the published canonical bytes and the moving c
     'qlever/tests/test_sdk_owned_input_generation.py',
     'qlever/tests/run_sdk_owned_input_generation_gate.py',
     '.github/workflows/ci.yml',
-    'qlever/tests/test_sdk90_metadata_open.py']);
+    'qlever/tests/test_sdk90_metadata_open.py',
+    'qlever/tests/sdk_test_paths.py',
+    'qlever/tests/test_sdk_pch_generated_private_mmap.py',
+    'qlever/tests/fixtures/pch_cmake/CMakeLists.txt',
+    'qlever/tests/fixtures/pch_cmake/pch.hpp',
+    'qlever/tests/fixtures/pch_cmake/main.cpp']);
   expect(new Set(current.map(row => row.path)).size).toBe(current.length);
 });
 

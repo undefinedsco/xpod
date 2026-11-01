@@ -1559,6 +1559,11 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
       // APPEND-ONLY: the same step also runs the exact six-case metadata-open
       // script through its own strict zero-skip __main__ guard.
       {workflowSha256:'00a76942f09e85bf3c6dbc5be6ab781bb06d85af7b9c7d2edf9579442276ca6d',
+      jobName:()=>callerNames[0]!},
+      // APPEND-ONLY: current ci.yml adds the reviewed scoped-PCH/compiler and
+      // privileged observer gates and the complete Python discovery path. Same
+      // caller jobs and current source group; all earlier versions stay exact.
+      {workflowSha256:'6635ff5b45c6a63f731ab84644b9356080d1d602050f989af5b0d127666b6996',
       jobName:()=>callerNames[0]!,
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,
