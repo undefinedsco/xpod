@@ -30,9 +30,9 @@ const READONLY_DCA_PUBLISHED_SIX = Object.freeze([
 ]);
 
 for (const [file, historicalName, currentName, historicalCount, currentCount] of [
-  ['qlever-sdk-generation.ts', 'REVIEWED_CONTROLLER_HELPER_GROUPS_NEXT', 'REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT', 30, 40],
+  ['qlever-sdk-generation.ts', 'REVIEWED_CONTROLLER_HELPER_GROUPS_NEXT', 'REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT', 30, 41],
   ['qlever-sdk-upstream-source.ts', 'REVIEWED_HELPER_GROUPS', 'REVIEWED_HELPER_GROUPS', 7, 7],
-  ['qlever-sdk-fetchcontent.ts', 'REVIEWED_HELPER_GROUPS_NEXT', 'REVIEWED_HELPER_GROUPS_CURRENT', 33, 43],
+  ['qlever-sdk-fetchcontent.ts', 'REVIEWED_HELPER_GROUPS_NEXT', 'REVIEWED_HELPER_GROUPS_CURRENT', 33, 44],
   ['qlever-sdk-readonly-executor.ts', 'REVIEWED_READONLY_HELPER_GROUPS', 'REVIEWED_READONLY_HELPER_GROUPS', 7, 10],
 ] as const) it(file + ' keeps its whole historical tuples and admits the real current bytes', () => {
   // The published/historical catalogue is frozen history: every one of its whole
@@ -155,19 +155,19 @@ for (const [file, historicalName, currentName, historicalCount, currentCount] of
   }
 });
 
-it('bounds forty-three reviewed whole tuples, accepting only the production maximum and rejecting forty-four or an ambiguous tuple', () => {
-  // The declared VERSION maximum is genuinely 43: the fetch CURRENT catalogue holds
-  // 43 whole tuples after the SDK88 phase-budget helper append. This is a
+it('bounds forty-four reviewed whole tuples, accepting only the production maximum and rejecting forty-five or an ambiguous tuple', () => {
+  // The declared VERSION maximum is genuinely 44: the fetch CURRENT catalogue holds
+  // 44 whole tuples after the SDK89 phase-parent v9 helper append. This is a
   // version-count ceiling, never a capture/role capacity: the observed PER-TUPLE
   // role bound stays 32 (asserted by the next case), and every time/byte budget is
   // untouched.
-  const groups = Array.from({length: 43}, (_, i) => Object.freeze([Object.freeze(['helper', String(i)] as const)]));
+  const groups = Array.from({length: 44}, (_, i) => Object.freeze([Object.freeze(['helper', String(i)] as const)]));
   // the genuine 41st declared version is the current production maximum and selects
-  expect(groups).toHaveLength(43);
-  expect(select(groups, new Map(groups[42]!))).toBe(groups[42]);
+  expect(groups).toHaveLength(44);
+  expect(select(groups, new Map(groups[43]!))).toBe(groups[43]);
   expect(select(groups, new Map(groups[0]!))).toBe(groups[0]);
-  // a 44th declared version exceeds the reviewed catalogue and is refused
-  expect(() => select([...groups, [['helper', '43']]], new Map([['helper', '43']]))).toThrow();
+  // a 45th declared version exceeds the reviewed catalogue and is refused
+  expect(() => select([...groups, [['helper', '44']]], new Map([['helper', '44']]))).toThrow();
   // a duplicate/ambiguous tuple is refused
   expect(() => select([...groups.slice(0, 25), groups[0]!], new Map(groups[0]!))).toThrow();
 });

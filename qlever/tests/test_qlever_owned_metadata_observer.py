@@ -170,6 +170,12 @@ def production_profile(backend):
     # Parameters this fixture supplies itself (identical names in production).
     supplied = {'maximum_bytes', 'maximum_stdio_bytes', 'deadline_monotonic',
                 'check_budget', 'out', 'source', 'build'}
+    # SdkExecutionObserver forwards this keyword unconditionally. These base
+    # Observer fixtures preserve the production factory default (None, legacy
+    # policy) because they do not opt into the phase-parent policy. Supplying the
+    # canonical default here keeps the fixture aligned without inferring or
+    # bypassing an unknown production expression.
+    defaults = {'phase_budget_policy_version': None}
 
     def resolve(node):
         # literal bool/int/str/None
@@ -192,6 +198,9 @@ def production_profile(backend):
     profile = {}
     for keyword in call.keywords:
         if keyword.arg in supplied:
+            continue
+        if keyword.arg in defaults:
+            profile[keyword.arg] = defaults[keyword.arg]
             continue
         value = resolve(keyword.value)
         if isinstance(value, tuple) and value and value[0] == 'SUPPLIED':

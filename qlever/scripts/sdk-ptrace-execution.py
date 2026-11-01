@@ -1906,7 +1906,7 @@ class Observer(CapturesMixin):
         if key in self.producers:
             producer,retained,expected=self.producers[key];producer_reference=dict(producerCaptureSequence=producer['sequence'])
         else:
-            assert generated and generated.model==generated_vma_module.PARKED_WAIT_MODEL and generated.active is None and key in generated.checkpoints,'rename lacks a verified producer'
+            assert generated and generated.model in generated_vma_module.PARKED_WAIT_MODELS and generated.active is None and key in generated.checkpoints,'rename lacks a verified producer'
             producer=generated.checkpoints[key];origin=generated.origins[key];retained=origin['held'];expected=(producer['original']['bytes'],producer['original']['sha256']);producer_reference=dict(generatedCheckpointSequence=producer['sequence'])
         held=os.dup(retained);self.retained.add(held)
         destination=None
@@ -4691,7 +4691,7 @@ class Observer(CapturesMixin):
                 if old and new and old.startswith(self.build+'/') and new.startswith(self.build+'/'):
                     try:rename_source=os.stat(old,follow_symlinks=False)
                     except FileNotFoundError:rename_source=None
-                    if rename_source and ((rename_source.st_dev,rename_source.st_ino) in self.producers or self.generated_vma and self.generated_vma.model==generated_vma_module.PARKED_WAIT_MODEL and (rename_source.st_dev,rename_source.st_ino) in self.generated_vma.checkpoints):
+                    if rename_source and ((rename_source.st_dev,rename_source.st_ino) in self.producers or self.generated_vma and self.generated_vma.model in generated_vma_module.PARKED_WAIT_MODELS and (rename_source.st_dev,rename_source.st_ino) in self.generated_vma.checkpoints):
                         assert nr!=policy.get('renameat2') or args[4]==0,'retained renameat2 flags unsupported'
                         task['capture']=(None,'rename-before')
         else:

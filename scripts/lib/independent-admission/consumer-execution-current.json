@@ -433,7 +433,7 @@
   },
   {
     "path": "qlever/scripts/sdk-generated-vma-originals.py",
-    "sha256": "dc7aa03908fdd1eae3bc4d474fc4045b1b09a49568c446709fb2b78a2c326c1f"
+    "sha256": "340b66af0944e70e99f26453e2d5f94d8dfa5d3a41e93f2a9e4448bce70b2114"
   },
   {
     "path": "qlever/scripts/sdk-generation-materials.py",
@@ -441,7 +441,7 @@
   },
   {
     "path": "qlever/scripts/sdk-generation-multiprocess-bindings.py",
-    "sha256": "58d581b548de1c71a105284c0cb3b9d05017b1535edcdce1ecbdbfc10196ceec"
+    "sha256": "1c5f288800cc7ab37b7e01e7b5151ba64941440e68033f1f95b37b92040d807d"
   },
   {
     "path": "qlever/scripts/sdk-git-patch-projection.py",
@@ -489,7 +489,7 @@
   },
   {
     "path": "qlever/scripts/sdk-ptrace-execution.py",
-    "sha256": "c12b639308e9221825d87b9c4e2e48ed88265cd67555231694a618a98d4025bc"
+    "sha256": "26f8f3194e9e746512b54d7d4d200ce0d9b96809ffa2140aadd657dc3e9c03b6"
   },
   {
     "path": "qlever/scripts/sdk-ptrace-kernel.py",
@@ -1205,11 +1205,11 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-fetchcontent.ts",
-    "sha256": "d11535d091e18bea2b2578196f625937f5f7fcacdd6f033206c6fed5775cd071"
+    "sha256": "81d3b12420c71438cff4093c6be319d8a983e498c0d82bff13195a7514d2deef"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
-    "sha256": "727f32ecfd302ae3e209c9b78af46e4959efbdd3082852e7d9373213499e7cc2"
+    "sha256": "2eb553609c457968aeff1f767f2728bd67d548df8aede0290d381f7344de25bc"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-inputs.ts",
@@ -1221,7 +1221,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "0ab0c483f4f6200cc26680bbbd4e378bb0b92a8137e593c74b832dff22b7eeb9"
+    "sha256": "858dc2a0ad45a16a4692005772ca81a1d0b56e0aa6a5dc28434adc7dd8a4b897"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -1293,7 +1293,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/sdk-controller-helper-groups.ts",
-    "sha256": "ad1fa75b1bf8d3320082e834a705e10cb30623ca482af9a0762ba41c7124c120"
+    "sha256": "da8f5c2388aebea28ed6347bfe29a6ad252391db39d9377f4a78a20a4b3bbc5c"
   },
   {
     "path": "scripts/lib/independent-admission/service-pack-copied-payload.ts",
@@ -1893,7 +1893,7 @@
   },
   {
     "path": "qlever/tests/test_qlever_inner_materials_ninja.py",
-    "sha256": "474fb14d45835438d222abe89e606fa17e0c68f8fafed7d4e3c869bb7d9d3a7b"
+    "sha256": "a2cb860d7300d62931a354c90ade3a00ada1c831c37f719b24f77385de93e4fc"
   },
   {
     "path": "qlever/tests/test_qlever_phase_histogram_optional.py",
@@ -1973,7 +1973,7 @@
   },
   {
     "path": "qlever/tests/test_sdk70_mremap_e2e.py",
-    "sha256": "6a470a45c9b81b8e9addafdfe2f6eb1224a5361d8d16d7e983d60f6083532a07"
+    "sha256": "25e0030d79387d11720e4637b01cf61b77ff7088a37b14adb4f427a91c45547d"
   },
   {
     "path": "qlever/tests/run_sdk70_mremap_gate.py",

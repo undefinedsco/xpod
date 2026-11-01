@@ -583,6 +583,7 @@ class Runtime:
     def finish(self,pid,entry,exit):
         b=self.b;pending=self.pending[pid];window=pending['window'];op=pending['op'];need(b.exclusive==(pid,entry['sequence']) and ((op=='private-wait-mismatch' and exit['result']==-LINUX_EAGAIN and exit['isError'] is True) or (op!='private-wait-mismatch' and exit['result']>=0 and exit['isError'] is False)),'actual exclusive operation exit required')
         common=dict(kind='generated-vma-operation-exit',operation=op,pid=pid,entrySequence=entry['sequence'],windowSequence=window['sequence'],exitSequence=exit['sequence'],result=exit['result'],isError=exit['isError'])
+        if self.model==PHASE_PARENT_MODEL:common['budgetPolicy']=self.policy.declaration()
         if op=='private-wait-mismatch':
             need(self.model in PRIVATE_WAIT_MODELS and self.active is not None and exit['sequence']==window['sequence']+2,'wait actual exclusive exit adjacency differs')
             barrier=self.fresh_barrier();need(barrier['sequence']==exit['sequence']+1 and barrier['pids']==pending['preBarrier']['pids'] and barrier['taskOwnership']==pending['preBarrier']['taskOwnership'],'wait immediate fresh post-barrier differs')

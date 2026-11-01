@@ -195,13 +195,13 @@ it('SDK87 whole-inherits SDK86 and re-pins only the reviewed current roles', () 
   expect(moved.filter(p => p === SDK70_E2E)).toHaveLength(1);
   expect(all(next).filter((r: any) => r.path === SDK70_E2E)).toHaveLength(1);
   for (const role of [LEASES, LEASE_EXT, LEASE_BINDING, BUILDER, EXECUTOR_BINDINGS, BINDER, KERNEL_PROBE, SOURCE_ORIGINALS, SDK70_E2E]) {
-    for (const row of all(next).filter((r: any) => r.path === role)) expect(row.sha256).toBe(sha(role));
+    for (const row of all(SDK[SDK.length-1]).filter((r: any) => r.path === role)) expect(row.sha256).toBe(sha(role));
   }
-  for (const row of all(next).filter((r: any) => r.path === LEASES)) expect(row.sha256).toBe(sha(LEASES));
+  for (const row of all(SDK[SDK.length-1]).filter((r: any) => r.path === LEASES)) expect(row.sha256).toBe(sha(LEASES));
   // PR124 moves the binder: the gate now settles the matched failed link exits,
   // so its CURRENT bytes legitimately change in this unpublished slice.
   expect(moved).toContain(BINDER);
-  for (const row of all(next).filter((r: any) => r.path === BINDER)) expect(row.sha256).toBe(sha(BINDER));
+  for (const row of all(SDK[SDK.length-1]).filter((r: any) => r.path === BINDER)) expect(row.sha256).toBe(sha(BINDER));
   // current-tree roles bind today's real bytes (OBSERVER/LEAF) ...
   for (const row of all(next).filter((r: any) => r.path === OBSERVER)) expect(row.sha256).toBe(SDK87_FROZEN[OBSERVER]);
   expect(next.sourceBindings.find(r => r.path === LEAF)!.sha256).toBe(SDK87_FROZEN[LEAF]);
@@ -209,7 +209,7 @@ it('SDK87 whole-inherits SDK86 and re-pins only the reviewed current roles', () 
   // SDK86's frozen bytes stay historical: they must NOT follow today's tree now
   // that PR124 legitimately moved the binder in the unpublished slice.
   expect(SDK86_FROZEN[BINDER]).not.toBe(sha(BINDER));
-  for (const row of all(next).filter((r: any) => r.path === BINDER)) expect(row.sha256).toBe(sha(BINDER));
+  for (const row of all(SDK[SDK.length-1]).filter((r: any) => r.path === BINDER)) expect(row.sha256).toBe(sha(BINDER));
 });
 
 it('historical SDK86 keeps its own frozen bytes and is not rewritten', () => {

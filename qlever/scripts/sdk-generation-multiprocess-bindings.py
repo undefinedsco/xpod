@@ -1290,7 +1290,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 need(row.get('taskOwnershipModel') in [None,'all-tracked-tids-shared-fd-v1'],'unknown task ownership model');shared_mode=row.get('taskOwnershipModel') is not None;owners={}
                 need(not denied_operations,'unclosed explicit syscall denial at new root');denial=row.get('optionalIoUringModel');need(denial in [None,'explicit-kernel-enosys-denial-v1','explicit-kernel-enosys-denial-v2'],'unknown optional syscall denial model');denial_mode=denial is not None
                 generated_model=row.get('generatedVmaModel')
-                metadata_model=row.get('generatedVmaMetadataModel');need(metadata_model in [None,'actual-closed-generated-transaction-retained-metadata-v1']and(metadata_model is None or generated_model=='actual-generated-file-vma-stopped-mm-cohort-parked-universe-wait-v8'),'unknown generated metadata accounting model')
+                metadata_model=row.get('generatedVmaMetadataModel');need(metadata_model in [None,'actual-closed-generated-transaction-retained-metadata-v1']and(metadata_model is None or generated_model in ['actual-generated-file-vma-stopped-mm-cohort-parked-universe-wait-v8','actual-generated-file-vma-stopped-mm-cohort-phase-parent-budget-v9']),'unknown generated metadata accounting model')
                 if generated_model is not None:
                     if generated_module is None:
                         import importlib.util
@@ -1355,7 +1355,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 entry=entries.get(row['entrySequence']);barrier=barriers.get(row['barrierSequence'])
                 generated_checkpoint=row.get('generatedCheckpointSequence')
                 if generated_checkpoint is not None:
-                    need(generated_verifier is not None and generated_verifier.model==generated_module.PARKED_WAIT_MODEL and 'producerCaptureSequence'not in row,'generated rename requires explicit v8 checkpoint')
+                    need(generated_verifier is not None and generated_verifier.model in generated_module.PARKED_WAIT_MODELS and 'producerCaptureSequence'not in row,'generated rename requires explicit v8 checkpoint')
                     checkpoint=generated_verifier.checkpoints.get(generated_checkpoint);producer=(checkpoint,checkpoint['data'])if checkpoint else None
                 else:producer=caps.get(row['producerCaptureSequence'])
                 need(entry and barrier and producer and row['pid']==entry['pid'] and exclusive is None and row['pid'] in barrier['pids'] and entry['sequence']<barrier['sequence'] and latest_execution_sequence<=barrier['sequence'] and entry['nr'] in policy(entry['arch'])['renameOps'],'retained rename entry/barrier/producer missing')
@@ -1394,7 +1394,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             elif kind.startswith('generated-kernel-wait-'):
                 need(generated_verifier is not None and generated_verifier.model in generated_module.COORDINATED_WAIT_MODELS,'coordinated wait requires explicit model')
                 need(kind in ['generated-kernel-wait-window','generated-kernel-wait-waiter-resume','generated-kernel-wait-quiescent','generated-kernel-wait-peer-resume','generated-kernel-wait-peer-stopped','generated-kernel-wait-wake-window','generated-kernel-wait-waker-resume','generated-kernel-wait-closed','generated-kernel-wait-side-wait-window','generated-kernel-wait-side-wait-resume','generated-kernel-wait-side-wait-closed','generated-kernel-wait-side-wait-deferred','generated-kernel-wait-peer-entry-selected'],'unknown coordinated wait record')
-                if kind.startswith('generated-kernel-wait-side-'):need(generated_verifier.model==generated_module.PARKED_WAIT_MODEL,'peer side wait requires v8 parked model')
+                if kind.startswith('generated-kernel-wait-side-'):need(generated_verifier.model in generated_module.PARKED_WAIT_MODELS,'peer side wait requires a parked-wait model')
                 if kind=='generated-kernel-wait-side-wait-resume':
                     need(exclusive is None,'peer mismatch crossed an exclusive operation');exclusive=(row['pid'],row['entrySequence'])
                 if kind=='generated-kernel-wait-window':

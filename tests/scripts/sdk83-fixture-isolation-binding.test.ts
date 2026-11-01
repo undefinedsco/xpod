@@ -59,7 +59,7 @@ const prefix=(groups:readonly unknown[],hashes:readonly string[],label:string)=>
 it('every published 3739 whole prefix is byte-identical',()=>{
   // LIVE frontier (SDK84 appended): this historical slice is proven by its own
   // frozen prefix below, not by current lengths.
-  expect(SDK).toHaveLength(88);expect(LINUX).toHaveLength(89);
+  expect(SDK).toHaveLength(89);expect(LINUX).toHaveLength(90);
   expect(CONSUMER).toHaveLength(99);expect(CI).toHaveLength(196);
   expect(API).toHaveLength(29);expect(CLI).toHaveLength(12);
   prefix(SDK.slice(0,82),OLD_SDK,'sdk');
@@ -77,7 +77,7 @@ it('helper and readonly registries keep every captured whole vector',()=>{
     const live=decodeCatalog('scripts/lib/independent-admission/'+file,name) as readonly unknown[];
     // Frozen vector proves the historical PREFIX only; the live tuple count is
     // the current frontier (observer 59 / controller 39 / fetch 42).
-    expect(live.length).toBe({REVIEWED_OBSERVER_GROUPS:60,REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT:40,REVIEWED_HELPER_GROUPS_CURRENT:43}[name as 'REVIEWED_OBSERVER_GROUPS']);
+    expect(live.length).toBe({REVIEWED_OBSERVER_GROUPS:61,REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT:41,REVIEWED_HELPER_GROUPS_CURRENT:44}[name as 'REVIEWED_OBSERVER_GROUPS']);
     for(let i=0;i<hashes.length;i++) expect(whole(live[i]),`${name}[${i}]`).toBe(hashes[i]);
   }
   const readonly=decodeCatalog('scripts/lib/independent-admission/qlever-sdk-readonly-executor.ts','REVIEWED_READONLY_HELPER_GROUPS') as readonly unknown[];

@@ -4,10 +4,10 @@
 // the declared VERSION count grows, and only to the exact real maximum created by
 // a genuine append. This is a catalogue length, never a capture capacity.
 //
-// 43 is the exact genuine maximum: the fetch CURRENT catalogue holds 43 whole
-// tuples after the SDK88 phase-budget helper append. It is the declared VERSION
+// 44 is the exact genuine maximum: the fetch CURRENT catalogue holds 44 whole
+// tuples after the SDK89 retained-metadata helper append. It is the declared VERSION
 // count only - it is not an artifact, capture, per-tuple, time or budget bound.
-const MAXIMUM_DECLARED_HELPER_GROUPS = 43;
+const MAXIMUM_DECLARED_HELPER_GROUPS = 44;
 const MAXIMUM_OBSERVED_HELPERS = 32;
 const DIFFERS = 'SDK controller complete helper group differs';
 
