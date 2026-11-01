@@ -72,6 +72,11 @@ class Observer:
     def check(self):
         return None
 
+    def check_full(self):
+        # This focused fixture stubs all lease/authority checks; resume selection
+        # and terminal-state semantics are the subject here.
+        return None
+
     def _raw(self, pid, address, maximum=4096):
         return self._paths[address]
 

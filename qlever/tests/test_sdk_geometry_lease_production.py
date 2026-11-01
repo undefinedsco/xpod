@@ -23,12 +23,17 @@ import importlib.util
 import os
 import signal
 import sys
-import tempfile
 import time
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+
+try:
+    from qlever.tests.sdk_test_paths import scoped_temp
+except ModuleNotFoundError:
+    from sdk_test_paths import scoped_temp
+
 
 
 def load(name, relative):
@@ -77,7 +82,7 @@ class RealMapsCohort:
 @unittest.skipUnless(sys.platform.startswith('linux'), 'real read leases are Linux-only')
 class RealOwnedTimerAndLeaseProduction(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = scoped_temp('geometry')
         self.lease_set = leases.LeaseSet(maximum=512)
         self.raw_fds = []
         for index in range(160):
@@ -155,7 +160,7 @@ class RealOwnedTimerAndLeaseProduction(unittest.TestCase):
         self.lease_set.check()
 
     def test_real_timer_inside_production_observer_check(self):
-        """Real Observer.check() must surface, not mask, the caller timer."""
+        """Real Observer.check_full() must surface, not mask, the caller timer."""
         observer = production_observer(self.lease_set)
         state = {'fired': False}
         real_check = observer.lifetime_leases.check
@@ -171,7 +176,7 @@ class RealOwnedTimerAndLeaseProduction(unittest.TestCase):
         started = time.monotonic()
         try:
             with self.assertRaises(TimeoutError) as caught:
-                observer.check()
+                observer.check_full()
         finally:
             self.disarm()
         self.assertLess(time.monotonic() - started, 3)
@@ -306,8 +311,13 @@ class RealOwnedTimerAndLeaseProduction(unittest.TestCase):
         observer = production_observer(self.lease_set)
 
         def lose_then_check():
-            fcntl.fcntl(self.raw_fds[3], fcntl.F_SETLEASE, fcntl.F_UNLCK)
-            observer.check()
+            try:
+                fcntl.fcntl(self.raw_fds[3], fcntl.F_SETLEASE, fcntl.F_UNLCK)
+            except BlockingIOError:
+                # The lease may already have been forced broken.  That is still
+                # a real loss, not a reason to suppress the closing boundary.
+                pass
+            observer.check_full()
 
         with self.assertRaises(leases.LeaseError):
             generated.cohort_mapping_geometry(cohort.members, lose_then_check, observer.check_deadline)
@@ -318,7 +328,7 @@ class ForcedScheduleNegatives(unittest.TestCase):
     """Forced rows: prove the schedule rejects drift/timeout at every boundary."""
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = scoped_temp('geometry')
         path = os.path.join(self.tmp.name, 'one.bin')
         with open(path, 'wb') as handle:
             handle.write(b'x')
@@ -432,7 +442,7 @@ class RealRecordPublicationBoundaries(unittest.TestCase):
     """Every published record is bracketed by full live lease/source validation."""
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = scoped_temp('geometry')
         self.harness = RealRecordPublicationBracket(self.tmp.name)
         self.observer = self.harness.observer()
 
@@ -450,9 +460,12 @@ class RealRecordPublicationBoundaries(unittest.TestCase):
 
     def _count(self):
         calls = {'full': 0, 'local': 0}
-        real = self.observer.check
+        real = self.harness.lease_set.check
         local = self.observer.check_deadline
-        self.observer.check = lambda: (calls.__setitem__('full', calls['full'] + 1), real())[1]
+        def counted_full(token=None):
+            calls['full'] += 1
+            return real(token)
+        self.harness.lease_set.check = counted_full
         def counted_local():
             calls['local'] += 1
             local()
@@ -467,27 +480,31 @@ class RealRecordPublicationBoundaries(unittest.TestCase):
         self.observer.raw.writer._record_check_callback = self.observer.check_deadline
 
 
-    def test_each_record_is_bracketed_by_exactly_two_full_sweeps(self):
+    def test_private_records_do_not_sweep_until_a_real_boundary(self):
         calls = self._count()
         for index in range(50):
             row = self._emit(index)
             self.assertEqual(row['sequence'], index + 1)
-        self.assertEqual(calls['full'], 100, 'one entry + one exit full validation per record')
-        self.assertGreater(calls['local'], 100, 'pure-local write iterations pay only the cheap refusal')
+        self.assertEqual(calls['full'], 0, 'private raw rows must not perform full sweeps')
+        self.assertGreater(calls['local'], 50, 'pure-local write iterations still pay the cheap refusal')
+        self.observer.check_full()
+        self.assertEqual(calls['full'], 1, 'one real closing boundary performs one full sweep')
         self.assertGreaterEqual(len(self.harness.fds), 144)
         # Raw gzip shards exist and are nonempty; publication really happened.
         self.assertTrue(any(path.stat().st_size > 0 for path in self.observer.raw.paths))
 
-    def test_real_lease_break_during_publication_refuses_before_escape(self):
+    def test_real_lease_break_rejects_at_full_boundary_not_private_row(self):
         self._emit(0)
         before = len(self.observer.raw.paths)
         fcntl.fcntl(self.harness.fds[0], fcntl.F_SETLEASE, fcntl.F_UNLCK)
+        # Private diagnostic publication is not external acceptance.  It may
+        # still write the row, but the real full boundary must reject before any
+        # returned/durable result can be treated as accepted.
+        self._emit(1)
         with self.assertRaises(leases.LeaseError):
-            self._emit(1)
-        # The next record also refuses: the failure is sticky, not permissive.
+            self.observer.check_full()
         with self.assertRaises(leases.LeaseError):
-            self._emit(2)
-        self.assertEqual(self.observer.seq, 1, 'no unvalidated record sequence escaped')
+            self.observer.check_full()
         self.assertGreaterEqual(len(self.observer.raw.paths), before)
 
     def test_real_timer_inside_publication_keeps_timeout(self):

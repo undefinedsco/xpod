@@ -143,6 +143,7 @@ class ReadFamilyRoutingTests(unittest.TestCase):
 class _FakeLeases:
     """Token contract only: no real fcntl lease on a non-Linux host."""
     def __init__(self):self.n=0
+    def guard(self):pass
     def check(self,*a,**k):pass
     def close(self):pass
     def acquire(self,fd):

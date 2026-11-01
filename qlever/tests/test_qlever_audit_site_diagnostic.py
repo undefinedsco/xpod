@@ -105,7 +105,7 @@ class UnitAuditSites(unittest.TestCase):
         self.o.check_nonlease=lambda:self.events.append('nonlease')
         def lease():
             self.events.append('lease');self.clock+=0.001
-        self.o.lifetime_leases=SimpleNamespace(check=lease)
+        self.o.lifetime_leases=SimpleNamespace(check=lease,guard=lambda:None)
         self.o._phase_progress=core.PhaseProgress('configure',2800.0,now=lambda:self.clock)
         self.o.window_arm(1001000000000);self.o.open_outer_lease_window()
         self.sites=self.o._audit_sites
@@ -118,10 +118,10 @@ class UnitAuditSites(unittest.TestCase):
             self.events=[];value=object()
             def body():self.o.check();return value
             self.assertIs(self.body(body,role),value)
-            self.assertEqual(self.events,['nonlease','lease','nonlease','nonlease','lease'])
+            self.assertEqual(self.events,['nonlease','nonlease','nonlease','lease'])
             row=self.summary()['readBodies'][role]
-            self.assertEqual(row[:5],[1,1,1,0,1]);self.assertEqual(row[6],0);self.assertEqual(row[8],1)
-            self.assertGreater(row[5],0);self.assertGreater(row[9],0)
+            self.assertEqual(row[:5],[1,1,1,0,0]);self.assertEqual(row[6],0);self.assertEqual(row[8],1)
+            self.assertEqual(row[5],0);self.assertGreater(row[9],0)
             self.assertIsNone(self.sites.tag);self.assertIsNone(self.sites.active)
     def test_disabled_attribution_keeps_identical_original_operations(self):
         def run(enabled):
@@ -132,17 +132,17 @@ class UnitAuditSites(unittest.TestCase):
     def test_plain_fault_before_entry_drops_diagnostic_not_callback(self):
         self.sites.native_begin=lambda *a:(_ for _ in ()).throw(ValueError('diagnostic only'))
         value=object();self.assertIs(self.body(lambda:value,'tool_original'),value)
-        self.assertEqual(self.events,['nonlease','lease','nonlease','lease'])
+        self.assertEqual(self.events,['nonlease','nonlease','lease'])
         self.assertIsNone(self.o._audit_sites)
         self.setUp()
         with patch.object(core,'OwnedWindowAuditSites',side_effect=ValueError('new allocation only')):
             self.o.window_arm(1001000000000)
         self.assertIsNotNone(self.o._window_diag);self.assertIsNone(self.o._audit_sites)
-        self.o.check();self.assertEqual(self.events,['nonlease','lease'])
+        self.o.check_full();self.assertEqual(self.events,['nonlease','lease'])
     def test_control_faults_propagate_same_object_and_restore_progress(self):
         for error in (TimeoutError('signal'),KeyboardInterrupt(),SystemExit(7)):
             self.setUp();self.sites.native_begin=lambda *a,e=error:(_ for _ in ()).throw(e)
-            with self.assertRaises(type(error)) as caught:self.o.check()
+            with self.assertRaises(type(error)) as caught:self.o.check_full()
             self.assertIs(caught.exception,error)
             self.assertIsNone(self.o._phase_progress.active)
     def test_failed_native_primary_survives_diagnostic_control_fault(self):
@@ -150,7 +150,7 @@ class UnitAuditSites(unittest.TestCase):
             self.setUp();primary=OSError('original native error')
             self.o.lifetime_leases.check=lambda:(_ for _ in ()).throw(primary)
             self.sites.native_end=lambda *a,e=error:(_ for _ in ()).throw(e)
-            with self.assertRaises(OSError) as caught:self.o.check()
+            with self.assertRaises(OSError) as caught:self.o.check_full()
             self.assertIs(caught.exception,primary);self.assertIsNone(self.o._audit_sites)
     def test_body_primary_survives_remove_fault_and_full_closing_runs(self):
         primary=OSError('body')
@@ -158,14 +158,14 @@ class UnitAuditSites(unittest.TestCase):
         def body():raise primary
         with self.assertRaises(OSError) as caught:self.body(body,'tool_original')
         self.assertIs(caught.exception,primary)
-        self.assertEqual(self.events,['nonlease','lease','nonlease','lease'])
+        self.assertEqual(self.events,['nonlease','nonlease','lease'])
         self.assertIsNone(self.o.owned_read_body_frame)
     def test_snapshot_fault_cannot_block_original_check(self):
         ticket=self.o.audit_site(self.sites,'snapshot_ticket');self.o.audit_site(self.sites,'install',ticket)
         class Broken:
             def get(self,*a):raise ValueError('diagnostic telemetry fault')
         self.o.audit_snapshot_check(ticket,Broken())
-        self.assertEqual(self.events,['nonlease','lease']);self.assertIsNone(self.o._audit_sites)
+        self.assertEqual(self.events,['nonlease']);self.assertIsNone(self.o._audit_sites)
     def test_partial_failed_native_site_and_return_identity(self):
         token=object()
         self.assertIs(self.o.instrument('lifetime_lease_check',lambda:token),token)
@@ -193,7 +193,7 @@ class UnitAuditSites(unittest.TestCase):
         ticket=self.o.audit_site(self.sites,'snapshot_ticket');self.o.audit_site(self.sites,'install',ticket)
         self.o.audit_snapshot_check(ticket,{'stage':'unknown'})
         self.o.audit_site(self.sites,'remove',ticket)
-        value=self.summary();self.assertEqual(value['otherNative'][0],3)
+        value=self.summary();self.assertEqual(value['otherNative'][0],1)
         self.assertEqual(tuple(value['readBodies']),core.AUDIT_BODY_ROLES)
         self.assertEqual(tuple(value['regularSnapshot']),core.AUDIT_SNAPSHOT_SITES)
         def unknown():return None
@@ -229,7 +229,7 @@ class UnitAuditSites(unittest.TestCase):
             for i in range(len(row)):row[i]=core.AUDIT_COUNTER_MAXIMUM
         self.sites.active=[self.sites,'body',4,2,core.AUDIT_COUNTER_MAXIMUM,None]
         self.sites.first_failed=('snapshot',6,-1,core.AUDIT_COUNTER_MAXIMUM,True)
-        self.o.check();value=self.summary()
+        self.o.check_full();value=self.summary()
         self.assertIsNotNone(value);self.assertLessEqual(len(json.dumps(value).encode()),6144)
         self.assertEqual(value['otherNative'][0],core.AUDIT_COUNTER_MAXIMUM)
     def test_partial_tag_arm_cleanup_does_not_steal_foreign_tag(self):
@@ -260,7 +260,7 @@ class UnitAuditSites(unittest.TestCase):
                 return 1000000000000
             self.o.phase_progress_ns=clock
             self.sites.native_end=lambda *a,e=secondary:(_ for _ in ()).throw(e)
-            with self.assertRaises(RuntimeError) as caught:self.o.check()
+            with self.assertRaises(RuntimeError) as caught:self.o.check_full()
             self.assertIs(caught.exception,primary);self.assertEqual(self.events,['nonlease','lease'])
             self.assertIsNone(self.o._phase_progress.active)
     def test_body_primary_and_closing_fault_keep_first_object(self):
@@ -277,12 +277,12 @@ class UnitAuditSites(unittest.TestCase):
                 field='owned_read_body_frame' if kind=='read' else 'owned_maps_frame'
                 def lease():
                     calls.append('lease')
-                    if len(calls)==2:raise secondary
+                    if len(calls)==1:raise secondary
                 self.o.lifetime_leases.check=lease
                 def body():setattr(self.o,field,foreign);raise primary
                 try:
                     with self.assertRaises(OSError) as caught:self.o.read_body(body)
-                    self.assertIs(caught.exception,primary);self.assertEqual(calls,['lease','lease'])
+                    self.assertIs(caught.exception,primary);self.assertEqual(calls,['lease'])
                     self.assertIs(getattr(self.o,field),foreign)
                 finally:setattr(self.o,field,None)
     def test_body_finished_fault_still_runs_original_closing(self):
@@ -290,7 +290,7 @@ class UnitAuditSites(unittest.TestCase):
         self.sites.body_finished=lambda *a:(_ for _ in ()).throw(primary)
         with self.assertRaises(TimeoutError) as caught:self.body(lambda:object(),'tool_original')
         self.assertIs(caught.exception,primary)
-        self.assertEqual(self.events,['nonlease','lease','nonlease','lease'])
+        self.assertEqual(self.events,['nonlease','nonlease','lease'])
         self.assertIsNone(self.o.owned_read_body_frame)
     def test_overflow_transport_preserves_old_line_histogram_and_quotas(self):
         old=dict(kind='phase-failure',phase='configure',padding='x'*7900,syscallStops={'kept':'old'})
@@ -376,8 +376,8 @@ class _CallerAttributionChecks(unittest.TestCase):
 
     def check_exact_parent_buckets_split_other_native_and_sum(self):
         for parent in ('emit', 'barrier', 'verify_task_ownership', 'not-a-bucket'):
-            self.o.instrument(parent, self.o.check)
-        self.o.check()  # no enclosing instrument -> fixed none bucket
+            self.o.instrument(parent, self.o.check_full)
+        self.o.check_full()  # no enclosing instrument -> fixed none bucket
 
         value = self.summary()
         rows = self.rows(value)
@@ -395,12 +395,13 @@ class _CallerAttributionChecks(unittest.TestCase):
         value = self.summary()
         self.assertEqual(value['otherNative'][0], 0)
         self.assertEqual(sum(row[0] for row in self.rows(value).values()), 0)
-        self.assertEqual(value['readBodies']['read_capture_fd'][4], 1)
+        self.assertEqual(value['readBodies']['read_capture_fd'][4], 0)
+        self.assertIn('lease', self.events)
 
     def check_unknown_parent_names_never_grow_or_leak(self):
         fixed = len(core.AUDIT_NATIVE_PARENT_BUCKETS)
         for parent in ('emit2', '/proc/private', 'x' * 200, 'none', 'unknown'):
-            self.o.instrument(parent, self.o.check)
+            self.o.instrument(parent, self.o.check_full)
         value = self.summary()
         rows = self.rows(value)
         self.assertEqual(len(rows), fixed)
@@ -422,14 +423,14 @@ class _CallerAttributionChecks(unittest.TestCase):
         self.assertEqual(sum(row[0] for row in self.rows(value).values()), 0)
 
     def check_invalid_binding_does_not_attach_parent(self):
-        thread = threading.Thread(target=lambda: self.o.instrument('emit', self.o.check))
+        thread = threading.Thread(target=lambda: self.o.instrument('emit', self.o.check_full))
         thread.start(); thread.join()
         self.assertEqual(self.o._audit_sites.nativeParents, [[0, 0, 0] for _ in core.AUDIT_NATIVE_PARENT_BUCKETS])
 
         previous = self.o.current_phase
         self.o.current_phase = 'other'
         try:
-            self.o.instrument('emit', self.o.check)
+            self.o.instrument('emit', self.o.check_full)
             self.assertIsNone(self.summary())
         finally:
             self.o.current_phase = previous
@@ -439,7 +440,7 @@ class _CallerAttributionChecks(unittest.TestCase):
             old = getattr(self.o.waiter, attribute)
             setattr(self.o.waiter, attribute, value)
             try:
-                self.o.instrument('emit', self.o.check)
+                self.o.instrument('emit', self.o.check_full)
                 self.assertIsNone(self.summary())
             finally:
                 setattr(self.o.waiter, attribute, old)
@@ -450,7 +451,7 @@ class _CallerAttributionChecks(unittest.TestCase):
             row[:] = [core.AUDIT_COUNTER_MAXIMUM] * 3
         self.o._audit_sites.other[:] = [core.AUDIT_COUNTER_MAXIMUM] * 3
         for _ in range(3):
-            self.o.instrument('emit', self.o.check)
+            self.o.instrument('emit', self.o.check_full)
         value = self.summary()
         rows = self.rows(value)
         self.assertEqual(rows['emit'], [core.AUDIT_COUNTER_MAXIMUM] * 3)
@@ -525,7 +526,7 @@ class _CallerAttributionChecks(unittest.TestCase):
                  patch.object(core.os, 'read', side_effect=AssertionError('new I/O')), \
                  patch.object(core.os, 'stat', side_effect=AssertionError('new I/O')), \
                  patch.object(core.os, 'scandir', side_effect=AssertionError('new I/O')):
-                self.o.instrument('emit', self.o.check)
+                self.o.instrument('emit', self.o.check_full)
             return len(clocks), list(self.events)
         disabled, enabled = run(False), run(True)
         self.assertEqual(disabled, enabled,
@@ -537,7 +538,7 @@ class _CallerAttributionChecks(unittest.TestCase):
         primary = OSError('native primary')
         self.o.lifetime_leases.check = lambda: (_ for _ in ()).throw(primary)
         with self.assertRaises(OSError) as caught:
-            self.o.instrument('emit', self.o.check)
+            self.o.instrument('emit', self.o.check_full)
         self.assertIs(caught.exception, primary)
         self.assertIsNone(self.o._phase_progress.active)
         value = self.summary()
@@ -550,7 +551,7 @@ class _CallerAttributionChecks(unittest.TestCase):
             self.setUp()
             self.o._audit_sites.native_begin = lambda *a, e=error, **k: (_ for _ in ()).throw(e)
             with self.assertRaises(type(error)) as caught:
-                self.o.instrument('emit', self.o.check)
+                self.o.instrument('emit', self.o.check_full)
             self.assertIs(caught.exception, error)
             self.assertIsNone(self.o._phase_progress.active)
 
@@ -600,9 +601,9 @@ class NativeAuditSites(common.Base):
                 result=self.o.read_capture_fd(self.fds[0],output)
             out.append((result,list(self.events),output.getvalue(),len(reads),len(claims),self.o.domain_bytes))
             if not enabled:self.o._audit_sites=sites
-        self.assertEqual(out[0],out[1]);self.assertEqual(out[1][1].count('lease'),2)
+        self.assertEqual(out[0],out[1]);self.assertEqual(out[1][1].count('lease'),1)
         self.assertEqual(out[1][3:],(2,1,256));self.assertEqual(out[1][2],b'x'*256)
-        self.assertEqual(self.summary()['readBodies']['read_capture_fd'][4::2],[1,0,1])
+        self.assertEqual(self.summary()['readBodies']['read_capture_fd'][4::2],[0,0,1])
     def test_real_chunk_transaction_seven_sites_native_and_fsync_unchanged(self):
         outcomes=[]
         for index,enabled in enumerate([False,True]):
@@ -625,11 +626,11 @@ class NativeAuditSites(common.Base):
                 outcomes.append((refs,raw,list(self.events),len(sync),physical,len(self.o.captures)))
             finally:
                 if not enabled:self.o._audit_sites=sites
-        self.assertEqual(outcomes[0],outcomes[1]);self.assertEqual(outcomes[1][2].count('lease'),6)
+        self.assertEqual(outcomes[0],outcomes[1]);self.assertEqual(outcomes[1][2].count('lease'),2)
         sites=self.summary()['regularSnapshot']
         for site,row in sites.items():
-            self.assertEqual(row[:3],[2,2 if site=='observer-leading' else 0,0])
-        self.assertEqual(self.summary()['otherNative'][0],4)
+            self.assertEqual(row[:3],[2,0,0])
+        self.assertEqual(self.summary()['otherNative'][0],2)
         # An unmatched context never adopts the read-body optimization.
         o=self.o;claim=o._outer_lease_coalesce;waiter=o.waiter;phase=o.current_phase
         for kind in ('no-claim','phase','waiter','window','thread','no-clamp'):
@@ -643,7 +644,7 @@ class NativeAuditSites(common.Base):
                 else:o._outer_lease_coalesce=dict(claim,parent=claim['local'])
                 try:
                     self.assertFalse(o.outer_lease_window_owned());o.snapshot_write_original(self.fds[0],256)
-                    self.assertEqual(self.events.count('lease'),9);self.assert_snapshot_closed()
+                    self.assertEqual(self.events.count('lease'),1);self.assert_snapshot_closed()
                 finally:o._outer_lease_coalesce=claim;o.waiter=waiter;o.current_phase=phase
         for kind in ('body','manifest','body-and-closing','closing'):
             with self.subTest(failure=kind):
@@ -652,7 +653,7 @@ class NativeAuditSites(common.Base):
                 actual=self.leases.check;calls=[]
                 def closing(*a,**k):
                     calls.append('lease')
-                    if len(calls)==2:raise secondary
+                    if len(calls)==1:raise secondary
                     return actual(*a,**k)
                 with patch.object(self.leases,'check',side_effect=closing) if kind in ('body-and-closing','closing') else patch.object(self.leases,'check',wraps=actual):
                     with patch.object(core.chunk_store,'_stage_bytes',side_effect=primary) if kind in ('body','body-and-closing') else patch.object(core.chunk_store,'read_manifest',side_effect=primary) if kind=='manifest' else patch.object(core.chunk_store,'read_manifest',wraps=core.chunk_store.read_manifest):
@@ -681,13 +682,13 @@ class NativeAuditSites(common.Base):
             result=actual(*a,**k);fcntl.fcntl(leases.fds[0],fcntl.F_SETLEASE,fcntl.F_UNLCK);return result
         with patch.object(core.chunk_store,'read_manifest',side_effect=lose):
             with self.assertRaises(core.lifetime_leases.LeaseError):self.o.snapshot_write_original(fd,256)
-        self.assertEqual(calls,['native','native']);self.assertEqual(len(self.o.captures),0)
+        self.assertEqual(calls,['native']);self.assertEqual(len(self.o.captures),0)
         self.assertEqual(self.o.raw.getvalue(),b'');self.assertGreater(self.o.domain_bytes,256);self.assert_snapshot_closed()
     def test_real_c_closing_loss_keeps_body_primary_object(self):
         primary=OSError('actual body primary')
         def body():fcntl.fcntl(self.leases.fds[0],fcntl.F_SETLEASE,fcntl.F_UNLCK);raise primary
         with self.assertRaises(OSError) as caught:self.body(body,'snapshot_raw')
-        self.assertIs(caught.exception,primary);self.assertEqual(self.events.count('lease'),2)
+        self.assertIs(caught.exception,primary);self.assertEqual(self.events.count('lease'),1)
     def test_real_owned_timer_keeps_primary_and_nonlease_closing(self):
         # Use the already-owned 0.9s fixture window; no 25ms pre-entry race or
         # attempted restore of an expired owned deadline. Product bounds unchanged.
@@ -697,6 +698,6 @@ class NativeAuditSites(common.Base):
                 while True:self.o.check();time.sleep(0.001)
             except BaseException as error:seen.append(error);raise
         with self.assertRaises(TimeoutError) as caught:self.body(body,'read_capture_fd')
-        self.assertIs(caught.exception,seen[0]);self.assertEqual(self.events.count('lease'),1)
+        self.assertIs(caught.exception,seen[0]);self.assertEqual(self.events.count('lease'),0)
         self.assertIsNone(self.o.owned_read_body_frame)
         self.assertEqual(self.summary()['readBodies']['read_capture_fd'][3],1)

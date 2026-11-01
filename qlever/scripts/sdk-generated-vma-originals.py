@@ -64,8 +64,10 @@ def validate_window_budget(window,row,parent,model):
     return True
 # One operation/ABI table, consumed by producer and independent replay.
 ABI={0xc000003e:dict(open=2,openat=257,resize=77,map=9,unmap=11,close=3,write=1,wake=202),0xc00000b7:dict(open=None,openat=56,resize=46,map=222,unmap=215,close=57,write=64,wake=98)}
-CREATE_REQUIRED=0x40|0x80
-CREATE_ALLOWED=3|CREATE_REQUIRED|0x80000|0x8000|0x20000
+CREATE_REQUIRED=0x40
+CREATE_EXCL=0x80
+CREATE_TRUNC=0x200
+CREATE_ALLOWED=3|CREATE_REQUIRED|CREATE_EXCL|CREATE_TRUNC|0x80000|0x8000|0x20000
 
 def need(value,why):
     if not value:raise ValueError('generated VMA: '+why)
@@ -92,12 +94,25 @@ def private_wake_allowed(entry,active):
     except (ValueError,KeyError,TypeError):return False
 
 def create_dimensions(entry):
-    op=operation(entry);args=entry['args'];need(op in ['open','openat'],'actual create syscall required')
-    flags=args[1] if op=='open' else args[2]
-    need(flags&3==2 and flags&CREATE_REQUIRED==CREATE_REQUIRED and flags&~CREATE_ALLOWED==0,'reviewed exclusive RW creation flags required')
-    return (-100,args[0]) if op=='open' else (args[0],args[1])
+    op=operation(entry);args=entry["args"];need(op in ["open","openat"],"actual create syscall required")
+    flags=args[1] if op=="open" else args[2]
+    need(flags&3==2 and flags&CREATE_REQUIRED==CREATE_REQUIRED and (bool(flags&CREATE_EXCL)!=bool(flags&CREATE_TRUNC)) and flags&~CREATE_ALLOWED==0,"reviewed exclusive-or-truncate RW creation flags required")
+    truncate=bool(flags&CREATE_TRUNC)
+    return (-100,args[0],truncate) if op=="open" else (args[0],args[1],truncate)
 def map_dimensions(entry,fd,length=1):
     need(operation(entry)=='map' and type(length) is int and length>0 and entry['args']==[0,length,PROTECTION,FLAGS,fd,0],'fixed one-byte non-executable shared mapping required')
+def truncate_absent(path):
+    need(absent(path),"truncate create requires an absent generated name")
+    return True
+def map_private_dimensions(entry,fd,file_length=1):
+    need(operation(entry)=="map" and entry["args"][2]==PROTECTION and entry["args"][3]==2 and entry["args"][5]==0 and entry["args"][4]==fd,"exact private writable COW mapping required")
+    address=entry["args"][0];length=entry["args"][1];need(type(address) is int and 0<=address<1<<64 and type(length) is int and 0<file_length<length<=CANONICAL_FILE_MAXIMUM,"bounded private mapping address/length/file required")
+    return length
+def verify_private_established(mappings,address,page,file_identity,length):
+    size=rounded_span(address,length,page);rows=matching_maps(mappings,file_identity)
+    need(len(rows)==1,"exact sole private backing VMA required");row=rows[0]
+    need(row["startHex"]==format(address,"x") and row["endHex"]==format(address+size,"x") and row["permissions"]=="rw-p" and row["fileOffset"]==0,"actual whole private RW VMA geometry differs")
+    return row
 def private_wait_dimensions(entry,active,*,model=PRIVATE_WAIT_MODEL):
     need(operation(entry)=='wake','actual futex syscall ABI required')
     args=entry['args'];need(all(type(word) is int and 0<=word<1<<64 for word in args),'canonical six raw futex words required')
@@ -463,13 +478,14 @@ class Runtime:
                 origin=self.active['origin']
             self.pending[pid]=dict(op=op,origin=origin,fd=args[0] if op=='close' else None)
         elif op in ['open','openat']:
-            try:dirfd,address=create_dimensions(entry)
+            try:dirfd,address,truncate=create_dimensions(entry)
             except ValueError:return False
             path=resolve(dirfd,address)
             if not path.startswith(b.build+'/'):return False
+            need(not truncate or truncate_absent(path),"truncate create requires an absent generated name")
             need(str(Path(path).resolve(strict=False))==path,'canonical generated path required')
-            self.b.emit(dict(kind='generated-vma-create-path',pid=pid,entrySequence=entry['sequence'],path=path,dirFd=dirfd,pathArgIndex=0 if op=='open' else 1))
-            self.pending[pid]=dict(op='create',path=path)
+            self.b.emit(dict(kind='generated-vma-create-path',pid=pid,entrySequence=entry['sequence'],path=path,truncate=truncate,dirFd=dirfd,pathArgIndex=0 if op=='open' else 1))
+            self.pending[pid]=dict(op='create',path=path,truncate=truncate)
         elif op=='resize':
             origin=self.lookup_fd(pid,args[0])
             if origin is None:return False
@@ -480,6 +496,15 @@ class Runtime:
                 except BaseException:pass
                 raise
             self.pending[pid]=dict(op=op,origin=origin,fd=args[0])
+        elif op=='map' and not(args[3]&0x20) and args[2]==PROTECTION and args[3]==2:
+            origin=self.lookup_fd(pid,args[4])
+            if origin is None:return False
+            try:self.mapping_domain(pid)
+            except ValueError:
+                try:memory_domain_rejection_diagnostic(pid,entry,self.mm,b.check)
+                except BaseException:pass
+                raise
+            self.pending[pid]=dict(op='private-map',origin=origin,fd=args[4])
         elif op=='map' and not(args[3]&0x20) and args[2]&2 and args[3]&1:
             origin=self.lookup_fd(pid,args[4]);need(origin is not None,'mapped output lacks actual create/resize origin');map_dimensions(entry,args[4],origin['identity'][3]);need(origin['pid']==pid and 0<origin['identity'][3]<=b.maximum_file_bytes<=CANONICAL_FILE_MAXIMUM,'selected own bounded nonempty origin required')
             try:self.mapping_domain(pid)
@@ -509,8 +534,32 @@ class Runtime:
             rows.append(dict(pid=member,original=raw['original'],mapping=mapping))
         word=self.b.generated_wait_word(pid,address);verify_wait_word(raw_record(word),entry,self.active,model=self.model)
         return rows,raw_record(word)
+    def capture_private_map(self,pid):
+        b=self.b;pending=self.pending[pid];origin=pending["origin"];entry=b.tasks[pid]["entry"];args=entry["args"]
+        need(self.model in [MODEL,COHORT_MODEL,PHASE_PARENT_MODEL,*WAKE_MODELS],"private mapping needs a modern full-file model")
+        barrier=self.fresh_barrier();current=identity(os.fstat(origin["held"]))
+        need(same_object(current,origin["identity"]) and not origin.get("writePending"),"private mapping backing origin changed")
+        selected=os.open("/proc/"+str(pid)+"/fd/"+str(pending["fd"]),os.O_RDONLY|os.O_CLOEXEC);b.retained.add(selected)
+        try:
+            before,ref=self.snapshot(selected);flags=b.generated_fd_flags(pid,pending["fd"]);path=b.generated_fd_path(pid,pending["fd"])
+            need(before==current==identity(os.stat("/proc/"+str(pid)+"/fd/"+str(pending["fd"])))==origin["identity"] and (ref["bytes"],ref["sha256"])==origin["data"] and flags&3==2 and path==origin["path"],"private mapping selected FD/full preimage differs")
+            aliases=b.writable_aliases(current,pid,pending["fd"]);need(len(aliases)==1 and aliases[0]["pid"]==pid and aliases[0]["fd"]==pending["fd"],"private mapping has another writable FD alias")
+            maps,values=self.maps(pid);need(not matching_maps(values,current),"private backing file already has VMA aliases")
+            page=os.sysconf("SC_PAGE_SIZE");length=args[1];rounded_span(0,length,page)
+            domain,cohort=self.mapping_domain(pid,barrier);reserved=cohort_reservation_bytes(len(barrier["pids"])-1,len(cohort)-1,b.tool_metadata_bytes,current[3],pending["fd"]!=origin["fd"]) if self.model in COHORT_MODELS else reservation_bytes(len(barrier["pids"])-1,b.tool_metadata_bytes,current[3],pending["fd"]!=origin["fd"])
+            b.reserve_generated_bytes(reserved);self.spending_thread=threading.get_ident()
+            end=self.policy.observation_window_deadline(b.waiter.parent_deadline,time.monotonic());token=b.waiter.clamp(end);getattr(b,"window_arm",lambda _d:None)(int(end*1e9));b.open_outer_lease_window();proc=ProcLease(self,pid)
+            common=dict(kind="generated-vma-operation-window",operation="map",privateMapping=True,pid=pid,entrySequence=entry["sequence"],barrierSequence=barrier["sequence"],originSequence=origin["sequence"],path=origin["path"],identity=current,fd=pending["fd"],beforeOriginal=ref,selectedIdentity=current,selectedOriginal=ref,selectedFlags=flags,procLease=proc.first,beforeMapsOriginal=maps["original"],aliases=aliases,pageBytes=page,memoryDomain=domain,reservationBytes=reserved,metadataMaximumBytes=b.tool_metadata_bytes,windowDeadlineMonotonicNs=str(int(end*1e9)),parentDeadlineMonotonicNs=str(int(b.waiter.parent_deadline*1e9)))
+            if self.model==PHASE_PARENT_MODEL:common["budgetPolicy"]=self.policy.declaration()
+            if self.model in COHORT_MODELS:common["memoryDomainMembers"]=cohort
+            row=b.emit(common);pending.update(window=row,preBarrier=barrier,selectedHeld=selected,procLease=proc,selectedFlags=flags,windowEnd=end,alarmToken=token);return row
+        except BaseException:
+            primary=sys.exc_info()[1];errors=self.cleanup_fds([selected])
+            if errors and primary is None:raise errors[0]
+            raise
     def capture(self,pid):
         b=self.b;pending=self.pending[pid];op=pending['op'];entry=b.tasks[pid]['entry']
+        if op=="private-map":return self.capture_private_map(pid)
         if op in ['private-wake','private-wait-mismatch']:
             need(self.model in WAKE_MODELS and self.active is not None and pid==self.owner and self.spending_thread==threading.get_ident() and self.reserved>0,'private wake requires sole active cohort owner and retained closing reservation')
             entry_bytes=len((json.dumps(entry,sort_keys=True)+'\n').encode());need(entry_bytes<=65536,'private wake actual entry raw bound')
@@ -528,7 +577,7 @@ class Runtime:
             common.update(originSequence=pending['origin']['sequence'],epochSequence=self.active['sequence'],memoryDomain=domain,memoryDomainMembers=members,wakeCount=private_wake_dimensions(entry,self.active),reservationBytes=WAKE_RESERVATION_BYTES)
             row=b.emit(common);pending.update(window=row,preBarrier=barrier);return row
         if op=='create':
-            path=pending['path'];parent=Path(path).parent;need(str(parent.resolve(strict=True))==str(parent) and absent(path),'actual fresh generated name required')
+            path=pending['path'];parent=Path(path).parent;need(str(parent.resolve(strict=True))==str(parent) and (not pending.get("truncate") or truncate_absent(path)),'actual fresh generated name required')
             held=os.open(parent,os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC|os.O_NOFOLLOW);b.retained.add(held);pending['parentFd']=held;need(identity(os.fstat(held))==identity(parent.lstat()),'same held/named create parent required');pending.update(parentFd=held,parentIdentity=identity(os.fstat(held)));common.update(path=path,parentIdentity=pending['parentIdentity'],nameAbsenceErrno=errno.ENOENT)
         else:
             origin=pending['origin'];need(not origin.get('writePending'),'unverified write invalidated generated origin');held=origin['held'];current=identity(os.fstat(held));need(same_object(current,origin['identity']),'retained generated backing object changed')
@@ -580,8 +629,25 @@ class Runtime:
                         other,items=self.maps(peer);verify_peer_geometry(items,values,b.check_full,b.check_deadline,entry=b.check_owned_entry);need(verify_established(items,self.active['address'],self.active['page'],current,self.active['length'])==mapping,'same-MM pre-unmap VMA differs');same.append(dict(pid=peer,original=other['original']))
                     common.update(memoryDomainMembers=cohort,sameMemoryDomainMaps=same)
         row=b.emit(common);pending.update(window=row,preBarrier=barrier);return row
+    def finish_private_map(self,pid,entry,exit):
+        b=self.b;pending=self.pending[pid];window=pending["window"];origin=pending["origin"];need(b.exclusive==(pid,entry["sequence"]) and exit["result"]>=0 and exit["isError"] is False,"actual private mapping exit required")
+        proc_after=pending["procLease"].sample()
+        barrier=self.fresh_barrier();need(barrier["sequence"]==exit["sequence"]+1 and barrier["pids"]==pending["preBarrier"]["pids"] and barrier.get("taskOwnership")==pending["preBarrier"].get("taskOwnership"),"private mapping post-stop ownership differs")
+        selected=pending["selectedHeld"];current,ref=self.snapshot(selected);flags=b.generated_fd_flags(pid,pending["fd"]);path=b.generated_fd_path(pid,pending["fd"])
+        need(current==origin["identity"] and (ref["bytes"],ref["sha256"])==origin["data"] and flags==pending["selectedFlags"] and path==origin["path"],"private mapping selected FD/full preimage changed")
+        maps,values=self.maps(pid);mapping=verify_private_established(values,exit["result"],window["pageBytes"],current,entry["args"][1])
+        link_path="/proc/"+str(pid)+"/map_files/"+mapping["startHex"]+"-"+mapping["endHex"];link=raw_record(os.fsencode(os.readlink(link_path)));kernel_link(link,origin["path"],b.build)
+        common=dict(kind="generated-vma-operation-exit",operation="map",privateMapping=True,pid=pid,entrySequence=entry["sequence"],windowSequence=window["sequence"],exitSequence=exit["sequence"],result=exit["result"],isError=exit["isError"],originSequence=origin["sequence"],identity=current,selectedFd=pending["fd"],selectedIdentity=current,selectedFlags=flags,beforeOriginal=window["beforeOriginal"],selectedOriginal=ref,mapsOriginal=maps["original"],mapping=mapping,kernelLink=link,requestedLength=entry["args"][1],fileLength=current[3],postBarrierSequence=barrier["sequence"])
+        if self.model==PHASE_PARENT_MODEL:common["budgetPolicy"]=self.policy.declaration()
+        common.update(windowDeadlineMonotonicNs=window["windowDeadlineMonotonicNs"],parentDeadlineMonotonicNs=window["parentDeadlineMonotonicNs"],procAfter=proc_after)
+        row=b.emit(common)
+        primary=sys.exc_info()[1];errors=pending["procLease"].close()+self.cleanup_fds([selected])
+        if errors and primary is None:raise errors[0]
+        b.close_outer_lease_window();b.waiter.restore(pending.get("alarmToken"));self.reserved=0;self.spending_thread=None
+        pending.pop("procLease",None);pending.pop("selectedHeld",None);self.pending.pop(pid,None);return row
     def finish(self,pid,entry,exit):
         b=self.b;pending=self.pending[pid];window=pending['window'];op=pending['op'];need(b.exclusive==(pid,entry['sequence']) and ((op=='private-wait-mismatch' and exit['result']==-LINUX_EAGAIN and exit['isError'] is True) or (op!='private-wait-mismatch' and exit['result']>=0 and exit['isError'] is False)),'actual exclusive operation exit required')
+        if op=="private-map":return self.finish_private_map(pid,entry,exit)
         common=dict(kind='generated-vma-operation-exit',operation=op,pid=pid,entrySequence=entry['sequence'],windowSequence=window['sequence'],exitSequence=exit['sequence'],result=exit['result'],isError=exit['isError'])
         if self.model==PHASE_PARENT_MODEL:common['budgetPolicy']=self.policy.declaration()
         if op=='private-wait-mismatch':
@@ -766,6 +832,31 @@ class Verifier:
         # selected-FD binding when the descriptor was reopened. No arbitrary
         # first origin is chosen here, and no entry itself grants byte custody.
         self.mapping_domain(row['pid'])[0];self.pending_mapping_entries.add(row['sequence']);return True
+    def record_private_window(self,row,entries,barriers):
+        entry=entries.get(row["entrySequence"]);barrier=barriers.get(row["barrierSequence"]);need(entry and barrier and entry["pid"]==row["pid"] and row["pid"] in barrier["pids"],"private mapping entry/barrier missing")
+        need(row["operation"]=="map" and operation(entry)=="map","private mapping ABI differs");origin=self.origins.get(row["originSequence"]);need(origin and not origin.get("writePending") and origin["pid"]==row["pid"] and row["path"]==origin["path"],"private mapping origin missing")
+        map_private_dimensions(entry,row["fd"],origin["identity"][3]);need(row["identity"]==origin["identity"] and self.original(row["beforeOriginal"])==origin["data"],"private mapping preimage differs")
+        need(row["selectedIdentity"]==origin["identity"] and row["selectedFlags"]&3==2 and self.original(row["selectedOriginal"])==origin["data"],"private selected FD original differs")
+        aliases=row["aliases"];need(len(aliases)==1 and aliases[0]["pid"]==row["pid"] and aliases[0]["fd"]==row["fd"] and aliases[0]["accessMode"]==2 and aliases[0]["flags"]&3==2,"private sole writable FD differs")
+        need(not matching_maps(self.maps_data(row["beforeMapsOriginal"]),origin["identity"]),"private backing already mapped");self.preimage_interval(row,barrier)
+        need(self.model in [MODEL,COHORT_MODEL,PHASE_PARENT_MODEL,*WAKE_MODELS],"private window model differs")
+        domain,members=self.mapping_domain(row["pid"],barrier);need(row["pageBytes"]==os.sysconf("SC_PAGE_SIZE") and row["memoryDomain"]==domain,"private page/domain differs")
+        need(row.get("memoryDomainMembers")==members if self.model in COHORT_MODELS else "memoryDomainMembers" not in row,"private pre-window cohort differs")
+        expected=cohort_reservation_bytes(len(barrier["pids"])-1,len(members)-1,self.metadata_maximum,origin["identity"][3],row["fd"]!=origin["fd"]) if self.model in COHORT_MODELS else reservation_bytes(len(barrier["pids"])-1,self.metadata_maximum,origin["identity"][3],row["fd"]!=origin["fd"])
+        need(row["metadataMaximumBytes"]==self.metadata_maximum and row["reservationBytes"]==expected,"private reservation/metadata budget differs")
+        verify_proc_lease(row["procLease"],row["pid"])
+        self.windows[row["sequence"]]=row;self.pending_window=row["sequence"]
+    def record_private_exit(self,row,entries,exits,barriers):
+        transaction=self.transaction;need(transaction and transaction["state"]=="exited","private exit outside exclusive exit");window=transaction["window"];entry=entries[window["entrySequence"]];actual=exits.get(window["entrySequence"]);need(row["windowSequence"]==window["sequence"] and row["operation"]=="map" and row["pid"]==window["pid"] and row["entrySequence"]==entry["sequence"] and actual and actual["sequence"]==row["exitSequence"] and actual["result"]==row["result"] and actual["isError"] is False,"private actual exit differs")
+        need(self.model in [MODEL,COHORT_MODEL,PHASE_PARENT_MODEL,*WAKE_MODELS],"private exit model differs")
+        validate_window_budget(window,row,self.parent_deadline_ns,self.model)
+        before=verify_proc_lease(window["procLease"],row["pid"]);after=verify_proc_lease(row["procAfter"],row["pid"])
+        need(after["directoryIdentity"]==before["directoryIdentity"] and after["statIdentity"]==before["statIdentity"] and after["starttime"]==before["starttime"] and proc_identity(raw_bytes(after["statOriginal"]),row["pid"])==int(before["starttime"]),"private held proc lifetime differs")
+        origin=self.origins[window["originSequence"]];need(row["originSequence"]==window["originSequence"] and row["identity"]==origin["identity"] and row["selectedIdentity"]==origin["identity"] and row["selectedFlags"]&3==2 and self.original(row["selectedOriginal"])==origin["data"],"private closure identity/preimage differs")
+        mapping=verify_private_established(self.maps_data(row["mapsOriginal"]),actual["result"],window["pageBytes"],origin["identity"],entry["args"][1]);need(row["mapping"]==mapping and row["requestedLength"]==entry["args"][1] and row["fileLength"]==origin["identity"][3],"private VMA geometry/length differs")
+        kernel_link(row["kernelLink"],origin["path"],self.build_root);post=barriers.get(row["postBarrierSequence"]);pre=barriers[window["barrierSequence"]]
+        need(post and post["sequence"]==actual["sequence"]+1 and post["pids"]==pre["pids"] and post.get("taskOwnership")==pre.get("taskOwnership"),"private post-stop ownership differs")
+        transaction["state"]="completed";transaction["completedSequence"]=row["sequence"]
     def record(self,row,entries,exits,barriers,caps):
         kind=row['kind'];seq=row['sequence'];clock=row.get('observedMonotonicNs');need(isinstance(clock,str) and clock.isdecimal(),'actual monotonic raw observation required');now=int(clock);need(self.last_observed_ns is None or now>=self.last_observed_ns,'raw monotonic observation moved backwards');self.last_observed_ns=now;need(seq not in self.events,'duplicate generated raw sequence');self.events[seq]=row
         while len(self.events)>256:self.events.pop(next(iter(self.events)))
@@ -773,6 +864,8 @@ class Verifier:
             self.charge_metadata(row)
         if kind=='generated-vma-kernel-link-original':need(self.model!=LEGACY_MODEL and self.transaction and self.transaction['state']=='exited' and self.transaction['window']['operation']=='map','kernel link original outside new mapping transaction')
         self.mm.record(row)
+        if kind=="generated-vma-operation-window" and row.get("privateMapping") is True:return self.record_private_window(row,entries,barriers)
+        if kind=="generated-vma-operation-exit" and row.get("privateMapping") is True:return self.record_private_exit(row,entries,exits,barriers)
         if kind=='owned-root-binding':
             end=row.get('generatedVmaParentDeadlineMonotonicNs');need(isinstance(end,str) and end.isdecimal() and int(end)>now,'actual owned root parent deadline required');self.parent_deadline_ns=int(end)
         if self.active is None and kind=='kernel-syscall' and row['op']=='entry' and operation(row) in ['close','write']:
@@ -822,7 +915,7 @@ class Verifier:
             while len(self.map_sequences)>256:
                 old=next(iter(self.map_sequences));self.map_sequences.pop(old);self.map_owners.pop(old)
         elif kind=='generated-vma-create-path':
-            entry=entries.get(row['entrySequence']);need(entry and entry['pid']==row['pid'],'actual create path entry missing');dirfd,address=create_dimensions(entry);path=row['path'];need(path.startswith(self.build_root+'/') and len(os.fsencode(path))<=4096 and all(part not in ['', '.', '..'] for part in path.split('/')[1:]) and row['dirFd']==dirfd and row['pathArgIndex']==(0 if operation(entry)=='open' else 1),'actual fixed generated path arguments differ');self.create_paths[entry['sequence']]=row
+            entry=entries.get(row['entrySequence']);need(entry and entry['pid']==row['pid'],'actual create path entry missing');dirfd,address,truncate=create_dimensions(entry);path=row['path'];need(path.startswith(self.build_root+'/') and len(os.fsencode(path))<=4096 and all(part not in ['', '.', '..'] for part in path.split('/')[1:]) and row['dirFd']==dirfd and row['pathArgIndex']==(0 if operation(entry)=='open' else 1),'actual fixed generated path arguments differ');self.create_paths[entry['sequence']]=row
         elif kind=='generated-vma-selected-fd-binding':
             self.fd_bindings[seq]=row
         elif kind=='generated-vma-operation-window':

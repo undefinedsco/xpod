@@ -1636,10 +1636,13 @@ class OwnedGenerationTransition(unittest.TestCase):
         os.rename(path, destination)
         after = list(self._module().identity(fd))
         tokens.advance(token, before, after, 'owned-rename-over-destination')
-        self.assertIsNone(tokens._plan, 'plan must be invalidated on advance')
-        self.assertIsNone(tokens._native_plan, 'native decode must be invalidated')
+        # The advance itself is now a full-set boundary: it clears the stale
+        # plan and rebuilds it from the advanced token, rather than returning
+        # with no plan for a later check.
+        self.assertIsNotNone(tokens._plan, 'advance must leave a current plan')
+        self.assertIsNone(tokens._native_plan, 'native decode must be invalidated on advance')
         self.assertIsNone(tokens._native_plan_source)
-        tokens.check()                                # rebuild against advanced tuple
+        tokens.check()                                # validate advanced tuple
         self._assert_clean(tokens, held=1)
 
     def test_advance_requires_a_live_held_lease(self):

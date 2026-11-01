@@ -124,6 +124,10 @@ jobs:
       # cross-workflow precondition: independent SDK workflows may start in
       # parallel. The gate builds the observer's real helper with a real
       # compiler child and runs every contract case; "0 tests ran" fails.
+      - name: Typed private generated-output COW contract (PCH)
+        run: |
+          set -eu
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD" python3 qlever/tests/test_sdk_pch_generated_private_mmap.py
       - name: Install interpreter-matched C headers for the native gate
         run: |
           set -eu
@@ -228,14 +232,22 @@ jobs:
               CLASS + '.test_real_unlink_emit_and_lease_advance',
               CLASS + '.test_semantic_observe_refuses_forged_closing_identity',
               CLASS + '.test_unknown_operation_refused',
-              WINDOW + '.test_window_coalesces_leading_sweep_and_trailing_check_always_runs',
-              WINDOW + '.test_trailing_check_still_rejects_a_mutated_identity',
+              WINDOW + '.test_private_emit_rows_have_no_full_sweep_inside_or_outside',
+              WINDOW + '.test_full_boundary_rejects_a_mutated_identity_after_private_emit',
               WINDOW + '.test_nested_reclamp_under_same_parent_does_not_inherit',
               WINDOW + '.test_wrong_thread_does_not_inherit',
               WINDOW + '.test_open_refuses_without_a_real_clamp',
-              WINDOW + '.test_wrong_phase_runs_both_sweeps',
+              WINDOW + '.test_wrong_phase_stays_private_until_full_boundary',
               WINDOW + '.test_another_waiter_cannot_inherit_the_same_deadlines',
               WINDOW + '.test_open_refuses_reentrancy',
+              WINDOW + '.test_primary_body_error_wins_over_failing_closing_check',
+              WINDOW + '.test_lease_eagain_diagnostic_valid_bounded_json',
+              WINDOW + '.test_lease_eagain_diagnostic_scan_unavailable_is_not_absence',
+              WINDOW + '.test_lease_eagain_diagnostic_does_not_replace_primary',
+              WINDOW + '.test_real_sigio_between_two_production_resumes_stops_second_child',
+              WINDOW + '.test_provider_mountinfo_full_closing_before_cache_or_emit',
+              WINDOW + '.test_lease_eagain_diagnostic_forced_total_slot_budget',
+              WINDOW + '.test_lease_eagain_diagnostic_uses_current_not_cached_identity',
               WINDOW + '.test_exception_after_arm_leaves_no_claim',
               WINDOW + '.test_abort_clears_claim',
               FATAL + '.test_real_event_path_captures_stop_from_real_lease_verdict',

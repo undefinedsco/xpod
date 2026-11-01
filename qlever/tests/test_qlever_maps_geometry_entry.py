@@ -83,12 +83,12 @@ class MapsGeometryEntry(common.Base):
         self.arm()
         first, parsed = self.o.content_tool_maps(self.pid)
         self.assertNotIn('originalReuse', first)
-        self.assertEqual(self.native_audits, 2)
+        self.assertEqual(self.native_audits, 1, 'one complete closing sweep; maps entry is cheap')
         self.assertGreater(self.local_checks, 0)
         before = self.native_audits
         second, repeated = self.o.content_tool_maps(self.pid)
         self.assertIn('originalReuse', second)
-        self.assertEqual(self.native_audits - before, 2)
+        self.assertEqual(self.native_audits - before, 1, 'one complete closing sweep on reuse')
         self.assertEqual(parsed, repeated)
         self.assertEqual(first['original']['path'], second['original']['path'])
         self.assertEqual(len(self.o.captures), 2)
@@ -101,8 +101,8 @@ class MapsGeometryEntry(common.Base):
             # Restore immediately: the later emit shares this policy and must
             # retain its actual owned-window behavior in this causal comparison.
             self.o.check_owned_entry = actual_entry
-            return self.o.check()
-        for entry, expected in [(one_full_maps_entry, 3), (actual_entry, 2)]:
+            return self.o.check_full()
+        for entry, expected in [(one_full_maps_entry, 2), (actual_entry, 1)]:
             # A fresh pool forces a real write; the immediately repeated capture
             # then verifies the same entity through the actual retained FD.
             self.o.content_capture_pool = {}
@@ -119,18 +119,18 @@ class MapsGeometryEntry(common.Base):
 
     def test_outside_window_maps_keep_five_and_geometry_two_full_audits(self):
         self.o.content_tool_maps(self.pid)
-        self.assertEqual(self.native_audits, 5)
+        self.assertEqual(self.native_audits, 1, 'maps entry + closing: only the closing is a full native sweep')
         before = self.native_audits
         geometry.cohort_mapping_geometry(self.actual_geometry(), self.o.check_full,
             self.o.check_deadline, entry=self.o.check_owned_entry)
-        self.assertEqual(self.native_audits - before, 2)
+        self.assertEqual(self.native_audits - before, 1, 'one full geometry closing; maps entry is cheap')
 
     def test_owned_actual_geometry_two_to_one_without_changing_local_checks(self):
         members = self.actual_geometry()
         self.arm()
         before = self.native_audits
         geometry.cohort_mapping_geometry(members, self.o.check, self.o.check_deadline)
-        self.assertEqual(self.native_audits - before, 2)
+        self.assertEqual(self.native_audits - before, 0, 'cheap entry/closing geometry path uses cheap guards')
         expected_local = self.local_checks
         self.local_checks = 0
         before = self.native_audits
@@ -143,7 +143,7 @@ class MapsGeometryEntry(common.Base):
     def test_legacy_geometry_call_defaults_to_two_full_audits_inside_window(self):
         self.arm()
         geometry.cohort_mapping_geometry(self.actual_geometry(), self.o.check, self.o.check_deadline)
-        self.assertEqual(self.native_audits, 2)
+        self.assertEqual(self.native_audits, 0, 'legacy cheap geometry path performs no full native sweep')
 
     def test_maps_real_lease_loss_refused_before_any_record_is_published(self):
         import fcntl
@@ -307,7 +307,7 @@ class MapsGeometryEntry(common.Base):
                 setattr(self.o, field, value)
                 before = self.native_audits
                 self.o.check_owned_entry()
-                self.assertEqual(self.native_audits - before, 1)
+                self.assertEqual(self.native_audits - before, 0, 'context mismatch falls back to the cheap acquisition guard')
             finally:setattr(self.o, field, original)
         for key in ['thread', 'phase', 'parent', 'local']:
             original = claim[key]
@@ -315,12 +315,12 @@ class MapsGeometryEntry(common.Base):
                 claim[key] = str(original) + '-mismatch'
                 before = self.native_audits
                 self.o.check_owned_entry()
-                self.assertEqual(self.native_audits - before, 1)
+                self.assertEqual(self.native_audits - before, 0, 'context mismatch falls back to the cheap acquisition guard')
             finally:claim[key] = original
         self.o.close_outer_lease_window()
         before = self.native_audits
         self.o.check_owned_entry()
-        self.assertEqual(self.native_audits - before, 1)
+        self.assertEqual(self.native_audits - before, 0, 'closed window uses the cheap acquisition guard')
         self.o._outer_lease_coalesce = claim
 
 
