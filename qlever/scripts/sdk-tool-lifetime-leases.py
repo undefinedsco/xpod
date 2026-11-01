@@ -346,6 +346,16 @@ class LeaseSet:
         if signal.getsignal(signal.SIGIO) != self._handler:
             self._reject('SIGIO ownership changed')
 
+    def guard(self):
+        """Cheap admission guard: sticky SIGIO failure + handler ownership only.
+
+        The kernel read lease is the write-exclusion primitive.  This does not
+        issue F_GETLEASE/fstat and therefore does not claim to establish an
+        interval by itself; full `check()` runs at every actual acceptance,
+        read closing and controlled resume boundary.
+        """
+        self._ready()
+
     @property
     def fds(self):
         return tuple(row['fd'] for row in self._held.values())
@@ -586,6 +596,11 @@ class LeaseSet:
         self._plan = None            # expected tuple advanced: plan is stale
         self._native_plan = None     # native decode no longer covers the set
         self._native_plan_source = None
+        # The transition itself is a full-set boundary: other held rows may
+        # have broken while this owned transition was being admitted.  The
+        # stale plan must be cleared before this sweep so the new token is
+        # compared against every held row.
+        self.check()
         # Return the SAME token shape `acquire()` returns (leaseId + identity
         # only). A filtered `check()` compares a supplied token EXACTLY, so
         # decorating it with extra keys would make the advanced token unusable

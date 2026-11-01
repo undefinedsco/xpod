@@ -173,7 +173,7 @@ def runtime_type(core):
             if current['stage']=='captured':
                 pid=current['owner'];assert self.b.tasks[pid]['stopped']
                 self.note('waiter-resume',pid=pid,entrySequence=current['entry']['sequence'],request='PTRACE_SYSCALL',signal=0)
-                core.single.trace(core.SYSCALL,pid,0,0);self.b.tasks[pid]['stopped']=False;self.b.exclusive=None
+                self.b.check();core.single.trace(core.SYSCALL,pid,0,0);self.b.tasks[pid]['stopped']=False;self.b.exclusive=None
                 while core.state(pid)!='S':self.b.check();time.sleep(0.0001)
                 observation=self.kernel_state();assert all(core.state(p)=='t' for p in current['universe'] if p!=pid)
                 self.note('quiescent',observation=observation,ownership=self.b.verify_task_ownership())
@@ -186,7 +186,7 @@ def runtime_type(core):
                 current['wakeWord']=word
                 self.note('wake-window',observation=observation,wakeEntrySequence=current['wakeEntry']['sequence'],wordOriginal=base.raw_record(word),ownership=self.b.verify_task_ownership(),cohortMaps=self.last_samples,backingOriginal=original,backingIdentity=identity)
                 self.note('waker-resume',pid=current['peer'],entrySequence=current['wakeEntry']['sequence'],request='PTRACE_SYSCALL',signal=0)
-                current['stage']='wake-running';peer=current['peer'];core.single.trace(core.SYSCALL,peer,0,0);self.b.tasks[peer]['stopped']=False
+                current['stage']='wake-running';peer=current['peer'];self.b.check();core.single.trace(core.SYSCALL,peer,0,0);self.b.tasks[peer]['stopped']=False
             else:assert current['stage']=='wake-running','invalid coordinated scheduler state'
         def drive_peers(self):
             current=self.round
@@ -203,7 +203,7 @@ def runtime_type(core):
                     self.peer_entry(prior);self.classify(peer,prior,None)
                 else:
                     self.note('peer-resume',pid=peer,waiter=current['owner'],request='PTRACE_SYSCALL',signal=0)
-                    core.single.trace(core.SYSCALL,peer,0,0);self.b.tasks[peer]['stopped']=False
+                    self.b.check();core.single.trace(core.SYSCALL,peer,0,0);self.b.tasks[peer]['stopped']=False
                     slice_end=min(time.monotonic()+0.002,self.b.waiter.deadline)
                     observed=None
                     while time.monotonic()<slice_end:
@@ -234,7 +234,7 @@ def runtime_type(core):
             current=self.round;peer=current['peer'];entry=current['sideEntry']
             self.note('side-wait-window',operation='private-side-wake'if current['sideWake']else 'private-wait-mismatch',pid=peer,entrySequence=entry['sequence'],wordOriginal=base.raw_record(current['sideWord']),observation=self.kernel_state(),ownership=self.b.verify_task_ownership())
             self.note('side-wait-resume',pid=peer,entrySequence=entry['sequence'],request='PTRACE_SYSCALL',signal=0)
-            current['stage']='side-wait-running';self.b.exclusive=(peer,entry['sequence']);core.single.trace(core.SYSCALL,peer,0,0);self.b.tasks[peer]['stopped']=False
+            current['stage']='side-wait-running';self.b.exclusive=(peer,entry['sequence']);self.b.check();core.single.trace(core.SYSCALL,peer,0,0);self.b.tasks[peer]['stopped']=False
             actual,status=self.b.wait_one();assert actual==peer,'another task ran during kernel-only peer mismatch'
             self.b.event(actual,status,False);assert current['stage']=='peer-ready','peer mismatch did not close before next trial'
         def finish(self,pid,entry,exit):

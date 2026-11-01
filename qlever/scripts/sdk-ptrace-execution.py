@@ -1084,15 +1084,12 @@ class Observer(CapturesMixin):
         assert not self.read_frame_any(),'record publication is forbidden inside an owned read-only body'
         assert getattr(self,'owned_maps_frame',None) is None,'record publication is forbidden inside a maps body'
         assert getattr(self,'owned_emit_record_frame',None) is None,'record publication is forbidden inside a record callback'
-        # One complete live validation brackets this single record publication.
-        # Encoding/compression/write of this same already-captured row is pure
-        # local work: it pays only the cheap deadline/stdio refusal per
-        # iteration (record_check). The trailing check runs on success AND on
-        # every exception, so an altered lease/source/ownership state can never
-        # let a row escape; no validated state is reused across records.
-        # Inside ONE owned outer window the redundant per-record native lease
-        # sweep is coalesced (every non-lease check still runs per record); the
-        # mandatory full sweep at the closing/acceptance boundary is unchanged.
+        # This is a speculative private raw-row publication, not an authority
+        # boundary. check_emit() and the trailing self.check() are cheap sticky
+        # guards; they do not perform a full FD sweep per row. Full validations
+        # remain explicit at actual-read, resume, and final acceptance
+        # boundaries. A raw row may be written before a later boundary rejects
+        # it; it is not external authority.
         self.check_emit()
         primary=None
         try:
@@ -1123,9 +1120,10 @@ class Observer(CapturesMixin):
             self.raw.flush()
             if self.generated_vma:
                 owner=self.generated_vma;claim=None
-                # This claim can only be installed INSIDE this already-armed
-                # complete emit finally. No separate callable wrapper can return
-                # a coalesced callback result without the full closing audit.
+                # This claim can only be installed inside the already-armed
+                # emit finally. The callback result is private speculative row
+                # state, not external authority; full checks remain at the
+                # explicit boundaries.
                 if self.outer_lease_window_owned() and getattr(owner,'active',None) is not None:
                     claim=self.new_emit_record_claim(owner,row)
                 try:
@@ -1144,7 +1142,7 @@ class Observer(CapturesMixin):
             primary=error
             raise
         finally:
-            # This COMPLETE per-record trailing audit is never coalesced.
+            # Cheap sticky guard, not a complete per-record full audit.
             # A closing failure must not replace an earlier body/callback error.
             try:self.check()
             except BaseException:
@@ -1169,8 +1167,13 @@ class Observer(CapturesMixin):
         self.check_lifetime_leases()
     def check(self):
         self.check_nonlease()
-        if self.lifetime_leases is not None and not (self.owned_maps_frame_active() or self.read_body_frame_active()):
-            self.check_lifetime_leases()
+        if self.lifetime_leases is not None:
+            # Cheap admission guard only; unlike the full sweep it remains
+            # active inside owned frames, so a foreign/unknown callback frame
+            # cannot suppress the sticky SIGIO refusal.  The kernel lease,
+            # sticky SIGIO and full `check_full()` boundaries establish the
+            # actual interval.
+            self.lifetime_leases.guard()
     def emit_record_frame_active(self,owner,row):
         """Only the exact synchronous callback of this one owned emitted row."""
         frame=getattr(self,'owned_emit_record_frame',None)
@@ -1266,12 +1269,12 @@ class Observer(CapturesMixin):
         self._outer_lease_coalesce=None
         self._audit_sites=None
     def check_owned_entry(self):
-        """Leading check of one body with an unconditional full closing audit.
+        """Cheap leading admission guard for one private owned body.
 
-        Only the exact existing outer window may omit this leading native sweep.
-        Every budget/waiter/stdio/deadline refusal still runs. Callers must arm
-        their own complete closing check before any result can escape; generic
-        check() and all closing checks remain unchanged.
+        Only the exact existing outer window may omit this leading native lease
+        sweep; every budget/waiter/stdio/deadline refusal still runs. This is
+        not a per-record full validation. Full checks remain explicit at
+        actual-read, resume, and final acceptance boundaries.
         """
         assert not self.read_frame_any(),'owned entry cannot inherit a read body'
         assert getattr(self,'owned_maps_frame',None) is None,'owned entry cannot inherit a maps body'
@@ -1281,7 +1284,7 @@ class Observer(CapturesMixin):
             return
         self.check()
     def check_emit(self):
-        """The emitted record retains its complete per-record closing audit."""
+        """Cheap leading guard for one speculative private raw row."""
         self.check_owned_entry()
     def owned_maps_frame_active(self):
         """True only on the exact thread/phase that opened the private maps frame.
@@ -2181,6 +2184,10 @@ class Observer(CapturesMixin):
                 else:
                     self.check()
                     reference,physical_bytes,telemetry=regular_snapshot_body()
+                    # Non-outer snapshot path has no read_body bracket; close
+                    # the actual-byte capture with a complete lease/identity sweep
+                    # before emitting or retaining the write-original row.
+                    self.check_full()
                 row=self.emit(dict(kind='write-original',original=reference))
                 self.append_capture(row);self.capture_bytes+=physical_bytes
                 self.snapshot_telemetry_completed=chunk_store.bounded_snapshot_telemetry(telemetry)
@@ -2220,6 +2227,7 @@ class Observer(CapturesMixin):
     def bindings_digest_fd(self,held,identity):
         result=bindings.digest_blocks(self.fd_blocks(held,identity[3]),self.maximum_file_bytes,self.check)
         assert identity==probe.identity(os.fstat(held)),'generated held FD changed during digest'
+        self.check_full()
         return (result['bytes'],result['sha256'])
     def capture_write(self,pid,fd):
         barrier=self.barrier();entry=self.tasks[pid]['entry'];path=fdpath(pid,fd);reader=os.open('/proc/'+str(pid)+'/fd/'+str(fd),os.O_RDONLY|os.O_CLOEXEC)
@@ -2854,6 +2862,109 @@ class Observer(CapturesMixin):
             value=os.stat('/proc/'+str(pid)+'/fd/'+str(descriptor))
             return stat.S_ISREG(value.st_mode) and not descriptor_flags(pid,descriptor)&os.O_PATH
         except (FileNotFoundError,ProcessLookupError):return False
+    def lease_acquisition_diagnostic(self,pid,descriptor,entry,barrier,error):
+        """Bounded EAGAIN attribution; never grants admission or changes failure.
+
+        The payload is valid JSON <=4096 bytes (not a sliced JSON string). The
+        attempted-descriptor identity is sampled CURRENTLY; the cached mmap-entry
+        identity is reported separately. Matching descriptors are scanned across
+        every live task sharing the attempted fdTable (or only the attempted pid
+        when shared tables are not in use), under one total budget.
+        """
+        try:
+            task=self.tasks.get(pid) or {}
+            fd_table=task.get("fdTable")
+            cached=(task.get("toolMmapFd") or {}).get("identity")
+            # Current attempted descriptor identity is separate from the cached
+            # syscall-entry identity. Never present one as the other.
+            attempted=None;attempted_error=None
+            try:
+                if descriptor is not None:
+                    attempted=probe.identity(os.stat("/proc/%d/fd/%d"%(pid,descriptor)))
+            except (OSError,ValueError) as caught:
+                attempted_error=type(caught).__name__
+            flags=None;flags_error=None
+            try:
+                if descriptor is not None:flags=descriptor_flags(pid,descriptor)
+            except (OSError,ValueError) as caught:
+                flags_error=type(caught).__name__
+            match_identity=attempted if attempted is not None else cached
+            match_source='attempted-current' if attempted is not None else ('cached-toolMmapFd' if cached is not None else 'unavailable')
+            # Same fdTable/sibling tasks are relevant; without shared tables only
+            # this task owns the descriptor table.
+            if getattr(self,'shared_tasks',False) and fd_table is not None:
+                owners=sorted(p for p,t in self.tasks.items() if not t.get('exited') and t.get('fdTable')==fd_table)
+                scope='same-fd-table'
+            else:
+                owners=[pid];scope='single-task'
+            if pid not in owners:owners.append(pid);owners.sort()
+            slot_budget=2048;slots=0;aliases=[];matches=0;unavailable=0
+            scan_available=True;scan_complete=True;scan_status='complete';scan_error=None;tasks_inspected=0
+            for owner in owners:
+                if slots>=slot_budget:
+                    scan_complete=False;scan_status='truncated';break
+                limit=min(1024,slot_budget-slots)
+                try:
+                    names=bounded_fd_slot_names(owner,lambda:None,maximum=limit)
+                except BaseException as caught:
+                    scan_available=False;scan_complete=False;scan_status='unavailable';scan_error=type(caught).__name__
+                    slots+=limit
+                    break
+                tasks_inspected+=1;slots+=len(names)
+                if len(names)>=limit:scan_complete=False;scan_status='truncated'
+                for name in names:
+                    try:
+                        fd=int(name);value=os.stat("/proc/%d/fd/%d"%(owner,fd))
+                    except (OSError,ValueError):
+                        unavailable+=1;continue
+                    if match_identity is not None and (value.st_dev,value.st_ino)==(match_identity[0],match_identity[1]):
+                        matches+=1
+                        if len(aliases)<64:
+                            row=dict(pid=owner,fd=fd,flags=None,access=None,identitySource=match_source)
+                            try:
+                                mode=descriptor_flags(owner,fd);row['flags']=mode;row['access']=mode&os.O_ACCMODE
+                            except (OSError,ValueError) as caught:
+                                row['flagsErrorClass']=type(caught).__name__
+                            aliases.append(row)
+            # Byte-bound descriptors: keep valid JSON <=4096 rather than slicing.
+            base=dict(pid=pid,tgid=task.get("tgid"),fdTable=fd_table,descriptor=descriptor,
+                descriptorFlags=flags,descriptorAccess=None if flags is None else flags&os.O_ACCMODE,
+                descriptorFlagsErrorClass=flags_error,
+                attemptedDescriptorIdentity=attempted,attemptedDescriptorIdentityErrorClass=attempted_error,
+                cachedToolMmapIdentity=cached,cachedIdentityProvenance='task.toolMmapFd@syscall-entry',
+                identityUsedForMatch=match_identity,identityUsedForMatchProvenance=match_source,
+                mmap=dict(args=[int(v) for v in (entry.get("args") or [])[:6]],
+                    length=(entry.get("args") or [None,None])[1] if len(entry.get("args") or [])>1 else None,
+                    protection=(entry.get("args") or [None,None,None])[2] if len(entry.get("args") or [])>2 else None,
+                    flags=(entry.get("args") or [None,None,None,None])[3] if len(entry.get("args") or [])>3 else None,
+                    fd=(entry.get("args") or [None,None,None,None,None])[4] if len(entry.get("args") or [])>4 else None,
+                    offset=(entry.get("args") or [None]*6)[5] if len(entry.get("args") or [])>5 else None),
+                entrySequence=entry.get("sequence"),barrierSequence=barrier.get("sequence"),
+                scanScope=scope,tasksInspected=tasks_inspected,scanAvailable=scan_available,
+                scanComplete=scan_complete,scanStatus=scan_status,scanErrorClass=scan_error,
+                slotBudget=slot_budget,slotsScanned=slots,slotsRemaining=max(0,slot_budget-slots),
+                descriptorStatUnavailable=unavailable,
+                matchingDescriptorCount=(None if not scan_available else matches),
+                matchingDescriptorRows=0,matchingDescriptorRowsOmitted=(None if not scan_available else max(0,matches-len(aliases))),
+                errorClass=type(error).__name__,errorErrno=getattr(error,"errno",None),
+                matchingOwnedDescriptors=[])
+            kept=[]
+            for row in aliases[:64]:
+                trial=dict(base);trial['matchingOwnedDescriptors']=kept+[row];trial['matchingDescriptorRows']=len(kept)+1
+                if len(json.dumps(trial,sort_keys=True,separators=(",",":")))<=4096:kept.append(row)
+                else:base['matchingDescriptorRowsOmitted']=(base['matchingDescriptorRowsOmitted'] or 0)+1
+            base['matchingOwnedDescriptors']=kept;base['matchingDescriptorRows']=len(kept)
+            encoded=json.dumps(base,sort_keys=True,separators=(",",":"))
+            if len(encoded)>4096:
+                # Last-resort structurally valid minimal payload; preserve the
+                # census status, never claim an empty scan is exhaustive.
+                minimal=dict(pid=pid,descriptor=descriptor,scanAvailable=scan_available,scanComplete=scan_complete,
+                    scanStatus=scan_status,slotsScanned=slots,matchingDescriptorCount=(None if not scan_available else matches),
+                    matchingDescriptorRows=0,matchingOwnedDescriptors=[],errorClass=type(error).__name__,errorErrno=getattr(error,"errno",None))
+                encoded=json.dumps(minimal,sort_keys=True,separators=(",",":"))
+            print("SDK_LEASE_ACQUISITION_EAGAIN "+encoded,file=sys.stderr,flush=True)
+        except BaseException:
+            pass
     def lifetime_acquisition(self,pid,lexical,role,entry_sequence,barrier_sequence,*,descriptor=None,depth=0,source='lexical',collected=None):
         """Acquire one actual kernel read lease before the syscall is resumed.
 
@@ -3335,6 +3446,11 @@ class Observer(CapturesMixin):
             with (self.capture_dir/name).open('xb') as output:
                 for at in range(0,len(data),65536):self.check();block=data[at:at+65536];self.claim(len(block),category='capture-body');output.write(block)
                 output.flush();os.fsync(output.fileno())
+            # Actual provider/mountinfo bytes were just read with cheap checks.
+            # Complete the capture boundary before the reference is accepted,
+            # cached, or emitted as an artifact; a break after the last cheap
+            # read must not escape.
+            self.check_full()
             reference=dict(path=name,bytes=len(data),sha256=digest)
             capture=self.emit(dict(kind='toolchain-original',captureKind='mountinfo',observedPid=pid,original=reference));self.append_capture(capture);self.capture_bytes+=len(data);self.tool_provider_cache[key]=reference
         return reference
@@ -3386,7 +3502,8 @@ class Observer(CapturesMixin):
         run budget, waiter, stdio and deadline refusal on every existing call and
         skip only the redundant full lifetime-lease sweep. The frame is closed
         unconditionally, a COMPLETE check runs before any result can escape, and
-        emission happens after the frame is gone so it pays its own full sweeps.
+        emission happens after the frame is gone and pays only the cheap
+        sticky guard; the full check above is the boundary.
         Every fresh read, digest and identity assertion is unchanged.
         """
         assert getattr(self,'owned_maps_frame',None) is None,'owned maps frame is not re-entrant'
@@ -3434,7 +3551,8 @@ class Observer(CapturesMixin):
                 except BaseException as error:
                     failure=error if failure is None else failure
             if failure is not None:raise failure
-            # Emitted after the frame: emit pays its own full sweeps.
+            # Emitted after the frame: emit pays only the cheap sticky guard;
+            # the full check above is the boundary.
             row=self.emit(pending);self.append_capture(row)
         mappings=bindings.parse_proc_maps(bytes(data));memory_policy.validate_mappings(mappings)
         return row,mappings
@@ -3560,7 +3678,14 @@ class Observer(CapturesMixin):
             descriptor=entry['args'][4]
             # Only queued for a nonanonymous regular FD; this job must acquire
             # through the tracee's own /proc/PID/fd/N before the kernel maps it.
-            lease=self.lifetime_acquisition(pid,fdpath(pid,descriptor) or '/proc/'+str(pid)+'/fd/'+str(descriptor),'mmap',entry['sequence'],barrier['sequence'],descriptor=descriptor,source='descriptor')
+            try:
+                lease=self.lifetime_acquisition(pid,fdpath(pid,descriptor) or '/proc/'+str(pid)+'/fd/'+str(descriptor),'mmap',entry['sequence'],barrier['sequence'],descriptor=descriptor,source='descriptor')
+            except BlockingIOError as error:
+                # EAGAIN before the kernel mmap is diagnostic-only.  Preserve the
+                # original exception; never retry, unlock, suppress or extend.
+                try:self.lease_acquisition_diagnostic(pid,descriptor,entry,barrier,error)
+                except BaseException:pass
+                raise
             if lease is not None:self.tasks[pid]['toolMmapLease']=dict(sequence=lease['sequence'],identity=lease['identity'],entrySequence=entry['sequence'])
         else:
             maps,mappings=self.tool_maps(pid);args=entry['args']
@@ -3623,6 +3748,9 @@ class Observer(CapturesMixin):
     def resume_original(self):
         assert not self.read_frame_any(),'tracee resume is forbidden inside an owned read-only body'
         assert getattr(self,'owned_emit_record_frame',None) is None,'tracee resume is forbidden inside a record callback'
+        # One complete check for this controlled resume batch.  No actual
+        # PTRACE_SYSCALL may occur after a failed lease/identity/artifact close.
+        self.check_full()
         if self.generated_vma and getattr(self.generated_vma,'round',None) is not None:return self.generated_vma.drive()
         focus=getattr(self,'terminal_focus',None)
         if focus is not None and self.tasks[focus].get('terminalAuthority',{}).get('closed')and state(focus)=='Z':self.terminal_focus=None
@@ -3662,18 +3790,29 @@ class Observer(CapturesMixin):
                     assert terminal['closed'],'EXIT task resumed before terminal/peer closure'
                     if state(pid)=='Z':self.reap_terminal_task(pid,allow_pending=getattr(self,'serialize_terminal_syscalls',False));continue
                     signal_value=row.pop('signal',0);assert signal_value==0,'EXIT resume may not inject a signal'
+                    # Cheap sticky guard immediately before this actual resume.
+                    # The one full batch check above remains the boundary proof.
+                    self.check()
                     single.trace(SYSCALL,pid,0,0);row['stopped']=False
                     terminal['resumed']=self.emit(dict(kind='actual-terminal-exit-resume',pid=pid,originalSequence=terminal['original']['sequence'],closeSequence=terminal['closedRow']['sequence'],request='PTRACE_SYSCALL',signal=0))
                 else:
-                    single.trace(SYSCALL,pid,0,row.pop('signal',0));row['stopped']=False
+                    signal_value=row.pop('signal',0)
+                    # Cheap sticky guard immediately before this actual resume.
+                    # No full sweep is added per task/event.
+                    self.check()
+                    single.trace(SYSCALL,pid,0,signal_value);row['stopped']=False
     def close_terminal_authorities(self,barrier):
         if not getattr(self,'terminal_exit_evidence',False):return
         for pid,task in list(self.tasks.items()):
             terminal=task.get('terminalAuthority')
             if terminal and not terminal['closed']:
+                # The terminal closure row and the terminal lease close are
+                # external authority; full validation must precede both.
+                self.check_full()
                 terminal['closedRow']=self.emit(dict(kind='toolchain-terminal-authority-closed',pid=pid,eventSequence=terminal['event']['sequence'],originalSequence=terminal['original']['sequence'],barrierSequence=barrier['sequence'],actualWaitSequence=task.get('actualWaitSequence')))
                 terminal['closed']=True
-                if task['exited']:terminal['lease'].close()
+                if task['exited']:
+                    terminal['lease'].close()
     def capture_identity_noop_entry(self,pid,record,status):
         task=self.tasks[pid]
         assert self.exclusive is None and not self.pausing and not task.get('authorityPending'),'identity requires initialized exclusive authority boundary'

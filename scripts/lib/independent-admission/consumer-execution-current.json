@@ -381,7 +381,7 @@
   },
   {
     "path": "qlever/scripts/sdk-coordinated-wait.py",
-    "sha256": "9870836b5b0cb69d55495ec4923c6800046aa52cdd1741219308df4149c1281a"
+    "sha256": "4e2015cf6032b4fcd15e02a725614ff71261122d6b40931b24a3e2379d441c47"
   },
   {
     "path": "qlever/scripts/sdk-debian-binary-hook.py",
@@ -433,7 +433,7 @@
   },
   {
     "path": "qlever/scripts/sdk-generated-vma-originals.py",
-    "sha256": "340b66af0944e70e99f26453e2d5f94d8dfa5d3a41e93f2a9e4448bce70b2114"
+    "sha256": "247bab448ae2ac24f5b939ab4c3af4dff3f281c11523de8f802286e7c7338d4a"
   },
   {
     "path": "qlever/scripts/sdk-generation-materials.py",
@@ -441,7 +441,7 @@
   },
   {
     "path": "qlever/scripts/sdk-generation-multiprocess-bindings.py",
-    "sha256": "c57050171eabc0f570689c8a1e668e497a7b9e892afdd48b855eef98c8cbe370"
+    "sha256": "d30a44a3c6962ac847232696a758808bec864d46e0c0b6d00a539adf13603bf7"
   },
   {
     "path": "qlever/scripts/sdk-git-patch-projection.py",
@@ -489,7 +489,7 @@
   },
   {
     "path": "qlever/scripts/sdk-ptrace-execution.py",
-    "sha256": "440e52d002a28ea187d76b99300b6724639a6c4c67aaa9ed1717b7d064ee3210"
+    "sha256": "585e4c7f67a84be16bd67f9eaf6af4816ef02c1e567b8a82fa2eec86b658199a"
   },
   {
     "path": "qlever/scripts/sdk-ptrace-kernel.py",
@@ -1205,11 +1205,11 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-fetchcontent.ts",
-    "sha256": "ece563afa293ff99ce7eee4f16becc7b45ff62a6097ce51ac42519fe4c2c2478"
+    "sha256": "160464da47245b7b760e05312034217ae1cbf10c1fb083a8abdff1abc7ddbee2"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
-    "sha256": "49ea127b230255384cad0a6104f902444657390b84c71f3aa196d6eeacb9fe0b"
+    "sha256": "0e59e6c707ba78ca36289fcab45e52bf4f9159d49d334e874c6c65842bb3f5eb"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-inputs.ts",
@@ -1217,11 +1217,11 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-observed-tools.ts",
-    "sha256": "19ca9168ccbdb6ca735a57824a25d8096d8572bc20396554af8a06b2269428cc"
+    "sha256": "1310845f7cf329f2dad2aef43e7112ff901f69a92a82c2d58548b48c4d181114"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "5cf74dfc71ef729f8c2de4e030bec0e8493452d07fe0efd22e6d2270744e0676"
+    "sha256": "ff2a708f2b2152eae7d6c6d8d8cb3bef25c974981daafd15c4c2a8c9cceb20b5"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -1697,7 +1697,7 @@
   },
   {
     "path": "qlever/scripts/sdk-tool-lifetime-leases.py",
-    "sha256": "487f198140df5e09eec58d58c5861b332e82bb14725881e739b95caf8c5e9c65"
+    "sha256": "b6fb8d4e15fa38ecd1dee061a46a4431316178f3f7146a0a5292ba1b0f54986e"
   },
   {
     "path": "qlever/scripts/sdk-executable-memory-policy.py",
@@ -1873,7 +1873,7 @@
   },
   {
     "path": "qlever/tests/test_native_lease_backend.py",
-    "sha256": "d501e415e180c97c2adfe8ecc8e618bb275aa31b639b08b2be445c40faf3149b"
+    "sha256": "e9968b07800e3b9b3d92c096105e63d43a1843cde75273bdea002969f248bb04"
   },
   {
     "path": "qlever/tests/test_native_lease_eintr.py",
@@ -2033,10 +2033,30 @@
   },
   {
     "path": ".github/workflows/ci.yml",
-    "sha256": "00a76942f09e85bf3c6dbc5be6ab781bb06d85af7b9c7d2edf9579442276ca6d"
+    "sha256": "6635ff5b45c6a63f731ab84644b9356080d1d602050f989af5b0d127666b6996"
   },
   {
     "path": "qlever/tests/test_sdk90_metadata_open.py",
     "sha256": "0f9f209cd79d6e512c48bf04af1259c47fa06b1bd3891728c554bfc148cb7a77"
+  },
+  {
+    "path": "qlever/tests/sdk_test_paths.py",
+    "sha256": "879127cf32cb4f5dae218911cebdd00a9ed9ad766e9e32b2bbf944a8aa89ba57"
+  },
+  {
+    "path": "qlever/tests/test_sdk_pch_generated_private_mmap.py",
+    "sha256": "efe206d2f59fb307ba5d4b054e37d5e96db1f040beb13509fa45eca4b3db4b62"
+  },
+  {
+    "path": "qlever/tests/fixtures/pch_cmake/CMakeLists.txt",
+    "sha256": "e932a67ead1ef4afe3da87ca01f14a7a1675492091f8d9d3a1e73a624dc3e938"
+  },
+  {
+    "path": "qlever/tests/fixtures/pch_cmake/pch.hpp",
+    "sha256": "11b6ef2b86b92570abdfd7366e92b4d88a415d7b0a9110c427669e5596777968"
+  },
+  {
+    "path": "qlever/tests/fixtures/pch_cmake/main.cpp",
+    "sha256": "55a43e241ac615b2a87f335c39c25096135c69f4ba0b9f5031bbaf171cfa7205"
   }
 ]

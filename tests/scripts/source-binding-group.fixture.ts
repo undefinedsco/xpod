@@ -1,12 +1,12 @@
 import {secondaryGitHubSourceBindingSelectors,sourceBindingKey,type GitHubSourceBinding,type GitHubSourceBindingGroup} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 /** Expected LIVE canonical source inventory. Kept independent of the JSON under test.
  * Published/frozen snapshots retain their own historical counts. */
-export const CURRENT_CANONICAL_SOURCE_ROWS = 510;
+export const CURRENT_CANONICAL_SOURCE_ROWS = 515;
 /** The single explicit CURRENT registration expectation. Historical suites keep
  * their own frozen prefix/hash fixtures; only genuine current-source checks use
  * these values. A future append updates this ONE object, never 41 scattered
  * literals. */
-export const CURRENT_SOURCE_GROUP_COUNTS = Object.freeze({api:29,sdk:90,consumer:99,ci:196,linux:91,cli:12,current:510});
+export const CURRENT_SOURCE_GROUP_COUNTS = Object.freeze({api:29,sdk:90,consumer:99,ci:196,linux:91,cli:12,current:515});
 export const CURRENT_OBSERVER_GROUPS = 62;
 export const CURRENT_HELPER_GROUP_COUNTS = Object.freeze({controller:42,fetch:45,maximum:45});
 

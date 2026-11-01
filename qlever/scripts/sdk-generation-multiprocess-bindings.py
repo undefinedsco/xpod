@@ -1220,7 +1220,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
     validated_mmap_operations={}
     for phase,lines in phase_lines:
         input_generations.phase()
-        need(not live,'prior actual process tree has not closed');phase_capture_sequences.clear();roots=[];waits=[];raw_decoder=raw_records.RawRecordDecoder();lease_model=None;lease_tokens={};lease_closed=[];memory_missing=False;memory_shared_entries=set();memory_released_entries=set();pending_provider_operations=set();pending_source_provider_paths={};lease_pids=[];lease_terminal=False;memory_mode=None;bti_mode=None;bti_required=set();bti_originals={};bti_completed=set();approved_rx={};clone3_mode=None;clone3_originals={};clone3_consumed=set();clone3_events={};memory_checker=executable_memory_policy();memory_writes={};remap_mode=None;remap_required=set();remap_originals={};remap_consumed=set()
+        need(not live,'prior actual process tree has not closed');phase_capture_sequences.clear();roots=[];waits=[];raw_decoder=raw_records.RawRecordDecoder();lease_model=None;lease_tokens={};lease_reuses={};lease_closed=[];memory_missing=False;memory_shared_entries=set();memory_released_entries=set();pending_provider_operations=set();pending_source_provider_paths={};lease_pids=[];lease_terminal=False;memory_mode=None;bti_mode=None;bti_required=set();bti_originals={};bti_completed=set();approved_rx={};clone3_mode=None;clone3_originals={};clone3_consumed=set();clone3_events={};memory_checker=executable_memory_policy();memory_writes={};remap_mode=None;remap_required=set();remap_originals={};remap_consumed=set()
         for raw in lines:
             check();total+=len(raw);need(total<=maximum_raw and len(raw)<=65536,'tiny raw aggregate/record bound');row=raw_decoder.feed(raw)
             if row is None:continue
@@ -1919,8 +1919,12 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 # acquisition row must be that exact token.
                 # The cited sequence is the acquisition ROW number; the replay
                 # stored that same number as `acquisitionSequence`.
+                reused_citation=False
                 acquired=[value for value in lease_tokens.values()
                           if value.get('leaseId')==lease_id and value.get('acquisitionSequence')==lease_sequence]
+                if not acquired and (lease_id,lease_sequence) in lease_reuses:
+                    token=lease_tokens.get(lease_id);reuse=lease_reuses[(lease_id,lease_sequence)]
+                    need(not lease_closed and not lease_terminal and token and reuse.get("identity")==row.get("identity") and reuse.get("role")=="input-read" and token.get("acquisitionSequence",0)<entry["sequence"],"reused lease citation identity/role/order/lifetime differs");lease_row=dict(token,role="input-read",identity=reuse["identity"],entrySequence=entry["sequence"]);acquired=[lease_row];reused_citation=True
                 need(acquired,'regular input cites a missing lease acquisition')
                 lease_row=acquired[0]
                 need(lease_row.get('role')=='input-read','cited lease is not an input-read lease')
@@ -1933,7 +1937,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 # to a DIFFERENT, later entry is not this read's custody.
                 acquisition_entry=lease_row.get('entrySequence')
                 need(acquisition_entry is not None,'cited lease lacks its acquisition entry binding')
-                if acquisition_entry!=entry['sequence']:
+                if not reused_citation and acquisition_entry!=entry['sequence']:
                     need(lease_sequence<entry['sequence'],
                          'cited lease is bound to another entry and was not already held')
                 need(lease_sequence<row['sequence'],
@@ -2320,6 +2324,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                     present=lease_tokens.get(token)
                     need(present is not None and all(present[key]==value for key,value in
                         dict(leaseId=token,identity=identity,acquisitionSequence=row.get('acquisitionSequence')).items()),'lease reuse changed acquisition')
+                if kind=='toolchain-lease-reused':lease_reuses[(token,row['sequence'])]=dict(identity=identity,role=row['role'],entrySequence=row.get('entrySequence'))
             elif kind=='toolchain-lease-closed-token':
                 need(lease_model==row.get('model')=='kernel-held-read-lease-v1' and not live and not lease_terminal and not lease_pids,'lease token close before actual waits/after closure')
                 value={key:row.get(key) for key in ['leaseId','identity','acquisitionSequence']}

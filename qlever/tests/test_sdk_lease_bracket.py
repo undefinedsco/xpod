@@ -13,10 +13,15 @@ import ast
 import os
 import signal
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2]
+
+try:
+    from qlever.tests.sdk_test_paths import scoped_temp
+except ModuleNotFoundError:
+    from sdk_test_paths import scoped_temp
+
 sys.path.insert(0,str(ROOT/'qlever/scripts'))
 import importlib.util
 
@@ -121,6 +126,16 @@ class SourceSafetyTest(unittest.TestCase):
             forbidden=called & MUTATING_NAMES
             self.assertFalse(forbidden,name+' must not mutate inside its bracket: '+str(sorted(forbidden)))
 
+
+    def test_every_actual_syscall_resume_has_an_immediate_cheap_guard(self):
+        import re
+        ptrace=(ROOT/'qlever/scripts/sdk-ptrace-execution.py').read_text()
+        coord=(ROOT/'qlever/scripts/sdk-coordinated-wait.py').read_text()
+        self.assertEqual(len(re.findall(r"self\.check\(\)\s*\n\s*single\.trace\(SYSCALL",ptrace)),2)
+        self.assertEqual(len(re.findall(r"single\.trace\(SYSCALL",ptrace)),2)
+        self.assertEqual(len(re.findall(r"self\.b\.check\(\);core\.single\.trace\(core\.SYSCALL",coord)),4)
+        self.assertEqual(len(re.findall(r"core\.single\.trace\(core\.SYSCALL",coord)),4)
+
     def test_no_once_per_epoch_permissive_cache(self):
         text=self.source
         for banned in ('_validated','validated=','begin_epoch','cached_check'):
@@ -131,7 +146,7 @@ class SourceSafetyTest(unittest.TestCase):
 @unittest.skipUnless(sys.platform.startswith('linux'),'real read leases are Linux-only')
 class RealLeaseBracketTest(unittest.TestCase):
     def setUp(self):
-        self.tmp=tempfile.TemporaryDirectory()
+        self.tmp=scoped_temp('lease-bracket')
         self.lease_set=leases.LeaseSet()
         self.fds=[]
         for index in range(4):
