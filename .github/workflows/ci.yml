@@ -181,6 +181,10 @@ jobs:
       - name: SDK90 owned input generation native gate
         run: |
           sudo -u root -E env PYTHONDONTWRITEBYTECODE=1 /usr/bin/setpriv --regid "$(id -g)" --keep-groups /usr/bin/python3 -B qlever/tests/run_sdk_owned_input_generation_gate.py -v
+          # Same privileged root/setpriv group and canonical native helper as the
+          # standing 17-case gate. The script has its own exact 6-case zero-skip
+          # guard; do not replace it with a bare unittest invocation.
+          sudo -u root -E env PYTHONDONTWRITEBYTECODE=1 /usr/bin/setpriv --regid "$(id -g)" --keep-groups /usr/bin/python3 -B qlever/tests/test_sdk90_metadata_open.py
 
       - name: Owned observer native regressions (required, no skip)
         run: |

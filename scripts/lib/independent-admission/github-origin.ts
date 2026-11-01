@@ -1555,6 +1555,11 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
       // explicit 17-case gate after the canonical native helper build.
       {workflowSha256:'eb4067fbcf7ce260010aafde8d5b89b3a0890a88af877bd91018d372a6358bbe',
       jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // APPEND-ONLY: the same step also runs the exact six-case metadata-open
+      // script through its own strict zero-skip __main__ guard.
+      {workflowSha256:'00a76942f09e85bf3c6dbc5be6ab781bb06d85af7b9c7d2edf9579442276ca6d',
+      jobName:()=>callerNames[0]!,
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,
     sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS,

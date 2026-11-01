@@ -146,17 +146,32 @@ class Runtime:
         owner.checkpoint_appends('generated-input-open', entry['sequence'])
         directory, address, flags = open_shape(entry)
         path = self.api.path_argument(pid, directory, address)
+        metadata = None
+        held = None
         try:
-            held = owner.lifetime_open(pid, path)
-        except FileNotFoundError:
-            return False
-        try:
-            identity = self.api.probe.identity(os.fstat(held))
+            # Metadata-only O_PATH probe through the same bound tracee root and
+            # openat2 RESOLVE_IN_ROOT|NO_MAGICLINKS. It never invokes a device
+            # open, so headless /dev/tty stays an ordinary non-regular target.
+            try:
+                metadata = owner.lifetime_open(pid, path, metadata_only=True)
+            except FileNotFoundError:
+                return False
+            metadata_value = os.fstat(metadata)
+            identity = self.api.probe.identity(metadata_value)
             key = tuple(identity[:2])
+            if not stat.S_ISREG(metadata_value.st_mode):
+                return False
             assert key not in self.active, 'overlapping generated writer open'
             acquired = owner.lifetime_acquired.get(key)
             if acquired is None:
                 return False
+            # A real leased regular candidate keeps the existing read-open
+            # handoff. Re-open only after the probe and require the full sampled
+            # identity to be unchanged; both local FDs are closed by finally.
+            os.close(metadata)
+            metadata = None
+            held = owner.lifetime_open(pid, path)
+            assert self.api.probe.identity(os.fstat(held)) == identity, 'generated input changed between metadata and read open'
             assert key not in self.protected_sources, 'source/dependency inode cannot become mutable through a build alias'
             assert path.startswith(owner.build + '/'), 'source/dependency input mutation refused'
             producer = owner.producers.get(key)
@@ -223,6 +238,8 @@ class Runtime:
                 entrySequence=entry['sequence'], captureSequence=retired['sequence']))
             return True
         finally:
+            if metadata is not None:
+                os.close(metadata)
             if held is not None:
                 os.close(held)
 

@@ -55,6 +55,9 @@ class Observer:
         self.rows = []
         self._seq = 100
         self._paths = paths
+        # The real owned-input generation hook is absent in these focused
+        # old-hook fixtures; keep the production None disabled-generation shape.
+        self.owned_input_generations = None
 
     # --- stubs -----------------------------------------------------------
     def barrier(self):

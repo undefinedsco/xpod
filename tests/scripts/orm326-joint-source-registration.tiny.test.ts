@@ -69,7 +69,8 @@ test('the frozen f803 snapshot is the published canonical bytes and the moving c
     'qlever/scripts/sdk-owned-input-generation.py',
     'qlever/tests/test_sdk_owned_input_generation.py',
     'qlever/tests/run_sdk_owned_input_generation_gate.py',
-    '.github/workflows/ci.yml']);
+    '.github/workflows/ci.yml',
+    'qlever/tests/test_sdk90_metadata_open.py']);
   expect(new Set(current.map(row => row.path)).size).toBe(current.length);
 });
 

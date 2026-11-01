@@ -221,7 +221,7 @@ test('only the genuinely new immutable-input-plan slice follows published2406', 
 
 test('the appended groups bind the actual frozen body and real module bytes', () => {
   // The current observer includes the verified regular-read source capture.
-  expect(sha(read(BODY))).toBe('3ade1dca1145e0dbde649e609658a8c39c4d537667b1152fe9b39b494c5c7c8a');
+  expect(sha(read(BODY))).toBe('440e52d002a28ea187d76b99300b6724639a6c4c67aaa9ed1717b7d064ee3210');
   for (const [name, groups] of Object.entries(families)) {
     // PUBLISHED f803 history ends at the f803 counts (SDK 74, i.e. indices 0..73).
     // Those tuples — including index 73 — are immutable published history: they are
@@ -358,7 +358,7 @@ test('the live canonical binds every actual row of the final combined tree', () 
     .toBe('a2cb860d7300d62931a354c90ade3a00ada1c831c37f719b24f77385de93e4fc');
   // The reviewed phase-syscall diagnostic plus its three CI-discovered tests.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-ptrace-execution.py')!.sha256)
-    .toBe('3ade1dca1145e0dbde649e609658a8c39c4d537667b1152fe9b39b494c5c7c8a');
+    .toBe('440e52d002a28ea187d76b99300b6724639a6c4c67aaa9ed1717b7d064ee3210');
   // The final reviewed VMA diagnostic and its root-corrected behavioural test.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-generated-vma-originals.py')!.sha256)
     .toBe('340b66af0944e70e99f26453e2d5f94d8dfa5d3a41e93f2a9e4448bce70b2114');
@@ -367,11 +367,11 @@ test('the live canonical binds every actual row of the final combined tree', () 
   for (const [p, h] of [
     ['qlever/tests/test_qlever_phase_histogram_optional.py', 'adfeebe0c560b460c27b2e8e732ace9445885ae4d6a6657635ac72c813191792'],
     ['qlever/tests/test_qlever_phase_syscall_diagnostics.py', 'f1313057c7279617335f603aea19a5087dff6be0a99e4352910be76ac7e08f3f'],
-    ['qlever/tests/test_qlever_phase_syscall_wiring.py', '8c3827bc18bdf4d5e7bf57318db8c375d5e1fe39fcc61cddf38e0977f0a63a1d'],
+    ['qlever/tests/test_qlever_phase_syscall_wiring.py', '37ced068c0473b965676c888aaac8e1e9535769cf895ee018ccf0a283c012be8'],
   ] as const) expect(current.find((r) => r.path === p)!.sha256).toBe(h);
   for (const row of current) expect(sha(read(row.path))).toBe(row.sha256);
   const body = current.find((r) => r.path === BODY)!;
-  expect(body.sha256).toBe('3ade1dca1145e0dbde649e609658a8c39c4d537667b1152fe9b39b494c5c7c8a');
+  expect(body.sha256).toBe('440e52d002a28ea187d76b99300b6724639a6c4c67aaa9ed1717b7d064ee3210');
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-original-chunk-store.py')!.sha256)
     .toBe('67ea1a610f15f74288d623694b1a4886a82b0f29a186c40e69bdd232b39f96db');
 });
@@ -446,7 +446,7 @@ test('the CURRENT unpublished slice carries the published helper prefixes and it
   const previous = sdk[85]!;
   const previousBindings = previous.sourceBindings ?? [];
   expect(previousBindings.length).toBe(154);
-  expect(current.sourceBindings.length).toBe(161);
+  expect(current.sourceBindings.length).toBe(162);
   expect(current.sourceBindings.slice(0, 154).map(r => r.path))
     .toEqual(previousBindings.map(r => r.path));
   const expectedAppended = [
@@ -457,6 +457,7 @@ test('the CURRENT unpublished slice carries the published helper prefixes and it
     'qlever/tests/test_sdk_owned_input_generation.py',
     'qlever/tests/run_sdk_owned_input_generation_gate.py',
     '.github/workflows/ci.yml',
+    'qlever/tests/test_sdk90_metadata_open.py',
   ];
   const appended = current.sourceBindings.slice(previousBindings.length);
   expect(appended.map(r => r.path)).toEqual(expectedAppended);

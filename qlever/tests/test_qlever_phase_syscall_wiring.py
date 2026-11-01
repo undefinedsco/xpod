@@ -53,6 +53,10 @@ class MinimalObserver:
         self.exclusive = None
         self.pump_errors = []
         self.producers = {}
+        # The production owned-input generation hook is disabled for this minimal
+        # kernel-syscall fake; the real Observer keeps the same None default when
+        # no generation runtime is attached.
+        self.owned_input_generations = None
         self.rename_records = []
         self.retained = set()
         self.capture_content_entities = False

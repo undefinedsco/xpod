@@ -2818,13 +2818,19 @@ class Observer(CapturesMixin):
         self.exclusive=None
         return base
 
-    def lifetime_open(self,pid,path):
+    def lifetime_open(self,pid,path,*,metadata_only=False):
         """Open the actual lexical target through the tracee's own root.
 
         Existing process authority must already have sampled this pid. Binding
         the opened root re-validates its six-field identity, so a root swap
         between the authority barrier and this open refuses the lease.
+
+        `metadata_only=True` is the narrow classification probe: identical
+        root/path resolution, but O_PATH instead of a real read open, so a
+        character device or other non-regular target is never opened with its
+        device semantics. The default path and flags are unchanged.
         """
+        assert type(metadata_only) is bool,'metadata_only must be an explicit bool'
         assert isinstance(path,str) and path.startswith('/') and '\x00' not in path,'absolute actual lexical target required'
         assert pid in self.authority_observed,'lifetime target requires an existing actual process authority sample'
         root=os.open('/proc/'+str(pid)+'/root',os.O_PATH|os.O_DIRECTORY|os.O_CLOEXEC)
@@ -2835,7 +2841,8 @@ class Observer(CapturesMixin):
             # Linux openat2 RESOLVE_IN_ROOT also confines absolute symlink
             # targets. A relative openat alone would still escape via symlinks.
             assert os.uname().machine in ['x86_64','aarch64'],'supported openat2 ABI required'
-            how=(ctypes.c_uint64*3)(os.O_RDONLY|os.O_CLOEXEC|os.O_NONBLOCK,0,0x10|0x02)
+            open_flags=os.O_PATH|os.O_CLOEXEC if metadata_only else os.O_RDONLY|os.O_CLOEXEC|os.O_NONBLOCK
+            how=(ctypes.c_uint64*3)(open_flags,0,0x10|0x02)
             libc=ctypes.CDLL(None,use_errno=True);libc.syscall.restype=ctypes.c_long
             descriptor=libc.syscall(ctypes.c_long(437),ctypes.c_int(root),ctypes.c_char_p(os.fsencode(path)),ctypes.byref(how),ctypes.c_size_t(ctypes.sizeof(how)))
             if descriptor<0:raise OSError(ctypes.get_errno(),'root-contained lifetime open failed',path)
