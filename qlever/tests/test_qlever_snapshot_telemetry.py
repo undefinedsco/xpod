@@ -56,6 +56,8 @@ class TelemetryObserverHarness(unittest.TestCase):
         self.p = obs.PhaseProgress('configure', self.clock + 1800, now=time.monotonic)
         self.o = obs.Observer.__new__(obs.Observer)
         self.o.deadline = self.clock + 1800
+        self.o.check_budget = lambda: None
+        self.o.pump_errors = []
         self.o.current_phase = 'configure'
         self.o._phase_progress = self.p
         self.o.waiter = FakeAlarmWaiter(self.clock + 1.0, parent_deadline=self.clock + 1800)
@@ -157,6 +159,9 @@ class SnapshotWriteOriginalTimeout(unittest.TestCase):
         o.snapshot_telemetry_failure = None
         o.check = lambda: None
         o.check_budget = lambda: None
+        o.pump_errors = []
+        o.deadline = time.monotonic() + 1800
+        o.lifetime_leases = None
         o.claim = lambda count, **kwargs: None
         # CaptureReservation reads these under the existing domain lock.
         o.domain_lock = __import__('threading').Lock()

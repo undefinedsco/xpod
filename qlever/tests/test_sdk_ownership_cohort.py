@@ -63,6 +63,11 @@ class LeaseStub:
         self.calls = 0
         self.fail_on = fail_on
 
+    def guard(self):
+        # Cheap admission guard: the stub has no sticky failure of its own;
+        # full lease verdicts remain on the counted check() path.
+        return None
+
     def check(self, token=None):
         self.calls += 1
         if self.fail_on is not None and self.calls >= self.fail_on:
@@ -220,8 +225,8 @@ class WholeCohortBracket(unittest.TestCase):
         self.assertEqual([row['tgid'] for row in ownership], pids)
         self.assertEqual(fixture.full, 2,
                          'one entry + one finally live validation for the whole cohort')
-        self.assertEqual(fixture.lease.calls, 2,
-                         'the real lease set is swept only at the two live boundaries')
+        self.assertEqual(fixture.lease.calls, 1,
+                         'the real lease set is swept at the one full closing boundary')
         self.assertEqual(fixture.events[0][0], 'full', 'entry validation precedes every real read')
         self.assertEqual(fixture.events[-1][0], 'full', 'trailing validation follows every real read')
         self.assertEqual(len([event for event in fixture.events if event[0] == 'scan']), len(pids))
@@ -246,7 +251,8 @@ class WholeCohortBracket(unittest.TestCase):
             self.assertEqual(fixture.observer.bounded_fd_slots(721), ['0', '3', '12'])
         self.assertEqual(fixture.full, 2,
                          'standalone slot scan still validates at entry and in finally')
-        self.assertEqual(fixture.lease.calls, 2)
+        self.assertEqual(fixture.lease.calls, 0,
+                         'standalone slots use only cheap guards; their enclosing boundary owns the full sweep')
 
     def test_scan_failure_still_runs_the_trailing_full_check(self):
         pids = [731, 733]
@@ -340,7 +346,7 @@ class NegativeOwnership(unittest.TestCase):
     def test_lease_break_is_refused_by_the_trailing_boundary(self):
         pids = [791, 793]
         tables = {pid: ['0', '1'] for pid in pids}
-        with Fixture(pids, tables, lease=LeaseStub(fail_on=2)) as fixture:
+        with Fixture(pids, tables, lease=LeaseStub(fail_on=1)) as fixture:
             with self.assertRaisesRegex(LeaseError, 'kernel requested read lease break'):
                 fixture.observer.verify_task_ownership_original()
         self.assertEqual(fixture.full, 2)

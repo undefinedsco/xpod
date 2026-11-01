@@ -7,6 +7,7 @@ spec=importlib.util.spec_from_file_location('terminal_serialization_backend',ROO
 class Tests(unittest.TestCase):
  def observer(self):
   observer=backend.Observer.__new__(backend.Observer)
+  observer.check_budget=lambda:None;observer.pump_errors=[];observer.deadline=1e9;observer.lifetime_leases=None
   observer.serialize_terminal_syscalls=True;observer.terminal_focus=None;observer.generated_vma=None;observer.exclusive=None
   observer.tasks={2:dict(stopped=True,exited=False,entry=dict(arch=0xc00000b7,nr=94)),3:dict(stopped=True,exited=False,entry=dict(arch=0xc00000b7,nr=93))}
   observer.barrier=lambda:None

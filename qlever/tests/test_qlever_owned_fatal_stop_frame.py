@@ -167,16 +167,20 @@ class FatalStopFrame(unittest.TestCase):
     def test_real_event_path_captures_stop_from_real_lease_verdict(self):
         """BOTH real verdict positions, with a REAL native LeaseSet.
 
-        LEADING: the leased inode is already mutated, so emit's leading full
-        check refuses BEFORE the raw row is written.
-        TRAILING: a real unlink happens AFTER a real raw write, so the refusal
-        comes from the trailing full check inside emit's `finally` -- the row IS
-        on the wire and this must NOT be reported as unemitted.
+        The old test injected a full lease check at emit's leading/trailing
+        boundaries. Those per-record boundaries are now cheap sticky guards;
+        the real native LeaseSet check is therefore latched at the real mutation
+        boundary, and the actual stop frame must propagate through the cheap
+        guard. LEADING remains before raw bytes; TRAILING remains after them.
         """
         # --- LEADING: refused before any raw bytes -------------------------
         obs = self._observer()
         path, task, token = self._armed_task(obs)
         os.unlink(path)                      # REAL kernel mutation of the leased inode
+        try:
+            self.leases.check()              # REAL native verdict latches sticky failure
+        except self.leases_mod.LeaseError as verdict:
+            self.assertIn('leased inode identity changed', str(verdict))
         with self.assertRaises(self.leases_mod.LeaseError) as caught:
             self._drive_real_event(obs, dict(op='exit', arch=0xc000003e,
                                              result=0, isError=False))
@@ -212,6 +216,10 @@ class FatalStopFrame(unittest.TestCase):
             if not state['mutated']:
                 state['mutated'] = True
                 os.unlink(path)              # REAL mutation AFTER the real write
+                try:
+                    self.leases.check()      # REAL native verdict after raw bytes
+                except self.leases_mod.LeaseError as verdict:
+                    self.assertIn('leased inode identity changed', str(verdict))
             return result
 
         obs.raw.write = write_then_unlink
