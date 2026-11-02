@@ -1565,6 +1565,11 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
       // caller jobs and current source group; all earlier versions stay exact.
       {workflowSha256:'6635ff5b45c6a63f731ab84644b9356080d1d602050f989af5b0d127666b6996',
       jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // APPEND-ONLY: the required owned-window gate gains five real case methods;
+      // same caller/job contract, current CI source group unchanged.
+      {workflowSha256:'4daf8f4a09ff921c08c4166bdc76697db9dce4ce0ad90e6499c0c280686c553e',
+      jobName:()=>callerNames[0]!,
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,
     sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS,

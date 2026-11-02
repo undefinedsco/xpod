@@ -9,7 +9,8 @@ Covers:
     an owned window;
   * cheap `Observer.check()` preserves the owned-window/waiter/thread refusals;
   * a mutated leased identity is REJECTED at the real full boundary
-    (`check_full`/resume/read/phase), not at a private emit row;
+    (`check_full`/read/final complete), not at a private emit row or a
+    controlled resume guard;
   * wrong thread / wrong phase / nested re-clamp under the same parent do NOT inherit;
   * an exception after arming leaves NO claim (unconditional reset).
 Linux only: real kernel read leases are required.
@@ -107,7 +108,7 @@ class OwnedWindowEmission(unittest.TestCase):
                 self.obs = None
         self._tmpdir.cleanup()
 
-    def _observer(self, fds=40):
+    def _observer(self, fds=40, lease_class=None):
         out = self.tmp / 'out'
         build = self.tmp / 'build'
         out.mkdir(parents=True, exist_ok=True)
@@ -124,7 +125,7 @@ class OwnedWindowEmission(unittest.TestCase):
         obs.wait_references = []
         obs.unknown_stops = {}
         obs.root_code = None
-        leases = self.leases_mod.LeaseSet()
+        leases = (lease_class or self.leases_mod.LeaseSet)()
         obs.lifetime_leases = leases
         held = []
         self.obs, self.held = obs, held
@@ -482,6 +483,128 @@ class OwnedWindowEmission(unittest.TestCase):
             obs.abort()
             self.assertIsNone(obs._outer_lease_coalesce)
 
+
+
+
+    def test_normal_resume_preserves_actual_output_without_resume_full(self):
+        import ctypes, signal
+        obs, _ = self._observer(lease_class=self.backend.SdkExecutionObserver.lifetime_leases_class)
+        child = None
+        read_fd = write_fd = None
+        try:
+            read_fd, write_fd = os.pipe()
+            child = os.fork()
+            if child == 0:
+                try:
+                    ctypes.CDLL(None, use_errno=True).ptrace(0, 0, None, None)
+                    os.kill(os.getpid(), signal.SIGSTOP)
+                    os.write(write_fd, b"y" * 64)
+                    os._exit(0)
+                except BaseException:
+                    os._exit(111)
+            os.close(write_fd); write_fd = None
+            _, status = os.waitpid(child, os.WUNTRACED)
+            self.assertTrue(os.WIFSTOPPED(status))
+            obs.tasks[child] = dict(stopped=True, exited=False, signal=0)
+            real_check = obs.lifetime_leases.check
+            checks = []
+            def counted_check(*arguments, **keywords):
+                checks.append(1)
+                return real_check(*arguments, **keywords)
+            obs.lifetime_leases.check = counted_check
+            obs.resume_original()
+            self.assertEqual(checks, [], "resume must not full-sweep")
+            _, status = os.waitpid(child, 0)
+            self.assertTrue(os.WIFSTOPPED(status))
+            self.backend.single.trace(self.backend.SYSCALL, child, 0, 0)
+            _, status = os.waitpid(child, 0)
+            self.assertTrue(os.WIFSTOPPED(status))
+            self.assertEqual(os.read(read_fd, 64), b"y" * 64)
+            tokens = obs.lifetime_leases.complete()
+            self.assertEqual(len(tokens), 40)
+            self.assertGreaterEqual(len(checks), 1, "final complete must full-sweep")
+            obs.lifetime_leases.check = real_check
+            self.assertFalse(obs.tasks[child]["stopped"])
+        finally:
+            for fd in (read_fd, write_fd):
+                if fd is not None:
+                    try: os.close(fd)
+                    except OSError: pass
+            if child is not None:
+                try:
+                    os.kill(child, signal.SIGKILL); os.waitpid(child, 0)
+                except OSError:
+                    pass
+            obs.close()
+
+    def test_final_complete_rejects_metadata_mutation_that_guard_misses(self):
+        import os
+        lease_set = self.backend.SdkExecutionObserver.lifetime_leases_class()
+        path = self.tmp / "metadata.bin"
+        path.write_bytes(b"z" * 64)
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            lease_set.acquire(fd)
+            os.chmod(path, 0o600)
+            lease_set.guard()
+            with self.assertRaises(self.backend.lifetime_leases.LeaseError):
+                lease_set.complete()
+        finally:
+            try: lease_set.close()
+            except BaseException: pass
+            os.close(fd)
+
+    def test_final_complete_rejects_forced_lease_loss_that_guard_misses(self):
+        import fcntl, os
+        lease_set = self.backend.SdkExecutionObserver.lifetime_leases_class()
+        path = self.tmp / "forced-loss.bin"
+        path.write_bytes(b"q" * 64)
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            lease_set.acquire(fd)
+            fcntl.fcntl(fd, fcntl.F_SETLEASE, fcntl.F_UNLCK)
+            lease_set.guard()
+            with self.assertRaises(self.backend.lifetime_leases.LeaseError):
+                lease_set.complete()
+        finally:
+            try: lease_set.close()
+            except BaseException: pass
+            os.close(fd)
+
+
+
+    def test_zero_eligible_resume_runs_entry_guard_and_refuses_deadline(self):
+        import time
+        obs, _ = self._observer(lease_class=self.backend.SdkExecutionObserver.lifetime_leases_class)
+        real_trace = self.backend.single.trace
+        calls = []
+        self.backend.single.trace = lambda *arguments, **keywords: calls.append(arguments)
+        try:
+            obs.tasks = {}; obs.generated_vma = None; obs.exclusive = None; obs.terminal_focus = None
+            obs.deadline = time.monotonic() - 1
+            with self.assertRaises(AssertionError):
+                obs.resume_original()
+            self.assertEqual(calls, [], "zero-eligible resume must not PTRACE")
+            self.assertEqual(self.count["sweep"], 0, "entry guard must not full-sweep")
+        finally:
+            self.backend.single.trace = real_trace
+            obs.close()
+
+    def test_zero_eligible_entry_sticky_refuses_without_trace(self):
+        obs, _ = self._observer(lease_class=self.backend.SdkExecutionObserver.lifetime_leases_class)
+        real_trace = self.backend.single.trace
+        calls = []
+        self.backend.single.trace = lambda *arguments, **keywords: calls.append(arguments)
+        try:
+            obs.tasks = {}; obs.generated_vma = None; obs.exclusive = None; obs.terminal_focus = None
+            obs.lifetime_leases._failure = "forced sticky guard"
+            with self.assertRaises(self.backend.lifetime_leases.LeaseError):
+                obs.resume_original()
+            self.assertEqual(calls, [], "sticky zero-eligible resume must not PTRACE")
+            self.assertEqual(self.count["sweep"], 0, "entry guard must not full-sweep")
+        finally:
+            self.backend.single.trace = real_trace
+            obs.close()
 
 if __name__ == '__main__':
     unittest.main()

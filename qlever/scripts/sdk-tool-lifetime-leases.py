@@ -351,8 +351,9 @@ class LeaseSet:
 
         The kernel read lease is the write-exclusion primitive.  This does not
         issue F_GETLEASE/fstat and therefore does not claim to establish an
-        interval by itself; full `check()` runs at every actual acceptance,
-        read closing and controlled resume boundary.
+        interval by itself; full `check()` runs at actual acceptance, real content
+        closing, lease transition, terminal close and phase-final complete.
+        Controlled resume uses this guard before each actual PTRACE.
         """
         self._ready()
 

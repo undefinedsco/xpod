@@ -3759,9 +3759,11 @@ class Observer(CapturesMixin):
     def resume_original(self):
         assert not self.read_frame_any(),'tracee resume is forbidden inside an owned read-only body'
         assert getattr(self,'owned_emit_record_frame',None) is None,'tracee resume is forbidden inside a record callback'
-        # One complete check for this controlled resume batch.  No actual
-        # PTRACE_SYSCALL may occur after a failed lease/identity/artifact close.
-        self.check_full()
+        self.check()
+        # The accepted endpoint is the phase-final complete()/closing proof.
+        # Each actual resume below keeps the existing cheap sticky guard, and
+        # all real content/closing/final boundaries remain full. A temporary
+        # unpublishable tracee does not need a second full sweep at this point.
         if self.generated_vma and getattr(self.generated_vma,'round',None) is not None:return self.generated_vma.drive()
         focus=getattr(self,'terminal_focus',None)
         if focus is not None and self.tasks[focus].get('terminalAuthority',{}).get('closed')and state(focus)=='Z':self.terminal_focus=None
@@ -3802,14 +3804,14 @@ class Observer(CapturesMixin):
                     if state(pid)=='Z':self.reap_terminal_task(pid,allow_pending=getattr(self,'serialize_terminal_syscalls',False));continue
                     signal_value=row.pop('signal',0);assert signal_value==0,'EXIT resume may not inject a signal'
                     # Cheap sticky guard immediately before this actual resume.
-                    # The one full batch check above remains the boundary proof.
+                    # Final phase completion and content closings carry the full proof.
                     self.check()
                     single.trace(SYSCALL,pid,0,0);row['stopped']=False
                     terminal['resumed']=self.emit(dict(kind='actual-terminal-exit-resume',pid=pid,originalSequence=terminal['original']['sequence'],closeSequence=terminal['closedRow']['sequence'],request='PTRACE_SYSCALL',signal=0))
                 else:
                     signal_value=row.pop('signal',0)
                     # Cheap sticky guard immediately before this actual resume.
-                    # No full sweep is added per task/event.
+                    # No full sweep is added per task; phase-final complete() remains.
                     self.check()
                     single.trace(SYSCALL,pid,0,signal_value);row['stopped']=False
     def close_terminal_authorities(self,barrier):
