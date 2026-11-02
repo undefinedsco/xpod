@@ -616,6 +616,44 @@ def _cleanup(
         raise errors[0]
 
 
+def _measure_new_chunk_bytes(
+    fd: int, size: int, chunks_fd: Optional[int], check: Callable[[], None]
+) -> int:
+    """Return unique bytes that would be newly written for this source.
+
+    The capture ledger is a total retained-byte budget.  Existing chunks are
+    already retained, so reserving the full logical source size for them counts
+    the same bytes twice at peak.  This read-only scan only measures; it does
+    not create directories, stage chunks, or mutate the ledger.
+    """
+    number_of_chunks = (size + CHUNK_SIZE - 1) // CHUNK_SIZE
+    seen: Dict[str, int] = {}
+    new_bytes = 0
+    offset = 0
+    for index in range(number_of_chunks):
+        if index % 64 == 0:
+            check()
+        length = min(CHUNK_SIZE, size - offset)
+        data = _pread_exact(fd, length, offset)
+        chunk_sha = hashlib.sha256(data).hexdigest()
+        previous = seen.get(chunk_sha)
+        if previous is not None:
+            if previous != length:
+                raise SnapshotError("chunk hash seen with inconsistent lengths")
+        else:
+            seen[chunk_sha] = length
+            if chunks_fd is None:
+                new_bytes += length
+            else:
+                try:
+                    _verify_existing_chunk(chunks_fd, chunk_sha, length, chunk_sha)
+                except FileNotFoundError:
+                    new_bytes += length
+        offset += length
+    check()
+    return new_bytes
+
+
 def snapshot(
     root: str,
     fd: int,
@@ -718,7 +756,25 @@ def snapshot(
 
         number_of_chunks = (size + CHUNK_SIZE - 1) // CHUNK_SIZE
         manifest_bound = MANIFEST_BASE_BOUND + number_of_chunks * MANIFEST_CHUNK_BOUND
-        reserve_amount = size + manifest_bound
+        # The normal path keeps the existing single-pass/checkpoint contract
+        # when the full peak already fits.  Only when the full-size reservation
+        # would not fit do we measure already-retained chunks: the ledger is a
+        # total retained-byte budget, so reserving size + manifest_bound for
+        # reused chunks double-counts them at peak.  A snapshot whose actual
+        # retained growth is only its manifest must still be admissible.
+        full_reserve = size + manifest_bound
+        remaining = getattr(ledger, 'remaining_bytes', None)
+        if callable(remaining):
+            remaining = remaining()
+        if isinstance(remaining, int) and remaining >= full_reserve:
+            reserve_amount = full_reserve
+        else:
+            planned_new_chunk_bytes = _measure_new_chunk_bytes(
+                fd, size, chunks_fd, check
+            )
+            if _identity(os.fstat(fd)) != identity_before:
+                raise SnapshotError("source file identity changed during snapshot")
+            reserve_amount = planned_new_chunk_bytes + manifest_bound
 
         # A failed reserve must not touch any reservation this transaction does
         # not own.  Ownership starts only after reserve succeeds.
@@ -1060,6 +1116,10 @@ class Ledger:
         self.reserved_bytes = 0
         self.write_bytes = 0
         self._active = False
+
+    @property
+    def remaining_bytes(self):
+        return self.maximum_bytes - self.retained_bytes
 
     def reserve(self, n):
         n = _amount(n, "n")
