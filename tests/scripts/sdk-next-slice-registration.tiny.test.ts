@@ -221,7 +221,7 @@ test('only the genuinely new immutable-input-plan slice follows published2406', 
 
 test('the appended groups bind the actual frozen body and real module bytes', () => {
   // The current observer includes the verified regular-read source capture.
-  expect(sha(read(BODY))).toBe('83f29f0a451712ead722c3abd4c2b62e67329e58bbf7ec6d18906b8a2cebf446');
+  expect(sha(read(BODY))).toBe('f0f5de76079bad3b1aee646c5ccedcbe148b73b7368f93e32ae1fe19ba570fb8');
   for (const [name, groups] of Object.entries(families)) {
     // PUBLISHED f803 history ends at the f803 counts (SDK 74, i.e. indices 0..73).
     // Those tuples — including index 73 — are immutable published history: they are
@@ -358,10 +358,10 @@ test('the live canonical binds every actual row of the final combined tree', () 
     .toBe('a2cb860d7300d62931a354c90ade3a00ada1c831c37f719b24f77385de93e4fc');
   // The reviewed phase-syscall diagnostic plus its three CI-discovered tests.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-ptrace-execution.py')!.sha256)
-    .toBe('83f29f0a451712ead722c3abd4c2b62e67329e58bbf7ec6d18906b8a2cebf446');
+    .toBe('f0f5de76079bad3b1aee646c5ccedcbe148b73b7368f93e32ae1fe19ba570fb8');
   // Current VMA source includes typed private PCH mapping and window closure.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-generated-vma-originals.py')!.sha256)
-    .toBe('247bab448ae2ac24f5b939ab4c3af4dff3f281c11523de8f802286e7c7338d4a');
+    .toBe('77f9e6dea5732afea75377832094de734fb9494dd565bfb237010aa65f93f4c7');
   expect(current.find((r) => r.path === 'qlever/tests/test_qlever_vma_finish_split.py')!.sha256)
     .toBe('b64ce9f4d0370809f54108f2fd417633984dd23b469ab6fc49b75c69c2bdd453');
   for (const [p, h] of [
@@ -371,7 +371,7 @@ test('the live canonical binds every actual row of the final combined tree', () 
   ] as const) expect(current.find((r) => r.path === p)!.sha256).toBe(h);
   for (const row of current) expect(sha(read(row.path))).toBe(row.sha256);
   const body = current.find((r) => r.path === BODY)!;
-  expect(body.sha256).toBe('83f29f0a451712ead722c3abd4c2b62e67329e58bbf7ec6d18906b8a2cebf446');
+  expect(body.sha256).toBe('f0f5de76079bad3b1aee646c5ccedcbe148b73b7368f93e32ae1fe19ba570fb8');
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-original-chunk-store.py')!.sha256)
     .toBe('67ea1a610f15f74288d623694b1a4886a82b0f29a186c40e69bdd232b39f96db');
 });

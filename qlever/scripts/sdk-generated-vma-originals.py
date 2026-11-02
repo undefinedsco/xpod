@@ -30,6 +30,7 @@ PHASE_PARENT_MODEL='actual-generated-file-vma-stopped-mm-cohort-phase-parent-bud
 PHASE_PARENT_MODELS=(PHASE_PARENT_MODEL,)
 PARKED_WAIT_MODELS=(PARKED_WAIT_MODEL,PHASE_PARENT_MODEL)
 COORDINATED_WAIT_MODELS=(COORDINATED_WAIT_MODEL,PARKED_WAIT_MODEL,PHASE_PARENT_MODEL)
+GLOBAL_METADATA_LIMIT=4*1024**2
 PRIVATE_WAIT_MODELS=(PRIVATE_WAIT_MODEL,*COORDINATED_WAIT_MODELS)
 WAKE_MODELS=(PRIVATE_WAKE_MODEL,*PRIVATE_WAIT_MODELS)
 COHORT_MODELS=(COHORT_MODEL,*WAKE_MODELS)
@@ -392,12 +393,36 @@ class Runtime:
         need(not getattr(backend,'generated_vma_private_wake',False) or getattr(backend,'generated_vma_shared_mm',False),'private wake requires existing stopped-MM model')
         self.b=backend;policy=getattr(backend,'phase_budget_policy',None) or budget_policy_module.LEGACY_PHASE_BUDGET_POLICY;self.policy=policy;self.model=PHASE_PARENT_MODEL if policy.observation_window=='phase-parent' else PARKED_WAIT_MODEL if getattr(backend,'generated_vma_parked_wait',False) else COORDINATED_WAIT_MODEL if getattr(backend,'generated_vma_coordinated_wait',False) else PRIVATE_WAIT_MODEL if getattr(backend,'generated_vma_private_wait_mismatch',False) else PRIVATE_WAKE_MODEL if getattr(backend,'generated_vma_private_wake',False) else (COHORT_MODEL if getattr(backend,'generated_vma_shared_mm',False) else MODEL);self.mm=MemoryDomains();self.origins={};self.pending={};self.active=None;self.checkpoints={};self.reserved=0;self.metadata_bytes=0;self.spending_thread=None;self.cleanup_errors=[];self.wake_closing=None;self.retained_metadata=getattr(backend,'retained_generated_metadata',False);self.metadata_close_entry=None;self.metadata_high_water=0
         need(not self.retained_metadata or self.model in PARKED_WAIT_MODELS,'retained metadata requires explicit parked-wait model')
+    def retained_metadata_state(self):
+        # Include every live protocol root that can survive an emit: the closed
+        # checkpoint subset is insufficient while a mapping/wait window is open.
+        return dict(
+            origins=self.origins,
+            pending=self.pending,
+            active=self.active,
+            checkpoints=self.checkpoints,
+            memoryDomains=self.mm.domains,
+            memoryProvenance=self.mm.provenance,
+            wakeClosing=self.wake_closing,
+            deferred=getattr(self,'deferred',{}),
+            round=getattr(self,'round',None),
+            reserved=self.reserved,
+            spendingThread=self.spending_thread,
+            metadataCloseEntry=self.metadata_close_entry,
+            cleanupErrors=[(type(error).__name__,str(error)[:256]) for error in self.cleanup_errors],
+        )
     def charge_metadata(self,row):
-        self.metadata_bytes+=len(json.dumps(row,separators=(',',':')).encode());need(self.metadata_bytes<=4*1024**2,'shared generated metadata bound');self.metadata_high_water=max(self.metadata_high_water,self.metadata_bytes)
+        data=json.dumps(row,separators=(',',':')).encode();limit=GLOBAL_METADATA_LIMIT
+        # Retained mode bounds the protocol state that survives each emit, not
+        # the already-persisted raw history of an open transaction. Recompute
+        # only at the cap so ordinary rows stay O(1).
+        if self.retained_metadata and self.metadata_bytes+len(data)>limit:
+            self.metadata_bytes=retained_metadata_bytes(self.retained_metadata_state(),maximum=limit)
+        self.metadata_bytes+=len(data);need(self.metadata_bytes<=limit,'shared generated metadata bound');self.metadata_high_water=max(self.metadata_high_water,self.metadata_bytes)
     def checkpoint_metadata(self,close):
         need(self.metadata_close_entry is not None and close.get('kind')=='exclusive-captured-syscall-exit'and(close['pid'],close['entrySequence'],close['sequence'])==self.metadata_close_entry,'metadata release requires its actual generated exclusive close')
         need(self.retained_metadata and self.active is None and not self.pending and getattr(self,'round',None)is None,'metadata release requires actual closed generated transaction')
-        self.metadata_bytes=retained_metadata_bytes(dict(origins=self.origins,checkpoints=self.checkpoints,pending=self.pending,active=self.active,memoryDomains=self.mm.domains,memoryProvenance=self.mm.provenance,wakeClosing=self.wake_closing,deferred=getattr(self,'deferred',{})))
+        self.metadata_bytes=retained_metadata_bytes(self.retained_metadata_state(),maximum=GLOBAL_METADATA_LIMIT)
         self.metadata_high_water=max(self.metadata_high_water,self.metadata_bytes);self.metadata_close_entry=None
     def cleanup_fds(self,fds):
         errors=[]
@@ -762,14 +787,21 @@ class Verifier:
         need(model in [LEGACY_MODEL,KERNEL_LINK_MODEL,MODEL,COHORT_MODEL,PHASE_PARENT_MODEL,*WAKE_MODELS],'unknown mapping evidence model');self.model=model;self.read_blocks=read_blocks;self.maximum_file=maximum_file
         need(type(retained_metadata)is bool and(not retained_metadata or model in PARKED_WAIT_MODELS),'retained metadata requires explicit parked-wait model');self.retained_metadata=retained_metadata;self.metadata_high_water=0;self.metadata_closed_operation=None
         self.capture_data=capture_data;self.maps_data=maps_data;self.metadata_maximum=metadata_maximum;self.mm=MemoryDomains();self.windows={};self.origins={};self.original_sequences={};self.map_sequences={};self.map_owners={};self.pending_window=None;self.transaction=None;self.active=None;self.events={};self.checkpoints={};self.consumers=[];self.metadata_bytes=0;self.pending_mapping_entries=set();self.create_paths={};self.last_observed_ns=None;self.parent_deadline_ns=None;self.fd_bindings={};self.private_wakes=[];self.private_waits=[]
+    def retained_metadata_state(self):
+        # Mirror every base/subclass field that holds open or closed protocol
+        # state; transaction/active/pending windows cannot be dropped merely
+        # because the old close-only checkpoint did not need them.
+        names=['origins','checkpoints','events','windows','original_sequences','map_sequences','map_owners','consumers','create_paths','private_wakes','private_waits','deferred','coordinated_waits','coordinated_epoch','transaction','active','pending_window','pending_mapping_entries','fd_bindings','last_observed_ns','parent_deadline_ns','scheduled_rows','scheduled_context','metadata_closed_operation']
+        state={name:getattr(self,name,None)for name in names};state.update(memoryDomains=self.mm.domains,memoryProvenance=self.mm.provenance);return state
     def charge_metadata(self,row):
-        self.metadata_bytes+=len(json.dumps(row,separators=(',',':')).encode());need(self.metadata_bytes<=4*1024**2,'shared generated replay metadata bound');self.metadata_high_water=max(self.metadata_high_water,self.metadata_bytes)
+        data=json.dumps(row,separators=(',',':')).encode();limit=GLOBAL_METADATA_LIMIT
+        if self.retained_metadata and self.metadata_bytes+len(data)>limit:
+            self.metadata_bytes=retained_metadata_bytes(self.retained_metadata_state(),maximum=limit)
+        self.metadata_bytes+=len(data);need(self.metadata_bytes<=limit,'shared generated replay metadata bound');self.metadata_high_water=max(self.metadata_high_water,self.metadata_bytes)
     def checkpoint_metadata(self,close):
         need(self.metadata_closed_operation is not None and close.get('kind')=='exclusive-captured-syscall-exit'and(close['pid'],close['entrySequence'],close['sequence'])==self.metadata_closed_operation,'metadata replay release lacks actual closed own operation')
         need(self.retained_metadata and self.active is None and self.transaction is None and self.pending_window is None and not self.pending_mapping_entries and not self.fd_bindings and not getattr(self,'scheduled_active',False),'metadata replay release requires actual closed generated transaction')
-        names=['origins','checkpoints','events','windows','original_sequences','map_sequences','map_owners','consumers','create_paths','private_wakes','private_waits','deferred','coordinated_waits','coordinated_epoch']
-        state={name:getattr(self,name,None)for name in names};state.update(memoryDomains=self.mm.domains,memoryProvenance=self.mm.provenance)
-        self.metadata_bytes=retained_metadata_bytes(state);self.metadata_high_water=max(self.metadata_high_water,self.metadata_bytes);self.metadata_closed_operation=None
+        self.metadata_bytes=retained_metadata_bytes(self.retained_metadata_state(),maximum=GLOBAL_METADATA_LIMIT);self.metadata_high_water=max(self.metadata_high_water,self.metadata_bytes);self.metadata_closed_operation=None
     def original(self,reference):return self.capture_data(reference)
     def mapping_domain(self,pid,barrier=None):
         return complete_memory_cohort(self.mm,pid,barrier) if self.model in COHORT_MODELS else (self.mm.unique(pid),[pid])
