@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { acquireIndependentProductInput, API_PRODUCT_WORKFLOW } from '../../scripts/acquire-independent-product-input';
@@ -68,6 +68,35 @@ test('projects exact original members, ignores same basename decoy and emits blo
   expect(result.exactAttemptAdmitted).toBe(false); expect(result.collectorExecuted).toBe(false);
   expect(result.releaseQualified).toBe(false); expect(result.producerBlockers).toEqual(['preview-not-publishable']);
   expect(result.selectedMembersProjected).toBe(3); expect(result.innerArchiveExpanded).toBe(false);
+});
+test('stages projected originals on the destination filesystem when the global temporary location is unusable or cross-device', async () => {
+  const f = await fixture();
+  const previousTmpdir = process.env.TMPDIR;
+  let crossDeviceTemp: string | undefined;
+  try {
+    const destinationDevice = statSync(f.root).dev;
+    if (existsSync('/dev/shm') && statSync('/dev/shm').isDirectory() && statSync('/dev/shm').dev !== destinationDevice) {
+      crossDeviceTemp = mkdtempSync(path.join('/dev/shm', 'xpod-projection-regression-'));
+      process.env.TMPDIR = crossDeviceTemp;
+    } else {
+      const blocked = path.join(f.root, 'blocked-global-temporary');
+      writeFileSync(blocked, 'not a directory');
+      process.env.TMPDIR = path.join(blocked, 'nested');
+    }
+    const result = await projectApiProductInput(f.input, f.output);
+    expect(result.selectedMembersProjected).toBe(3);
+    expect(readFileSync(path.join(f.output, 'product.tgz')).equals(f.archive)).toBe(true);
+    expect(readFileSync(path.join(f.output, 'pack.raw.log')).equals(f.raw)).toBe(true);
+    expect(readFileSync(path.join(f.output, 'producer.receipt.json')).equals(f.producerBytes)).toBe(true);
+    const receipt = JSON.parse(readFileSync(path.join(f.output, 'projection.receipt.json'), 'utf8'));
+    expect(receipt.producerReceipt.sha256).toBe(hash(f.producerBytes));
+    expect(receipt.selectedMembersProjected).toBe(3);
+    expect(receipt.innerArchiveExpanded).toBe(false);
+    expect(readdirSync(f.root).some(name => name.startsWith('xpod-product-projection-'))).toBe(false);
+  } finally {
+    if (previousTmpdir === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previousTmpdir;
+    if (crossDeviceTemp) rmSync(crossDeviceTemp, { recursive: true, force: true });
+  }
 });
 for (const change of ['source', 'attempt', 'event-head', 'workflow', 'dirty', 'target', 'clearance', 'archive-path', 'pack-hash']) {
   test(`rejects producer/custody mismatch: ${change}`, async () => {

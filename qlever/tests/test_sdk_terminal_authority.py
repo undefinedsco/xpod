@@ -14,6 +14,8 @@ def _init_observer_checks(observer):
  observer.pump_errors=[]
  observer.deadline=1e9
  observer.lifetime_leases=None
+ # Real Observer.__init__ always initializes this; these fixtures bypass it.
+ observer.seq=0
 class Tests(unittest.TestCase):
  def fixture(self,wait_first=False):
   _,entry,_,_,_,_,_,base=f.setup();base['mountinfoOriginal']['path']='capture-0001.original';rows=[]
@@ -89,7 +91,7 @@ class Tests(unittest.TestCase):
  def test_actual_backend_captures_strict_exit_before_peer_barrier_and_actual_reap(self):
   rows=self.fixture();observation=copy.deepcopy(rows[5]['observation']);o=object.__new__(backend.Observer);o.generated_vma=None;o.generated_vma_output=False;o.tasks={10:dict(stopped=False,exited=False,entry=None,initial=False)};o.process_authority=True;o.terminal_exit_evidence=True;o.capture_toolchain=False;o.shared_tasks=False;o.exclusive=None;o.root=10;o.current_phase='configure';o.wait_references=[];o.rows=[];o.check=lambda:None;o.tool_metadata_bytes=4194304;o.authority_handles=object();calls=[];_init_observer_checks(o)
   def emit(row):
-   value=dict(row,sequence=len(o.rows)+1,phase='configure');o.rows.append(value);return value
+   o.seq+=1;value=dict(row,sequence=o.seq,phase='configure');o.rows.append(value);return value
   o.emit=emit;o.tool_mountinfo_original=lambda *args:observation['authority']['mountinfoOriginal']
   class Lease:
    closed=False
@@ -111,7 +113,7 @@ class Tests(unittest.TestCase):
   o=object.__new__(backend.Observer);o.generated_vma=None;o.generated_vma_output=False;o.tasks={1:dict(stopped=True,exited=False,entry=None,initial=False,authorityPending=[('initial',None)]),2:dict(stopped=False,exited=False,entry=None,initial=False)}
   o.authority_observed=set();o.unknown_stops={};o.process_authority=True;o.terminal_exit_evidence=True;o.capture_toolchain=False;o.shared_tasks=False;o.exclusive=None;o.root=1;o.current_phase='configure';o.rows=[];o.check=lambda:None;o.tool_metadata_bytes=4194304;o.authority_handles=object();o.wait_references=[];_init_observer_checks(o)
   def emit(row):
-   value=dict(row,sequence=len(o.rows)+1,phase='configure');o.rows.append(value);return value
+   o.seq+=1;value=dict(row,sequence=o.seq,phase='configure');o.rows.append(value);return value
   o.emit=emit;o.wait_one=lambda:(2,STOP);o.tool_mountinfo_original=lambda *args:dict(path='mountinfo',bytes=0,sha256='0'*64)
   observation=copy.deepcopy(self.fixture()[5]['observation'])
   class Lease:

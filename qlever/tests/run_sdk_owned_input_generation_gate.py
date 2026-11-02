@@ -13,7 +13,7 @@ EXPECTED = frozenset({
     'test_peer_mapping', 'test_truncate', 'test_replay_mutations',
     'test_replay_truncate_mutations', 'test_ar', 'test_owned', 'test_idle_read_fd', 'test_mapped_then_unmapped_stays_immutable',
     'test_live_mapping', 'test_source', 'test_source_inode_protection_survives_phase_and_build_alias',
-    'test_source_inode_through_build_hardlink_stays_immutable', 'test_replaced_fd', 'test_before',
+    'test_source_inode_through_build_hardlink_stays_immutable', 'test_replaced_fd', 'test_before', 'test_deferred_generation_open_with_peer_read',
 })
 
 def ids(suite):

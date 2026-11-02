@@ -28,6 +28,19 @@ static int handoff(char *archive){
 }
 int main(int argc,char**argv){
  int fd=-1;
+ if(!strcmp(argv[2],"deferred")){
+  int created=open(argv[1],O_WRONLY|O_CREAT|O_EXCL,0600);if(created<0||write(created,"!<arch>\n",8)!=8||close(created))return 70;
+  int writer=open(argv[1],O_WRONLY|O_TRUNC|O_NONBLOCK);if(writer<0)return 71;
+  int peer_input=open(argv[3],O_RDONLY);if(peer_input<0)return 72;
+  pid_t peer=fork();if(peer<0)return 73;
+  if(!peer){char ignored;if(read(peer_input,&ignored,1)!=1)_exit(74);_exit(0);}
+  close(peer_input);
+  if(write(writer,"B",1)!=1)return 75;
+  int status=0;if(waitpid(peer,&status,0)!=peer||!WIFEXITED(status)||WEXITSTATUS(status))return 76;
+  if(close(writer))return 77;
+  int verify=open(argv[1],O_RDONLY);char byte;if(verify<0||read(verify,&byte,1)!=1||byte!='B')return 78;
+  return close(verify)?79:0;
+ }
  if(strcmp(argv[2],"existing")){
  fd=open(argv[1],(!strcmp(argv[2],"source-alias")||!strcmp(argv[2],"source-read-only"))?O_RDWR:(O_RDWR|O_CREAT|O_EXCL),0600); if(fd<0)return 2;
  if(write(fd,"!<arch>\n",8)!=8)return 3;if(close(fd))return 4;
@@ -69,7 +82,7 @@ int main(int argc,char**argv){
 '''
 
 class Generation(e2e.EndToEnd):
- def run_case(self,mode='plain',source=False,enabled=True):
+ def run_case(self,mode='plain',source=False,enabled=True,defer_generation_once=False):
   label=('source-' if source else 'build-')+mode
   base=self.root/label;base.mkdir();originals=base/'originals';originals.mkdir();build=base/'build';build.mkdir();src=base/'source';src.mkdir()
   self.trusted_roots[label]=str(build.resolve())
@@ -83,12 +96,28 @@ class Generation(e2e.EndToEnd):
   for key in ('generated_vma_output','generated_vma_shared_mm','generated_vma_private_wake','generated_vma_private_wait_mismatch','generated_vma_coordinated_wait','generated_vma_parked_wait','retained_generated_metadata'):setattr(observer,key,False)
   observer.generated_vma=None
   observer.source=str(src)
+  deferred=[False]
+  if defer_generation_once:
+   original_pending=observer.pending_captures
+   def scheduled_pending():
+    live=[task for task in observer.tasks.values()
+          if not task['exited'] and task.get('entry') is not None
+          and (task.get('generationOpenPending') or task.get('generationTruncatePending'))]
+    if live and not deferred[0]:
+     # Test-only scheduling at an actual stopped generation entry: perform the
+     # real earlier-priority capture checkpoint (barrier emits its actual row)
+     # and return without servicing the queued generation. The production
+     # dispatcher must drain this live trigger before resuming.
+     deferred[0]=True;observer.barrier();return True
+    return original_pending()
+   observer.pending_captures=scheduled_pending
   if enabled:
    observer.owned_input_generations=e2e.obs.owned_input_module.Runtime(observer,e2e.obs.SimpleNamespace(probe=e2e.obs.probe,bindings=e2e.obs.bindings,memory_policy=e2e.obs.memory_policy,profile=e2e.obs.profile,path_argument=e2e.obs.path_argument,descriptor_flags=e2e.obs.descriptor_flags))
   binary=e2e.build(C,self.root/'bin','generation-'+label)
   archive=(src if source else build)/'libtest.a'
   alias_source=src/'original-input.a'
-  if mode=='source-alias':alias_source.write_bytes(b'AAAAAAAA');os.link(alias_source,archive)
+  if mode in ('source-alias','deferred'):alias_source.write_bytes(b'AAAAAAAA')
+  if mode=='source-alias':os.link(alias_source,archive)
   phase=None;error=None;external=None
   if mode in ('foreign','foreign-held'):
    program="""import os,sys,time,json
@@ -123,7 +152,7 @@ sys.stdin.read(1)
    if mode=='foreign':self.assertTrue(external_result['opened']);self.assertEqual(external_result['written'],1)
    else:self.assertFalse(external_result['opened']);self.assertEqual(external_result['errorCode'],11);self.assertEqual(external_result['written'],0)
    self.assertNotIn(external_result['pid'],observer.tasks)
-  result=dict(case=label,enabled=enabled,phase=bool(phase),error=(type(error).__name__+': '+str(error)) if error else None,content=archive.read_bytes().hex())
+  result=dict(case=label,enabled=enabled,phase=bool(phase),error=(type(error).__name__+': '+str(error)) if error else None,content=archive.read_bytes().hex(),deferred=deferred[0])
   if external_result:result['externalWriter']=external_result
   if phase:
    self.wire_refs[label]={str(Path(ref['path'])):ref for ref in phase['rawTraceShards']}
@@ -235,6 +264,9 @@ sys.stdin.read(1)
   result=self.run_case('ar');self.assertTrue(result['phase']);self.assertEqual(result['replay'],'pass')
  def test_owned(self):
   result=self.run_case();self.assertTrue(result['phase']);self.assertEqual(result['replay'],'pass')
+ def test_deferred_generation_open_with_peer_read(self):
+  result=self.run_case('deferred',defer_generation_once=True)
+  self.assertTrue(result['deferred']);self.assertTrue(result['phase']);self.assertEqual(result['replay'],'pass');self.assertEqual(result['content'],'42')
  def test_idle_read_fd(self):
   result=self.run_case('hold');self.assertTrue(result['phase']);self.assertEqual(result['replay'],'pass')
  def test_live_mapping(self):self.assertFalse(self.run_case('map')['phase'])

@@ -3792,6 +3792,10 @@ class Observer(CapturesMixin):
             if self.exclusive and pid!=self.exclusive[0]:continue
             if row.get('vforkHeldChild') is not None:continue
             if row.get('identityNoopPending') or row.get('clone3Pending') or row.get('btiPending'):continue
+            # A queued generation trigger must be serviced while the syscall
+            # entry is still live. Resuming it would let the exit clear
+            # task['entry'] and turn a required handoff into a stale trigger.
+            if row.get('generationOpenPending') or row.get('generationTruncatePending'):continue
             if getattr(self,'mremapDeferred',None) and pid in self.mremapDeferred:continue
             # Never resume a pid whose initial/late authority sample has not been
             # captured yet: the next pending_captures() drains it at this same
@@ -4385,6 +4389,14 @@ class Observer(CapturesMixin):
         if progress is None:return self.pending_captures_original()
         return self.instrument('pending_captures',self.pending_captures_original)
     def pending_captures_original(self):
+        # Actual capture helpers return None (or early-return from a branch).
+        # The drain loop needs a real progress bit, not the branch's incidental
+        # return value. Every actual capture/checkpoint emits a row and advances
+        # self.seq; no new scan or synthetic event is introduced.
+        before=self.seq
+        self._pending_captures_original_body()
+        return self.seq!=before
+    def _pending_captures_original_body(self):
         if self.generated_vma and getattr(self.generated_vma,'round',None) is not None:return
         if self.exclusive:return
         if getattr(self,'terminal_focus',None)is not None:
@@ -4976,6 +4988,20 @@ class Observer(CapturesMixin):
                 try:self.resource_call(self.resource_finish,frame,primary,primary=primary)
                 finally:
                     if frame is not None and getattr(self,'_phase_resources',None) is frame:self._phase_resources=None
+    def drain_pending_generations(self):
+        """Service queued generation handoffs before any tracee resume.
+
+        Other pending-capture classes may consume the one capture slot first.
+        Keep draining while a real generation trigger remains; a false return
+        means an exclusive/generated-VMA owner must be driven, and resume() then
+        resumes only that owner. No trigger is dropped or synthesized here.
+        """
+        while True:
+            progressed=self.pending_captures()
+            pending=any(not task['exited'] and (task.get('generationOpenPending') or task.get('generationTruncatePending'))
+                        for task in self.tasks.values())
+            if not pending:return
+            if not progressed:return
     def phase_armed(self,name,command,cwd,env,stdoutPath,stderrPath):
         self.reset_owned_frames()
         capture_start=len(self.captures);started_ns=time.time_ns();stdout_path=Path(stdoutPath) if stdoutPath is not None else self.out/(name+'.stdout.raw');stderr_path=Path(stderrPath) if stderrPath is not None else self.out/(name+'.stderr.raw')
@@ -5047,7 +5073,7 @@ class Observer(CapturesMixin):
             for pump in pumps:pump.start()
             if self.process_authority:
                 os.close(ready_write);ready_write=None;self.check();remaining=max(0,self.deadline-time.monotonic());readable,_,_=select.select([ready_read],[],[],remaining);self.check();assert readable and os.read(ready_read,1)==b'R','child authority setup did not complete before release';os.close(ready_read);ready_read=None
-            self.emit(dict(kind='owned-root-binding',pid=child,command=command,**(dict(ownedInputGenerationModel=owned_input_module.MODEL) if self.owned_input_generations is not None else {}),**(dict(toolchainLifetimeModel=LIFETIME_MODEL,executableMemoryPolicy=memory_policy.MODEL,clone3ArgsModel='stopped-clone3-args-v1',btiHardeningModel='held-rx-bti-hardening-v1',**(dict(remapCapabilityModel=memory_policy.REMAP_MODEL) if self.generated_vma else {})) if self.capture_toolchain else {}),**(dict(rawRecordModel=probe.RAW_RECORD_MODEL_V2)if self.indexed_raw_records else {}),backend='ptrace-all-stop-process-v1',**(dict(chunkOriginalStorageModel='chunk-original-v1') if self.capture_content_entities else {}),captureOriginalEntityModel='same-phase-content-entity-v2' if self.capture_content_entities else 'same-phase-producer-original-v1',**(dict(mapsOriginalEntityModel='same-phase-maps-content-entity-v1')if getattr(self,'capture_maps_content_entities',False)else {}),**(dict(generatedVmaModel=self.generated_vma.model,**(dict(generatedVmaMetadataModel=generated_vma_module.RETAINED_METADATA_MODEL)if getattr(self,'retained_generated_metadata',False)else {}),generatedVmaBuildRoot=self.build,generatedVmaParentDeadlineMonotonicNs=str(int(self.waiter.parent_deadline*1e9))) if self.generated_vma else {}),**(dict(stoppedWriterAliasModel='all-stop-exclusive-write-aliases-v1') if getattr(self,'stopped_writer_aliases',False) else {}),**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v2' if getattr(self,'io_uring_enosys_v2',False) else 'explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(setresIdentityNoopModel='actual-stopped-setres-identity-noop-queued-v2' if getattr(self,'queued_identity_noop',False) else 'actual-stopped-setres-identity-noop-v1') if getattr(self,'verified_identity_noop',False) else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(exitAuthorityModel='actual-selected-exit-stop-held-terminal-peers-v2'if getattr(self,'serialize_terminal_syscalls',False)else 'actual-selected-exit-stop-before-peer-barrier-v1') if getattr(self,'terminal_exit_evidence',False) else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.pending_captures()
+            self.emit(dict(kind='owned-root-binding',pid=child,command=command,**(dict(ownedInputGenerationModel=owned_input_module.MODEL) if self.owned_input_generations is not None else {}),**(dict(toolchainLifetimeModel=LIFETIME_MODEL,executableMemoryPolicy=memory_policy.MODEL,clone3ArgsModel='stopped-clone3-args-v1',btiHardeningModel='held-rx-bti-hardening-v1',**(dict(remapCapabilityModel=memory_policy.REMAP_MODEL) if self.generated_vma else {})) if self.capture_toolchain else {}),**(dict(rawRecordModel=probe.RAW_RECORD_MODEL_V2)if self.indexed_raw_records else {}),backend='ptrace-all-stop-process-v1',**(dict(chunkOriginalStorageModel='chunk-original-v1') if self.capture_content_entities else {}),captureOriginalEntityModel='same-phase-content-entity-v2' if self.capture_content_entities else 'same-phase-producer-original-v1',**(dict(mapsOriginalEntityModel='same-phase-maps-content-entity-v1')if getattr(self,'capture_maps_content_entities',False)else {}),**(dict(generatedVmaModel=self.generated_vma.model,**(dict(generatedVmaMetadataModel=generated_vma_module.RETAINED_METADATA_MODEL)if getattr(self,'retained_generated_metadata',False)else {}),generatedVmaBuildRoot=self.build,generatedVmaParentDeadlineMonotonicNs=str(int(self.waiter.parent_deadline*1e9))) if self.generated_vma else {}),**(dict(stoppedWriterAliasModel='all-stop-exclusive-write-aliases-v1') if getattr(self,'stopped_writer_aliases',False) else {}),**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v2' if getattr(self,'io_uring_enosys_v2',False) else 'explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(setresIdentityNoopModel='actual-stopped-setres-identity-noop-queued-v2' if getattr(self,'queued_identity_noop',False) else 'actual-stopped-setres-identity-noop-v1') if getattr(self,'verified_identity_noop',False) else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(exitAuthorityModel='actual-selected-exit-stop-held-terminal-peers-v2'if getattr(self,'serialize_terminal_syscalls',False)else 'actual-selected-exit-stop-before-peer-barrier-v1') if getattr(self,'terminal_exit_evidence',False) else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.drain_pending_generations()
             binding=self.emit(dict(kind='toolchain-control-gate-binding',model='observer-owned-startup-gate-v1',
                 gateSequence=gate['sequence'],pid=child,identity=gate_identity,
                 scope='the observer, not the tracee, owns the write end of this exact pipe inode'))
@@ -5061,7 +5087,7 @@ class Observer(CapturesMixin):
             os.close(write_fd);write_fd=None;self.resume()
             while any(not r['exited'] for r in self.tasks.values()):
                 progress=self._phase_progress;progress.ticks+=1
-                pid,status=self.wait_one();self.event(pid,status);self.pending_captures();self.resume()
+                pid,status=self.wait_one();self.event(pid,status);self.drain_pending_generations();self.resume()
                 if self.snapshot_due():self.publish_phase_progress('phase-progress')
             assert getattr(self,'terminal_focus',None)is None,'serialized terminal wait did not close'
             assert not any(task.get('vforkHeldChild') is not None for task in self.tasks.values()),'vfork child release/wait closure missing'
