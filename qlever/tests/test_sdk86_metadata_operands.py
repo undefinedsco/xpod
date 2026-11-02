@@ -53,7 +53,7 @@ class Observer:
         self.metadata_states = []
         self.timespec_originals = {}
         self.rows = []
-        self._seq = 100
+        self.seq = 100
         self._paths = paths
         # The real owned-input generation hook is absent in these focused
         # old-hook fixtures; keep the production None disabled-generation shape.
@@ -64,8 +64,8 @@ class Observer:
         return dict(sequence=11, pids=[1])
 
     def emit(self, row):
-        self._seq += 1
-        row = dict(row, sequence=self._seq, phase='configure')
+        self.seq += 1
+        row = dict(row, sequence=self.seq, phase='configure')
         self.rows.append(row)
         return row
 
@@ -86,6 +86,7 @@ class Observer:
     capture_link_metadata = backend.Observer.capture_link_metadata
     settle_absent_link_operand = backend.Observer.settle_absent_link_operand
     pending_captures_original = backend.Observer.pending_captures_original
+    _pending_captures_original_body = backend.Observer._pending_captures_original_body
     resume_original = backend.Observer.resume_original
     read_frame_any = backend.Observer.read_frame_any
     close_terminal_authorities = backend.Observer.close_terminal_authorities
