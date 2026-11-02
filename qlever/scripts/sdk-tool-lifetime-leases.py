@@ -12,6 +12,48 @@ class LeaseError(RuntimeError):
     pass
 
 
+# A lease row is tiny compared with this conservative resident bound.  The
+# bound is used only to prove the pre-execution capacity fits available memory;
+# it is not a workload or file-size estimate.
+LEASE_ROW_MEMORY_BYTES = 4096
+LEASE_CAPACITY_MODEL = 'prepared-live-lease-capacity-v1'
+# Keep room for the observer's pipes, native plan, capture FDs and child setup.
+LEASE_FD_RESERVE = 64
+
+
+def lease_capacity(inventory_files, fd_soft, fd_used, memory_bytes, source_members):
+    """Derive a finite live-lease admission bound before execution.
+
+    The inventory count is the actual precompile candidate count; `fd_soft` and
+    `fd_used` are the live RLIMIT_NOFILE ledger; `memory_bytes` is current
+    available memory.  The result is an explicit evidence object, never a
+    silently expandable limit.
+    """
+    if (type(inventory_files) is not int or inventory_files < 1 or
+            type(source_members) is not int or source_members < 1 or
+            type(fd_used) is not int or fd_used < 0 or
+            type(memory_bytes) is not int or memory_bytes < 0):
+        raise ValueError('lease capacity inputs must be bounded non-negative integers')
+    if inventory_files > source_members:
+        raise ValueError('prepared lease inventory exceeds canonical source member bound')
+    if type(fd_soft) is int and fd_soft > 0:
+        fd_headroom = fd_soft - fd_used - LEASE_FD_RESERVE
+    else:
+        # RLIM_INFINITY is represented as -1 on Linux; the canonical member
+        # bound remains the finite outer limit in that case.
+        fd_headroom = source_members
+    memory_rows = memory_bytes // LEASE_ROW_MEMORY_BYTES
+    maximum = min(inventory_files, fd_headroom, memory_rows, source_members)
+    if maximum < 1:
+        raise ValueError('no finite live-lease capacity funded by the FD/memory ledger')
+    return dict(schemaVersion=1, kind='live-lease-capacity-v1', model=LEASE_CAPACITY_MODEL,
+                inventoryFiles=inventory_files, sourceMembers=source_members,
+                fdSoft=fd_soft, fdUsed=fd_used, fdReserve=LEASE_FD_RESERVE,
+                fdHeadroom=fd_headroom, memoryBytes=memory_bytes,
+                memoryRowBytes=LEASE_ROW_MEMORY_BYTES, memoryRows=memory_rows,
+                maximum=maximum)
+
+
 # Owned generation transitions a held lease token may legally advance across.
 # These are OWNED OPERATION KINDS witnessed by the observer's own rename/unlink
 # path, never a path, filename or profile: a foreign or unwitnessed change has no
@@ -90,10 +132,18 @@ class LeaseSet:
             return None, None
         return required_native_backend()
 
-    def __init__(self, maximum=4096):
+    def __init__(self, maximum=4096, capacity_evidence=None):
         """Original public constructor. Pure Python unless a subclass opts in."""
         if type(maximum) is not int or maximum < 1:
             raise ValueError('positive unique lease bound required')
+        if capacity_evidence is not None:
+            if (not isinstance(capacity_evidence, dict)
+                    or capacity_evidence.get('maximum') != maximum
+                    or capacity_evidence.get('kind') != 'live-lease-capacity-v1'):
+                raise ValueError('lease capacity evidence does not bind the admitted maximum')
+            self.capacity_evidence = dict(capacity_evidence)
+        else:
+            self.capacity_evidence = None
         self.maximum = maximum
         self._held = {}
         self._next_lease_id = 1
@@ -670,5 +720,5 @@ class SdkLeaseSet(LeaseSet):
 
     _native_backend_required = True
 
-    def __init__(self, maximum=4096):
-        super().__init__(maximum)
+    def __init__(self, maximum=4096, capacity_evidence=None):
+        super().__init__(maximum, capacity_evidence)

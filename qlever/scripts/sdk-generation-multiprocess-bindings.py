@@ -413,6 +413,83 @@ def policy(arch):
 
 def need(value,reason):
     if not value:raise ValueError('multi-process generation originals: '+reason)
+
+LEASE_CAPACITY_KIND='prepared-lease-capacity'
+LEASE_CAPACITY_MODEL='prepared-live-lease-capacity-v1'
+LEASE_CAPACITY_SCOPE='actual full pre-compile inventory original plus sealed prepared build inputs; reserved before child fork'
+LEASE_CAPACITY_KEYS=frozenset(['kind','model','inventory','inventoryOriginal','inventoryFiles','preparedInputFiles','admissionMembers','sourceMembers','fdSoft','fdUsed','fdReserve','fdHeadroom','memoryBytes','memoryRowBytes','memoryRows','maximum','scope'])
+LEASE_CAPACITY_ENVELOPE=frozenset(['phase','sequence','observedUnixNs','observedMonotonicNs'])
+LEASE_CAPACITY_FD_RESERVE=64
+LEASE_CAPACITY_ROW_BYTES=4096
+
+
+def _lease_inventory_object(data,limits=None):
+    """Parse one authoritative inventory original without duplicate-key loss."""
+    source_members=limits['sourceMembers'] if limits else 250000
+    maximum_inventory=min(limits.get('sourceMaterialBytes',4*1024**3),max(limits.get('metadataBytes',4*1024**2),source_members*256))
+    need(type(data) is bytes and len(data)<=maximum_inventory,'prepared lease inventory original bytes required')
+    def no_duplicate_pairs(pairs):
+        result={}
+        for key,value in pairs:
+            need(key not in result,'duplicate prepared lease inventory path')
+            result[key]=value
+        return result
+    try:value=json.loads(data,object_pairs_hook=no_duplicate_pairs)
+    except (TypeError,ValueError) as error:raise ValueError('multi-process generation originals: prepared lease inventory JSON differs: '+str(error)[:256])
+    need(isinstance(value,dict) and value,'prepared lease inventory object required')
+    for name,identity in value.items():
+        need(type(name) is str and name.startswith('/') and '\x00' not in name and len(name.encode())<=4096,'prepared lease inventory path differs')
+        need(isinstance(identity,dict) and set(identity)=={'bytes','sha256','mode'},'prepared lease inventory identity field set differs')
+        need(type(identity['bytes']) is int and identity['bytes']>=0 and type(identity['mode']) is int and 0<=identity['mode']<=0o7777,'prepared lease inventory byte/mode differs')
+        need(type(identity['sha256']) is str and re.fullmatch('[0-9a-f]{64}',identity['sha256']) is not None,'prepared lease inventory digest differs')
+    return value
+
+
+def validate_lease_capacity(row,inventory_bytes,prepared_count,limits):
+    """Independently validate the runtime's pre-execution capacity receipt.
+
+    The receipt's own count/digest/max are NOT authority.  This function parses
+    the actual inventory original, counts its complete path universe, checks the
+    sealed prepared-input count, recomputes the FD/memory/member formula, and
+    requires the reservation to fund every admitted member exactly once.
+    """
+    need(isinstance(row,dict),'prepared lease capacity row required')
+    keys=set(row)
+    need(LEASE_CAPACITY_KEYS<=keys and keys<=LEASE_CAPACITY_KEYS|LEASE_CAPACITY_ENVELOPE,'prepared lease capacity field set differs')
+    need(row.get('kind')==LEASE_CAPACITY_KIND and row.get('model')==LEASE_CAPACITY_MODEL and row.get('scope')==LEASE_CAPACITY_SCOPE,'prepared lease capacity kind/model/scope differs')
+    need(limits is not None and type(limits.get('sourceMembers')) is int and limits['sourceMembers']>=1,'canonical source member limit required')
+    source_members=limits['sourceMembers']
+    inventory=row.get('inventory');original=row.get('inventoryOriginal')
+    need(isinstance(inventory,dict) and set(inventory)=={'path','bytes','sha256'} and inventory.get('path')=='inner/inputs-before.json','prepared lease inventory reference differs')
+    need(isinstance(original,dict) and set(original)=={'path','bytes','sha256'} and re.fullmatch(r'capture-[0-9]{4,}\.original',original.get('path','')) is not None,'prepared lease inventory capture reference differs')
+    need(type(inventory['bytes']) is int and inventory['bytes']>=0 and type(inventory['sha256']) is str and re.fullmatch('[0-9a-f]{64}',inventory['sha256']) is not None,'prepared lease inventory reference bytes/digest malformed')
+    need(original['bytes']==inventory['bytes'] and original['sha256']==inventory['sha256'],'prepared lease inventory capture/reference differ')
+    need(type(inventory_bytes) is bytes and len(inventory_bytes)==inventory['bytes'],'prepared lease inventory original length differs')
+    inventory_sha=hashlib.sha256(inventory_bytes).hexdigest();need(inventory_sha==inventory['sha256'],'prepared lease inventory original digest differs')
+    parsed=_lease_inventory_object(inventory_bytes,limits)
+    inventory_files=len(parsed)
+    # Path keys are the authoritative upper-bound universe. Prepared build
+    # members may overlap inventory paths and are intentionally counted again:
+    # over-counting is conservative and can never admit an unlisted member.
+    need(type(prepared_count) is int and prepared_count>=0,'sealed prepared-input count required')
+    need(row.get('inventoryFiles')==inventory_files and row.get('preparedInputFiles')==prepared_count,'prepared lease inventory domain count differs')
+    admission=inventory_files+prepared_count
+    need(row.get('admissionMembers')==admission,'prepared lease admission member total differs')
+    need(admission<=source_members,'prepared lease admission exceeds canonical source member bound')
+    need(row.get('sourceMembers')==source_members,'prepared lease source member bound differs')
+    fd_soft=row.get('fdSoft');fd_used=row.get('fdUsed');fd_reserve=row.get('fdReserve')
+    need(type(fd_soft) is int and type(fd_used) is int and fd_used>=0 and fd_reserve==LEASE_CAPACITY_FD_RESERVE,'prepared lease FD ledger fields differ')
+    if fd_soft>0:fd_headroom=fd_soft-fd_used-LEASE_CAPACITY_FD_RESERVE
+    elif fd_soft<0:fd_headroom=source_members
+    else:raise ValueError('multi-process generation originals: prepared lease FD soft limit differs')
+    need(fd_headroom>=0 and row.get('fdHeadroom')==fd_headroom,'prepared lease FD headroom formula differs')
+    memory_bytes=row.get('memoryBytes');memory_row_bytes=row.get('memoryRowBytes');memory_rows=row.get('memoryRows')
+    need(type(memory_bytes) is int and memory_bytes>=0 and memory_row_bytes==LEASE_CAPACITY_ROW_BYTES and memory_rows==memory_bytes//LEASE_CAPACITY_ROW_BYTES,'prepared lease memory ledger fields differ')
+    maximum=min(admission,fd_headroom,memory_rows,source_members)
+    need(maximum>=1 and row.get('maximum')==maximum,'prepared lease maximum formula differs')
+    need(maximum==admission,'prepared lease admission is not fully funded exactly once')
+    return dict(maximum=maximum,inventoryFiles=inventory_files,preparedInputFiles=prepared_count,admissionMembers=admission,inventoryBytes=len(inventory_bytes),inventorySha256=inventory_sha)
+
 DENIED_IO_URING_ERRNO=38 # Linux ENOSYS, for both explicitly supported audit architectures.
 def denied_io_uring_register_layout(arch):
     policy(arch)
@@ -1220,7 +1297,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
     validated_mmap_operations={}
     for phase,lines in phase_lines:
         input_generations.phase()
-        need(not live,'prior actual process tree has not closed');phase_capture_sequences.clear();roots=[];waits=[];raw_decoder=raw_records.RawRecordDecoder();lease_model=None;lease_tokens={};lease_reuses={};lease_closed=[];memory_missing=False;memory_shared_entries=set();memory_released_entries=set();pending_provider_operations=set();pending_source_provider_paths={};lease_pids=[];lease_terminal=False;memory_mode=None;bti_mode=None;bti_required=set();bti_originals={};bti_completed=set();approved_rx={};clone3_mode=None;clone3_originals={};clone3_consumed=set();clone3_events={};memory_checker=executable_memory_policy();memory_writes={};remap_mode=None;remap_required=set();remap_originals={};remap_consumed=set()
+        need(not live,'prior actual process tree has not closed');phase_capture_sequences.clear();roots=[];waits=[];raw_decoder=raw_records.RawRecordDecoder();lease_model=None;lease_capacity_evidence=None;lease_capacity_seen=False;lease_capacity_row=None;lease_admission_model=None;lease_tokens={};lease_reuses={};lease_closed=[];memory_missing=False;memory_shared_entries=set();memory_released_entries=set();pending_provider_operations=set();pending_source_provider_paths={};lease_pids=[];lease_terminal=False;memory_mode=None;bti_mode=None;bti_required=set();bti_originals={};bti_completed=set();approved_rx={};clone3_mode=None;clone3_originals={};clone3_consumed=set();clone3_events={};memory_checker=executable_memory_policy();memory_writes={};remap_mode=None;remap_required=set();remap_originals={};remap_consumed=set()
         for raw in lines:
             check();total+=len(raw);need(total<=maximum_raw and len(raw)<=65536,'tiny raw aggregate/record bound');row=raw_decoder.feed(raw)
             if row is None:continue
@@ -1280,11 +1357,29 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             elif kind=='prepared-build-input-seal':
                 need(not live and not roots and not phase_tracking and not prepared_sealed and row['files']==prepared_count and row['inventorySha256']==prepared_digest.hexdigest(),'prepared closed-set byte seal differs');prepared_sealed=True
                 need(all(value[0]['path'].startswith(row['buildRoot'].rstrip('/')+'/') for value in prepared.values()),'prepared original escapes actual build root')
+            elif kind=='prepared-lease-capacity':
+                # `phase_tracking` is GLOBAL across phases: a valid completed
+                # configure phase must remain recorded while the new compile
+                # phase reserves capacity.  The receipt is still current-phase
+                # pre-execution: no live task, no root of THIS phase, no prior
+                # completed compile/install, and no current compile tracking row.
+                prior_phases=[item.get('phase') for item in phase_tracking]
+                need(prior_phases in ([],['configure']),'prepared lease capacity prior phase order differs')
+                need(phase=='compile' and not live and not roots and 'compile' not in prior_phases and prepared_sealed and not lease_capacity_seen and lease_model is None,'prepared lease capacity must be one pre-execution compile receipt')
+                inventory_original=row.get('inventoryOriginal');need(isinstance(inventory_original,dict) and set(inventory_original)=={'path','bytes','sha256'},'prepared lease inventory original reference differs')
+                capture_data(inventory_original)
+                blocks=read_reference(inventory_original);payload=bytearray()
+                for block in blocks:
+                    check();need(isinstance(block,bytes) and len(block)<=65536 and len(payload)+len(block)<=inventory_original['bytes'],'prepared lease inventory bounded original differs');payload.extend(block)
+                inventory_bytes=bytes(payload)
+                need(len(inventory_bytes)==inventory_original['bytes'] and hashlib.sha256(inventory_bytes).hexdigest()==inventory_original['sha256'],'prepared lease inventory original changed')
+                lease_capacity_evidence=validate_lease_capacity(row,inventory_bytes,prepared_count,limits)
+                lease_capacity_row=row;lease_capacity_seen=True
             elif kind=='owned-root-binding':
                 bti_mode=row.get('btiHardeningModel');need(bti_mode in [None,'held-rx-bti-hardening-v1'],'unknown BTI model')
                 clone3_mode=row.get('clone3ArgsModel');need(clone3_mode in [None,'stopped-clone3-args-v1'],'unknown clone3 argument model')
                 memory_mode=row.get('executableMemoryPolicy');need(memory_mode in [None,memory_checker.MODEL],'unknown executable memory policy')
-                remap_mode=row.get('remapCapabilityModel');need(remap_mode in [None,memory_checker.REMAP_MODEL] and (remap_mode is None or memory_mode==memory_checker.MODEL),'unknown or unfounded mremap capability model');lease_model=row.get('toolchainLifetimeModel');need(lease_model in [None,'kernel-held-read-lease-v1'],'unknown lifetime model')
+                remap_mode=row.get('remapCapabilityModel');need(remap_mode in [None,memory_checker.REMAP_MODEL] and (remap_mode is None or memory_mode==memory_checker.MODEL),'unknown or unfounded mremap capability model');lease_model=row.get('toolchainLifetimeModel');need(lease_model in [None,'kernel-held-read-lease-v1'],'unknown lifetime model');lease_admission_model=row.get('leaseAdmissionModel');need(lease_admission_model in [None,LEASE_CAPACITY_MODEL],'unknown lease admission model');need((lease_admission_model is None and not lease_capacity_seen) or (lease_admission_model==LEASE_CAPACITY_MODEL and lease_capacity_seen and lease_capacity_evidence is not None and lease_model is not None),'lease admission model/capacity receipt mismatch')
                 need(row.get('rawRecordModel')==raw_decoder.model,'declared raw record model differs from actual phase format')
                 declared_chunk=row.get('chunkOriginalStorageModel')
                 need(declared_chunk in [None,'chunk-original-v1'] and (not chunk_storage_initialized or chunk_storage_model==declared_chunk),'unknown or changed chunk storage model')
@@ -2317,7 +2412,12 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
                 identity=row.get('identity');token=row.get('leaseId')
                 need(type(token)is int and token>0 and isinstance(identity,list) and len(identity)==6 and all(type(v)is int for v in identity) and identity[2]&0o170000==0o100000,'regular lease token identity required')
                 if kind=='toolchain-lease-acquired':
-                    need(row.get('model')==lease_model and token not in lease_tokens and token==len(lease_tokens)+1 and len(lease_tokens)<4096,'duplicate/unbounded lease acquisition')
+                    need(row.get('model')==lease_model and not lease_terminal and not lease_closed,'lease acquisition model/lifetime differs')
+                    if lease_capacity_evidence is None:
+                        need(row.get('model')==lease_model and token not in lease_tokens and token==len(lease_tokens)+1 and len(lease_tokens)<4096,'duplicate/unbounded lease acquisition')
+                    else:
+                        live_count=sum(1 for lease_id in lease_tokens if lease_id not in input_generations.retired)
+                        need(token not in lease_tokens and (not lease_tokens or token>max(lease_tokens)) and live_count<lease_capacity_evidence['maximum'],'admitted live unique lease acquisition differs')
                     lease_tokens[token]=dict(leaseId=token,identity=identity,acquisitionSequence=row['sequence'],role=row['role'],barrierSequence=row['barrierSequence'],entrySequence=row.get('entrySequence'))
                     lease_entry_by_token[(row['phase'],token)]=row.get('entrySequence')
                 else:

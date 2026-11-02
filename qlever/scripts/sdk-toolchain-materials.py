@@ -232,7 +232,7 @@ class Session:
             mount_path=self.directory/'dependency-provider.mountinfo.raw'
             with mount_path.open('xb') as stream:stream.write(mounts)
             dependency_options['prepared_dependencies']=dict(collection=dict(prepared_dependencies,path=str(collection)),mountinfo=dict(commands.ref(mount_path,self.out),path=str(mount_path)))
-        self.observer=backend.SdkExecutionObserver(self.directory,source,build,deadline_monotonic=budget.end,check_budget=check,maximum_bytes=maximum_bytes,maximum_stdio_bytes=commands.RAW_LIMIT,phase_budget_policy_version=phase_budget_policy_version,**dependency_options)
+        self.observer=backend.SdkExecutionObserver(self.directory,source,build,deadline_monotonic=budget.end,check_budget=check,maximum_bytes=maximum_bytes,maximum_stdio_bytes=commands.RAW_LIMIT,phase_budget_policy_version=phase_budget_policy_version,lease_inventory_path=self.out/'inputs-before.json',**dependency_options)
     def original_bytes(self):
         # Stage originals live outside the execution directory. Count the unique
         # canonical set, not one directory or repeated collection references.

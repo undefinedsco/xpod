@@ -37,6 +37,12 @@ COHORT_MODELS=(COHORT_MODEL,*WAKE_MODELS)
 LINUX_EAGAIN=11
 WAKE_RAW_RECORDS=8
 WAKE_RESERVATION_BYTES=WAKE_RAW_RECORDS*65536
+GENERATED_WRITE_SLACK=10*65536
+
+def generated_write_reserve(before_size,count,offset):
+    """New bytes for one exact generated write: one preimage, postimage, and buffer."""
+    return before_size+count+max(before_size,offset+count)+GENERATED_WRITE_SLACK
+
 CANONICAL_FILE_MAXIMUM=json.loads((Path(__file__).resolve().parents[2]/'scripts/lib/module-artifact-limits.json').read_bytes())['shardBytes']
 MAPPING_KIND='actual-exclusive-mmap-selected-file-v1'
 BUILD_ROOT='/opt/qlever-sdk/build'
@@ -391,7 +397,7 @@ class MemoryDomains:
 class Runtime:
     def __init__(self,backend):
         need(not getattr(backend,'generated_vma_private_wake',False) or getattr(backend,'generated_vma_shared_mm',False),'private wake requires existing stopped-MM model')
-        self.b=backend;policy=getattr(backend,'phase_budget_policy',None) or budget_policy_module.LEGACY_PHASE_BUDGET_POLICY;self.policy=policy;self.model=PHASE_PARENT_MODEL if policy.observation_window=='phase-parent' else PARKED_WAIT_MODEL if getattr(backend,'generated_vma_parked_wait',False) else COORDINATED_WAIT_MODEL if getattr(backend,'generated_vma_coordinated_wait',False) else PRIVATE_WAIT_MODEL if getattr(backend,'generated_vma_private_wait_mismatch',False) else PRIVATE_WAKE_MODEL if getattr(backend,'generated_vma_private_wake',False) else (COHORT_MODEL if getattr(backend,'generated_vma_shared_mm',False) else MODEL);self.mm=MemoryDomains();self.origins={};self.pending={};self.active=None;self.checkpoints={};self.reserved=0;self.metadata_bytes=0;self.spending_thread=None;self.cleanup_errors=[];self.wake_closing=None;self.retained_metadata=getattr(backend,'retained_generated_metadata',False);self.metadata_close_entry=None;self.metadata_high_water=0
+        self.b=backend;policy=getattr(backend,'phase_budget_policy',None) or budget_policy_module.LEGACY_PHASE_BUDGET_POLICY;self.policy=policy;self.model=PHASE_PARENT_MODEL if policy.observation_window=='phase-parent' else PARKED_WAIT_MODEL if getattr(backend,'generated_vma_parked_wait',False) else COORDINATED_WAIT_MODEL if getattr(backend,'generated_vma_coordinated_wait',False) else PRIVATE_WAIT_MODEL if getattr(backend,'generated_vma_private_wait_mismatch',False) else PRIVATE_WAKE_MODEL if getattr(backend,'generated_vma_private_wake',False) else (COHORT_MODEL if getattr(backend,'generated_vma_shared_mm',False) else MODEL);self.mm=MemoryDomains();self.origins={};self.pending={};self.active=None;self.checkpoints={};self.reserved=0;self.write_active=False;self.write_epoch=0;self.metadata_bytes=0;self.spending_thread=None;self.cleanup_errors=[];self.wake_closing=None;self.retained_metadata=getattr(backend,'retained_generated_metadata',False);self.metadata_close_entry=None;self.metadata_high_water=0
         need(not self.retained_metadata or self.model in PARKED_WAIT_MODELS,'retained metadata requires explicit parked-wait model')
     def retained_metadata_state(self):
         # Include every live protocol root that can survive an emit: the closed
@@ -470,17 +476,21 @@ class Runtime:
     def write_baseline(self,pid,fd,current,before_size,offset):
         origin=self.lookup_fd(pid,fd)
         if origin is None:return None
-        need(self.active is None and origin['pid']==pid and origin['fd']==fd and current==origin['identity']==identity(os.fstat(origin['held'])) and before_size==current[3],'generated write lacks exact current held origin')
+        need(not self.write_active and self.active is None and origin['pid']==pid and origin['fd']==fd and current==origin['identity']==identity(os.fstat(origin['held'])) and before_size==current[3],'generated write lacks exact current held origin')
         count=self.b.tasks[pid]['entry']['args'][2];need(type(count) is int and 0<=count<=self.b.maximum_file_bytes,'bounded generated write count')
-        need(type(offset) is int and 0<=offset and offset+count<=self.b.maximum_file_bytes,'bounded generated write offset');reserve=2*before_size+count+max(before_size,offset+count)+10*65536;self.b.reserve_generated_bytes(reserve);self.spending_thread=threading.get_ident()
-        origin['writePending']=True
+        need(type(offset) is int and 0<=offset and offset+count<=self.b.maximum_file_bytes,'bounded generated write offset');reserve=generated_write_reserve(before_size,count,offset);self.b.reserve_generated_bytes(reserve);self.write_epoch+=1;self.write_active=True;self.spending_thread=threading.get_ident()
+        origin['writePending']=True;origin['writeEpoch']=self.write_epoch
         return origin
+    def abort_write(self,origin):
+        """Release one failed owned write reservation without changing retained bytes."""
+        origin['writePending']=False
+        self.write_active=False;self.reserved=0;self.spending_thread=None
     def complete_write_bridge(self,origin,window,transition,held):
-        need(origin.get('writePending') and transition['afterIdentity']==identity(os.fstat(held)) and transition['afterIdentity'][:3]==origin['identity'][:3] and window['beforeIdentity']==origin['identity'] and window['baseline']==origin['sequence'],'generated write transition baseline differs')
-        current,ref=self.snapshot(held);need(current==identity(os.fstat(origin['held'])) and window['fd']==origin['fd'] and (ref['bytes'],ref['sha256'])==(transition['after']['bytes'],transition['after']['sha256']),'generated write full postimage differs from sole write projection')
+        need(self.write_active and origin.get('writePending') and origin.get('writeEpoch')==self.write_epoch and transition['afterIdentity']==identity(os.fstat(held)) and transition['afterIdentity'][:3]==origin['identity'][:3] and window['beforeIdentity']==origin['identity'] and window['baseline']==origin['sequence'],'generated write transition baseline differs')
+        current,ref=self.snapshot(held,generated_epoch=origin['writeEpoch']);need(current==identity(os.fstat(origin['held'])) and window['fd']==origin['fd'] and (ref['bytes'],ref['sha256'])==(transition['after']['bytes'],transition['after']['sha256']),'generated write full postimage differs from sole write projection')
         row=self.b.emit(dict(kind='generated-vma-write-origin-transition',pid=window['pid'],originSequence=origin['sequence'],windowSequence=window['sequence'],transitionSequence=transition['sequence'],identity=current,original=ref))
         origin.update(identity=current,data=(ref['bytes'],ref['sha256']),original=ref,sequence=row['sequence'],writePending=False,checkpointed=False)
-        self.reserved=0;self.spending_thread=None
+        self.write_active=False;self.reserved=0;self.spending_thread=None
         return row
     def lookup_fd(self,pid,fd):
         try:current=identity(os.stat('/proc/'+str(pid)+'/fd/'+str(fd)))
@@ -544,9 +554,9 @@ class Runtime:
         row=self.b.barrier()
         if row['sequence']!=self.b.seq:row=self.b.barrier()
         need(row['sequence']==self.b.seq,'fresh all-task barrier required');return row
-    def snapshot(self,fd):
+    def snapshot(self,fd,*,generated_epoch=None):
         before=identity(os.fstat(fd));need(stat.S_ISREG(before[2]) and 0<=before[3]<=self.b.maximum_file_bytes<=CANONICAL_FILE_MAXIMUM,'bounded regular generated original required')
-        ref=self.b.snapshot_write_original(fd,before[3]);need(before==identity(os.fstat(fd)),'generated original changed during capture');return before,ref
+        ref=self.b.snapshot_write_original(fd,before[3],generated_epoch=generated_epoch) if generated_epoch is not None else self.b.snapshot_write_original(fd,before[3]);need(before==identity(os.fstat(fd)),'generated original changed during capture');return before,ref
     def maps(self,pid):return self.b.tool_maps(pid)
     def wait_samples(self,pid,entry,barrier):
         address=private_wait_dimensions(entry,self.active,model=self.model);domain,members=self.mapping_domain(pid,barrier)
@@ -771,7 +781,7 @@ class Runtime:
         # Unconditional: a leaked claim must never outlive this runtime, even if
         # any lease cleanup below raises.
         self.b.close_outer_lease_window()
-        self.reserved=0;self.spending_thread=None
+        self.write_active=False;self.reserved=0;self.spending_thread=None
         # Failed closes remain in the existing observer retained set for its
         # outer cleanup retry. Try every lease, never hide a propagating error.
         self.cleanup_fds([origin['held'] for origin in self.origins.values()]+[pending.get('parentFd') for pending in self.pending.values()])
