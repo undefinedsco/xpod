@@ -12,6 +12,7 @@ import importlib.util
 import json
 import math
 import re
+import resource
 import select
 import os
 from pathlib import Path
@@ -385,20 +386,36 @@ class PhaseProgress:
 LIFETIME_OPEN_ERRORS=frozenset([errno.EACCES,errno.EPERM,errno.ENOENT,errno.ENOTDIR,errno.ELOOP,errno.ENAMETOOLONG,errno.ESTALE,errno.ENXIO,errno.ESRCH])
 
 class CaptureReservation:
-    """One snapshot reservation in the observer's existing source-byte ledger."""
-    def __init__(self,observer):self.observer=observer;self.reserved=0;self.active=False;self.committed_bytes=0
+    """One snapshot reservation in the observer's existing source-byte ledger.
+
+    A generated write owns one pre-reservation. Chunk snapshots belonging to
+    that exact write may draw on it, but only on the owner thread/window and
+    only for bytes they actually commit. The generated credit is consumed by
+    commit, not reserved a second time; other snapshots and other threads keep
+    seeing the full generated reservation as unavailable.
+    """
+    def __init__(self,observer,generated_epoch=None):
+        self.observer=observer;self.generated_epoch=generated_epoch;self.generated_credit=0;self.reserved=0;self.active=False;self.committed_bytes=0
+    def _generated_credit(self,generated):
+        return bool(generated is not None and self.generated_epoch is not None and getattr(generated,'write_active',False) and getattr(generated,'write_epoch',None)==self.generated_epoch and getattr(generated,'spending_thread',None)==threading.get_ident())
     def remaining_bytes(self):
         b=self.observer
         with b.domain_lock:
             generated=getattr(b,'generated_vma',None)
-            return b.maximum_bytes-b.domain_bytes-getattr(b,'chunk_reserved',0)-(generated.reserved if generated else 0)
+            # An eligible generated snapshot sees its own reservation as funding,
+            # capped at that owned credit. Everyone else still sees it subtracted,
+            # so a foreign/nested snapshot cannot consume the owner's reserve.
+            available=b.maximum_bytes-b.domain_bytes-getattr(b,'chunk_reserved',0)
+            if generated and self._generated_credit(generated):
+                return min(available,generated.reserved)
+            return available-(generated.reserved if generated else 0)
     def reserve(self,count):
         b=self.observer;b.check_budget()
         with b.domain_lock:
             assert not self.active and type(count) is int and count>=0
             generated=getattr(b,'generated_vma',None)
             domain_bytes=b.domain_bytes;chunk_reserved=getattr(b,'chunk_reserved',0)
-            generated_reserved=generated.reserved if generated else 0
+            generated_reserved=generated.reserved if generated and not self._generated_credit(generated) else 0
             computed_total=domain_bytes+chunk_reserved+generated_reserved+count
             assert computed_total<=b.maximum_bytes,(
                 'shared capture reservation bound '+json.dumps(dict(
@@ -406,18 +423,38 @@ class CaptureReservation:
                     generated_reserved=generated_reserved,requested=count,
                     maximum_bytes=b.maximum_bytes,computed_total=computed_total,
                     remaining=b.maximum_bytes-computed_total),sort_keys=True,separators=(',',':')))
-            b.chunk_reserved=chunk_reserved+count;self.reserved=count;self.active=True
+            eligible=bool(generated and self._generated_credit(generated))
+            assert not eligible or count<=generated.reserved,'generated capture reservation exceeds owned generated write credit'
+            credit=min(count,generated.reserved) if eligible else 0
+            if credit:generated.reserved-=credit
+            b.chunk_reserved=chunk_reserved+count;self.generated_credit=credit;self.reserved=count;self.active=True
+            assert b.domain_bytes+b.chunk_reserved+(generated.reserved if generated else 0)<=b.maximum_bytes,'capture reservation transfer invariant broken'
     def commit(self,count):
         b=self.observer
         with b.domain_lock:
             assert self.active and type(count) is int and 0<=count<=self.reserved
+            generated=getattr(b,'generated_vma',None)
             b.domain_bytes+=count;b.claim_bytes['capture-body']+=count;self.committed_bytes+=count
             b.chunk_reserved-=count;self.reserved-=count
+            assert b.chunk_reserved>=0 and self.reserved>=0,'capture reservation went negative'
+            # Generated credit was transferred out of generated.reserved at
+            # reserve time. Consume that owned credit first, exactly once.
+            self.generated_credit-=min(count,self.generated_credit)
+            assert self.generated_credit>=0 and self.generated_credit<=self.reserved,'capture generated credit exceeds remaining reservation'
+            assert b.domain_bytes+b.chunk_reserved+(generated.reserved if generated else 0)<=b.maximum_bytes,'capture reservation invariant broken'
     def release(self):
         b=self.observer
         with b.domain_lock:
             assert self.active
-            b.chunk_reserved-=self.reserved;self.reserved=0;self.active=False
+            generated=getattr(b,'generated_vma',None)
+            # Return only the uncommitted owned credit to its still-active exact
+            # window. Free-space reservation is simply released. An aborted/
+            # stale window loses its credit instead of donating it to a new one.
+            if self.generated_credit and self._generated_credit(generated):
+                generated.reserved+=self.generated_credit
+            b.chunk_reserved-=self.reserved;self.reserved=0;self.generated_credit=0;self.active=False
+            assert b.chunk_reserved>=0,'capture reservation release went negative'
+            assert b.domain_bytes+b.chunk_reserved+(generated.reserved if generated else 0)<=b.maximum_bytes,'capture reservation release invariant broken'
 SEIZE=0x4206;INTERRUPT=0x4207;GETEVENTMSG=0x4201;SYSCALL=24;WALL=0x40000000
 OPTIONS=1|2|4|8|16|32|64|0x00100000
 
@@ -2171,7 +2208,7 @@ class Observer(CapturesMixin):
         ref=storage['manifest'];value=os.stat(self.capture_dir/ref['path'],follow_symlinks=False)
         assert stat.S_ISREG(value.st_mode) and value.st_nlink==1 and value.st_size==ref['bytes']
         return [*probe.identity(value),value.st_nlink]
-    def snapshot_write_original(self,reader,size,*,offset=0):
+    def snapshot_write_original(self,reader,size,*,offset=0,generated_epoch=None):
         assert 0<=size<=self.maximum_file_bytes,'write original byte bound'
         source=os.fstat(reader)
         if getattr(self,'capture_content_entities',False) and offset==0 and stat.S_ISREG(source.st_mode) and source.st_size==size:
@@ -2182,7 +2219,7 @@ class Observer(CapturesMixin):
                     self.audit_site(sites,'install',ticket)
                 self.audit_site(sites,'snapshot_site',ticket,'observer-leading') if ticket is not None else None
                 def regular_snapshot_body():
-                    number=len(self.captures);ledger=CaptureReservation(self)
+                    number=len(self.captures);ledger=CaptureReservation(self,generated_epoch=generated_epoch)
                     # Out-of-band counter sink. It is updated in place by the chunk store
                     # BEFORE each fsync it counts, so a deadline raised inside the manifest
                     # fsync still leaves the exact counters at the failure point in
@@ -2255,6 +2292,7 @@ class Observer(CapturesMixin):
         return (result['bytes'],result['sha256'])
     def capture_write(self,pid,fd):
         barrier=self.barrier();entry=self.tasks[pid]['entry'];path=fdpath(pid,fd);reader=os.open('/proc/'+str(pid)+'/fd/'+str(fd),os.O_RDONLY|os.O_CLOEXEC)
+        generated_origin=None
         try:
             identity=probe.identity(os.fstat(reader));assert stat.S_ISREG(identity[2]) and identity[3]<=self.maximum_file_bytes
             alias_inventory=self.stopped_write_alias_inventory(pid,fd,identity) if getattr(self,'stopped_writer_aliases',False) else None
@@ -2274,7 +2312,7 @@ class Observer(CapturesMixin):
             if generated_origin is not None:assert generated_origin['data']==(before['bytes'],before['sha256']),'generated write entire before bytes differ from retained origin'
             initial=None
             if generated_origin is not None or tuple(identity[:2]) not in self.write_states:
-                initial=self.snapshot_write_original(reader,identity[3]);assert identity==probe.identity(os.fstat(reader))
+                initial=self.snapshot_write_original(reader,identity[3],generated_epoch=generated_origin.get('writeEpoch')) if generated_origin else self.snapshot_write_original(reader,identity[3]);assert identity==probe.identity(os.fstat(reader))
             prior=None if generated_origin is not None else self.write_states.get(tuple(identity[:2]));baseline=generated_origin['sequence'] if generated_origin is not None else 'empty'
             if identity[3] and generated_origin is None:
                 if prior:
@@ -2286,7 +2324,7 @@ class Observer(CapturesMixin):
                     row,held,data=original;assert probe.identity(os.fstat(held))==identity and data==(before['bytes'],before['sha256']),'write preimage differs from actual retained original';baseline=row['sequence']
             memory=os.open('/proc/'+str(pid)+'/mem',os.O_RDONLY|os.O_CLOEXEC)
             try:
-                self.budget_context['role']='actual-write-buffer';buffer=self.snapshot_write_original(memory,count,offset=entry['args'][1])
+                self.budget_context['role']='actual-write-buffer';buffer=self.snapshot_write_original(memory,count,offset=entry['args'][1],generated_epoch=generated_origin.get('writeEpoch')) if generated_origin else self.snapshot_write_original(memory,count,offset=entry['args'][1])
             finally:os.close(memory)
             row=self.emit(dict(kind='actual-write-window',pid=pid,fd=fd,path=path,entrySequence=entry['sequence'],barrierSequence=barrier['sequence'],beforeIdentity=identity,format='bounded-append-effect-v1' if append else 'bounded-write-delta-v1',initialBefore=initial,before=before,buffer=buffer,offset=offset,position=position,flags=flags,writers=writers,baseline=baseline,**(dict(stoppedAliasInventory=alias_inventory) if alias_inventory else {})))
             self.budget_context={}
@@ -2299,10 +2337,15 @@ class Observer(CapturesMixin):
                 chain=dict(identity=identity,digest=digest,held=retained,dirty=False,transition=None)
                 self.append_chains[key]=chain
             self.tasks[pid]['writeWindow']=(row,reader);self.retained.add(reader);reader=None;return row
+        except BaseException:
+            self.tasks[pid].pop('generatedWriteOrigin',None)
+            if generated_origin is not None:self.generated_vma.abort_write(generated_origin)
+            raise
         finally:
             if reader is not None:os.close(reader)
     def complete_write(self,pid,entry,exit):
         row,held=self.tasks[pid].pop('writeWindow')
+        generated_origin=self.tasks[pid].get('generatedWriteOrigin')
         try:
             assert self.exclusive==(pid,entry['sequence']) and not exit['isError'] and 0<=exit['result']<=entry['args'][2],'actual write failed or returned invalid count'
             identity=probe.identity(os.fstat(held));assert identity==probe.identity(os.stat('/proc/'+str(pid)+'/fd/'+str(row['fd']))) and identity[:3]==row['beforeIdentity'][:3] and descriptor_flags(pid,row['fd'])==row['flags'],'actual writer FD changed'
@@ -2341,6 +2384,10 @@ class Observer(CapturesMixin):
             self.write_states[tuple(identity[:2])]=transition
             generated_origin=self.tasks[pid].pop('generatedWriteOrigin',None)
             if generated_origin is not None:self.generated_vma.complete_write_bridge(generated_origin,row,transition,held)
+        except BaseException:
+            self.tasks[pid].pop('generatedWriteOrigin',None)
+            if generated_origin is not None:self.generated_vma.abort_write(generated_origin)
+            raise
         finally:
             primary=sys.exc_info()[1]
             try:os.close(held)
@@ -5015,6 +5062,8 @@ class Observer(CapturesMixin):
                         for task in self.tasks.values())
             if not pending:return
             if not progressed:return
+    def prepared_lease_capacity(self,phase):
+        return None
     def phase_armed(self,name,command,cwd,env,stdoutPath,stderrPath):
         self.reset_owned_frames()
         capture_start=len(self.captures);started_ns=time.time_ns();stdout_path=Path(stdoutPath) if stdoutPath is not None else self.out/(name+'.stdout.raw');stderr_path=Path(stderrPath) if stderrPath is not None else self.out/(name+'.stderr.raw')
@@ -5026,6 +5075,12 @@ class Observer(CapturesMixin):
             try:
                 self.seal_prepared_dependency_sources()
                 self.seal_prepared_build_inputs()
+            except BaseException:
+                self.raw_bytes_completed+=self.raw.tell();self.raw.close();self.close();raise
+        capacity=None
+        if self.capture_toolchain:
+            try:
+                capacity=self.prepared_lease_capacity(name)
             except BaseException:
                 self.raw_bytes_completed+=self.raw.tell();self.raw.close();self.close();raise
         ready_read,ready_write=os.pipe() if self.process_authority else (None,None)
@@ -5074,7 +5129,11 @@ class Observer(CapturesMixin):
         try:
             # Created only here, in the parent after fork: the child must never
             # inherit a lease FD or SIGIO ownership.
-            if self.capture_toolchain:self.lifetime_leases=self.lifetime_leases_class()
+            if self.capture_toolchain:
+                if capacity is None:
+                    self.lifetime_leases=self.lifetime_leases_class()
+                else:
+                    self.lifetime_leases=self.lifetime_leases_class(capacity['maximum'],capacity)
             # LEASES ARE PER-PHASE. The cache and the FD-generation map are keyed
             # by inode, so carrying them across phases would let a later phase
             # cite a token that the previous phase already closed. Reset them
@@ -5086,7 +5145,7 @@ class Observer(CapturesMixin):
             for pump in pumps:pump.start()
             if self.process_authority:
                 os.close(ready_write);ready_write=None;self.check();remaining=max(0,self.deadline-time.monotonic());readable,_,_=select.select([ready_read],[],[],remaining);self.check();assert readable and os.read(ready_read,1)==b'R','child authority setup did not complete before release';os.close(ready_read);ready_read=None
-            self.emit(dict(kind='owned-root-binding',pid=child,command=command,**(dict(ownedInputGenerationModel=owned_input_module.MODEL) if self.owned_input_generations is not None else {}),**(dict(toolchainLifetimeModel=LIFETIME_MODEL,executableMemoryPolicy=memory_policy.MODEL,clone3ArgsModel='stopped-clone3-args-v1',btiHardeningModel='held-rx-bti-hardening-v1',**(dict(remapCapabilityModel=memory_policy.REMAP_MODEL) if self.generated_vma else {})) if self.capture_toolchain else {}),**(dict(rawRecordModel=probe.RAW_RECORD_MODEL_V2)if self.indexed_raw_records else {}),backend='ptrace-all-stop-process-v1',**(dict(chunkOriginalStorageModel='chunk-original-v1') if self.capture_content_entities else {}),captureOriginalEntityModel='same-phase-content-entity-v2' if self.capture_content_entities else 'same-phase-producer-original-v1',**(dict(mapsOriginalEntityModel='same-phase-maps-content-entity-v1')if getattr(self,'capture_maps_content_entities',False)else {}),**(dict(generatedVmaModel=self.generated_vma.model,**(dict(generatedVmaMetadataModel=generated_vma_module.RETAINED_METADATA_MODEL)if getattr(self,'retained_generated_metadata',False)else {}),generatedVmaBuildRoot=self.build,generatedVmaParentDeadlineMonotonicNs=str(int(self.waiter.parent_deadline*1e9))) if self.generated_vma else {}),**(dict(stoppedWriterAliasModel='all-stop-exclusive-write-aliases-v1') if getattr(self,'stopped_writer_aliases',False) else {}),**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v2' if getattr(self,'io_uring_enosys_v2',False) else 'explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(setresIdentityNoopModel='actual-stopped-setres-identity-noop-queued-v2' if getattr(self,'queued_identity_noop',False) else 'actual-stopped-setres-identity-noop-v1') if getattr(self,'verified_identity_noop',False) else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(exitAuthorityModel='actual-selected-exit-stop-held-terminal-peers-v2'if getattr(self,'serialize_terminal_syscalls',False)else 'actual-selected-exit-stop-before-peer-barrier-v1') if getattr(self,'terminal_exit_evidence',False) else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.drain_pending_generations()
+            self.emit(dict(kind='owned-root-binding',pid=child,command=command,**(dict(ownedInputGenerationModel=owned_input_module.MODEL) if self.owned_input_generations is not None else {}),**(dict(toolchainLifetimeModel=LIFETIME_MODEL,executableMemoryPolicy=memory_policy.MODEL,clone3ArgsModel='stopped-clone3-args-v1',btiHardeningModel='held-rx-bti-hardening-v1',**(dict(remapCapabilityModel=memory_policy.REMAP_MODEL) if self.generated_vma else {})) if self.capture_toolchain else {}),**(dict(leaseAdmissionModel=capacity['model']) if capacity is not None else {}),**(dict(rawRecordModel=probe.RAW_RECORD_MODEL_V2)if self.indexed_raw_records else {}),backend='ptrace-all-stop-process-v1',**(dict(chunkOriginalStorageModel='chunk-original-v1') if self.capture_content_entities else {}),captureOriginalEntityModel='same-phase-content-entity-v2' if self.capture_content_entities else 'same-phase-producer-original-v1',**(dict(mapsOriginalEntityModel='same-phase-maps-content-entity-v1')if getattr(self,'capture_maps_content_entities',False)else {}),**(dict(generatedVmaModel=self.generated_vma.model,**(dict(generatedVmaMetadataModel=generated_vma_module.RETAINED_METADATA_MODEL)if getattr(self,'retained_generated_metadata',False)else {}),generatedVmaBuildRoot=self.build,generatedVmaParentDeadlineMonotonicNs=str(int(self.waiter.parent_deadline*1e9))) if self.generated_vma else {}),**(dict(stoppedWriterAliasModel='all-stop-exclusive-write-aliases-v1') if getattr(self,'stopped_writer_aliases',False) else {}),**(dict(optionalIoUringModel='explicit-kernel-enosys-denial-v2' if getattr(self,'io_uring_enosys_v2',False) else 'explicit-kernel-enosys-denial-v1') if self.deny_optional_io_uring else {}),**(dict(setresuidNoopModel='actual-stopped-setresuid-noop-v1') if self.verified_setresuid_noop else {}),**(dict(setresIdentityNoopModel='actual-stopped-setres-identity-noop-queued-v2' if getattr(self,'queued_identity_noop',False) else 'actual-stopped-setres-identity-noop-v1') if getattr(self,'verified_identity_noop',False) else {}),**(dict(processAuthorityModel=tool_providers.AUTHORITY_MODEL) if self.process_authority else {}),**(dict(exitAuthorityModel='actual-selected-exit-stop-held-terminal-peers-v2'if getattr(self,'serialize_terminal_syscalls',False)else 'actual-selected-exit-stop-before-peer-barrier-v1') if getattr(self,'terminal_exit_evidence',False) else {}),**(dict(taskOwnershipModel='all-tracked-tids-shared-fd-v1',tgid=child,fdTable=child) if self.shared_tasks else {})));single.trace(SEIZE,child,0,OPTIONS);single.trace(INTERRUPT,child);pid,status=self.wait_one();self.event(pid,status,False);self.drain_pending_generations()
             binding=self.emit(dict(kind='toolchain-control-gate-binding',model='observer-owned-startup-gate-v1',
                 gateSequence=gate['sequence'],pid=child,identity=gate_identity,
                 scope='the observer, not the tracee, owns the write end of this exact pipe inode'))
@@ -5250,7 +5309,7 @@ class SdkExecutionObserver(Observer):
     .phase returns real command/tracked receipts; it does not claim a closed
     process group while this long-lived observer still retains descriptors.
     """
-    def __init__(self,out,source,build,*,deadline_monotonic,check_budget,maximum_bytes,maximum_stdio_bytes,prepared_dependencies=None,phase_budget_policy_version=None):
+    def __init__(self,out,source,build,*,deadline_monotonic,check_budget,maximum_bytes,maximum_stdio_bytes,prepared_dependencies=None,phase_budget_policy_version=None,lease_inventory_path=None):
         limits=load_sdk_execution_limits()
         assert isinstance(maximum_bytes,int) and 0<maximum_bytes<=limits['sourceMaterialBytes'],'canonical shared execution byte bound required'
         assert isinstance(maximum_stdio_bytes,int) and 0<maximum_stdio_bytes<=min(maximum_bytes,limits['shardBytes']),'existing bounded command raw limit required'
@@ -5258,7 +5317,7 @@ class SdkExecutionObserver(Observer):
         assert isinstance(deadline_monotonic,(float,int)) and math.isfinite(deadline_monotonic) and time.monotonic()<deadline_monotonic,'existing live SDK deadline required'
         super().__init__(out,source,build,deadline_monotonic=deadline_monotonic,check_budget=check_budget,maximum_bytes=maximum_bytes,
             owned_input_generations=True,maximum_file_bytes=limits['shardBytes'],phase_budget_policy_version=phase_budget_policy_version,selected_names=None,maximum_processes=limits['sourceMembers'],shard_bytes=limits['shardBytes'],require_success=False,maximum_stdio_bytes=maximum_stdio_bytes,shared_tasks=True,capture_toolchain=True,deny_optional_io_uring=True,verified_identity_noop=True,terminal_exit_evidence=True,generated_vma_output=True,generated_vma_shared_mm=True,generated_vma_private_wake=True,generated_vma_private_wait_mismatch=True,capture_content_entities=True,queued_identity_noop=True,stopped_writer_aliases=True,generated_vma_coordinated_wait=True,generated_vma_parked_wait=True,io_uring_enosys_v2=True,serialize_terminal_syscalls=True,capture_maps_content_entities=True,retained_generated_metadata=True,indexed_raw_records=True,compressed_raw=True)
-        self.capture_dir=self.out/'captures';self.capture_dir.mkdir(exist_ok=False);self.sdk_phase_index=0;self.sdk_failed=False
+        self.capture_dir=self.out/'captures';self.capture_dir.mkdir(exist_ok=False);self.sdk_phase_index=0;self.sdk_failed=False;self.lease_inventory_path=Path(lease_inventory_path) if lease_inventory_path is not None else None
         mounts=Path('/proc/self/mountinfo').read_bytes();assert len(mounts)<=limits['metadataBytes'],'source provider metadata bound'
         self.source_provider=probe.effective_readonly(source,mounts);self.source_provider_originals=dict(mountinfo=probe.put(self.out/'source-provider.mountinfo.raw',mounts));self.claim(len(mounts))
         if prepared_dependencies is not None:
@@ -5270,3 +5329,76 @@ class SdkExecutionObserver(Observer):
         assert command==expected,'fixed actual SDK phase argv required'
         result=super().phase(name,command,deadline_monotonic,cwd=cwd,env=env,stdoutPath=stdoutPath,stderrPath=stderrPath)
         self.sdk_failed=result['trackingReceipt']['actualRootReturnCode']!=0;self.sdk_phase_index+=1;return result
+    def prepared_lease_capacity(self,phase):
+        if phase!='compile' or not self.capture_toolchain:return None
+        if self.lease_inventory_path is None:return None
+        path=self.lease_inventory_path
+        if not path.is_file():raise RuntimeError('mandatory prepared lease inventory missing: '+str(path))
+        limits=load_sdk_execution_limits()
+        maximum_inventory_bytes=min(limits['sourceMaterialBytes'],max(limits['metadataBytes'],limits['sourceMembers']*256))
+        fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
+        try:
+            before=probe.identity(os.fstat(fd));assert stat.S_ISREG(before[2]) and before[3]<=maximum_inventory_bytes,'prepared lease inventory byte bound'
+            data=bytearray()
+            while True:
+                block=os.read(fd,65536)
+                if not block:break
+                data.extend(block);assert len(data)<=maximum_inventory_bytes,'prepared lease inventory grew'
+            after=probe.identity(os.fstat(fd))
+            assert before==after==probe.identity(os.stat(path,follow_symlinks=False)),'prepared lease inventory changed during full read'
+        finally:os.close(fd)
+        def no_duplicate_pairs(pairs):
+            result={}
+            for key,value in pairs:
+                if key in result:raise ValueError('duplicate prepared lease inventory path')
+                result[key]=value
+            return result
+        inventory=json.loads(data,object_pairs_hook=no_duplicate_pairs)
+        if not isinstance(inventory,dict) or not inventory:raise ValueError('prepared lease inventory object required')
+        for name,identity in inventory.items():
+            if type(name) is not str or not name.startswith('/') or chr(0) in name or len(name.encode())>4096:raise ValueError('prepared lease inventory path differs')
+            if not isinstance(identity,dict) or set(identity)!={'bytes','sha256','mode'}:raise ValueError('prepared lease inventory identity field set differs')
+            if type(identity['bytes']) is not int or identity['bytes']<0 or type(identity['mode']) is not int or not 0<=identity['mode']<=0o7777:raise ValueError('prepared lease inventory byte/mode differs')
+            if type(identity['sha256']) is not str or re.fullmatch('[0-9a-f]{64}',identity['sha256']) is None:raise ValueError('prepared lease inventory digest differs')
+        inventory_sha=hashlib.sha256(data).hexdigest()
+        # `inputs-before` covers the precompile source/dependency/toolchain/build
+        # path universe. Prepared build members may overlap that path domain and
+        # are conservatively counted a second time; this can only overstate the
+        # bound, never understate it.
+        prepared_count=len(self.prepared_inputs)
+        known=len(inventory)+prepared_count
+        memory_values=[]
+        try:
+            with open('/proc/meminfo','rb') as stream:
+                for line in stream:
+                    if line.startswith(b'MemAvailable:'):
+                        memory_values.append(int(line.split()[1])*1024);break
+        except (OSError,ValueError,IndexError):pass
+        try:
+            cgroup_max=Path('/sys/fs/cgroup/memory.max').read_text().strip()
+            cgroup_current=Path('/sys/fs/cgroup/memory.current').read_text().strip()
+            if cgroup_max!='max' and cgroup_current.isdigit() and int(cgroup_max)>int(cgroup_current):memory_values.append(int(cgroup_max)-int(cgroup_current))
+        except (OSError,ValueError):pass
+        try:
+            address_limit=resource.getrlimit(resource.RLIMIT_AS)[0]
+            if type(address_limit) is int and address_limit>0:memory_values.append(address_limit)
+        except (OSError,ValueError):pass
+        memory_bytes=min(memory_values) if memory_values else 0
+        evidence=lifetime_leases.lease_capacity(known,resource.getrlimit(resource.RLIMIT_NOFILE)[0],len(os.listdir('/proc/self/fd')),memory_bytes,limits['sourceMembers'])
+        if evidence['maximum']<known:raise RuntimeError('prepared lease inventory exceeds live FD/memory capacity')
+        name=self.next_capture_name();digest=hashlib.sha256(data)
+        self.claim(len(data),category='capture-body')
+        with (self.capture_dir/name).open('xb') as output:
+            output.write(data);output.flush();os.fsync(output.fileno())
+        os.chmod(self.capture_dir/name,0o600)
+        self.capture_bytes+=len(data)
+        original=dict(path=name,bytes=len(data),sha256=digest.hexdigest())
+        self.emit(dict(kind='prepared-lease-capacity',model=evidence['model'],inventory=dict(path='inner/inputs-before.json',bytes=len(data),sha256=inventory_sha),inventoryOriginal=original,inventoryFiles=len(inventory),preparedInputFiles=prepared_count,admissionMembers=known,sourceMembers=evidence['sourceMembers'],fdSoft=evidence['fdSoft'],fdUsed=evidence['fdUsed'],fdReserve=evidence['fdReserve'],fdHeadroom=evidence['fdHeadroom'],memoryBytes=evidence['memoryBytes'],memoryRowBytes=evidence['memoryRowBytes'],memoryRows=evidence['memoryRows'],maximum=evidence['maximum'],scope='actual full pre-compile inventory original plus sealed prepared build inputs; reserved before child fork'))
+        # Register the SAME physical inventory original through the existing
+        # write-original capture contract.  The capacity receipt's
+        # inventoryOriginal must be a phase capture, because Session.finalize
+        # builds the published ZIP capture indexes from phase_capture_files()
+        # only.  No new raw kind, no second registry, and no second byte charge.
+        registration=self.emit(dict(kind='write-original',original=original))
+        self.append_capture(registration)
+        return evidence

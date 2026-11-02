@@ -273,7 +273,7 @@ class VmaHarness:
         # "established absent mappings": the original's backing is gone
         return {'original': dict(bytes=0, sha256='0' * 64, content='')}, []
 
-    def snapshot_write_original(self, fd, size):
+    def snapshot_write_original(self, fd, size, *, offset=0, generated_epoch=None):
         # the single stubbed capture boundary; REAL Runtime.snapshot validations run.
         # bytes/hash must equal the window's beforeOriginal (the unmap checks it).
         return dict(bytes=self.ref_row['bytes'], sha256=self.ref_row['sha256'], content='')

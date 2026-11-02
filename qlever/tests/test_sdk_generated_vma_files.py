@@ -47,7 +47,7 @@ class Backend:
  def instrument_substep(self,name,function,*arguments,**keywords):return function(*arguments,**keywords)
  def emit(self,row):self.seq+=1;return dict(row,sequence=self.seq)
  def barrier(self):return self.emit(dict(kind='all-stop-barrier',pids=[10],taskOwnership=[dict(tid=10,fdTable=10)]))
- def snapshot_write_original(self,fd,size,offset=0):
+ def snapshot_write_original(self,fd,size,*,offset=0,generated_epoch=None):
   data=os.pread(fd,size,offset);ref=dict(path=str(len(self.originals)),bytes=len(data),sha256=hashlib.sha256(data).hexdigest());self.originals[ref['path']]=data;return ref
  def original_blocks(self,ref):
   raw=self.originals[ref['path']];return (raw[i:i+65536] for i in range(0,len(raw),65536))
