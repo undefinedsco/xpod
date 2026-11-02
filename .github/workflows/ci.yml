@@ -53,21 +53,9 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
-      - name: Check native SDK, archive and Docker context contracts before builds
-        run: |
-          python3 -m unittest discover -s qlever/tests -p 'test_qlever*'
-          python3 -m unittest discover -s qlever/tests -p 'test_resolve_runtime_sdk_build.py'
-          python3 -m unittest discover -s qlever/tests -p 'test_macos*.py'
-          python3 qlever/tests/test_bounded_original_reader.py
-
-      # Standing dual-compiler gate for the shipped scoped-PCH recipe.
-      # The canonical suite executes the REAL recipe block extracted from the
-      # shipped patch, so CMake must actually select a compiler the recipe admits
-      # (Clang 19..<20 or GNU 12..<13). ubuntu-latest preinstalls Clang 16/17/18
-      # and GNU 13 as `g++`, so neither reviewed driver may be assumed.
-      # Ubuntu noble-updates ships clang-19, g++-12 and gcc-12 as ordinary
-      # packages, so no external archive, extra image or default-compiler
-      # substitution is needed.
+      # The first Python discovery imports the new owned-window cases, which
+      # instantiate the real native SdkLeaseSet. Build the canonical helper and
+      # its compiler/header prerequisites before that discovery.
       - name: Install the two reviewed scoped-PCH compilers when absent
         run: |
           set -eu
@@ -104,6 +92,37 @@ jobs:
           g++-12 --version | head -1
           clang++-19 --version | head -1
 
+      - name: Install interpreter-matched C headers for the native gate
+        run: |
+          set -eu
+          PY=/usr/bin/python3
+          VER=$($PY -c 'import sys;print("%d.%d"%sys.version_info[:2])')
+          INC=$($PY -c 'import sysconfig;print(sysconfig.get_paths()["include"])')
+          echo "interpreter: $($PY --version)  version=$VER  include=$INC"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends "python${VER}-dev" clang
+          test -f "$INC/Python.h"
+
+      - name: Build canonical SDK native lease helper for the required gate
+        run: |
+          sudo -E env PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -B qlever/scripts/native/build_native_helper.py \
+            qlever/scripts/native/lease_sweep_ext.c qlever/scripts/native --cc gcc-12
+
+      - name: Check native SDK, archive and Docker context contracts before builds
+        run: |
+          python3 -m unittest discover -s qlever/tests -p 'test_qlever*'
+          python3 -m unittest discover -s qlever/tests -p 'test_resolve_runtime_sdk_build.py'
+          python3 -m unittest discover -s qlever/tests -p 'test_macos*.py'
+          python3 qlever/tests/test_bounded_original_reader.py
+
+      # Standing dual-compiler gate for the shipped scoped-PCH recipe.
+      # The canonical suite executes the REAL recipe block extracted from the
+      # shipped patch, so CMake must actually select a compiler the recipe admits
+      # (Clang 19..<20 or GNU 12..<13). ubuntu-latest preinstalls Clang 16/17/18
+      # and GNU 13 as `g++`, so neither reviewed driver may be assumed.
+      # Ubuntu noble-updates ships clang-19, g++-12 and gcc-12 as ordinary
+      # packages, so no external archive, extra image or default-compiler
+      # substitution is needed.
       - name: Scoped-PCH recipe gate (both reviewed compilers, 4 tests 0 skips each)
         run: |
           set -eu
@@ -128,17 +147,6 @@ jobs:
         run: |
           set -eu
           PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD" python3 qlever/tests/test_sdk_pch_generated_private_mmap.py
-      - name: Install interpreter-matched C headers for the native gate
-        run: |
-          set -eu
-          PY=/usr/bin/python3
-          VER=$($PY -c 'import sys;print("%d.%d"%sys.version_info[:2])')
-          INC=$($PY -c 'import sysconfig;print(sysconfig.get_paths()["include"])')
-          echo "interpreter: $($PY --version)  version=$VER  include=$INC"
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends "python${VER}-dev" clang
-          test -f "$INC/Python.h"
-
       - name: Native lease contract gate
         env:
           NATIVE_LEASE_CC: clang
@@ -173,11 +181,6 @@ jobs:
       # Importing the module already runs its ONE real capability probe, so there
       # is no duplicated preflight here; an incapable host skips and the zero-skip
       # rule below turns that into a failure.
-      - name: Build canonical SDK native lease helper for the required gate
-        run: |
-          sudo -E env PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -B qlever/scripts/native/build_native_helper.py \
-            qlever/scripts/native/lease_sweep_ext.c qlever/scripts/native --cc gcc-12
-
       # SDK90 owned-generated-input generation gate. The new module is not
       # matched by the `test_qlever*` discovery glob, so this explicit runner
       # requires its exact real case set, no skips and no zero-test pass. It uses
