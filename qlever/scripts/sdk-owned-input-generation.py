@@ -122,7 +122,11 @@ class Runtime:
             return False
         truncating=next(((pid,task) for pid,task in owner.tasks.items() if not task['exited'] and task.get('generationTruncatePending')),None)
         if truncating is not None:
-            pid,task=truncating;task.pop('generationTruncatePending');entry=task['entry']
+            pid,task=truncating;pending=task.pop('generationTruncatePending');entry=task.get('entry')
+            # The syscall exit may already have closed this task's entry before a
+            # later pending_captures() drain observed the queued trigger. There is
+            # no live truncate entry left to bind in that case; never index None.
+            if entry is None or entry['sequence']!=pending:raise ValueError('owned input truncate trigger lacks exact live syscall entry')
             item=next(value for value in self.active.values() if value['pid']==pid and value['fd']==entry['args'][0])
             barrier=owner.barrier();owner.checkpoint_appends('generated-input-truncate',entry['sequence'])
             identity=self.api.probe.identity(os.fstat(item['held']))
@@ -140,8 +144,12 @@ class Runtime:
         if selected is None:
             return False
         pid, task = selected
-        task.pop('generationOpenPending')
-        entry = task['entry']
+        pending = task.pop('generationOpenPending')
+        entry = task.get('entry')
+        # The matching exit may have cleared task['entry'] before this drain.
+        # A queued trigger without its exact live entry is stale; do not turn a
+        # closed syscall into a NoneType failure or a synthetic generation.
+        if entry is None or entry['sequence']!=pending:raise ValueError('owned input open trigger lacks exact live syscall entry')
         barrier = owner.barrier()
         owner.checkpoint_appends('generated-input-open', entry['sequence'])
         directory, address, flags = open_shape(entry)

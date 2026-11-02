@@ -214,8 +214,8 @@ it('CURRENT last observer tuple binds r3 ptrace and the owned-input module, neve
   const groups=decodeCatalog('scripts/lib/independent-admission/qlever-sdk-generation.ts','REVIEWED_OBSERVER_GROUPS') as Record<string,string>[];
   expect(groups).toHaveLength(CURRENT_OBSERVER_GROUPS);
   const last=groups.at(-1)!;
-  expect(last['qlever/scripts/sdk-ptrace-execution.py']).toBe('f0f5de76079bad3b1aee646c5ccedcbe148b73b7368f93e32ae1fe19ba570fb8');
-  expect(last['qlever/scripts/sdk-owned-input-generation.py']).toBe('ca765b358342593be9e501a019b49513a731af990291de57f5b5adeb7037f2b8');
+  expect(last['qlever/scripts/sdk-ptrace-execution.py']).toBe('713a36b9efc53d46367028b5450e37be9dd8df22a3562d213456277c992f22e4');
+  expect(last['qlever/scripts/sdk-owned-input-generation.py']).toBe('d3bdcac27bcadcc1e714b603be9a1190181042bf9cce9a6f3e68a408ff7bed07');
   expect(Object.keys(last)).toContain('qlever/scripts/sdk-owned-input-generation.py');
   for(const [file,digest] of Object.entries(last)) expect(sha(file)).toBe(digest);
 });
