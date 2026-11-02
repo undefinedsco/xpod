@@ -221,7 +221,7 @@ test('only the genuinely new immutable-input-plan slice follows published2406', 
 
 test('the appended groups bind the actual frozen body and real module bytes', () => {
   // The current observer includes the verified regular-read source capture.
-  expect(sha(read(BODY))).toBe('713a36b9efc53d46367028b5450e37be9dd8df22a3562d213456277c992f22e4');
+  expect(sha(read(BODY))).toBe('f5faf3e43d217d06982ab1a9afaa272885b93af4e219be24d15f1607391449a4');
   for (const [name, groups] of Object.entries(families)) {
     // PUBLISHED f803 history ends at the f803 counts (SDK 74, i.e. indices 0..73).
     // Those tuples — including index 73 — are immutable published history: they are
@@ -358,7 +358,7 @@ test('the live canonical binds every actual row of the final combined tree', () 
     .toBe('a2cb860d7300d62931a354c90ade3a00ada1c831c37f719b24f77385de93e4fc');
   // The reviewed phase-syscall diagnostic plus its three CI-discovered tests.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-ptrace-execution.py')!.sha256)
-    .toBe('713a36b9efc53d46367028b5450e37be9dd8df22a3562d213456277c992f22e4');
+    .toBe('f5faf3e43d217d06982ab1a9afaa272885b93af4e219be24d15f1607391449a4');
   // Current VMA source includes typed private PCH mapping and window closure.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-generated-vma-originals.py')!.sha256)
     .toBe('77f9e6dea5732afea75377832094de734fb9494dd565bfb237010aa65f93f4c7');
@@ -371,9 +371,9 @@ test('the live canonical binds every actual row of the final combined tree', () 
   ] as const) expect(current.find((r) => r.path === p)!.sha256).toBe(h);
   for (const row of current) expect(sha(read(row.path))).toBe(row.sha256);
   const body = current.find((r) => r.path === BODY)!;
-  expect(body.sha256).toBe('713a36b9efc53d46367028b5450e37be9dd8df22a3562d213456277c992f22e4');
+  expect(body.sha256).toBe('f5faf3e43d217d06982ab1a9afaa272885b93af4e219be24d15f1607391449a4');
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-original-chunk-store.py')!.sha256)
-    .toBe('67ea1a610f15f74288d623694b1a4886a82b0f29a186c40e69bdd232b39f96db');
+    .toBe('c1930b0e71a114be8f0de05f17f3a6274303452b5a8590744e87653ffdf0a193');
 });
 
 test('helper tuples retain the e4 published histories and current role bytes', () => {

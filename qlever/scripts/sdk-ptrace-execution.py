@@ -387,13 +387,26 @@ LIFETIME_OPEN_ERRORS=frozenset([errno.EACCES,errno.EPERM,errno.ENOENT,errno.ENOT
 class CaptureReservation:
     """One snapshot reservation in the observer's existing source-byte ledger."""
     def __init__(self,observer):self.observer=observer;self.reserved=0;self.active=False;self.committed_bytes=0
+    def remaining_bytes(self):
+        b=self.observer
+        with b.domain_lock:
+            generated=getattr(b,'generated_vma',None)
+            return b.maximum_bytes-b.domain_bytes-getattr(b,'chunk_reserved',0)-(generated.reserved if generated else 0)
     def reserve(self,count):
         b=self.observer;b.check_budget()
         with b.domain_lock:
             assert not self.active and type(count) is int and count>=0
             generated=getattr(b,'generated_vma',None)
-            assert b.domain_bytes+getattr(b,'chunk_reserved',0)+(generated.reserved if generated else 0)+count<=b.maximum_bytes,'shared capture reservation bound'
-            b.chunk_reserved=getattr(b,'chunk_reserved',0)+count;self.reserved=count;self.active=True
+            domain_bytes=b.domain_bytes;chunk_reserved=getattr(b,'chunk_reserved',0)
+            generated_reserved=generated.reserved if generated else 0
+            computed_total=domain_bytes+chunk_reserved+generated_reserved+count
+            assert computed_total<=b.maximum_bytes,(
+                'shared capture reservation bound '+json.dumps(dict(
+                    domain_bytes=domain_bytes,chunk_reserved=chunk_reserved,
+                    generated_reserved=generated_reserved,requested=count,
+                    maximum_bytes=b.maximum_bytes,computed_total=computed_total,
+                    remaining=b.maximum_bytes-computed_total),sort_keys=True,separators=(',',':')))
+            b.chunk_reserved=chunk_reserved+count;self.reserved=count;self.active=True
     def commit(self,count):
         b=self.observer
         with b.domain_lock:

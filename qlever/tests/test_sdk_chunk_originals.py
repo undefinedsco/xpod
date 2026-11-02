@@ -771,5 +771,145 @@ class SnapshotTelemetryTest(unittest.TestCase):
         self.assertEqual(b''.join(store.blocks(self.data, result)), payload)
 
 
+class ReservationBoundTests(TemporaryTreeTests):
+    """The ledger is a total retained budget; reused chunks are not new bytes."""
+
+    def _source(self, payload):
+        source = self.root / 'source.bin'
+        source.write_bytes(payload)
+        fd = os.open(source, os.O_RDWR)
+        self.addCleanup(os.close, fd)
+        return source, fd
+
+    def test_over_capacity_failure_reports_exact_bounded_operands(self):
+        capture = self.root / 'captures'
+        capture.mkdir()
+        payload = b'D' * store.CHUNK_SIZE
+        source, fd = self._source(payload)
+        bound = store.MANIFEST_BASE_BOUND + store.MANIFEST_CHUNK_BOUND
+        maximum = len(payload) + bound - 1
+        observer = core.Observer(
+            capture, '/source', '/build', capture_content_entities=True,
+            maximum_bytes=maximum, maximum_file_bytes=1024 * 1024)
+        observer.raw = io.BytesIO()
+        observer.current_phase = 'configure'
+        observer.deadline = time.monotonic() + 60
+        self.addCleanup(observer.close)
+        with self.assertRaises(AssertionError) as caught:
+            observer.snapshot_write_original(fd, len(payload))
+        message = str(caught.exception)
+        prefix = 'shared capture reservation bound '
+        self.assertTrue(message.startswith(prefix))
+        diagnostic = json.loads(message[len(prefix):])
+        self.assertEqual(set(diagnostic), {
+            'domain_bytes', 'chunk_reserved', 'generated_reserved', 'requested',
+            'maximum_bytes', 'computed_total', 'remaining'})
+        for value in diagnostic.values():
+            self.assertIs(type(value), int)
+        self.assertEqual(diagnostic['domain_bytes'], 0)
+        self.assertEqual(diagnostic['chunk_reserved'], 0)
+        self.assertEqual(diagnostic['generated_reserved'], 0)
+        self.assertEqual(diagnostic['requested'], len(payload) + bound)
+        self.assertEqual(diagnostic['maximum_bytes'], maximum)
+        self.assertEqual(diagnostic['computed_total'], len(payload) + bound)
+        self.assertEqual(diagnostic['remaining'], -1)
+        self.assertNotIn('/', message)
+        self.assertEqual(getattr(observer, 'chunk_reserved', 0), 0)
+        self.assertEqual(observer.domain_bytes, 0)
+        self.assertEqual(observer.raw.getvalue(), b'')
+        self.assertEqual(list(capture.iterdir()), [])
+
+    def test_reused_chunks_are_not_reserved_twice(self):
+        root = self.root / 'root'
+        root.mkdir()
+        payload = b'A' * store.CHUNK_SIZE
+        source, fd = self._source(payload)
+        first = store.Ledger(10_000_000)
+        store.snapshot(root, fd, 0, first)
+        retained = first.retained_bytes
+        bound = store.MANIFEST_BASE_BOUND + store.MANIFEST_CHUNK_BOUND
+
+        # Same content: the second snapshot retains only its manifest, so a cap
+        # of retained + manifest_bound must be sufficient.
+        same = store.Ledger(retained + bound, retained_bytes=retained)
+        second = store.snapshot(root, fd, 1, same)
+        self.assertTrue((root / second['path']).is_file())
+        self.assertEqual(same.reserved_bytes, 0)
+        self.assertEqual(same.retained_bytes, disk_sum(root))
+        self.assertEqual(txn_names(root), set())
+
+        # Append a genuinely new chunk: only its bytes + the new manifest are
+        # additional; the already-retained first chunk is not reserved again.
+        os.lseek(fd, 0, os.SEEK_END)
+        write_all(fd, b'B' * 1024)
+        os.fsync(fd)
+        retained = same.retained_bytes
+        bound = store.MANIFEST_BASE_BOUND + 2 * store.MANIFEST_CHUNK_BOUND
+        append = store.Ledger(retained + 1024 + bound, retained_bytes=retained)
+        third = store.snapshot(root, fd, 2, append)
+        self.assertTrue((root / third['path']).is_file())
+        self.assertEqual(append.reserved_bytes, 0)
+        self.assertEqual(append.retained_bytes, disk_sum(root))
+        self.assertEqual(txn_names(root), set())
+
+    def test_repeated_chunks_inside_one_source_reserve_unique_bytes(self):
+        root = self.root / 'root'
+        root.mkdir()
+        payload = b'A' * store.CHUNK_SIZE + b'A' * store.CHUNK_SIZE
+        source, fd = self._source(payload)
+        bound = store.MANIFEST_BASE_BOUND + 2 * store.MANIFEST_CHUNK_BOUND
+        ledger = store.Ledger(store.CHUNK_SIZE + bound)
+        result = store.snapshot(root, fd, 0, ledger)
+        manifest = store.read_manifest(root, result)
+        self.assertEqual(len(manifest['chunks']), 2)
+        self.assertEqual(len({chunk['sha256'] for chunk in manifest['chunks']}), 1)
+        self.assertEqual(ledger.reserved_bytes, 0)
+        self.assertEqual(ledger.retained_bytes, disk_sum(root))
+        self.assertEqual(txn_names(root), set())
+
+    def test_genuinely_new_chunk_still_fails_before_writing(self):
+        root = self.root / 'root'
+        root.mkdir()
+        payload = b'A' * store.CHUNK_SIZE
+        source, fd = self._source(payload)
+        first = store.Ledger(10_000_000)
+        store.snapshot(root, fd, 0, first)
+        retained = first.retained_bytes
+        os.lseek(fd, 0, os.SEEK_END)
+        write_all(fd, b'C' * 1024)
+        os.fsync(fd)
+        bound = store.MANIFEST_BASE_BOUND + 2 * store.MANIFEST_CHUNK_BOUND
+        tight = store.Ledger(retained + 1024 + bound - 1, retained_bytes=retained)
+        with self.assertRaises(store.LedgerValidationError):
+            store.snapshot(root, fd, 1, tight)
+        self.assertEqual(tight.reserved_bytes, 0)
+        self.assertEqual(tight.retained_bytes, retained)
+        self.assertFalse((root / 'manifests/1.json').exists())
+        self.assertEqual(txn_names(root), set())
+
+    def test_observer_reused_snapshot_reserves_manifest_only(self):
+        capture = self.root / 'captures'
+        capture.mkdir()
+        payload = b'A' * store.CHUNK_SIZE
+        source, fd = self._source(payload)
+        observer = core.Observer(
+            capture, '/source', '/build', capture_content_entities=True,
+            maximum_bytes=10_000_000, maximum_file_bytes=1024 * 1024)
+        observer.raw = io.BytesIO()
+        observer.current_phase = 'configure'
+        observer.deadline = time.monotonic() + 60
+        self.addCleanup(observer.close)
+        observer.snapshot_write_original(fd, len(payload))
+        retained = observer.domain_bytes
+        bound = store.MANIFEST_BASE_BOUND + store.MANIFEST_CHUNK_BOUND
+        observer.maximum_bytes = retained + bound + 8192
+        second = observer.snapshot_write_original(fd, len(payload))
+        self.assertTrue((capture / second['storage']['manifest']['path']).is_file())
+        self.assertEqual(observer.chunk_reserved, 0)
+        self.assertEqual(observer.snapshot_telemetry_completed['reusedChunks'], 1)
+        self.assertEqual(observer.snapshot_telemetry_completed['newChunks'], 0)
+        self.assertLess(observer.domain_bytes - retained, len(payload))
+
+
 if __name__ == '__main__':
     unittest.main()
