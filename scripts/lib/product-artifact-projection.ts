@@ -73,6 +73,12 @@ export async function withProductProjection<T>(input: ProductCustodyInput, outpu
   }
   const zipStat = lstatSync(path.join(root, 'artifact.zip'));
   if (!zipStat.isFile() || zipStat.isSymbolicLink() || zipStat.size !== custody.archive.bytes || zipStat.size !== artifact.size_in_bytes) fail('original ZIP size/type mismatch');
+  // Finalization renames each projected original, so staging must live on the
+  // verified destination filesystem rather than the process-wide temporary one.
+  const destinationParent = path.dirname(output);
+  const destinationStat = lstatSync(destinationParent);
+  if (!destinationStat.isDirectory() || destinationStat.isSymbolicLink()) fail('output parent must be an existing ordinary directory');
+  const destination = { parent: destinationParent, identity: { dev: destinationStat.dev, ino: destinationStat.ino } };
   return await withOwnedTempRoot('xpod-product-projection-', async (temporary: string) => {
     const projected = new Set<string>();
     function project(selections: any[]) {
@@ -92,6 +98,8 @@ export async function withProductProjection<T>(input: ProductCustodyInput, outpu
       let owned = false;
       try {
         mkdirSync(output, { mode: 0o700 }); owned = true;
+        const created = lstatSync(output);
+        if (!created.isDirectory() || created.isSymbolicLink() || created.dev !== destination.identity.dev) fail('created output ownership changed');
         for (const file of projected) renameSync(path.join(temporary, file), path.join(output, file));
         for (const [file, bytes] of Object.entries(extras)) {
           if (!/^[a-z0-9.-]+$/u.test(file) || projected.has(file) || file === 'projection.receipt.json') fail('invalid projection sidecar');
@@ -107,5 +115,5 @@ export async function withProductProjection<T>(input: ProductCustodyInput, outpu
       }
     }
     return await operation({ root, custody, metadata, temporary, member, project, select, writeOutput });
-  });
+  }, destination);
 }

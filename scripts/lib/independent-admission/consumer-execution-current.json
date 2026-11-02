@@ -1437,7 +1437,7 @@
   },
   {
     "path": "scripts/lib/product-artifact-projection.ts",
-    "sha256": "6e45b58a056c78e2d1cf73bbab5e7bdbbbd9cdb680e685c3656a54b9dc0858ee"
+    "sha256": "5d3b0e0fceeb5f6bebee9110e50cefb7f6b631b66119ee30d3fe146c923f3de3"
   },
   {
     "path": "scripts/lib/publication-control-input.cjs",
