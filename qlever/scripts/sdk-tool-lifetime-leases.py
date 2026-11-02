@@ -470,7 +470,12 @@ class LeaseSet:
                     self._reject('same inode changed before reuse')
                 self.check(row['token'])
                 return dict(row['token'], identity=list(before))
-            if len(self._held) >= self.maximum or self._next_lease_id > self.maximum:
+            # `maximum` bounds LIVE unique inodes only. `_next_lease_id` is a
+            # monotonic token identity, not a capacity counter: retiring a
+            # lease frees its live slot while the next token ID keeps moving.
+            # Comparing that historical ID here falsely rejected 4,026 live
+            # leases at the 4,096 cap during the compile phase.
+            if len(self._held) >= self.maximum:
                 self._reject('unique lease bound exceeded')
             owned = fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, 0)
             if fcntl.fcntl(owned, fcntl.F_GETLEASE) != fcntl.F_UNLCK:
