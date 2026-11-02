@@ -20,6 +20,30 @@ class Tests(unittest.TestCase):
     else:owner.metadata_closed_operation=(10,1,4)
     owner.checkpoint_metadata(CLOSE)
    self.assertLess(owner.metadata_bytes,32768);self.assertLess(owner.metadata_high_water,LIMIT)
+ def test_retained_live_state_does_not_charge_emitted_history(self):
+  # A long open mapping can emit many ephemeral write rows whose raw history is
+  # already on the bounded raw ledger. The 4 MiB contract bounds surviving live
+  # protocol state, so crossing it must refresh that state rather than fail.
+  for owner in [self.runtime(),self.verifier()]:
+   owner.checkpoints[1]=dict(payload='x'*1024)
+   for _ in range(200):owner.charge_metadata(dict(payload='x'*32768))
+   self.assertLessEqual(owner.metadata_bytes,LIMIT)
+   self.assertLessEqual(owner.metadata_high_water,LIMIT)
+ def test_open_protocol_roots_remain_in_the_live_budget(self):
+  cases=[(self.runtime(),'active',dict(payload='x'*(LIMIT+1))),
+         (self.runtime(),'round',dict(payload='x'*(LIMIT+1))),
+         (self.verifier(),'transaction',dict(payload='x'*(LIMIT+1))),
+         (self.verifier(),'active',dict(payload='x'*(LIMIT+1))),
+         (self.verifier(),'scheduled_rows',[dict(payload='x'*(LIMIT+1))])]
+  for owner,name,value in cases:
+   setattr(owner,name,value);owner.metadata_bytes=LIMIT-1
+   with self.subTest(owner=type(owner).__name__,root=name),self.assertRaisesRegex(ValueError,'retained generated metadata bound'):
+    owner.charge_metadata(dict(payload='x'))
+ def test_larger_window_metadata_maximum_does_not_lift_global_limit(self):
+  owner=m.create_verifier(m,lambda _:None,lambda _:[],metadata_maximum=64*1024**2,model=m.LEGACY_MODEL,retained_metadata=False)
+  owner.metadata_bytes=LIMIT-1
+  with self.assertRaisesRegex(ValueError,'shared generated replay metadata bound'):
+   owner.charge_metadata(dict(payload='xx'))
  def test_open_or_unreferenced_runtime_transaction_cannot_release(self):
   for mode in ['missing-close','wrong-close','active','pending','scheduled']:
    owner=self.runtime();owner.charge_metadata(dict(payload='x'*100));owner.metadata_close_entry=None if mode=='missing-close'else (10,1,4);before=owner.metadata_bytes;close=dict(CLOSE)

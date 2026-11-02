@@ -361,7 +361,7 @@ test('the live canonical binds every actual row of the final combined tree', () 
     .toBe('83f29f0a451712ead722c3abd4c2b62e67329e58bbf7ec6d18906b8a2cebf446');
   // Current VMA source includes typed private PCH mapping and window closure.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-generated-vma-originals.py')!.sha256)
-    .toBe('247bab448ae2ac24f5b939ab4c3af4dff3f281c11523de8f802286e7c7338d4a');
+    .toBe('77f9e6dea5732afea75377832094de734fb9494dd565bfb237010aa65f93f4c7');
   expect(current.find((r) => r.path === 'qlever/tests/test_qlever_vma_finish_split.py')!.sha256)
     .toBe('b64ce9f4d0370809f54108f2fd417633984dd23b469ab6fc49b75c69c2bdd453');
   for (const [p, h] of [
