@@ -36,6 +36,8 @@ const whole=(g:unknown)=>createHash('sha256').update(JSON.stringify(g)).digest('
 const sha=(p:string)=>createHash('sha256').update(readFileSync(path.join(ROOT,p))).digest('hex');
 const FIXTURE='qlever/tests/test_sdk70_mremap_observer.py';
 const OLD_FIXTURE='ff4b065f065c287c9be64a29ca1f1f69173149bfade75aeb81cf389fd152b548';
+// SDK83's frozen fixture stays independent of the current SDK90 fixture bytes.
+const SDK83_FIXTURE='b83d697a0ec8d09fd93a6c129ec1056cf753b89433b18b2ee1b58fac210726c3';
 const SDK_POLICY='scripts/lib/independent-admission/qlever-sdk-origin-policy.ts';
 const CONSUMER_POLICY='scripts/lib/independent-admission/consumer-observer-policy.ts';
 const CANONICAL_JSON='scripts/lib/independent-admission/consumer-execution-current.json';
@@ -113,7 +115,7 @@ it('SDK83 whole-inherits SDK82 and re-pins only the pre-owned observer fixture',
   expect(new Set(moved)).toEqual(new Set([FIXTURE,LEAFLET]));
   expect(moved.filter(p=>p===FIXTURE)).toHaveLength(2);
   expect(moved.filter(p=>p===LEAFLET)).toHaveLength(1);
-  for(const row of next.sourceBindings) if(row.path===FIXTURE) expect(row.sha256).toBe(sha(FIXTURE));
+  for(const row of next.sourceBindings) if(row.path===FIXTURE) expect(row.sha256).toBe(SDK83_FIXTURE);
   // The leaf was re-pinned by SDK83 for its own frontier counts; a later slice
   // (SDK84) moved it again, so this PUBLISHED tail is asserted against its own
   // frozen value rather than today's disk bytes.
@@ -122,7 +124,7 @@ it('SDK83 whole-inherits SDK82 and re-pins only the pre-owned observer fixture',
   const stages=next.secondarySelectorStages??[];
   expect(stages.length).toBe((old.secondarySelectorStages??[]).length+1);
   expect(stages[stages.length-1]!.map(r=>r.path)).toEqual([FIXTURE]);
-  expect(stages[stages.length-1]![0]!.sha256).toBe(sha(FIXTURE));
+  expect(stages[stages.length-1]![0]!.sha256).toBe(SDK83_FIXTURE);
   expect(stages[stages.length-2]).toBe(old.secondarySelectorStages![old.secondarySelectorStages!.length-1]);
   // Linux mirrors the SDK tail
   expect(whole(LINUX[83]!)).toBe(whole(next));
@@ -140,7 +142,7 @@ it('real staged walk: old fixture selects SDK82, new selects SDK83',()=>{
   const observed=new Map(base);
   observed.set('source:'+FIXTURE,OLD_FIXTURE);
   expect(selectGitHubSourceBindingGroup(peers,observed)).toBe(old);
-  observed.set('source:'+FIXTURE,sha(FIXTURE));
+  observed.set('source:'+FIXTURE,SDK83_FIXTURE);
   expect(selectGitHubSourceBindingGroup(peers,observed)).toBe(next);
 });
 
@@ -152,7 +154,7 @@ it('stage-4 missing, earlier-stage missing, stale and source-only shapes are ref
   expect(()=>selectGitHubSourceBindingGroup(peers,base)).toThrow('staged secondary observation incomplete');
   const skip=new Map<string,string>();
   for(const r of old.selectors) skip.set(sourceBindingKey(r),r.sha256);
-  skip.set('source:'+FIXTURE,sha(FIXTURE));
+  skip.set('source:'+FIXTURE,SDK83_FIXTURE);
   expect(secondaryGitHubSourceBindingSelectors(peers,skip).some(r=>r.path===FIXTURE)).toBe(false);
   expect(()=>selectGitHubSourceBindingGroup(peers,skip)).toThrow('staged secondary observation incomplete');
   for(const stale of ['f'.repeat(64),OLD_FIXTURE.slice(0,63)+'0']){
@@ -162,7 +164,7 @@ it('stage-4 missing, earlier-stage missing, stale and source-only shapes are ref
   // a SOURCE-ONLY SDK83 (no stage 4) is indistinguishable from SDK82 for the new
   // value, so it must be refused rather than silently selected.
   const sourceOnly:any={...next,secondarySelectorStages:old.secondarySelectorStages};
-  const withNew=new Map(base);withNew.set('source:'+FIXTURE,sha(FIXTURE));
+  const withNew=new Map(base);withNew.set('source:'+FIXTURE,SDK83_FIXTURE);
   expect(()=>selectGitHubSourceBindingGroup([...peers,sourceOnly],withNew)).toThrow();
 });
 
@@ -218,4 +220,17 @@ it('CURRENT last observer tuple binds r3 ptrace and the owned-input module, neve
   expect(last['qlever/scripts/sdk-owned-input-generation.py']).toBe('d3bdcac27bcadcc1e714b603be9a1190181042bf9cce9a6f3e68a408ff7bed07');
   expect(Object.keys(last)).toContain('qlever/scripts/sdk-owned-input-generation.py');
   for(const [file,digest] of Object.entries(last)) expect(sha(file)).toBe(digest);
+});
+
+
+it('the current SDK group binds the live fixture in every owned occurrence and rejects the frozen SDK83 value',()=>{
+  const current=SDK.at(-1)!;
+  const selectors=[...current.selectors,...(current.secondarySelectors??[]),...(current.secondarySelectorStages??[]).flat()];
+  const fixtureRows=[...selectors,...current.sourceBindings].filter(row=>row.path===FIXTURE);
+  expect(fixtureRows).toHaveLength(3);
+  for(const row of fixtureRows) expect(row.sha256).toBe(sha(FIXTURE));
+  const observed=new Map(selectors.map(row=>[sourceBindingKey(row),row.sha256]));
+  expect(selectGitHubSourceBindingGroup([current],observed)).toBe(current);
+  observed.set('source:'+FIXTURE,SDK83_FIXTURE);
+  expect(()=>selectGitHubSourceBindingGroup([current],observed)).toThrow('group not reviewed');
 });

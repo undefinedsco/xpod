@@ -336,6 +336,13 @@ class AuthorityDrainOrder(unittest.TestCase):
 
     def _host(self, events):
         observer = obs.Observer.__new__(obs.Observer)
+        # Real Observer.__init__ always initializes seq; real emit advances it.
+        # This fixture bypasses __init__ for a minimal scheduling host.
+        observer.seq = 0
+        def emit(row):
+            observer.seq += 1
+            return dict(row, sequence=observer.seq, phase='configure')
+        observer.emit = emit
         # A child pid whose initial-child authority sample is still pending.
         observer.tasks = {2: dict(stopped=True, exited=False, entry=None,
                                   initial=True, authorityPending=[('initial-child', None)])}
