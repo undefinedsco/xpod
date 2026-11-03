@@ -26,8 +26,12 @@ class RealWorkloadTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=base) as directory:
             root = Path(directory); source = root / 'source'; build = root / 'build'
             source.mkdir(); build.mkdir(); out = root / 'originals'; out.mkdir()
+            limits = backend.load_sdk_execution_limits()
+            # This fixture must not carry a local copy of a production bound.
+            # The canonical profile uses shardBytes for a tool FD; the existing
+            # e2e observer fixture keeps its 256 MiB total-domain allowance.
             observer = backend.Observer(out, source, build, deadline_monotonic=time.monotonic() + 120,
-                maximum_bytes=8 * 1024 ** 2, maximum_file_bytes=8 * 1024 ** 2, maximum_processes=4096,
+                maximum_bytes=256 * 1024 ** 2, maximum_file_bytes=limits['shardBytes'], maximum_processes=4096,
                 maximum_stdio_bytes=4096, capture_toolchain=True, capture_content_entities=True,
                 shared_tasks=True, verified_identity_noop=True, queued_identity_noop=True,
                 capture_maps_content_entities=True, terminal_exit_evidence=True,
