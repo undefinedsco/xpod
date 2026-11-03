@@ -2465,7 +2465,7 @@ const SDK91_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  'scripts/lib/module-artifact-limits.json':'5eb76b0cfcefc0b0352342fe0bf2d46dab2cbfa4a6f549af17c819e8cf90494c',
  // Current registration test edited for the SDK91 API/combined tail; bound here
  // because the SDK/linux current groups already own this test role.
- 'tests/scripts/candidate-producer-attempt-binding.test.ts':'de138d61773efc330e3e6ed63cd819610e4133f197cf1b9991c4741f6d1a70e1'
+ 'tests/scripts/candidate-producer-attempt-binding.test.ts':'b5d7fd107f2978b265df10dc02fe75659b23d25ca300527f720045d8bf9001c8'
 });
 const SDK91_NEW_ROWS=Object.freeze([
  Object.freeze({path:'qlever/tests/test_actual_flow.py',sha256:SDK91_SOURCE_HASHES['qlever/tests/test_actual_flow.py']!}),

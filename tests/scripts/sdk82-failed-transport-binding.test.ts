@@ -65,7 +65,7 @@ it('every published whole prefix is byte-identical to the captured 7863 baseline
   // LIVE frontier (SDK84 appended); this slice is proven by its frozen prefix.
   expect(SDK).toHaveLength(91);expect(LINUX).toHaveLength(92);
   expect(CONSUMER).toHaveLength(99);expect(CI).toHaveLength(196);
-  expect(API).toHaveLength(30);expect(CLI).toHaveLength(12);
+  expect(API).toHaveLength(30);expect(CLI).toHaveLength(13);
   prefix(SDK.slice(0,81),OLD_SDK_GROUPS,'sdk');
   prefix(LINUX.slice(0,82),OLD_LINUX_GROUPS,'linux');
   prefix(CONSUMER.slice(0,97),OLD_CONSUMER_GROUPS,'consumer');

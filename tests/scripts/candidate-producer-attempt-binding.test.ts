@@ -50,7 +50,7 @@ const prefix=(groups:readonly unknown[],hashes:readonly string[],label:string)=>
 it('every published whole prefix is byte-identical to the captured baseline',()=>{
   expect(SDK).toHaveLength(91);expect(LINUX).toHaveLength(92);
   expect(CONSUMER).toHaveLength(99);expect(CI).toHaveLength(196);
-  expect(API).toHaveLength(30);expect(CLI).toHaveLength(12);
+  expect(API).toHaveLength(30);expect(CLI).toHaveLength(13);
   prefix(SDK,OLD_SDK_GROUPS,'sdk');prefix(LINUX,OLD_LINUX_GROUPS,'linux');
   prefix(CONSUMER,OLD_CONSUMER_GROUPS,'consumer');prefix(CI,OLD_CI_GROUPS,'ci');
   prefix(API,OLD_API_GROUPS,'api');prefix(CLI,OLD_CLI_GROUPS,'cli');

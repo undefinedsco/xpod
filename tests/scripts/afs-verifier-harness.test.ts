@@ -15,8 +15,9 @@ try:
   p=repo/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text('tiny original')
  (repo/'package.json').write_text(json.dumps({'scripts':{'postinstall':a.harness.POSTINSTALL},'patchedDependencies':{}}))
  git('add','--','.');git('commit','-qm','tiny source');sha=git('rev-parse','HEAD')
+ minimum=a.budget.projection()['freshHarnessLiveBytes']+a.tool_originals.LIMITS['sourceMaterialBytes']
  r=a.Runner.__new__(a.Runner);r.output=out;r.owned=owned;r.records=[];r.result={};r.checked={'roots':[repo]};r.preserve_owned_root=False
- r.plan={'checkout':str(repo),'sourceSha':sha,'node':'/usr/bin/false','bun':'/usr/bin/false','budget':{'estimatedPeakBytes':12*1024**3}}
+ r.plan={'checkout':str(repo),'sourceSha':sha,'node':'/usr/bin/false','bun':'/usr/bin/false','budget':{'estimatedPeakBytes':minimum}}
  observed=[]
  def command(label,argv,env,cwd):
   observed.append(label)

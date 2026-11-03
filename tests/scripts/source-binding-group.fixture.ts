@@ -6,7 +6,7 @@ export const CURRENT_CANONICAL_SOURCE_ROWS = 520;
  * their own frozen prefix/hash fixtures; only genuine current-source checks use
  * these values. A future append updates this ONE object, never 41 scattered
  * literals. */
-export const CURRENT_SOURCE_GROUP_COUNTS = Object.freeze({api:30,sdk:91,consumer:99,ci:196,linux:92,cli:12,current:520});
+export const CURRENT_SOURCE_GROUP_COUNTS = Object.freeze({api:30,sdk:91,consumer:99,ci:196,linux:92,cli:13,current:520});
 export const CURRENT_OBSERVER_GROUPS = 63;
 export const CURRENT_HELPER_GROUP_COUNTS = Object.freeze({controller:43,fetch:46,maximum:46});
 

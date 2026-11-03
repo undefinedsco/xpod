@@ -44,10 +44,10 @@ test('every ACTUAL 9d02 published prefix is byte-identical and only genuine tupl
   const live=groups[name] as readonly unknown[];
   if(name==='cli'){
    // The 9d02 fixture publishes CLI only as its plain hash list, so compare the
-   // published PREFIX to that list and let the ORM 0.3.26 joint tuple append.
+   // published PREFIX to that list and let the ORM 0.3.26 + current 8GiB tuples append.
    expect(live.slice(0,published.cliHashes.length).map(digest)).toEqual(published.cliHashes);
    expect(published.publishedAll.cli).toBe(published.cliHashes.length);
-   expect(live.length-published.cliHashes.length).toBe(1);
+   expect(live.length-published.cliHashes.length).toBe(2);
    continue;
   }
   const frozen=(published.groupHashes as Record<string,string[]>)[name]!;

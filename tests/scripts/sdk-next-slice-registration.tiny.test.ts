@@ -202,7 +202,7 @@ test('only the genuinely new immutable-input-plan slice follows published2406', 
   // Appends beyond published2406: the immutable-input-plan slice, the ORM 0.3.26
   // joint tail, and the candidate-producer-attempt SDK81/new current tails.
   expect([sdk.length, consumer.length, ci.length, api.length, linuxGroups.length, CLI_SOURCE_VERSION_GROUPS.length])
-    .toEqual([CURRENT_SOURCE_GROUP_COUNTS.sdk, CURRENT_SOURCE_GROUP_COUNTS.consumer, CURRENT_SOURCE_GROUP_COUNTS.ci, CURRENT_SOURCE_GROUP_COUNTS.api, CURRENT_SOURCE_GROUP_COUNTS.linux, 12]);
+    .toEqual([CURRENT_SOURCE_GROUP_COUNTS.sdk, CURRENT_SOURCE_GROUP_COUNTS.consumer, CURRENT_SOURCE_GROUP_COUNTS.ci, CURRENT_SOURCE_GROUP_COUNTS.api, CURRENT_SOURCE_GROUP_COUNTS.linux, CURRENT_SOURCE_GROUP_COUNTS.cli]);
   expect([(n2406Groups as any).published.sdk, (n2406Groups as any).published.consumer,
     (n2406Groups as any).published.ci, (n2406Groups as any).published.linux]).toEqual([73, 88, 174, 74]);
   expect([sdk.length - n2406Groups.published.sdk, consumer.length - n2406Groups.published.consumer,
