@@ -32,7 +32,8 @@ class SharedReadBudgetTests(unittest.TestCase):
         return budget_module.SharedReadBudget(maximum, check)
 
     def test_rejects_invalid_maximum_and_check(self):
-        for bad in (0, -1, 4294967297, 1.5, '16', True, None):
+        maximum = budget_module.MAXIMUM_BYTES_LIMIT
+        for bad in (0, -1, maximum + 1, 1.5, '16', True, None):
             with self.subTest(bad=bad):
                 with self.assertRaises((TypeError, ValueError)):
                     budget_module.SharedReadBudget(bad, lambda: None)
@@ -40,7 +41,7 @@ class SharedReadBudgetTests(unittest.TestCase):
             budget_module.SharedReadBudget(16, None)
         with self.assertRaises(TypeError):
             budget_module.SharedReadBudget(16, 'nope')
-        self.assertEqual(self.budget(4294967296).remaining, 4294967296)
+        self.assertEqual(self.budget(maximum).remaining, maximum)
 
     def test_sequential_roles_share_one_ledger_and_charge_actual_bytes(self):
         ledger = self.budget(100)
@@ -81,7 +82,7 @@ class SharedReadBudgetTests(unittest.TestCase):
         self.assertEqual(ledger.remaining, 0)
 
     def test_count_is_bounded_to_one_through_65536(self):
-        ledger = self.budget(4294967296)
+        ledger = self.budget(budget_module.MAXIMUM_BYTES_LIMIT)
         for bad in (0, -1, 65537, 1.5, '8', True, None):
             with self.subTest(bad=bad):
                 with patch.object(budget_module.os, 'read', side_effect=AssertionError):
