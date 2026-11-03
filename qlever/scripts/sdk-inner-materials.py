@@ -12,6 +12,7 @@ import sys
 import tarfile
 
 HERE=Path(__file__).resolve().parent
+LIMITS=json.loads((HERE.parents[1]/'scripts/lib/module-artifact-limits.json').read_text())
 spec=importlib.util.spec_from_file_location('sdk_cmake_file_api',HERE/'cmake_file_api.py')
 file_api=importlib.util.module_from_spec(spec);spec.loader.exec_module(file_api)
 spec=importlib.util.spec_from_file_location('sdk_commands',HERE/'sdk-command-materials.py')
@@ -25,7 +26,7 @@ def sdk_tools(profile_name):
 SDK_TOOLS=sdk_tools('module-bookworm-gcc12')
 spec=importlib.util.spec_from_file_location('sdk_tar_budget',HERE/'sdk-tar-budget.py')
 tar_budget=importlib.util.module_from_spec(spec);spec.loader.exec_module(tar_budget)
-LIMIT=4*1024**3
+LIMIT=LIMITS['sourceMaterialBytes']
 spec=importlib.util.spec_from_file_location('sdk_budget',HERE/'sdk-execution-budget.py')
 budget_module=importlib.util.module_from_spec(spec);spec.loader.exec_module(budget_module)
 EXECUTION_BUDGET=None
@@ -81,7 +82,7 @@ def archive_inputs(files,out,before,compile_outputs=(),metadata_originals=(),rem
         verify_after(path)
         actual=file_identity(path);total+=actual['bytes']
         if str(path) in observed_after and actual!={key:observed_after[str(path)][key] for key in ['bytes','sha256','mode']}:raise ValueError('Observed tool bytes differ from stop original')
-        if total>LIMIT:raise ValueError('SDK source domains exceed shared 4GiB budget')
+        if total>LIMIT:raise ValueError('SDK source domains exceed shared source budget')
         expected=before.get(str(path))
         if expected is None and str(path) not in compile_outputs and str(path) not in metadata_originals and str(path) not in observed_after:pending.append(dict(path=str(path),reason='generated-or-unobserved-before-compile'))
         elif expected is not None and expected!=actual:raise ValueError('SDK compiler input differs from before observation')

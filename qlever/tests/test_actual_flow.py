@@ -107,14 +107,34 @@ def _find_repo(start):
 REPO = _find_repo(HERE)
 
 
+def canonical_limits():
+    """The canonical limits file as the staged scripts resolve it.
+
+    The SDK producers read ``HERE.parents[1]/scripts/lib/module-artifact-limits.json``.
+    Staging scripts under ``<root>/qlever/scripts`` therefore requires the file at
+    ``<root>/scripts/lib`` -- never at the shared system temp root.
+    """
+    path = SCRIPTS.resolve().parents[1] / 'scripts/lib/module-artifact-limits.json'
+    if not path.is_file():
+        raise RuntimeError('canonical module-artifact-limits.json is missing beside the candidate scripts')
+    return path
+
+
 def with_tools(generator='Ninja'):
     """Stage the REAL patched scripts plus their real siblings in a temp dir."""
     def wrap(fn):
         def run():
-            root = tempfile.mkdtemp(prefix='flow-')
+            data_root = REPO / '.test-data/actual-flow'
+            data_root.mkdir(parents=True, exist_ok=True)
+            root = tempfile.mkdtemp(prefix='flow-', dir=data_root)
             try:
-                scripts = os.path.join(root, 'scripts')
+                # Repo-shaped: the component stays one level below the fixture root
+                # so their ``HERE.parents[1]`` resolves inside the owned temp tree.
+                scripts = os.path.join(root, 'qlever', 'scripts')
                 os.makedirs(scripts)
+                limits = os.path.join(root, 'scripts', 'lib')
+                os.makedirs(limits)
+                shutil.copy2(canonical_limits(), os.path.join(limits, 'module-artifact-limits.json'))
                 # the new helpers come from the candidate; the shared bounded reader
                 # is the sibling both cmake_file_api and link_command_origin load, so
                 # it must be staged too or the fail-closed loader refuses the fixture.

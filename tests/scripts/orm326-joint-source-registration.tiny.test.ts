@@ -75,7 +75,13 @@ test('the frozen f803 snapshot is the published canonical bytes and the moving c
     'qlever/tests/test_sdk_pch_generated_private_mmap.py',
     'qlever/tests/fixtures/pch_cmake/CMakeLists.txt',
     'qlever/tests/fixtures/pch_cmake/pch.hpp',
-    'qlever/tests/fixtures/pch_cmake/main.cpp']);
+    'qlever/tests/fixtures/pch_cmake/main.cpp',
+    // SDK91 combined current registration appends the capacity/native tests.
+    'qlever/tests/test_actual_flow.py',
+    'qlever/tests/test_sdk_execution_budget_diagnostic.py',
+    'qlever/tests/test_sdk_image_originals.py',
+    'qlever/tests/test_sdk_ptrace_execution_library.py',
+    'qlever/tests/test_sdk_upstream_source_materials.py']);
   expect(new Set(current.map(row => row.path)).size).toBe(current.length);
 });
 
@@ -122,12 +128,12 @@ test('the appended consumer/CI tails bind every ORM 0.3.26 fact and keep the 0.3
   const f803Api = (f803.groupHashes as Record<string, string[]>).api!;
   // Index 27 is the PUBLISHED f803 tuple; index 28 is the new ORM 0.3.26 tail.
   const published = api[27]!;
-  expect(api.length).toBe(29);
+  expect(api.length).toBe(30);
   expect(digest(published)).toBe(f803Api[f803Api.length - 1]!);
   expect(api[28]!.selectors.some(row => row.path === PATCH_26)).toBe(true);
   expect(published.selectors.some(row => row.path === PATCH_26)).toBe(false);
-  // No 29th group: the controlled-recipe 10-role predicate cannot separate groups
-  // that differ only in manifest/lock, so an appended group would be ambiguous.
+  // The new capacity group differs only in a source binding, so the controlled-
+  // recipe 10-role predicate cannot separate it; the exact predicate still binds.
   for (const list of [consumer, ci]) {
     const tail = list[list.length - 1]!;
     const rows = [...tail.selectors, ...(tail.secondarySelectors ?? []), ...tail.sourceBindings];

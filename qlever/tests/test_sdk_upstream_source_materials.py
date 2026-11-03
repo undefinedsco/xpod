@@ -24,6 +24,10 @@ class UpstreamSourceTest(unittest.TestCase):
     def setUpClass(cls):
         (ROOT/'.test-data/sdk-upstream-source').mkdir(parents=True,exist_ok=True)
     def fixture(self,root):
+        # Staged component scripts resolve HERE.parents[1] to this owned fixture
+        # root, exactly as qlever/scripts resolves to the repository root.
+        limits=root/'scripts/lib';limits.mkdir(parents=True)
+        shutil.copy2(ROOT/'scripts/lib/module-artifact-limits.json',limits/'module-artifact-limits.json')
         source=root/'source';source.mkdir();git(source,'init','-q');git(source,'config','user.name','Fixture');git(source,'config','user.email','fixture@example.invalid')
         (source/'previous.h').write_text('previous history only\n');git(source,'add','.');git(source,'commit','-qm','parent')
         parent=git(source,'rev-parse','HEAD').decode().strip();(source/'previous.h').unlink()

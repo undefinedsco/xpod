@@ -15,6 +15,7 @@ import urllib.parse
 import urllib.request
 
 HERE=Path(__file__).resolve().parent
+LIMITS=json.loads((HERE.parents[1]/'scripts/lib/module-artifact-limits.json').read_text())
 
 def load(name,file):
     spec=importlib.util.spec_from_file_location(name,HERE/file);module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
@@ -96,7 +97,7 @@ def copy_inner(cid,destination):
                 name=name.rstrip('/')
                 if name in seen:raise ValueError('Duplicate SDK image original')
                 seen.add(name);count+=1;total+=member.size
-                if count>4096 or total>4608*1024**2 or not (member.isdir() or member.isfile()):raise ValueError('SDK image original copy budget/type')
+                if count>4096 or total>LIMITS['sourceMaterialBytes'] or not (member.isdir() or member.isfile()):raise ValueError('SDK image original copy budget/type')
                 path=destination/name
                 if member.isdir():path.mkdir(parents=True,exist_ok=True);continue
                 path.parent.mkdir(parents=True,exist_ok=True)
@@ -296,7 +297,7 @@ def collect(image,target,metadata,out,deadline):
         if 'rawTraceShards' in record:stage['rawTraceShards']=[prefix(ref,'inner') for ref in record['rawTraceShards']]
         stages.append(stage)
     execution_owners=collect_execution_owners(out,inner['executionBudget']['deadlineUnix'])
-    if sum(ref['bytes'] for ref in execution_owners.values())+context['archive']['bytes']+sum(ref['bytes'] for ref in inner['domains'])+inner.get('debianSourceBytes',0)+inner.get('symlinkOriginalBytes',0)+inner.get('upstreamSourceBytes',0)+inner.get('generationMaterialBytes',0)+inner.get('toolchainExecutionBytes',0)+inner.get('debianBinaryBytes',0)+inner.get('debianBinaryOwnershipBytes',0)+inner.get('dependencyMaterialBytes',0)>4*1024**3:raise ValueError('Shared SDK source/context domains exceed 4GiB')
+    if sum(ref['bytes'] for ref in execution_owners.values())+context['archive']['bytes']+sum(ref['bytes'] for ref in inner['domains'])+inner.get('debianSourceBytes',0)+inner.get('symlinkOriginalBytes',0)+inner.get('upstreamSourceBytes',0)+inner.get('generationMaterialBytes',0)+inner.get('toolchainExecutionBytes',0)+inner.get('debianBinaryBytes',0)+inner.get('debianBinaryOwnershipBytes',0)+inner.get('dependencyMaterialBytes',0)>LIMITS['sourceMaterialBytes']:raise ValueError('Shared SDK source/context domains exceed canonical source budget')
     debian_reference=receiver_debian_collection(out,inner['debianSources'])
     binary_reference=receiver_binary_collection(out,inner['debianBinaries'])
     dependency_reference=receiver_dependency_collection(out,inner['dependencyCollection'])

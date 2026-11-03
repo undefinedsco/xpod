@@ -18,7 +18,7 @@ export const moduleSourcePhasePolicy = Object.freeze({
   css: '78e2ec3c272233602083f81d574cfefc5f6c36e9200c1d92e6f7935bd6cac41f',
   afs: 'c44348bd2e28b04c5e427c0070045c0e28c9437b7abadae6bdcc72d405abd508',
   materials: '1871c59b9f0bfb4c0ce824123ce9cdc5f472aba11245b5e0eb45c62c4fca42e2',
-  limits: 'c1c529aba719356c682affbe630c215e28cc07163192f8f3b601aab7b0126bd4',
+  limits: '5eb76b0cfcefc0b0352342fe0bf2d46dab2cbfa4a6f549af17c819e8cf90494c',
   supervisor: '49fd9c7a7a9c9dc1612b1261f0cbc218166f48487df726239437ae9ad98ba407',
 });
 const CSS_METADATA_REVALIDATION_PRODUCER='9bc6411c30e8f96402f39b80acf9e8af27350bfde84d0ec6d4e5f8eb04a05da4';
@@ -299,7 +299,7 @@ export function controlledApiSourceRecipe(readTracked:(name:string)=>Buffer,prod
  // The completion predicate includes the two ACTUAL manifest facts: without them a
  // newer tuple that differs only in package.json/bun.lock (e.g. a published
  // dependency bump) would tie every earlier recipe and silently select nothing.
- const matches=candidates.filter(rows=>rows.filter(row=>["scripts/lib/inngest-controlled-build.py", "packages/xpod-api/scripts/inngest-controlled-build-policy.json", "scripts/lib/module-source-materials.py", "scripts/lib/physical-module-stage.ts", "scripts/lib/api-scoped-dependency-state.ts", "scripts/lib/inngest-controlled-materials.ts", "scripts/agentfs-native-ci/supervise.py", "packages/xpod-api/scripts/sourcekit-producer.ts", "scripts/workspace-package-payload.cjs", "scripts/lib/physical-module-archive.ts", "package.json", "bun.lock"].includes(row.path)).every(row=>hash(readTracked(row.path))===row.sha256));
+ const matches=candidates.filter(rows=>rows.filter(row=>["scripts/lib/inngest-controlled-build.py", "packages/xpod-api/scripts/inngest-controlled-build-policy.json", "scripts/lib/module-source-materials.py", "scripts/lib/physical-module-stage.ts", "scripts/lib/api-scoped-dependency-state.ts", "scripts/lib/inngest-controlled-materials.ts", "scripts/lib/module-artifact-limits.json", "scripts/agentfs-native-ci/supervise.py", "packages/xpod-api/scripts/sourcekit-producer.ts", "scripts/workspace-package-payload.cjs", "scripts/lib/physical-module-archive.ts", "package.json", "bun.lock"].includes(row.path)).every(row=>hash(readTracked(row.path))===row.sha256));
  if(matches.length!==1)return fail('controlled native complete source recipe not reviewed');
  const rows=matches[0];
  for(const row of rows)if(hash(readTracked(row.path))!==row.sha256)return fail('controlled native complete source recipe mismatch');

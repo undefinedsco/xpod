@@ -79,8 +79,14 @@ class LeaseCase(unittest.TestCase):
         leases = RealLeases()
         self.addCleanup(leases.close)
         rows = []
+        # Each make() gets a distinct directory: repeated test helpers must
+        # never overwrite/truncate an already-leased path from an earlier call.
+        index = getattr(self, '_make_index', 0)
+        self._make_index = index + 1
+        root = os.path.join(self.dir, 'm%03d' % index)
+        os.makedirs(root)
         for i in range(n):
-            p = os.path.join(self.dir, 'f%03d' % i)
+            p = os.path.join(root, 'f%03d' % i)
             with open(p, 'wb') as h: h.write(b'x' * 64)
             fd = leases.acquire(p)
             rows.append((fd, tuple(ident(fd))))
@@ -221,6 +227,78 @@ class ContractSignals(LeaseCase):
         before = signal.getsignal(signal.SIGIO)
         self.ext.sweep(rows)
         self.assertIs(signal.getsignal(signal.SIGIO), before)
+
+
+class _SideEffectIdentity:
+    """Expected field whose __eq__ invalidates a later FD once."""
+    def __init__(self, value, target_fd):
+        self.value = value
+        self.target_fd = target_fd
+        self.fired = 0
+
+    def __eq__(self, other):
+        if not self.fired:
+            self.fired = 1
+            try: os.close(self.target_fd)
+            except OSError: pass
+        return other == self.value
+
+
+class ParallelPlan(LeaseCase):
+    """Lasting plan-path regressions for the bounded native parallel sweep.
+
+    Repeated real leased FDs keep the >=1024 threshold cheap; where a distinct
+    bad row is required, a separate real leased FD is inserted at that index.
+    The actual 5711-unique-FD benchmark remains outside the unit gate.
+    """
+
+    THRESHOLD = 1024
+
+    def repeat_rows(self):
+        base = self.make(4)
+        return [base[i % len(base)] for i in range(self.THRESHOLD)]
+
+    def test_parallel_threshold_1024_valid(self):
+        rows = self.repeat_rows()
+        self.assertEqual(self.ext.sweep_plan(self.ext.plan_new(tuple(rows))), (0, -1, 0))
+
+    def test_parallel_broken_lease_reports_original_index(self):
+        rows = self.repeat_rows()
+        bad = self.make(1)[0]
+        rows[777] = bad
+        fcntl.fcntl(bad[0], fcntl.F_SETLEASE, fcntl.F_UNLCK)
+        self.assertEqual(self.ext.sweep_plan(self.ext.plan_new(tuple(rows))),
+                         (self.ext.LEASE, 777, 0))
+
+    def test_parallel_six_field_mismatch_reports_original_index(self):
+        rows = self.repeat_rows()
+        bad = self.make(1)[0]
+        want = list(bad[1]); want[3] += 1
+        rows[888] = (bad[0], tuple(want))
+        self.assertEqual(self.ext.sweep_plan(self.ext.plan_new(tuple(rows))),
+                         (self.ext.IDENTITY, 888, 0))
+
+    def test_parallel_multiple_bad_rows_lowest_original_index(self):
+        rows = self.repeat_rows()
+        bad_low = self.make(1)[0]
+        bad_high = self.make(1)[0]
+        rows[17] = bad_low
+        rows[900] = bad_high
+        fcntl.fcntl(bad_low[0], fcntl.F_SETLEASE, fcntl.F_UNLCK)
+        fcntl.fcntl(bad_high[0], fcntl.F_SETLEASE, fcntl.F_UNLCK)
+        self.assertEqual(self.ext.sweep_plan(self.ext.plan_new(tuple(rows))),
+                         (self.ext.LEASE, 17, 0))
+
+    def test_nondecoded_callback_invalidating_later_fd_stays_serial(self):
+        rows = self.repeat_rows()
+        target = self.make(1)[0]
+        rows[900] = target
+        side = _SideEffectIdentity(rows[100][1][3], target[0])
+        want = list(rows[100][1]); want[3] = side
+        rows[100] = (rows[100][0], tuple(want))
+        self.assertEqual(self.ext.sweep_plan(self.ext.plan_new(tuple(rows))),
+                         (self.ext.ERRNO, 900, 9))
+        self.assertEqual(side.fired, 1)
 
 
 # ------------------------------------------------------------------- width

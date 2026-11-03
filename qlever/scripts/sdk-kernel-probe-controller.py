@@ -2,6 +2,7 @@
 import hashlib,importlib.util,json,math,os,re,resource,secrets,sys,time
 from pathlib import Path
 HERE=Path(__file__).resolve().parent
+LIMITS=json.loads((HERE.parents[1]/'scripts/lib/module-artifact-limits.json').read_text())
 META=4*1024**2;RAW=65536;HOST_RESERVE=4*META;OUTPUT_MAX=64*1024**2
 ROLES=('image','create','before','start','wait','after','remove','absence','recover-owned','cleanup-inspect')
 def need(v,reason):
@@ -54,7 +55,7 @@ def inspect_owned(value,plan,cid,*,stopped):
 
 def run(prepared_image,identity,deadline,out,remaining_retained_bytes):
  identity=identity_tuple(identity);now=time.time();need(isinstance(deadline,(int,float)) and math.isfinite(deadline) and 0<deadline-now<=120.5,'inherited diagnostic deadline must be within 120s')
- need(type(remaining_retained_bytes) is int and HOST_RESERVE<remaining_retained_bytes<=4*1024**3,'positive caller remaining retained budget required')
+ need(type(remaining_retained_bytes) is int and HOST_RESERVE<remaining_retained_bytes<=LIMITS['sourceMaterialBytes'],'positive caller remaining retained budget required')
  need(re.fullmatch('sha256:[a-f0-9]{64}',prepared_image),'actual prepared image config digest required');end=min(float(deadline),now+120);mono_end=time.monotonic()+end-now
  out=Path(out);need(out.name=='kernel-probe' and len(str(out).encode())<=4096 and not any(c in str(out) for c in ',\n\r\x00') and out.is_absolute() and not out.exists() and out.parent.resolve(strict=True)==out.parent,'fresh canonical caller-owned output required');out.mkdir(mode=0o700);output=out/'probe-output';output.mkdir(mode=0o700)
  plan=dict(image=prepared_image,identity=identity,nonce=secrets.token_hex(16),deadline=end,output=str(output),outputLimit=min(OUTPUT_MAX,remaining_retained_bytes-HOST_RESERVE));plan['name']='xpod-sdk-kernel-probe-'+plan['nonce']

@@ -39,13 +39,14 @@
 #include <unistd.h>
 #include <string.h>
 #include <limits.h>
+#include <pthread.h>
 
 #define NS_PER_SEC 1000000000LL
 #define NS_FAST_MAX_SEC 9223372035LL
 
 typedef struct Plan Plan;
 
-enum { V_OK = 0, V_LEASE = 1, V_IDENTITY = 2, V_ERRNO = 3, V_NEEDPY = 4 };
+enum { V_OK = 0, V_LEASE = 1, V_IDENTITY = 2, V_ERRNO = 3, V_NEEDPY = 4, V_EINTR = 5 };
 
 /* Exact-int equality WITHOUT narrowing: used whenever a fast path would be
  * unsafe or would need an out-of-range cast. */
@@ -609,6 +610,254 @@ static int exact_compare_sampled_row(const PlanRow *row, const struct stat *st,
     return 1;
 }
 
+
+/* ---------------------------------------------------------------------------
+ * Bounded per-call parallel row sampling.
+ *
+ * The immutable Plan is produced under the GIL and is never mutated here. Up to
+ * three ephemeral pthreads plus main (four total) sample disjoint contiguous
+ * ranges. A worker performs ONLY fcntl(F_GETLEASE) + fstat + the exact six-field
+ * C comparison for decoded rows; it never calls any Python API and never releases
+ * the GIL. Rows that need exact Python comparison are marked V_NEEDPY, sampled
+ * exactly once by the worker, and compared by the main thread after join using
+ * the already-sampled struct stat. The main thread alone performs
+ * PyErr_CheckSignals and builds the verdict tuple.
+ *
+ * No row is skipped or sampled twice. The main thread scans results in ascending
+ * original index order, so the reported failure is the lowest original row.
+ * ------------------------------------------------------------------------- */
+#define SWEEP_MAX_WORKERS 4
+/* Below this many rows, pthread creation and the per-call sample storage cost
+ * more than the serial native loop. Compile-time implementation threshold, not
+ * product configuration. Four TOTAL workers execute: three pthreads plus main. */
+#define SWEEP_PARALLEL_MIN_ROWS 1024
+
+/* Plain-C deep copy of the immutable plan rows. Workers never touch a Plan,
+ * PyObject, or Python API; after a join failure this context remains valid even
+ * if the caller's Python plan is released. */
+typedef struct {
+    int fd;
+    unsigned long long dev, ino, mode;
+    long long size, mtime_ns, ctime_ns;
+} WorkerRow;
+
+typedef struct {
+    struct stat stat_value;
+    int verdict;                /* V_OK, V_LEASE, V_IDENTITY, V_ERRNO, V_NEEDPY, V_EINTR */
+    int errno_value;
+} SweepSample;
+
+typedef struct {
+    WorkerRow *rows;
+    SweepSample *samples;
+    Py_ssize_t begin;
+    Py_ssize_t end;
+} SweepWorker;
+
+typedef struct {
+    WorkerRow *rows;
+    SweepSample *samples;
+    SweepWorker *ranges;
+    pthread_t *threads;
+    int workers;
+} ParallelCall;
+
+static void parallel_call_free(ParallelCall *call)
+{
+    if (call == NULL) return;
+    PyMem_Free(call->rows);
+    PyMem_Free(call->samples);
+    PyMem_Free(call->ranges);
+    PyMem_Free(call->threads);
+    PyMem_Free(call);
+}
+
+static void sweep_worker_rows(const SweepWorker *work)
+{
+    for (Py_ssize_t i = work->begin; i < work->end; i++) {
+        const WorkerRow *row = &work->rows[i];
+        SweepSample *sample = &work->samples[i];
+        sample->verdict = V_OK;
+        sample->errno_value = 0;
+
+        int lease;
+        errno = 0;
+        lease = fcntl(row->fd, F_GETLEASE);
+        int lease_errno = errno;
+        if (lease == -1 && lease_errno == EINTR) {
+            /* No Python API and no unbounded retry in a worker. Main joins,
+             * processes Python signal/deadline authority, then falls back to
+             * the ORIGINAL serial full sweep for the whole plan. */
+            sample->verdict = V_EINTR;
+            return;
+        }
+        if (lease == -1) {
+            sample->verdict = V_ERRNO;
+            sample->errno_value = lease_errno;
+            return;
+        }
+        if (lease != F_RDLCK) {
+            sample->verdict = V_LEASE;
+            return;
+        }
+
+        struct stat st;
+        int stat_ret;
+        errno = 0;
+        stat_ret = fstat(row->fd, &st);
+        int stat_errno = errno;
+        if (stat_ret != 0 && stat_errno == EINTR) {
+            sample->verdict = V_EINTR;
+            return;
+        }
+        if (stat_ret != 0) {
+            sample->verdict = V_ERRNO;
+            sample->errno_value = stat_errno;
+            return;
+        }
+        /* Copy only a successfully returned stat. */
+        sample->stat_value = st;
+
+        if (!(st.st_mtim.tv_nsec >= 0 && st.st_mtim.tv_nsec < NS_PER_SEC
+              && st.st_mtim.tv_sec >= -NS_FAST_MAX_SEC && st.st_mtim.tv_sec <= NS_FAST_MAX_SEC
+              && st.st_ctim.tv_nsec >= 0 && st.st_ctim.tv_nsec < NS_PER_SEC
+              && st.st_ctim.tv_sec >= -NS_FAST_MAX_SEC && st.st_ctim.tv_sec <= NS_FAST_MAX_SEC)) {
+            /* Decoded exact-builtin expectations only; main exact-compares this
+             * already-sampled row with no user callback. Continue sampling the
+             * later rows in ascending order. */
+            sample->verdict = V_NEEDPY;
+            continue;
+        }
+        if ((unsigned long long)st.st_dev != row->dev
+            || (unsigned long long)st.st_ino != row->ino
+            || (unsigned long long)st.st_mode != row->mode
+            || (long long)st.st_size != row->size
+            || (long long)st.st_mtim.tv_sec * NS_PER_SEC + (long long)st.st_mtim.tv_nsec != row->mtime_ns
+            || (long long)st.st_ctim.tv_sec * NS_PER_SEC + (long long)st.st_ctim.tv_nsec != row->ctime_ns) {
+            sample->verdict = V_IDENTITY;
+            return;
+        }
+    }
+}
+
+static void *sweep_worker_main(void *argument)
+{
+    sweep_worker_rows((const SweepWorker *)argument);
+    return NULL;
+}
+
+/* Returns 1 with a verdict tuple, 0 when the caller must run the old serial
+ * path (any EINTR/deferred row, small set, or any non-decoded expected row), or
+ * -1 with a Python exception set. */
+static int parallel_plan_sweep(const Plan *plan, PyObject **result)
+{
+    Py_ssize_t count = plan->count;
+    if (count < SWEEP_PARALLEL_MIN_ROWS) return 0;
+    /* R3: any non-decoded expected row or non-fast fd makes the WHOLE plan use
+     * the original serial path. That preserves Python fallback ordering and any
+     * user __eq__ side effects before later FDs are sampled. */
+    for (Py_ssize_t i = 0; i < count; i++) {
+        if (!plan->rows[i].decoded || !plan->rows[i].fd_fast_ok) return 0;
+    }
+
+    ParallelCall *call = PyMem_New(ParallelCall, 1);
+    if (call == NULL) { PyErr_NoMemory(); return -1; }
+    memset(call, 0, sizeof(*call));
+    call->rows = PyMem_New(WorkerRow, (size_t)count);
+    call->samples = PyMem_New(SweepSample, (size_t)count);
+    call->ranges = PyMem_New(SweepWorker, SWEEP_MAX_WORKERS);
+    call->threads = PyMem_New(pthread_t, SWEEP_MAX_WORKERS);
+    if (call->rows == NULL || call->samples == NULL || call->ranges == NULL || call->threads == NULL) {
+        parallel_call_free(call);
+        PyErr_NoMemory();
+        return -1;
+    }
+    for (Py_ssize_t i = 0; i < count; i++) {
+        call->rows[i].fd = plan->rows[i].fd;
+        call->rows[i].dev = plan->rows[i].dev;
+        call->rows[i].ino = plan->rows[i].ino;
+        call->rows[i].mode = plan->rows[i].mode;
+        call->rows[i].size = plan->rows[i].size;
+        call->rows[i].mtime_ns = plan->rows[i].mtime_ns;
+        call->rows[i].ctime_ns = plan->rows[i].ctime_ns;
+        call->samples[i].verdict = V_OK;
+        call->samples[i].errno_value = 0;
+    }
+
+    int workers = SWEEP_MAX_WORKERS;
+    Py_ssize_t chunk = (count + workers - 1) / workers;
+    for (int w = 0; w < workers; w++) {
+        call->ranges[w].rows = call->rows;
+        call->ranges[w].samples = call->samples;
+        call->ranges[w].begin = chunk * (Py_ssize_t)w;
+        call->ranges[w].end = chunk * (Py_ssize_t)(w + 1);
+        if (call->ranges[w].end > count) call->ranges[w].end = count;
+        if (w == workers - 1) call->ranges[w].end = count;
+    }
+
+    int created = 0;
+    int create_error = 0;
+    int join_error = 0;
+    for (int w = 1; w < workers; w++) {
+        int rc = pthread_create(&call->threads[created], NULL, sweep_worker_main, &call->ranges[w]);
+        if (rc != 0) { create_error = rc; break; }
+        created++;
+    }
+    if (create_error == 0) sweep_worker_rows(&call->ranges[0]);
+
+    for (int w = 0; w < created; w++) {
+        /* Linux pthread_join does not return EINTR normally; one direct join.
+         * Any error retains the plain-C call for fail-closed lifetime safety. */
+        int rc = pthread_join(call->threads[w], NULL);
+        if (rc != 0) join_error = rc;
+    }
+
+    if (create_error != 0 || join_error != 0) {
+        int code = create_error != 0 ? create_error : join_error;
+        /* On a join error a worker may still be running. The entire plain-C
+         * call (deep-copied rows, samples, ranges, thread ids) is retained; no
+         * stack pointer and no Python reference is part of it. This is a small
+         * bounded fail-closed retention, not a success path leak. */
+        if (join_error == 0) parallel_call_free(call);
+        PyErr_Format(PyExc_RuntimeError, "native lease sweep pthread failure: %d", code);
+        return -1;
+    }
+
+    /* Main-thread Python signal/deadline authority; workers did no Python. */
+    if (PyErr_CheckSignals() < 0) { parallel_call_free(call); return -1; }
+
+    for (Py_ssize_t i = 0; i < count; i++) {
+        SweepSample *sample = &call->samples[i];
+        if (sample->verdict == V_EINTR) {
+            /* Discard all parallel results and run the original serial full
+             * sweep, which has the original per-syscall signal checks and
+             * fallback ordering. */
+            parallel_call_free(call);
+            return 0;
+        }
+        if (sample->verdict == V_NEEDPY) {
+            int verdict = V_OK, errno_value = 0;
+            int exact = exact_compare_sampled_row(&plan->rows[i], &sample->stat_value,
+                                                  &verdict, &errno_value);
+            if (exact < 0) { parallel_call_free(call); return -1; }
+            if (exact == 0) {
+                *result = verdict_tuple(verdict, i, errno_value);
+                parallel_call_free(call);
+                return 1;
+            }
+            continue;
+        }
+        if (sample->verdict != V_OK) {
+            *result = verdict_tuple(sample->verdict, i, sample->errno_value);
+            parallel_call_free(call);
+            return 1;
+        }
+    }
+    *result = verdict_tuple(V_OK, (Py_ssize_t)-1, 0);
+    parallel_call_free(call);
+    return 1;
+}
+
 static PyObject *lease_sweep_plan(PyObject *module_self, PyObject *args)
 {
     (void)module_self;
@@ -620,6 +869,11 @@ static PyObject *lease_sweep_plan(PyObject *module_self, PyObject *args)
     }
     Plan *plan = (Plan *)PyCapsule_GetPointer(capsule, "xpod.lease.plan");
     if (plan == NULL) return NULL;
+
+    PyObject *parallel_result = NULL;
+    int parallel = parallel_plan_sweep(plan, &parallel_result);
+    if (parallel < 0) return NULL;
+    if (parallel > 0) return parallel_result;
 
     Py_ssize_t count = plan->count;
     if (count > 0) {

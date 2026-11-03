@@ -63,7 +63,7 @@ it('every published 3739 whole prefix is byte-identical',()=>{
   // frozen prefix below, not by current lengths.
   expect(SDK).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.sdk);expect(LINUX).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.linux);
   expect(CONSUMER).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.consumer);expect(CI).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.ci);
-  expect(API).toHaveLength(29);expect(CLI).toHaveLength(12);
+  expect(API).toHaveLength(30);expect(CLI).toHaveLength(13);
   prefix(SDK.slice(0,82),OLD_SDK,'sdk');
   prefix(LINUX.slice(0,83),OLD_LINUX,'linux');
   prefix(CONSUMER.slice(0,98),OLD_CONSUMER,'consumer');

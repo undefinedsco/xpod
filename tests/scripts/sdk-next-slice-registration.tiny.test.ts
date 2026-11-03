@@ -171,7 +171,7 @@ test('the accepted SDK823 baseline proves all 299 published whole histories', ()
   // Only genuinely new, UNPUBLISHED current groups follow the 299 published ones:
   // the immutable-input-plan slice, the ORM 0.3.26 joint API/CLI/consumer/CI tail
   // and the ORM 0.3.26 joint SDK tuple.
-  expect([sdk.length, consumer.length, ci.length, api.length]).toEqual([CURRENT_SOURCE_GROUP_COUNTS.sdk, CURRENT_SOURCE_GROUP_COUNTS.consumer, CURRENT_SOURCE_GROUP_COUNTS.ci, 29]);
+  expect([sdk.length, consumer.length, ci.length, api.length]).toEqual([CURRENT_SOURCE_GROUP_COUNTS.sdk, CURRENT_SOURCE_GROUP_COUNTS.consumer, CURRENT_SOURCE_GROUP_COUNTS.ci, CURRENT_SOURCE_GROUP_COUNTS.api]);
 });
 
 test('the immutable fae9170b baseline proves its full published 69/84/166/28 prefixes', () => {
@@ -202,12 +202,12 @@ test('only the genuinely new immutable-input-plan slice follows published2406', 
   // Appends beyond published2406: the immutable-input-plan slice, the ORM 0.3.26
   // joint tail, and the candidate-producer-attempt SDK81/new current tails.
   expect([sdk.length, consumer.length, ci.length, api.length, linuxGroups.length, CLI_SOURCE_VERSION_GROUPS.length])
-    .toEqual([CURRENT_SOURCE_GROUP_COUNTS.sdk, CURRENT_SOURCE_GROUP_COUNTS.consumer, CURRENT_SOURCE_GROUP_COUNTS.ci, 29, CURRENT_SOURCE_GROUP_COUNTS.linux, 12]);
+    .toEqual([CURRENT_SOURCE_GROUP_COUNTS.sdk, CURRENT_SOURCE_GROUP_COUNTS.consumer, CURRENT_SOURCE_GROUP_COUNTS.ci, CURRENT_SOURCE_GROUP_COUNTS.api, CURRENT_SOURCE_GROUP_COUNTS.linux, CURRENT_SOURCE_GROUP_COUNTS.cli]);
   expect([(n2406Groups as any).published.sdk, (n2406Groups as any).published.consumer,
     (n2406Groups as any).published.ci, (n2406Groups as any).published.linux]).toEqual([73, 88, 174, 74]);
   expect([sdk.length - n2406Groups.published.sdk, consumer.length - n2406Groups.published.consumer,
     ci.length - n2406Groups.published.ci, linuxGroups.length - n2406Groups.published.linux])
-    .toEqual([17, 11, 22, 17]);
+    .toEqual([18, 11, 22, 18]);
   // Every published2406 group keeps its own exact bytes, including its last.
   for (const [name, groups] of Object.entries({sdk, consumer, ci, api, linux: linuxGroups})) {
     const published = (n2406Groups as any).groupHashes[name] as unknown[];
@@ -353,7 +353,7 @@ test('the live canonical binds every actual row of the final combined tree', () 
   // The genuinely new roles of this slice: the corrected SDK inner producer and
   // the CI-discovered Ninja regression that now runs under `test_qlever*`.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-inner-materials.py')!.sha256)
-    .toBe('3f9c3133523f8de6e5faec7946a5145ce6a09c7a299ca6f9e738d1f9c7a403f0');
+    .toBe('cfebfc200b35241d4e5200eb2251910b32c2ee56894666098a046408df302091');
   expect(current.find((r) => r.path === 'qlever/tests/test_qlever_inner_materials_ninja.py')!.sha256)
     .toBe('a2cb860d7300d62931a354c90ade3a00ada1c831c37f719b24f77385de93e4fc');
   // The reviewed phase-syscall diagnostic plus its three CI-discovered tests.
@@ -446,7 +446,7 @@ test('the CURRENT unpublished slice carries the published helper prefixes and it
   const previous = sdk[85]!;
   const previousBindings = previous.sourceBindings ?? [];
   expect(previousBindings.length).toBe(154);
-  expect(current.sourceBindings.length).toBe(162);
+  expect(current.sourceBindings.length).toBe(169);
   expect(current.sourceBindings.slice(0, 154).map(r => r.path))
     .toEqual(previousBindings.map(r => r.path));
   const expectedAppended = [
@@ -458,6 +458,15 @@ test('the CURRENT unpublished slice carries the published helper prefixes and it
     'qlever/tests/run_sdk_owned_input_generation_gate.py',
     '.github/workflows/ci.yml',
     'qlever/tests/test_sdk90_metadata_open.py',
+    // SDK91 current combined registration appends the capacity/native tests that
+    // no earlier tuple owned; the SDK86-90 rows above keep their exact order.
+    'qlever/tests/test_actual_flow.py',
+    'qlever/tests/test_native_lease_contract.py',
+    'qlever/tests/test_native_lease_eintr.py',
+    'qlever/tests/test_sdk_execution_budget_diagnostic.py',
+    'qlever/tests/test_sdk_image_originals.py',
+    'qlever/tests/test_sdk_ptrace_execution_library.py',
+    'qlever/tests/test_sdk_upstream_source_materials.py',
   ];
   const appended = current.sourceBindings.slice(previousBindings.length);
   expect(appended.map(r => r.path)).toEqual(expectedAppended);

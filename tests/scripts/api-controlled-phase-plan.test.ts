@@ -9,6 +9,7 @@ import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {controlledApiSourceRecipe,moduleSourcePhasePolicy,reviewedModulePhasePlan} from '../../scripts/lib/independent-admission/module-source-phases';
 const read=(name:string)=>readFileSync(name);
+const sourceMaterialBytes=(JSON.parse(read('scripts/lib/module-artifact-limits.json').toString()) as {sourceMaterialBytes:number}).sourceMaterialBytes;
 const readHistorical = (name: string) => {
   if (name === 'packages/xpod-api/scripts/pack.ts') {
     // Historical recipes must read the retained source, even after pack changes.
@@ -55,7 +56,7 @@ describe('one reviewed API parent recipe',()=>{
   expect(controlled.some(row=>row.name==='native-material'||row.name==='native-inputs')).toBe(false);
  });
  it('rejects unsupported source kinds, targets and expanded retained budgets',()=>{
-  for(const value of [{sourceKind:'other',retainedByteCeiling:1},{sourceKind:'xpod-controlled-inngest-build-v1',retainedByteCeiling:4294967297}])expect(()=>reviewedModulePhasePlan('api','/r','/o','1.2.3','linux-arm64',value,workspace)).toThrow();
+  for(const value of [{sourceKind:'other',retainedByteCeiling:1},{sourceKind:'xpod-controlled-inngest-build-v1',retainedByteCeiling:sourceMaterialBytes+1}])expect(()=>reviewedModulePhasePlan('api','/r','/o','1.2.3','linux-arm64',value,workspace)).toThrow();
   expect(()=>reviewedModulePhasePlan('api','/r','/o','1.2.3','windows-x64',{...scope,retainedByteCeiling:1},workspace)).toThrow();
  });
 });

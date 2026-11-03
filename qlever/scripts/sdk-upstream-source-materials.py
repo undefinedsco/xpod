@@ -16,6 +16,7 @@ import subprocess
 import time
 
 HERE=Path(__file__).resolve().parent
+LIMITS=json.loads((HERE.parents[1]/'scripts/lib/module-artifact-limits.json').read_text())
 spec=importlib.util.spec_from_file_location('upstream_budget',HERE/'sdk-execution-budget.py')
 budgets=importlib.util.module_from_spec(spec);spec.loader.exec_module(budgets)
 MEMBER=512*1024**2
@@ -178,7 +179,7 @@ class Collector:
             row=self.observe_file(name);logical+=row['bytes']
             if row['mode']!=mode or row['blobOid']!=oid:raise ValueError('Upstream actual prepatch file differs from locked Git blob/mode')
             files.append(row)
-            if len(files)>100000 or logical>4*1024**3:raise ValueError('Upstream source observation count/byte bound')
+            if len(files)>100000 or logical>LIMITS['sourceMaterialBytes']:raise ValueError('Upstream source observation count/byte bound')
         ids=self.out/'object-ids.original';id_bytes=0
         with ids.open('x') as output:
             for oid in sorted(objects):
@@ -191,7 +192,7 @@ class Collector:
             oid,kind,size=line.split()
             if oid not in objects or oid in observed or kind not in ('commit','tree','blob') or not size.isdigit() or int(size)>MEMBER:raise ValueError('Upstream Git object expanded bound/type/set')
             observed.add(oid);expanded+=int(size)
-            if expanded>4*1024**3:raise ValueError('Upstream Git expanded aggregate bound')
+            if expanded>LIMITS['sourceMaterialBytes']:raise ValueError('Upstream Git expanded aggregate bound')
         if observed!=objects:raise ValueError('Upstream Git object size universe differs')
         pack=self.command('git-pack',['git','pack-objects','--stdout','--window=0','--depth=0','--no-reuse-delta','--no-reuse-object'],MEMBER,ids)
         status=self.command('git-clean',['git','status','--porcelain','--untracked-files=all'])
@@ -236,7 +237,7 @@ class Collector:
             for name in [*names,*linked]:
                 path=Path(directory)/name
                 row=self.observe_file(path.relative_to(self.source).as_posix());files.append(row);total+=row['bytes']
-                if len(files)>100000 or total>4*1024**3:raise ValueError('Upstream postpatch observation count/byte bound')
+                if len(files)>100000 or total>LIMITS['sourceMaterialBytes']:raise ValueError('Upstream postpatch observation count/byte bound')
         files.sort(key=lambda row:row['path'])
         write(self.out/'postpatch-inventory.json',dict(schemaVersion=1,files=files),self.check)
         previous={row['path'] for row in json.loads((self.out/'prepatch-inventory.json').read_text())['files']}
@@ -281,5 +282,5 @@ def finalize(out,source,inventory,stages,check):
     for path in directory.rglob('*'):
         check()
         if path.is_file():total+=ref(path,out,check)['bytes']
-    if total>4*1024**3:raise ValueError('Upstream original domain aggregate bound')
+    if total>LIMITS['sourceMaterialBytes']:raise ValueError('Upstream original domain aggregate bound')
     return ref(directory/'final-materials.json',out,check),total

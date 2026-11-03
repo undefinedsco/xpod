@@ -21,6 +21,7 @@ owned_input_module=importlib.util.module_from_spec(_owned_input_spec);_owned_inp
 import struct
 import stat
 import shlex
+LIMITS=json.loads((Path(__file__).resolve().parents[2]/'scripts/lib/module-artifact-limits.json').read_text())
 TIMESTAMP_MODEL='actual-utimensat-timespec-v6'
 TIMESTAMP_CHAIN_MODEL='actual-rename-mode-timestamp-chain-v6'
 UTIME_NOW_NS=1073741823
@@ -425,8 +426,9 @@ LEASE_CAPACITY_ROW_BYTES=4096
 
 def _lease_inventory_object(data,limits=None):
     """Parse one authoritative inventory original without duplicate-key loss."""
+    limits=LIMITS if limits is None else limits
     source_members=limits['sourceMembers'] if limits else 250000
-    maximum_inventory=min(limits.get('sourceMaterialBytes',4*1024**3),max(limits.get('metadataBytes',4*1024**2),source_members*256))
+    maximum_inventory=min(limits.get('sourceMaterialBytes',LIMITS['sourceMaterialBytes']),max(limits.get('metadataBytes',4*1024**2),source_members*256))
     need(type(data) is bytes and len(data)<=maximum_inventory,'prepared lease inventory original bytes required')
     def no_duplicate_pairs(pairs):
         result={}

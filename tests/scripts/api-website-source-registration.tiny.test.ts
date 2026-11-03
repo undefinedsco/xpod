@@ -9,7 +9,7 @@ import tcb from '../../scripts/lib/independent-admission/consumer-execution-curr
 import {CURRENT_CANONICAL_SOURCE_ROWS} from './source-binding-group.fixture';
 const read=(p:string)=>fs.readFileSync(path.resolve(import.meta.dir,'../..',p));const sha=(b:Buffer)=>createHash('sha256').update(b).digest('hex');
 test('website projection is a separate exact source group while every Node and earlier source tree remains selectable',()=>{
- expect(groups).toHaveLength(29);expect(consumers).toHaveLength(99);expect(ci).toHaveLength(196);expect(tcb).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
+ expect(groups).toHaveLength(30);expect(consumers).toHaveLength(99);expect(ci).toHaveLength(196);expect(tcb).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
  expect(groups.find(g=>'name' in g&&g.name==='root-minimal-node-public-tool-input')!.sourceBindings).toBe(previous);
  expect(website.filter(row=>previous.find(old=>old.path===row.path)?.sha256!==row.sha256).map(row=>row.path).sort()).toEqual(['packages/xpod-api/scripts/inngest-controlled-build-policy.json','scripts/lib/inngest-controlled-build.py']);
  expect(current).toHaveLength(75);for(const row of [...API_SERVICE_BUILD_SOURCE_BINDINGS,...tcb])expect(sha(read(row.path))).toBe(row.sha256);

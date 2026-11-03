@@ -86,7 +86,7 @@ class Generation(e2e.EndToEnd):
   label=('source-' if source else 'build-')+mode
   base=self.root/label;base.mkdir();originals=base/'originals';originals.mkdir();build=base/'build';build.mkdir();src=base/'source';src.mkdir()
   self.trusted_roots[label]=str(build.resolve())
-  # Canonical production sourceMaterialBytes is 4GiB. The actual Ubuntu x64 ar
+  # Canonical production sourceMaterialBytes is 8GiB. The actual Ubuntu x64 ar
   # toolchain loads real preinstalled binaries and legitimately exceeds the former
   # 512MiB fixture allowance; all other modes retain the factory default.
   if mode == "ar":

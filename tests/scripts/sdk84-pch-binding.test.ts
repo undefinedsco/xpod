@@ -109,7 +109,7 @@ it('the latest live SDK90 group binds the actual current build-contract bytes',(
   // equal today's working tree. It complements the frozen SDK84 historical case
   // above instead of asking that published tuple to follow a later edit.
   const latest=SDK[SDK.length-1]!;
-  expect(SDK).toHaveLength(90);
+  expect(SDK).toHaveLength(91);
   expect(whole(LINUX[LINUX.length-1]!)).toBe(whole(latest));
   // three role occurrences: inherited source binding, inherited stage-0 secondary
   // selector, and the appended final stage — all must carry the same live bytes.
