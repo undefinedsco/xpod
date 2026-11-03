@@ -1082,9 +1082,14 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             need(type(ref.get('observationSequence'))is int and ref['observationSequence']==row['sequence'],'maps reference lacks its own actual observation sequence')
         else:need('observationSequence'not in ref,'observation reference requires maps storage model')
         if reuse is not None:
-            need(maps_entity_model=='same-phase-maps-content-entity-v1'and row.get('kind')=='toolchain-original'and row.get('captureKind')=='maps','noncanonical maps alias requires explicit model')
-            need(isinstance(reuse,dict)and set(reuse)=={'model','originCaptureSequence'}and reuse['model']==maps_entity_model and type(reuse['originCaptureSequence'])is int and 0<reuse['originCaptureSequence']<row['sequence'],'exact backward maps physical alias required')
-            origin=storage_origins.get(reuse['originCaptureSequence']);need(origin and origin['kind']=='toolchain-original'and origin.get('captureKind')=='maps'and origin['phase']==row['phase']and physical_original_reference(origin['original'])==physical_original_reference(ref)and entity==origin['originalEntityIdentity'],'maps alias mixes phase, original or physical identity')
+            if row.get('kind')=='toolchain-original'and row.get('captureKind')=='maps':
+                need(maps_entity_model=='same-phase-maps-content-entity-v1','noncanonical maps alias requires explicit model')
+                need(isinstance(reuse,dict)and set(reuse)=={'model','originCaptureSequence'}and reuse['model']==maps_entity_model and type(reuse['originCaptureSequence'])is int and 0<reuse['originCaptureSequence']<row['sequence'],'exact backward maps physical alias required')
+                origin=storage_origins.get(reuse['originCaptureSequence']);need(origin and origin['kind']=='toolchain-original'and origin.get('captureKind')=='maps'and origin['phase']==row['phase']and physical_original_reference(origin['original'])==physical_original_reference(ref)and entity==origin['originalEntityIdentity'],'maps alias mixes phase, original or physical identity')
+            else:
+                need(entity_model=='same-phase-content-entity-v2'and row.get('kind')=='toolchain-original'and row.get('captureKind')=='file','noncanonical content alias requires file toolchain row')
+                need(isinstance(reuse,dict)and set(reuse)=={'model','originCaptureSequence'}and reuse['model']==entity_model and type(reuse['originCaptureSequence'])is int and 0<reuse['originCaptureSequence']<row['sequence'],'exact backward content physical alias required')
+                origin=storage_origins.get(reuse['originCaptureSequence']);need(origin and origin['phase']==row['phase']and physical_original_reference(origin['original'])==physical_original_reference(ref)and entity==origin['originalEntityIdentity'],'content alias mixes phase, original or physical identity')
         else:
             old=storage_entities.get(ref['path']);need(old is None,'canonical physical content path repeated without typed alias')
             storage_entities.setdefault(ref['path'],row);storage_origins[row['sequence']]=row
@@ -1096,7 +1101,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
         need((len(data),hashlib.sha256(data).hexdigest())==(ref['bytes'],ref['sha256']),'dependency metadata original changed');return bytes(data)
     def dependency_json(ref):return json.loads(dependency_bytes(ref))
     tool_coverage=(IndexedToolchainOperationCoverage if compact_tool_coverage else ToolchainOperationCoverage)(limits.get('metadataBytes',4*1024**2) if limits else 4*1024**2,limits.get('sourceMembers',50000) if limits else 50000,check)
-    tool_originals={};tool_files={};tool_pending=set();tool_execs=0;tool_mappings=0;producer_input_edges=[];producer_exec_image={};unbound_read_operations=[];input_read_originals={};regular_input_observations={};inputs_pending={};inputs_pending_rejected={};observations_by_entry={};disposition_entries={};writable_dispositions={};kernel_metadata_originals={};authority_mountinfo={};control_gates=[];nonexec_credit={};exec_event_history={};nonexec_positive_pending={};read_custody={};lease_entry_by_token={};read_source_class={};read_lease_epoch={};target_resolutions={};tool_core=None;exec_events={};terminal_events={};tool_exec_paths={};tool_protect_before={};tool_providers={};tool_provider_pending=set();provider_verifier=None;tool_digest=hashlib.sha256()
+    tool_originals={};tool_originals_by_sequence={};tool_files=[];tool_pending=set();tool_execs=0;tool_mappings=0;producer_input_edges=[];producer_exec_image={};unbound_read_operations=[];input_read_originals={};regular_input_observations={};inputs_pending={};inputs_pending_rejected={};observations_by_entry={};disposition_entries={};writable_dispositions={};kernel_metadata_originals={};authority_mountinfo={};control_gates=[];nonexec_credit={};exec_event_history={};nonexec_positive_pending={};read_custody={};lease_entry_by_token={};read_source_class={};read_lease_epoch={};target_resolutions={};tool_core=None;exec_events={};terminal_events={};tool_exec_paths={};tool_protect_before={};tool_providers={};tool_provider_pending=set();provider_verifier=None;tool_digest=hashlib.sha256()
     def resolved_target_for(observation_row):
         """Canonical target of the descriptor this read used.
 
@@ -1916,9 +1921,27 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
             elif kind=='toolchain-original':
                 need(not append_dirty,'tool/source output before mandatory append full checkpoint')
                 need(bool(live) and row['captureKind'] in ['file','maps','mountinfo','input-read','kernel-metadata'],'actual tool original must be observed with live stopped tracees')
-                data=capture_data(row['original']);need(tool_original_key(row['original'])not in tool_originals,'duplicate tool original')
+                data=capture_data(row['original']);key=tool_original_key(row['original']);reuse=row.get('originalReuse')
+                prior=tool_originals.get(key)
                 if row['captureKind']=='file':
-                    need(len(row['identity'])==6 and row['identity'][3]==data[0],'tool FD identity/bytes differ');tool_files[row['original']['path']]=dict(observedPath=row['observedPath'],identity=row['identity'],original=row['original'])
+                    if prior is not None:
+                        need(isinstance(reuse,dict) and set(reuse)=={'model','originCaptureSequence'} and reuse.get('model')=='same-phase-content-entity-v2' and type(reuse.get('originCaptureSequence')) is int and 0<reuse['originCaptureSequence']<row['sequence'],'duplicate tool original')
+                        need(prior['sequence']==reuse['originCaptureSequence'] and prior['phase']==row['phase'] and prior['original']==row['original'] and prior.get('originalEntityIdentity')==row.get('originalEntityIdentity'),'tool original alias differs from prior physical original')
+                    else:
+                        if reuse is not None:
+                            need(isinstance(reuse,dict) and set(reuse)=={'model','originCaptureSequence'} and reuse.get('model')=='same-phase-content-entity-v2' and type(reuse.get('originCaptureSequence')) is int and 0<reuse['originCaptureSequence']<row['sequence'],'tool original alias lacks typed backward origin')
+                            origin=tool_originals_by_sequence.get(reuse['originCaptureSequence'])
+                            if origin is None:
+                                pair=caps.get(reuse['originCaptureSequence']);origin=pair[0] if pair else None
+                            if origin is None:origin=storage_origins.get(reuse['originCaptureSequence'])
+                            need(origin is not None and origin['phase']==row['phase'] and origin['original']==row['original'] and origin.get('originalEntityIdentity')==row.get('originalEntityIdentity'),'tool original alias lacks same-phase physical prior')
+                        tool_originals[key]=row
+                else:
+                    need(prior is None,'duplicate tool original')
+                    tool_originals[key]=row
+                tool_originals_by_sequence[row['sequence']]=row
+                if row['captureKind']=='file':
+                    need(len(row['identity'])==6 and row['identity'][3]==data[0],'tool FD identity/bytes differ');tool_files.append(dict(observedPath=row['observedPath'],identity=row['identity'],original=row['original']))
                 elif row['captureKind']=='kernel-metadata':
                     # Kernel-generated metadata of ONE stopped tracee pid. It is
                     # byte evidence bound to that subject; it grants no file or
@@ -3045,7 +3068,7 @@ def observe(phase_lines,read_original,required_inputs=None,check=lambda:None,lim
         sorted(read_source_class.values(),key=lambda r:(r['leaseSequence'],r['identity'])))
 
     return dict(**(dict(observedOwnedInputGenerations=input_generations.total_completed,ownedInputGenerationModel=owned_input_module.MODEL,ownedInputGenerationScope='exact protected consumed generations and complete observed mutation byte effects; no global host-writer absence between generations') if input_generations.total_completed else {}),**(dict(observedGeneratedRetainedMetadata=dict(model=generated_module.RETAINED_METADATA_MODEL,maximumBytes=4*1024**2,peakBytes=generated_verifier.metadata_high_water))if generated_verifier is not None and generated_verifier.retained_metadata else {}),**(dict(verifiedCoordinatedWaitIntervals=list(getattr(generated_verifier,'coordinated_waits',[]))) if generated_verifier is not None and generated_verifier.model in generated_module.COORDINATED_WAIT_MODELS else {}),**(dict(verifiedPrivateWakeEntrySequences=list(generated_verifier.private_wakes),**(dict(verifiedPrivateWaitMismatchEntrySequences=list(generated_verifier.private_waits)) if generated_verifier.model in generated_module.PRIVATE_WAIT_MODELS else {})) if generated_verifier is not None and generated_verifier.model in generated_module.WAKE_MODELS else {}),schemaVersion=1,kind='all-stop-CMake-generated-byte-mechanics',observedGeneratedWritableMapCheckpoints=len(generated_verifier.checkpoints) if generated_verifier is not None else 0,generatedMappedConsumerByteCustodyVerified=bool(mapped_outputs),selectedGeneratedConsumerByteCustodyVerified=not pending,outputs=sorted(covered.values(),key=lambda row:row['path']),observedSourceReadCaptures=len(source_reads),observedPreparedDependencyReadCaptures=dependency_reads,preparedDependencySourceAuthorityVerified=False,preparedDependencyPending=(['independent-FetchContent-dependency-stage-and-Git-or-URL-source-authority-unverified'] if dependency_roots else []),pending=pending,overallSdkSourceVerified=False,
-                observedAliasOnlyCloses=len(alias_close_exits),observedActualModeTransitions=len(mode_transitions),observedNamedRetainedFdBindings=len(namespaces),observedActualWriteTransitions=len(write_transitions),observedEmptyReadEofWindows=len(empty_eofs),toolchainProcessAuthorityIntervals=process_intervals,toolchainProcessAuthorityIntervalVerified=bool(process_intervals) and all(row.get('model') is not None for row in process_intervals),toolchainProcessAuthorityPending=['toolchain-provider-namespace-external-writer-and-backing-snapshot-authority-unverified']+([] if process_intervals and all(row.get('model') is not None for row in process_intervals) else ['toolchain-owned-process-authority-interval-originals-unavailable']),toolchainFileSnapshots=list(tool_files.values()),toolchainOperationCoverage=tool_coverage.finish(sorted(tool_pending),sorted(tool_provider_pending)),toolchainActualExecImages=tool_execs,toolchainActualFileMappings=tool_mappings,verifiedFileMappedMmapKeys=sorted(list(key) for key in verified_file_mmap_keys),
+                observedAliasOnlyCloses=len(alias_close_exits),observedActualModeTransitions=len(mode_transitions),observedNamedRetainedFdBindings=len(namespaces),observedActualWriteTransitions=len(write_transitions),observedEmptyReadEofWindows=len(empty_eofs),toolchainProcessAuthorityIntervals=process_intervals,toolchainProcessAuthorityIntervalVerified=bool(process_intervals) and all(row.get('model') is not None for row in process_intervals),toolchainProcessAuthorityPending=['toolchain-provider-namespace-external-writer-and-backing-snapshot-authority-unverified']+([] if process_intervals and all(row.get('model') is not None for row in process_intervals) else ['toolchain-owned-process-authority-interval-originals-unavailable']),toolchainFileSnapshots=tool_files,toolchainOperationCoverage=tool_coverage.finish(sorted(tool_pending),sorted(tool_provider_pending)),toolchainActualExecImages=tool_execs,toolchainActualFileMappings=tool_mappings,verifiedFileMappedMmapKeys=sorted(list(key) for key in verified_file_mmap_keys),
 
     verifiedGeneratedProducerTransport=verified_generated_producer_transport,
     verifiedGeneratedProducerInputs=verified_generated_producer_inputs,verifiedGeneratedProducerWitness=verified_generated_producer_witness,

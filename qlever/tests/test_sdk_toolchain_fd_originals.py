@@ -1,5 +1,6 @@
 """Actual file byte snapshots and raw protocol math, not an SDK capability."""
 import copy
+import contextlib
 import errno
 import hashlib
 import importlib.util
@@ -48,6 +49,73 @@ class Tests(unittest.TestCase):
                 first=observer.tool_original(fd,str(file));self.assertIs(observer.tool_original(fd,str(file)),first)
                 file.write_bytes(elf()+b'changed');second=observer.tool_original(fd,str(file));self.assertNotEqual(first['original']['sha256'],second['original']['sha256']);self.assertEqual(len(observer.captures),2)
             finally:os.close(fd);observer.raw.close();observer.close()
+    def _reuse_observer(self,root,out,maximum_bytes=32*1024**2):
+        observer=backend.Observer(out,root,root);observer.deadline=time.monotonic()+30;observer.current_phase='compile'
+        observer.capture_content_entities=True;observer.maximum_file_bytes=8*1024**2;observer.maximum_bytes=maximum_bytes
+        observer.raw=(out/'raw').open('xb');self.addCleanup(observer.raw.close);self.addCleanup(observer.close);return observer
+    def test_tool_original_same_bytes_different_inode_keeps_two_identities_one_body(self):
+        base=ROOT/'.test-data/sdk-tool-original-reuse';base.mkdir(parents=True,exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=base) as directory:
+            root=Path(directory);out=root/'originals';out.mkdir();data=b'Q'*(131072+17);a=root/'tool-a';b=root/'tool-b';a.write_bytes(data);b.write_bytes(data)
+            observer=self._reuse_observer(root,out);fa=os.open(a,os.O_RDONLY);fb=os.open(b,os.O_RDONLY);self.addCleanup(os.close,fa);self.addCleanup(os.close,fb)
+            first=observer.tool_original(fa,str(a),pid=10,fd=3);physical=observer.capture_bytes;body_claim=observer.claim_bytes['capture-body']
+            second=observer.tool_original(fb,str(b),pid=10,fd=4)
+            self.assertIn('originalReuse',second);self.assertEqual(first['original'],second['original']);self.assertNotEqual(first['identity'],second['identity'])
+            self.assertEqual(second['originalReuse']['originCaptureSequence'],first['sequence']);self.assertEqual(second['originalEntityIdentity'],first['originalEntityIdentity'])
+            self.assertEqual(observer.capture_bytes,physical);self.assertEqual(observer.claim_bytes['capture-body'],body_claim);self.assertEqual(len(observer.captures),2);self.assertEqual(len(observer.capture_entities),1)
+            self.assertEqual(len(observer.phase_capture_files(0)),1)
+    def test_tool_original_same_inode_different_path_emits_both_path_rows(self):
+        base=ROOT/'.test-data/sdk-tool-original-reuse';base.mkdir(parents=True,exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=base) as directory:
+            root=Path(directory);out=root/'originals';out.mkdir();data=b'H'*(131072+9);a=root/'tool-a';b=root/'tool-b';a.write_bytes(data);os.link(a,b);observer=self._reuse_observer(root,out)
+            fa=os.open(a,os.O_RDONLY);fb=os.open(b,os.O_RDONLY);self.addCleanup(os.close,fa);self.addCleanup(os.close,fb)
+            first=observer.tool_original(fa,str(a),pid=20,fd=3);physical=observer.capture_bytes
+            second=observer.tool_original(fb,str(b),pid=20,fd=4)
+            self.assertEqual(first['identity'],second['identity']);self.assertNotEqual(first['observedPath'],second['observedPath']);self.assertIn('originalReuse',second);self.assertEqual(first['original'],second['original']);self.assertEqual(first['originalEntityIdentity'],second['originalEntityIdentity'])
+            self.assertEqual(observer.capture_bytes,physical);self.assertEqual(len(observer.captures),2);self.assertEqual(len(observer.capture_entities),1);self.assertEqual(len(observer.phase_capture_files(0)),1)
+            observed=observer.observed_tool_files(0,'compile');self.assertEqual({row['actualOriginalPath'] for row in observed},{str(a),str(b)});self.assertEqual(len({row['captureSequence'] for row in observed}),2)
+    def test_tool_original_unique_over_budget_fails_before_write_with_bounded_context(self):
+        base=ROOT/'.test-data/sdk-tool-original-reuse';base.mkdir(parents=True,exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=base) as directory:
+            root=Path(directory);out=root/'originals';out.mkdir();data=b'U'*65537;path=root/'tool';path.write_bytes(data);observer=self._reuse_observer(root,out)
+            fd=os.open(path,os.O_RDONLY);self.addCleanup(os.close,fd);start=observer.domain_bytes;observer.maximum_bytes=start+len(data)-1;capture=io.StringIO()
+            with contextlib.redirect_stderr(capture),self.assertRaises(AssertionError):observer.tool_original(fd,str(path),pid=11,fd=7)
+            self.assertEqual(observer.domain_bytes,start);self.assertEqual(observer.capture_bytes,0);self.assertEqual(getattr(observer,'chunk_reserved',0),0);self.assertEqual(observer.captures,[]);self.assertFalse((out/'capture-0000.original').exists())
+            line=next(line for line in capture.getvalue().splitlines() if line.startswith('SDK_TOOL_ORIGINAL_BOUND '));payload=json.loads(line.split(' ',1)[1])
+            self.assertEqual(payload['kind'],'tool-original-byte-bound');self.assertEqual(payload['pid'],11);self.assertEqual(payload['fd'],7);self.assertEqual(payload['fileSize'],len(data));self.assertEqual(payload['observedPath'],str(path));self.assertEqual(payload['requestedBytes'],len(data))
+            self.assertTrue(payload['observedComplete']);self.assertEqual(payload['observedWholeSha256'],hashlib.sha256(data).hexdigest());self.assertFalse(payload['retained']);self.assertEqual(payload['readOffset']+payload['attemptedBytes'],len(data));self.assertGreater(payload['attemptedBytes'],0);self.assertLess(payload['freeBytes'],payload['requestedBytes'])
+    def test_tool_original_partial_write_failure_releases_reservation_and_removes_partial(self):
+        base=ROOT/'.test-data/sdk-tool-original-reuse';base.mkdir(parents=True,exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=base) as directory:
+            root=Path(directory);out=root/'originals';out.mkdir();data=b'P'*(131072+1);path=root/'tool';path.write_bytes(data);observer=self._reuse_observer(root,out)
+            fd=os.open(path,os.O_RDONLY);self.addCleanup(os.close,fd);start=observer.domain_bytes;calls=0;pread=os.pread
+            def read(reader,size,offset):
+                nonlocal calls
+                calls+=1
+                if calls==4:raise OSError('injected second-pass read failure')
+                return pread(reader,size,offset)
+            with patch.object(backend.os,'pread',side_effect=read),self.assertRaises(OSError):observer.tool_original(fd,str(path),pid=12,fd=8)
+            self.assertEqual(observer.domain_bytes,start);self.assertEqual(observer.capture_bytes,0);self.assertEqual(getattr(observer,'chunk_reserved',0),0);self.assertEqual(observer.captures,[]);self.assertFalse((out/'capture-0000.original').exists())
+    def test_tool_original_corrupt_retained_entity_is_rejected(self):
+        base=ROOT/'.test-data/sdk-tool-original-reuse';base.mkdir(parents=True,exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=base) as directory:
+            root=Path(directory);out=root/'originals';out.mkdir();data=b'C'*131089;a=root/'a';b=root/'b';a.write_bytes(data);b.write_bytes(data);observer=self._reuse_observer(root,out)
+            fa=os.open(a,os.O_RDONLY);fb=os.open(b,os.O_RDONLY);self.addCleanup(os.close,fa);self.addCleanup(os.close,fb)
+            first=observer.tool_original(fa,str(a),pid=13,fd=9);physical=observer.capture_bytes;(out/first['original']['path']).write_bytes(b'Z'*len(data))
+            with self.assertRaises(AssertionError):observer.tool_original(fb,str(b),pid=13,fd=10)
+            self.assertEqual(observer.capture_bytes,physical);self.assertEqual(len(observer.captures),1)
+    def test_tool_original_changed_named_window_is_rejected_without_partial(self):
+        base=ROOT/'.test-data/sdk-tool-original-reuse';base.mkdir(parents=True,exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=base) as directory:
+            root=Path(directory);out=root/'originals';out.mkdir();data=b'A'*(131072+1);path=root/'tool';path.write_bytes(data);observer=self._reuse_observer(root,out)
+            fd=os.open(path,os.O_RDONLY);self.addCleanup(os.close,fd);start=observer.domain_bytes;calls=0;pread=os.pread
+            def read(reader,size,offset):
+                nonlocal calls
+                calls+=1
+                if calls==4:path.write_bytes(b'B'*len(data))
+                return pread(reader,size,offset)
+            with patch.object(backend.os,'pread',side_effect=read),self.assertRaises(AssertionError):observer.tool_original(fd,str(path),pid=14,fd=11)
+            self.assertEqual(observer.domain_bytes,start);self.assertEqual(observer.capture_bytes,0);self.assertEqual(observer.captures,[]);self.assertFalse((out/'capture-0000.original').exists())
     def test_no_held_preuse_inode_refuses_without_a_mapping_claim(self):
         """NEGATIVE CONTROL: absent held pre-use inode must still fail closed.
 
