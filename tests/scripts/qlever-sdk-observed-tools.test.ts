@@ -2,6 +2,7 @@ import {describe,it,expect} from 'vitest';
 import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {inspectSdkObservedToolAfterFiles} from '../../scripts/lib/independent-admission/qlever-sdk-inputs';
+import {selectSdkControllerHelperGroup} from '../../scripts/lib/independent-admission/sdk-controller-helper-groups';
 import {observeQleverSdkObservedToolOriginals} from '../../scripts/lib/independent-admission/qlever-sdk-observed-tools';
 const file={path:'/usr/bin/tool',bytes:3,sha256:'a'.repeat(64),mode:0o755,phase:'configure',captureSequence:3,identityDecimal:['1','2','33261','3','1760000000000000001','1760000000000000003'],observedBeforeCompile:false};
 const row={originalPath:file.path,bytes:file.bytes,sha256:file.sha256,mode:file.mode};
@@ -23,6 +24,8 @@ describe('observed tools narrow byte joins',()=>{
    expect(createHash('sha256').update(bytes).digest('hex'),name+' reviewed bytes').toBe(expected);
   };
   for(const row of rows){expect(row).toHaveLength(2);verify(row[0],row[1]);}
+  const observed=new Map(rows);
+  expect(selectSdkControllerHelperGroup([rows],observed)).toBe(rows);
   expect(rows.map(row=>row[0])).toEqual(expect.arrayContaining(['sdk-zip-originals.py','sdk-execution-originals-util.py','sdk-generation-multiprocess-bindings.py','sdk-original-chunk-store.py']));
   expect(()=>verify('sdk-zip-originals.py','304a8d26c8a124af31f2b240f1b2af52312520982cd6e1f4cba70fde2602bcb8')).toThrow();
  });

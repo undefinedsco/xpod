@@ -64,6 +64,17 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(session.tool_input_pending(dict(files=[]))[0]['reason'],'observed-tool-file-missing-from-after-full-shard')
             self.assertEqual(session.tool_input_pending(dict(files=[{**actual,'sha256':'0'*64}]))[0]['reason'],'observed-tool-file-differs-from-after-full-shard')
 
+    def test_two_tool_identities_share_one_physical_capture_with_typed_alias(self):
+        parent=ROOT/'.test-data/sdk-toolchain-adapter';parent.mkdir(parents=True,exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=parent) as directory:
+            out=Path(directory);session=module.Session.__new__(module.Session);session.out=out;session.directory=out/'toolchain-execution';session.directory.mkdir();session.tool_files=[];session.tool_captures=set()
+            payload=session.directory/'capture.original';payload.write_bytes(b'actual executable');ref=module.commands.ref(payload,out)
+            first=dict(actualOriginalPath='/usr/bin/tool-a',identity=[1,2,0o100755,ref['bytes'],3,4],actualMode=0o100755,sourceKind='actual-tool-file-fd-snapshot',role='observed-tool-file',phase='configure',rawEventKind='toolchain-original',captureSequence=7,original=ref)
+            second=dict(actualOriginalPath='/usr/bin/tool-b',identity=[1,3,0o100755,ref['bytes'],5,6],actualMode=0o100755,sourceKind='actual-tool-file-fd-snapshot',role='observed-tool-file',phase='configure',rawEventKind='toolchain-original',captureSequence=8,original=ref,originalReuse=dict(model='same-phase-content-entity-v2',originCaptureSequence=7))
+            result=session.tool_snapshots('configure',[first,second],[ref],lambda original:original)
+            self.assertEqual((result['files'],result['bytes']),(2,2*ref['bytes']));self.assertEqual(len(session.tool_files),2)
+            with self.assertRaisesRegex(ValueError,'repeated across phases'):
+                session.tool_snapshots('compile',[{**second,'phase':'compile'}],[ref],lambda original:original)
     def test_new_observed_tool_is_retained_after_only_and_changed_or_deleted_is_pending(self):
         spec=importlib.util.spec_from_file_location('inner_tool_after',ROOT/'qlever/scripts/sdk-inner-materials.py')
         inner=importlib.util.module_from_spec(spec);spec.loader.exec_module(inner)

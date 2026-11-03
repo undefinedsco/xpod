@@ -221,7 +221,7 @@ def emit_cmake_failure_originals(out,build,directory,check,remaining_bytes,resul
 class Session:
     def __init__(self,out,source,build,budget,check,maximum_bytes,prepared_dependencies=None,phase_budget_policy_version=None):
         self.out=Path(out);self.build=Path(build);self.directory=self.out/'toolchain-execution';self.directory.mkdir()
-        self.budget=budget;self.phases=[];self.results=[];self.closed=False;self.tool_files=[];self.tool_captures=set()
+        self.budget=budget;self.phases=[];self.results=[];self.closed=False;self.tool_files=[];self.tool_captures=set();self.tool_capture_phases={}
         backend=load('execution_backend','sdk-ptrace-execution.py')
         dependency_options={}
         if prepared_dependencies is not None:
@@ -290,7 +290,16 @@ class Session:
                     or type(mode) is not int or mode!=identity[2] or not stat.S_ISREG(mode) or identity[3]!=original['bytes']):
                 raise ValueError('Observed tool snapshot phase/identity binding differs')
             if parent.get(original['path'])!=original:raise ValueError('Observed tool snapshot lacks same-phase parent capture')
-            if original['path'] in self.tool_captures:raise ValueError('Observed tool snapshot repeated across phases')
+            phases=getattr(self,'tool_capture_phases',None)
+            if phases is None:phases={};self.tool_capture_phases=phases
+            prior_phase=phases.get(original['path'])
+            alias=row.get('originalReuse')
+            if prior_phase is not None:
+                if prior_phase!=name:raise ValueError('Observed tool snapshot repeated across phases')
+                if not (isinstance(alias,dict) and set(alias)=={'model','originCaptureSequence'} and alias.get('model')=='same-phase-content-entity-v2' and type(alias.get('originCaptureSequence')) is int and 0<alias['originCaptureSequence']<row['captureSequence']):raise ValueError('Observed tool snapshot repeated without typed same-phase alias')
+            else:
+                if original['path'] in self.tool_captures:raise ValueError('Observed tool snapshot path state lacks phase')
+                phases[original['path']]=name
             self.tool_captures.add(original['path']);normalized.append(dict(row,original=original))
         indexes=[];batch=[]
         def flush():

@@ -39,9 +39,19 @@ WAKE_RAW_RECORDS=8
 WAKE_RESERVATION_BYTES=WAKE_RAW_RECORDS*65536
 GENERATED_WRITE_SLACK=10*65536
 
-def generated_write_reserve(before_size,count,offset):
-    """New bytes for one exact generated write: one preimage, postimage, and buffer."""
-    return before_size+count+max(before_size,offset+count)+GENERATED_WRITE_SLACK
+def generated_write_reserve(before_size,count,offset,*,preimage_new_bytes=None,preimage_manifest_bytes=0,post_manifest_bytes=0):
+    """Reserve only actually-new bytes for one exact generated write.
+
+    ``before_size`` remains the logical preimage size used to derive the
+    postimage bound.  A chunked preimage that is already retained supplies
+    its measured new-byte count and manifest bound; raw fallback passes no
+    override because it really writes a fresh full preimage copy.  The
+    postimage is not retained yet, so its full logical size (plus its bounded
+    manifest) remains a real upper bound, never a retained-origin credit.
+    """
+    post=max(before_size,offset+count)
+    preimage_new=before_size if preimage_new_bytes is None else preimage_new_bytes
+    return preimage_new+preimage_manifest_bytes+count+post+post_manifest_bytes+GENERATED_WRITE_SLACK
 
 CANONICAL_FILE_MAXIMUM=json.loads((Path(__file__).resolve().parents[2]/'scripts/lib/module-artifact-limits.json').read_bytes())['shardBytes']
 MAPPING_KIND='actual-exclusive-mmap-selected-file-v1'
@@ -478,7 +488,15 @@ class Runtime:
         if origin is None:return None
         need(not self.write_active and self.active is None and origin['pid']==pid and origin['fd']==fd and current==origin['identity']==identity(os.fstat(origin['held'])) and before_size==current[3],'generated write lacks exact current held origin')
         count=self.b.tasks[pid]['entry']['args'][2];need(type(count) is int and 0<=count<=self.b.maximum_file_bytes,'bounded generated write count')
-        need(type(offset) is int and 0<=offset and offset+count<=self.b.maximum_file_bytes,'bounded generated write offset');reserve=generated_write_reserve(before_size,count,offset);self.b.reserve_generated_bytes(reserve);self.write_epoch+=1;self.write_active=True;self.spending_thread=threading.get_ident()
+        need(type(offset) is int and 0<=offset and offset+count<=self.b.maximum_file_bytes,'bounded generated write offset')
+        post=max(before_size,offset+count);preimage_new=before_size;preimage_manifest=0;post_manifest=0
+        measure=getattr(self.b,'measure_generated_preimage',None)
+        if getattr(self.b,'capture_content_entities',False) and measure is not None:
+            preimage_new,preimage_manifest=measure(origin['held'],before_size)
+            need(identity(os.fstat(origin['held']))==current,'generated preimage changed during reservation measurement')
+            bound=getattr(self.b,'generated_manifest_bound',None)
+            if bound is not None:post_manifest=bound(post)
+        reserve=generated_write_reserve(before_size,count,offset,preimage_new_bytes=preimage_new,preimage_manifest_bytes=preimage_manifest,post_manifest_bytes=post_manifest);self.b.reserve_generated_bytes(reserve);self.write_epoch+=1;self.write_active=True;self.spending_thread=threading.get_ident()
         origin['writePending']=True;origin['writeEpoch']=self.write_epoch
         return origin
     def abort_write(self,origin):

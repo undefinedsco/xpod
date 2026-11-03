@@ -50,6 +50,24 @@ class ToolOriginalTests(unittest.TestCase):
             with zipfile.ZipFile(archive,'w') as z:
                 for name,data in originals.items():z.writestr(name,data)
             return module.observe(archive,plan)
+    def test_two_tool_identities_share_one_physical_original(self):
+        originals={}
+        def ref(name,data):
+            if not isinstance(data,bytes):data=(json.dumps(data)+'\n').encode()
+            originals[name]=data;return dict(path=name,bytes=len(data),sha256=hashlib.sha256(data).hexdigest())
+        payload=ref('inner/toolchain-execution/captures/capture-0001.original',b'actual executable')
+        ident_a=[1,21,0o100755,payload['bytes'],1760000000000000001,1760000000000000003]
+        ident_b=[1,22,0o100755,payload['bytes'],1760000000000000005,1760000000000000007]
+        raws=[dict(kind='toolchain-original',captureKind='file',observedPath='/usr/bin/tool-a',identity=ident_a,original=dict(payload,path='capture-0001.original'),sequence=3,phase='configure'),dict(kind='toolchain-original',captureKind='file',observedPath='/usr/bin/tool-b',identity=ident_b,original=dict(payload,path='capture-0001.original'),sequence=4,phase='configure')]
+        descriptors=[dict(actualOriginalPath='/usr/bin/tool-a',identity=ident_a.copy(),actualMode=ident_a[2],sourceKind='actual-tool-file-fd-snapshot',role='observed-tool-file',phase='configure',rawEventKind='toolchain-original',captureSequence=3,original=payload),dict(actualOriginalPath='/usr/bin/tool-b',identity=ident_b.copy(),actualMode=ident_b[2],sourceKind='actual-tool-file-fd-snapshot',role='observed-tool-file',phase='configure',rawEventKind='toolchain-original',captureSequence=4,original=payload)]
+        verified=[dict(observedPath=raw['observedPath'],identity=raw['identity'],original=raw['original']) for raw in raws]
+        after=[dict(originalPath=raw['observedPath'],bytes=payload['bytes'],sha256=payload['sha256'],mode=0o755) for raw in raws]
+        tools=ref('inner/toolchain-execution/configure-tools-0000.json',dict(schemaVersion=1,rows=descriptors))
+        captures=ref('inner/toolchain-execution/configure-captures-0000.json',dict(schemaVersion=1,files=[payload]))
+        trace=ref('inner/toolchain-execution/configure.raw',b''.join((json.dumps(raw)+'\n').encode() for raw in raws))
+        end=ref('inner/toolchain-execution/compile.raw',dict(kind='end',sequence=5,phase='compile'))
+        plan=dict(remainingMilliseconds=10000,verifiedRows=after,verifiedToolSnapshots=verified,phases=[dict(name='configure',rawTraceShards=[trace],captures=dict(indexes=[captures],files=1,bytes=payload['bytes']),toolFileSnapshots=dict(indexes=[tools],files=2,bytes=2*payload['bytes'])),dict(name='compile',rawTraceShards=[end],captures=dict(indexes=[],files=0,bytes=0),toolFileSnapshots=dict(indexes=[],files=0,bytes=0))])
+        result=self.run_fixture(originals,plan);self.assertEqual(result['pending'],[]);self.assertEqual(len(result['files']),2);self.assertNotEqual(result['files'][0]['identityDecimal'],result['files'][1]['identityDecimal'])
     def test_same_raw_full_payload_after_only_preserves_exact_ns(self):
         files,plan=self.fixture();result=self.run_fixture(files,plan)
         self.assertEqual(result['pending'],[]);self.assertFalse(result['wholeToolchainVerified']);self.assertFalse(result['sourceClosureVerified'])

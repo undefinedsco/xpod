@@ -132,6 +132,18 @@ class Harness:
     def disk_bytes(self):
         return sum(path.stat().st_size for path in self.out.rglob('*') if path.is_file())
 
+    def reserve_for(self, before_size, count, offset):
+        post=max(before_size, offset+count)
+        if getattr(self.obs,'capture_content_entities',False):
+            pre_new,pre_manifest=self.obs.measure_generated_preimage(self.held,before_size)
+            post_manifest=self.obs.generated_manifest_bound(post)
+        else:
+            pre_new=before_size;pre_manifest=0;post_manifest=0
+        return vma.generated_write_reserve(
+            before_size, count, offset, preimage_new_bytes=pre_new,
+            preimage_manifest_bytes=pre_manifest, post_manifest_bytes=post_manifest,
+        )
+
     def _patches(self, offset, *, open_files=True):
         stack = ExitStack()
         if open_files:
@@ -203,12 +215,108 @@ class GeneratedWriteReservationTest(unittest.TestCase):
         self.assertLessEqual(new, 42_104_387)
         self.assertGreater(old, 42_104_387)
 
+    def test_b98_retained_preimage_credit_fits_job_free_bytes(self):
+        before, count, offset = 15_901_184, 512, 15_901_696
+        post = max(before, offset + count)
+        harness = Harness(self.root / 'b98-bound', test=self, capture_content_entities=True)
+        pre_manifest = harness.obs.generated_manifest_bound(before)
+        post_manifest = harness.obs.generated_manifest_bound(post)
+        self.assertEqual(pre_manifest, 39_904)
+        self.assertEqual(post_manifest, 39_904)
+        old = before + count + post + vma.GENERATED_WRITE_SLACK
+        new = vma.generated_write_reserve(
+            before, count, offset, preimage_new_bytes=41_472,
+            preimage_manifest_bytes=pre_manifest, post_manifest_bytes=post_manifest,
+        )
+        self.assertEqual(old, 32_459_264)
+        self.assertEqual(new, 16_679_360)
+        self.assertLess(new, 30_150_929)
+        self.assertGreater(old, 30_150_929)
+
+    def test_actual_15mib_mostly_reused_chunks_counts_new_physical_once(self):
+        chunk_size = 65536
+        prefix_chunks = 242
+        prefix = b''.join(i.to_bytes(4, 'little') * (chunk_size // 4) for i in range(prefix_chunks))
+        partial = 41_472
+        before = len(prefix) + partial
+        harness = Harness(self.root / 'reused-15mib', test=self,
+                          capture_content_entities=True, maximum_file_bytes=16 * 1024 * 1024)
+        prefill_path = self.root / 'prefill.bin'
+        prefill_path.write_bytes(prefix)
+        prefill_fd = os.open(prefill_path, os.O_RDONLY)
+        prefill_held = os.dup(prefill_fd)
+        try:
+            harness.obs.snapshot_write_original(prefill_held, len(prefix))
+        finally:
+            os.close(prefill_held)
+            os.close(prefill_fd)
+        data = prefix + b'Z' * partial
+        # Measure the real b98 shape before the origin snapshot: 242 full
+        # chunks retained, one 41,472-byte final chunk absent.
+        pending_path = self.root / 'pending-partial.bin'
+        pending_path.write_bytes(data)
+        pending_fd = os.open(pending_path, os.O_RDONLY)
+        pending_held = os.dup(pending_fd)
+        try:
+            missing_new, missing_manifest = harness.obs.measure_generated_preimage(pending_held, before)
+        finally:
+            os.close(pending_held)
+            os.close(pending_fd)
+        self.assertEqual(missing_new, partial)
+        self.assertEqual(missing_manifest, harness.obs.generated_manifest_bound(before))
+        self.assertEqual(missing_manifest, 39_904)
+        harness.origin(data)
+        pre_new, pre_manifest = harness.obs.measure_generated_preimage(harness.held, before)
+        self.assertEqual(pre_new, 0, 'the retained preimage must not be counted as new')
+        post = before
+        post_manifest = harness.obs.generated_manifest_bound(post)
+        new_reserve = harness.reserve_for(before, 512, 100)
+        old_reserve = before + 512 + post + vma.GENERATED_WRITE_SLACK
+        self.assertEqual(new_reserve, pre_new + pre_manifest + 512 + post + post_manifest + vma.GENERATED_WRITE_SLACK)
+        self.assertEqual(new_reserve, 16_636_864)
+        self.assertEqual(old_reserve, 32_458_240)
+        self.assertGreater(old_reserve, 30_150_929)
+        self.assertLess(new_reserve, 30_150_929)
+        window, transition, reserved = harness.write(
+            offset=100, count=512, payload=b'B' * 512, remaining=30_150_929,
+        )
+        domain_delta = harness.obs.domain_bytes - harness.domain_before
+        self.assertLess(domain_delta, before, 'full retained preimage was charged again')
+        self.assertLess(domain_delta, new_reserve)
+        self.assertEqual(transition['afterIdentity'][3], before)
+        self.assertEqual(os.pread(harness.fd, before, 0),
+                         data[:100] + b'B' * 512 + data[612:])
+        self.assertEqual(harness.obs.generated_vma.reserved, 0)
+        self.assertEqual(getattr(harness.obs, 'chunk_reserved', 0), 0)
+        self.assertLessEqual(harness.obs.domain_bytes, harness.obs.maximum_bytes)
+
+    def test_corrupt_existing_chunk_credit_is_refused_before_reservation(self):
+        data = b'A' * (256 * 1024)
+        harness = Harness(self.root, test=self, capture_content_entities=True)
+        harness.origin(data)
+        before, count, offset = len(data), 4_096, 100_000
+        harness.obs.maximum_bytes = harness.domain_before + 10_000_000
+        harness.buffer_path = self.root / 'write-buffer.bin'
+        harness.buffer_path.write_bytes(b'\0' * offset + b'B' * count)
+        harness.obs.tasks[PID]['entry'].update(args=[FD, offset, count, 0, 0, 0])
+        chunks = sorted((harness.out / 'chunks').iterdir())
+        self.assertTrue(chunks)
+        chunks[0].write_bytes(b'corrupt')
+        with harness._patches(offset):
+            with self.assertRaises(Exception):
+                core.Observer.capture_write(harness.obs, PID, FD)
+        self.assertEqual(harness.obs.generated_vma.reserved, 0)
+        self.assertEqual(getattr(harness.obs, 'chunk_reserved', 0), 0)
+        self.assertFalse(harness.obs.generated_vma.write_active)
+        self.assertNotIn('writeWindow', harness.obs.tasks[PID])
+        self.assertEqual(os.pread(harness.fd, before, 0), data)
+
     def test_actual_chunked_write_admits_at_exact_new_reserve_and_completes(self):
         data = b'A' * (256 * 1024)
         harness = Harness(self.root, test=self, capture_content_entities=True)
         harness.origin(data)
         before, count, offset = len(data), 4_096, 100_000
-        new_reserve = vma.generated_write_reserve(before, count, offset)
+        new_reserve = harness.reserve_for(before, count, offset)
         old_reserve = 2 * before + count + max(before, offset + count) + vma.GENERATED_WRITE_SLACK
         self.assertGreater(old_reserve, new_reserve)
         window, transition, reserved = harness.write(
@@ -230,7 +338,7 @@ class GeneratedWriteReservationTest(unittest.TestCase):
         harness = Harness(self.root, test=self, capture_content_entities=False)
         harness.origin(data)
         before, count, offset = len(data), 4_096, 100_000
-        new_reserve = vma.generated_write_reserve(before, count, offset)
+        new_reserve = harness.reserve_for(before, count, offset)
         old_reserve = 2 * before + count + max(before, offset + count) + vma.GENERATED_WRITE_SLACK
         self.assertGreater(old_reserve - new_reserve, count)
         window, transition, reserved = harness.write(
@@ -251,7 +359,7 @@ class GeneratedWriteReservationTest(unittest.TestCase):
         probe = Harness(self.root / 'probe', test=self, capture_content_entities=True)
         probe.origin(data)
         probe.write(offset=offset, count=count, payload=b'B' * count,
-                    remaining=vma.generated_write_reserve(before, count, offset))
+                    remaining=probe.reserve_for(before, count, offset))
         needed = probe.obs.domain_bytes - probe.domain_before
         self.assertGreater(needed, count)
 
@@ -278,7 +386,7 @@ class GeneratedWriteReservationTest(unittest.TestCase):
         harness = Harness(self.root, test=self, capture_content_entities=True)
         harness.origin(data)
         before, count, offset = len(data), 4_096, 100_000
-        new_reserve = vma.generated_write_reserve(before, count, offset)
+        new_reserve = harness.reserve_for(before, count, offset)
         harness.obs.maximum_bytes = harness.domain_before + new_reserve + 131_072
         harness.buffer_path = self.root / 'write-buffer.bin'
         harness.buffer_path.write_bytes(b'\0' * (offset + count))
@@ -305,7 +413,7 @@ class GeneratedWriteReservationTest(unittest.TestCase):
         harness = Harness(self.root, test=self, capture_content_entities=True)
         harness.origin(data)
         before, count, offset = len(data), 4_096, 100_000
-        harness.obs.maximum_bytes = harness.domain_before + vma.generated_write_reserve(before, count, offset)
+        harness.obs.maximum_bytes = harness.domain_before + harness.reserve_for(before, count, offset)
         harness.buffer_path = self.root / 'write-buffer.bin'
         harness.buffer_path.write_bytes(b'\0' * offset + b'B' * count)
         harness.obs.tasks[PID]['entry'].update(args=[FD, offset, count, 0, 0, 0])
@@ -326,7 +434,7 @@ class GeneratedWriteReservationTest(unittest.TestCase):
         harness = Harness(self.root, test=self, capture_content_entities=True)
         harness.origin(data)
         before, count, offset = len(data), 4_096, 100_000
-        new_reserve = vma.generated_write_reserve(before, count, offset)
+        new_reserve = harness.reserve_for(before, count, offset)
         harness.obs.maximum_bytes = harness.domain_before + new_reserve
         harness.buffer_path = self.root / 'write-buffer.bin'
         harness.buffer_path.write_bytes(b'\0' * offset + b'B' * count)
@@ -400,7 +508,7 @@ class GeneratedWriteReservationTest(unittest.TestCase):
         harness = Harness(self.root, test=self, capture_content_entities=True)
         harness.origin(data)
         before, count, offset = len(data), 4_096, 100_000
-        new_reserve = vma.generated_write_reserve(before, count, offset)
+        new_reserve = harness.reserve_for(before, count, offset)
         harness.obs.maximum_bytes = harness.domain_before + new_reserve
         harness.buffer_path = self.root / 'write-buffer.bin'
         harness.buffer_path.write_bytes(b'\0' * offset + b'B' * count)
@@ -463,7 +571,7 @@ class GeneratedWriteReservationTest(unittest.TestCase):
                 harness = Harness(self.root / label, test=self, capture_content_entities=True)
                 data = b'A' * (256 * 1024)
                 harness.origin(data)
-                new_reserve = vma.generated_write_reserve(len(data), count, offset)
+                new_reserve = harness.reserve_for(len(data), count, offset)
                 window, transition, reserved = harness.write(
                     offset=offset, count=count, payload=payload,
                     remaining=new_reserve,
@@ -507,7 +615,7 @@ class GeneratedWriteReservationTest(unittest.TestCase):
         manifest_bytes = reference['storage']['manifest']['bytes']
         self.assertEqual((harness.out / reference['storage']['manifest']['path']).stat().st_size, manifest_bytes)
         self.assertGreater(manifest_bytes, vma.GENERATED_WRITE_SLACK)
-        reserve = vma.generated_write_reserve(size, 1, size - 1)
+        reserve = harness.reserve_for(size, 1, size - 1)
         self.assertGreater(reserve, size)
         self.assertGreater(reserve - size, manifest_bytes)
         harness.obs.tasks = {PID: dict(

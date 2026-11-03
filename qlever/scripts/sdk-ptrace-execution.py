@@ -2267,6 +2267,25 @@ class Observer(CapturesMixin):
         self.read_body(body)
         row=self.emit(dict(kind='write-original',original=dict(path=name,bytes=count,sha256=digest.hexdigest())))
         self.append_capture(row);self.capture_bytes+=count;return row['original']
+    def generated_manifest_bound(self,size):
+        chunks=(size+chunk_store.CHUNK_SIZE-1)//chunk_store.CHUNK_SIZE
+        return chunk_store.MANIFEST_BASE_BOUND+chunks*chunk_store.MANIFEST_CHUNK_BOUND
+    def measure_generated_preimage(self,reader,size):
+        """Read-only actual-new-chunk measurement for the retained preimage.
+
+        Uses the existing capture chunk store and its own content verification;
+        it does not create a chunk, manifest, capture row or parallel ledger.
+        Missing/corrupt existing chunks are conservatively new/fail-closed.
+        """
+        chunks_fd=None
+        flags=os.O_RDONLY|os.O_DIRECTORY|getattr(os,'O_NOFOLLOW',0)|getattr(os,'O_CLOEXEC',0)
+        try:
+            try:chunks_fd=os.open(self.capture_dir/'chunks',flags)
+            except FileNotFoundError:pass
+            new_bytes=chunk_store._measure_new_chunk_bytes(reader,size,chunks_fd,self.check)
+        finally:
+            if chunks_fd is not None:os.close(chunks_fd)
+        return new_bytes,self.generated_manifest_bound(size)
     def fd_blocks(self,reader,size):
         # Streamed blocks stay a true boundary: callers bracket the full read
         # and full digest. Iterations only pay the cheap deadline/stdio check.
@@ -2461,14 +2480,17 @@ class Observer(CapturesMixin):
             except BaseException:
                 if primary is None:raise
             else:self.retained.remove(reader)
-    def read_capture_fd(self,reader,output,*,context=None):
+    def read_capture_fd(self,reader,output,*,context=None,claim=True,on_offset=None):
         def body():
             offset=0;digest=hashlib.sha256()
             while True:
                 self.check();block=os.pread(reader,65536,offset)
                 if not block:break
                 offset+=len(block);assert offset<=self.maximum_file_bytes,'bounded actual capture FD required'
-                if output is not None:self.claim(len(block),category='capture-body',context=dict(context or {},captureOffset=offset-len(block),capturePrefixSHA256=digest.copy().hexdigest()));output.write(block)
+                if on_offset is not None:on_offset(offset-len(block),len(block))
+                if output is not None:
+                    if claim:self.claim(len(block),category='capture-body',context=dict(context or {},captureOffset=offset-len(block),capturePrefixSHA256=digest.copy().hexdigest()))
+                    output.write(block)
                 digest.update(block)
             return offset,digest.hexdigest()
         return self.read_body(body)
@@ -2479,7 +2501,14 @@ class Observer(CapturesMixin):
         ref=bindings.physical_original_reference(prior['original']);entity=self.verify_capture_entity(ref)
         assert data==(ref['bytes'],ref['sha256'])and entity==prior['originalEntityIdentity'],'actual body differs from canonical retained entity'
         return prior,ref,entity
-    def content_capture_original(self,reader,target,ident,name,context):
+    def discard_unregistered_capture(self,name):
+        """Remove only a private capture this call allocated and never registered."""
+        try:
+            if name in self.capture_entities:return
+            try:(self.capture_dir/name).unlink()
+            except FileNotFoundError:pass
+        except BaseException:pass
+    def content_capture_original(self,reader,target,ident,name,context,*,reserve_full=False,on_offset=None):
         # Lookup follows a fresh complete FD read. The pool is physical storage,
         # never a substitute for this window's FD/source/operation provenance.
         value=os.fstat(reader);before=[*probe.identity(value),value.st_nlink];assert before[:6]==ident,'actual FD changed before content observation'
@@ -2488,7 +2517,9 @@ class Observer(CapturesMixin):
         try:initial_named=named()
         except (FileNotFoundError,NotADirectoryError,PermissionError):initial_named=None
         eligible=initial_named==before and stat.S_ISREG(before[2])
-        data=self.read_capture_fd(reader,None)
+        data=self.read_capture_fd(reader,None,on_offset=on_offset)
+        if context is not None:
+            context['observedBytes']=data[0];context['observedWholeSha256']=data[1];context['observedComplete']=True
         current=os.fstat(reader);assert before==[*probe.identity(current),current.st_nlink],'actual complete content FD changed'
         if eligible:assert named()==before,'actual named content FD changed'
         reused=self.prior_content_entity(data)if eligible else None
@@ -2497,13 +2528,32 @@ class Observer(CapturesMixin):
             value=os.fstat(reader);assert before==[*probe.identity(value),value.st_nlink]==named(),'FD/named identity changed during canonical verification'
             return ref,entity,dict(originalReuse=dict(model='same-phase-content-entity-v2',originCaptureSequence=prior['sequence']),captureWindowIdentity=before,captureWindowAfterIdentity=[*probe.identity(value),value.st_nlink],namedWindowIdentity=initial_named,namedWindowAfterIdentity=named()),data
         # Unknown contents incur a second actual held-FD pass, not a refunded
-        # speculative body. Charge each output block before writing it.
-        with (self.capture_dir/name).open('xb') as output:
-            actual=self.read_capture_fd(reader,output,context=context);output.flush();os.fsync(output.fileno())
-        value=os.fstat(reader);assert actual==data and before==[*probe.identity(value),value.st_nlink],'fresh physical content pass changed actual FD/body'
-        if eligible:assert named()==before,'actual named source changed during physical capture'
-        ref=dict(path=name,bytes=data[0],sha256=data[1]);self.capture_bytes+=data[0];entity=self.register_capture_entity(ref)
-        return ref,entity,dict(captureWindowIdentity=before,captureWindowAfterIdentity=[*probe.identity(value),value.st_nlink],**(dict(namedWindowIdentity=initial_named,namedWindowAfterIdentity=named()) if eligible else {})),data
+        # speculative body. The full-reservation path is used by tool originals:
+        # reserve the exact full raw size before opening anything, so a budget
+        # refusal cannot leave a partial body or a partial claim. The ordinary
+        # fd-capture path keeps its existing block-claim behaviour.
+        ledger=CaptureReservation(self) if reserve_full else None
+        try:
+            if ledger is not None:ledger.reserve(data[0])
+            with (self.capture_dir/name).open('xb') as output:
+                actual=self.read_capture_fd(reader,output,context=context,claim=not reserve_full,on_offset=on_offset);output.flush();os.fsync(output.fileno())
+            value=os.fstat(reader);assert actual==data and before==[*probe.identity(value),value.st_nlink],'fresh physical content pass changed actual FD/body'
+            if eligible:assert named()==before,'actual named source changed during physical capture'
+            ref=dict(path=name,bytes=data[0],sha256=data[1]);entity=self.register_capture_entity(ref)
+            if ledger is not None:
+                try:ledger.commit(data[0])
+                except BaseException:
+                    self.capture_entities.pop(name,None)
+                    raise
+                ledger.release()
+            self.capture_bytes+=data[0]
+            return ref,entity,dict(captureWindowIdentity=before,captureWindowAfterIdentity=[*probe.identity(value),value.st_nlink],**(dict(namedWindowIdentity=initial_named,namedWindowAfterIdentity=named()) if eligible else {})),data
+        except BaseException:
+            try:
+                if ledger is not None and ledger.active:ledger.release()
+            finally:
+                if reserve_full:self.discard_unregistered_capture(name)
+            raise
     def phase_capture_files(self,capture_start):
         # Raw observations stay one-per-window; each physical body appears once.
         references={}
@@ -3488,25 +3538,59 @@ class Observer(CapturesMixin):
             if total>self.maximum_file_bytes:return None
         return dict(bytes=total,lengths=lengths)
 
-    def tool_original(self,reader,observed_path):
+    def emit_tool_original_bound(self,context,error):
+        """Bounded failure-only context for one actual tool-file capture."""
+        try:
+            generated=getattr(self,'generated_vma',None)
+            chunk_reserved=getattr(self,'chunk_reserved',0)
+            generated_reserved=generated.reserved if generated else 0
+            maximum=getattr(self,'maximum_bytes',0);charged=getattr(self,'domain_bytes',0)
+            free=max(0,maximum-charged-chunk_reserved-generated_reserved)
+            payload=dict(kind='tool-original-byte-bound',phase=self.current_phase,errorType=type(error).__name__,
+                pid=context.get('pid'),fd=context.get('fd'),identity=context.get('identity'),fileSize=context.get('fileSize'),
+                observedPath=context.get('observedPath'),pathTruncated=context.get('pathTruncated'),pathSha256=context.get('pathSha256'),
+                role='toolchain-original',captureKind='file',category='capture-body',
+                chargedBytes=charged,maximumBytes=maximum,freeBytes=free,chunkReservedBytes=chunk_reserved,generatedReservedBytes=generated_reserved,
+                requestedBytes=context.get('requestedBytes'),readOffset=context.get('readOffset'),attemptedBytes=context.get('attemptedBytes'),
+                observedWholeSha256=context.get('observedWholeSha256'),observedComplete=bool(context.get('observedComplete')),retained=False)
+            encoded=json.dumps(payload,sort_keys=True,separators=(',',':'));assert len(encoded.encode())<=4096,'bounded tool original diagnostic'
+            print('SDK_TOOL_ORIGINAL_BOUND '+encoded,file=sys.stderr,flush=True)
+        except BaseException:
+            pass  # Never replace the original capture failure.
+    def tool_original(self,reader,observed_path,*,pid=None,fd=None):
         before=probe.identity(os.fstat(reader));assert stat.S_ISREG(before[2]) and before[3]<=self.maximum_file_bytes,'bounded regular tool FD required'
-        cached=self.tool_original_cache.get(tuple(before))
+        cache_key=(tuple(before),observed_path)
+        cached=self.tool_original_cache.get(cache_key)
         if cached:return cached
         name=self.next_capture_name()
-        def body():
-            offset=0;digest=hashlib.sha256()
-            with (self.capture_dir/name).open('xb') as output:
-                while True:
-                    self.check();block=os.pread(reader,65536,offset)
-                    if not block:break
-                    offset+=len(block);assert offset<=before[3] and offset<=self.maximum_file_bytes,'tool FD grew during bounded capture'
-                    self.claim(len(block),category='capture-body');output.write(block);digest.update(block)
-                output.flush();os.fsync(output.fileno())
-            assert offset==before[3] and before==probe.identity(os.fstat(reader)),'tool FD changed during capture'
-            return dict(path=name,bytes=offset,sha256=digest.hexdigest())
-        original=self.read_body(body)
-        row=self.emit(dict(kind='toolchain-original',captureKind='file',observedPath=observed_path,identity=before,original=original))
-        self.append_capture(row);self.capture_bytes+=original['bytes'];self.tool_original_cache[tuple(before)]=row
+        context=dict(pid=pid,fd=fd,identity=list(before),fileSize=before[3],observedPath=observed_path[:128],
+            pathTruncated=len(observed_path)>128,pathSha256=hashlib.sha256(os.fsencode(observed_path)).hexdigest(),
+            requestedBytes=before[3],readOffset=0,attemptedBytes=0)
+        def progress(offset,count):
+            context['readOffset']=offset;context['attemptedBytes']=count
+        try:
+            if getattr(self,'capture_content_entities',False):
+                ref,entity,storage,data=self.content_capture_original(reader,observed_path,before,name,context,reserve_full=True,on_offset=progress)
+                row=self.emit(dict(kind='toolchain-original',captureKind='file',observedPath=observed_path,identity=before,original=ref,originalEntityIdentity=entity,**storage))
+            else:
+                def body():
+                    offset=0;digest=hashlib.sha256()
+                    with (self.capture_dir/name).open('xb') as output:
+                        while True:
+                            self.check();block=os.pread(reader,65536,offset)
+                            if not block:break
+                            offset+=len(block);assert offset<=before[3] and offset<=self.maximum_file_bytes,'tool FD grew during bounded capture'
+                            self.claim(len(block),category='capture-body');output.write(block);digest.update(block)
+                        output.flush();os.fsync(output.fileno())
+                    assert offset==before[3] and before==probe.identity(os.fstat(reader)),'tool FD changed during capture'
+                    return dict(path=name,bytes=offset,sha256=digest.hexdigest())
+                original=self.read_body(body)
+                self.capture_bytes+=original['bytes']
+                row=self.emit(dict(kind='toolchain-original',captureKind='file',observedPath=observed_path,identity=before,original=original))
+        except BaseException as error:
+            self.emit_tool_original_bound(context,error)
+            raise
+        self.append_capture(row);self.tool_original_cache[cache_key]=row
         return row
     def tool_mountinfo_original(self,pid,namespace_identity,data):
         digest=hashlib.sha256(data).hexdigest();key=(tuple(namespace_identity),digest)
@@ -3660,7 +3744,7 @@ class Observer(CapturesMixin):
         common['mappingBackingModel']='held-pre-use-lease-v1'
         try:
             identity=probe.identity(os.fstat(reader));assert (os.major(identity[0]),os.minor(identity[0]),identity[1])==(mapping['deviceMajor'],mapping['deviceMinor'],mapping['inode']),'actual map_files FD differs from VMA'
-            original=self.tool_original(reader,mapping['path'])
+            original=self.tool_original(reader,mapping['path'],pid=pid)
             if actual_fd is not None:
                 if actual_fd['identity']!=identity:return self.tool_unresolved(pid,'entry-FD-to-actual-mapped-file-identity-differs',**{key:value for key,value in common.items() if key!='pid'})
             assert identity==probe.identity(os.fstat(reader))==backing['token']['identity'],'actual held mapping inode identity changed'
@@ -3721,7 +3805,7 @@ class Observer(CapturesMixin):
                 if not expected_oserror(error,[errno.EPERM,errno.EACCES,errno.ENOENT,errno.ESRCH]):raise
                 self.tool_unresolved(pid,'exec-stop-executable-FD-unavailable',execEntrySequence=entry['sequence'],execEventSequence=event['sequence'],errorCode=error.errno);return
             try:
-                identity=probe.identity(os.fstat(reader));resolved=os.readlink(path);original=self.tool_original(reader,resolved)
+                identity=probe.identity(os.fstat(reader));resolved=os.readlink(path);original=self.tool_original(reader,resolved,pid=pid)
                 try:elf=bindings.elf_interpreter(lambda offset,size:os.pread(reader,size,offset),identity[3])
                 except ValueError as error:elf=dict(unresolved='actual-ELF-interpreter-unclassified:'+str(error)[:256])
                 assert identity==probe.identity(os.fstat(reader))==probe.identity(os.stat(path)),'actual exe FD changed'
@@ -3767,7 +3851,7 @@ class Observer(CapturesMixin):
                         reader=os.open('/proc/'+str(pid)+'/fd/'+str(fd['fd']),os.O_RDONLY|os.O_CLOEXEC)
                         try:
                             current=probe.identity(os.fstat(reader))
-                            if current==fd['identity'] and stat.S_ISREG(current[2]):fd['original']=self.tool_original(reader,fdpath(pid,fd['fd']))['original']
+                            if current==fd['identity'] and stat.S_ISREG(current[2]):fd['original']=self.tool_original(reader,fdpath(pid,fd['fd']),pid=pid,fd=fd['fd'])['original']
                             else:self.tool_unresolved(pid,'actual-mmap-FD-changed-or-nonregular',entrySequence=entry['sequence'])
                         finally:os.close(reader)
                     except OSError as error:
