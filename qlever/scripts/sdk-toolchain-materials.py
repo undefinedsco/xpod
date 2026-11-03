@@ -11,8 +11,9 @@ from pathlib import Path
 import time
 
 HERE=Path(__file__).resolve().parent
+LIMITS=json.loads((HERE.parents[1]/'scripts/lib/module-artifact-limits.json').read_text())
 METADATA=4*1024**2
-LIMIT=4*1024**3
+LIMIT=LIMITS['sourceMaterialBytes']
 CONTEXT_RESERVE=512*1024**2
 
 def load(name,file):

@@ -84,8 +84,18 @@ class Tests(unittest.TestCase):
                 with self.assertRaisesRegex(AssertionError,'precede'):backend.seal_prepared_build_inputs()
             finally:backend.raw.close();backend.close()
     def test_canonical_budget_cannot_be_increased(self):
+        limits=module.load_sdk_execution_limits()
+        self.assertEqual(limits['sourceMaterialBytes'],8*1024**3)
         with self.assertRaisesRegex(AssertionError,'canonical shared execution'):
-            module.SdkExecutionObserver(Path('/unused'),Path('/opt/qlever-sdk/source'),Path('/opt/qlever-sdk/build'),deadline_monotonic=time.monotonic()+1,check_budget=lambda:None,maximum_bytes=4*1024**3+1,maximum_stdio_bytes=1000)
+            module.SdkExecutionObserver(Path('/unused'),Path('/opt/qlever-sdk/source'),Path('/opt/qlever-sdk/build'),deadline_monotonic=time.monotonic()+1,check_budget=lambda:None,maximum_bytes=limits['sourceMaterialBytes']+1,maximum_stdio_bytes=1000)
+    def test_canonical_budget_propagates_to_active_ledger(self):
+        limits=module.load_sdk_execution_limits()
+        spec=importlib.util.spec_from_file_location('capacity_toolchain',ROOT/'qlever/scripts/sdk-toolchain-materials.py')
+        toolchain=importlib.util.module_from_spec(spec);spec.loader.exec_module(toolchain)
+        self.assertEqual(toolchain.LIMIT,limits['sourceMaterialBytes'])
+        base=ROOT/'.test-data';base.mkdir(parents=True,exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=base) as directory:
+            self.assertEqual(toolchain.remaining_source_bytes(Path(directory)),limits['sourceMaterialBytes']-toolchain.CONTEXT_RESERVE)
 
 class ReadFamilyRoutingTests(unittest.TestCase):
     """OBS-READ-ROUTE-SHADOW: read-family role routing must stay reachable.

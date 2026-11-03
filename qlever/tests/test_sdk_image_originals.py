@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import tarfile
 import time
+import types
 import unittest
 from unittest.mock import patch
 
@@ -22,6 +23,38 @@ class Response(io.BytesIO):
     def __exit__(self,*_):self.close()
 
 class ImageOriginalsTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        (ROOT/'.test-data/sdk-image-originals').mkdir(parents=True,exist_ok=True)
+    def test_copy_inner_uses_canonical_source_material_budget_for_tar_members(self):
+        payload=b'x'*4096
+        with tempfile.TemporaryDirectory(prefix='fixture-',dir=ROOT/'.test-data/sdk-image-originals') as directory:
+            root=Path(directory)
+            def archive(data):
+                path=root/('archive-%d.tar'%len(data))
+                with tarfile.open(path,'w') as bundle:
+                    info=tarfile.TarInfo('materials/payload.bin');info.size=len(data)
+                    bundle.addfile(info,io.BytesIO(data))
+                return path
+            valid=archive(payload);oversized=archive(payload+b'y')
+            class Child:
+                def __init__(self,stream):self.stdout=stream
+                def wait(self,timeout=None):return 0
+                def poll(self):return 0
+                def terminate(self):raise AssertionError('successful copy child was terminated')
+            stream=valid
+            def spawn(*_args,**_kwargs):return Child(open(stream,'rb'))
+            # Temporarily bound the canonical quantity so the real archive needs
+            # no multi-GiB fixture. The copy must accept exactly the bound and
+            # reject one byte over it; an independent 4.5GiB constant would do neither.
+            with patch.object(module.shutil,'disk_usage',return_value=types.SimpleNamespace(free=8*1024**3)),\
+                 patch.object(module.subprocess,'Popen',side_effect=spawn),\
+                 patch.dict(module.LIMITS,{'sourceMaterialBytes':len(payload)}):
+                module.copy_inner('a'*64,root/'accepted')
+                self.assertEqual((root/'accepted/payload.bin').read_bytes(),payload)
+                stream=oversized
+                with self.assertRaisesRegex(ValueError,'SDK image original copy budget/type'):
+                    module.copy_inner('b'*64,root/'rejected')
     def test_registry_preserves_exact_manifest_config_bytes_and_rejects_wrong_blob(self):
         config=encoded(dict(os='linux',architecture='amd64',config={}))
         manifest=encoded(dict(schemaVersion=2,config=dict(digest='sha256:'+hashlib.sha256(config).hexdigest()),layers=[]))

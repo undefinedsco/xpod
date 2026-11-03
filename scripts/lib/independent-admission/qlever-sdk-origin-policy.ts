@@ -2437,7 +2437,52 @@ const SDK90_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK89_GROUP,
  secondarySelectorStages:Object.freeze((SDK89_GROUP.secondarySelectorStages??[]).map(stage=>rebindSdk90Rows(stage))),
  sourceBindings:Object.freeze([...rebindSdk90Rows(SDK89_GROUP.sourceBindings),...SDK90_NEW_ROWS])});
 
-export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP,SDK78_GROUP,SDK79_GROUP,SDK80_GROUP,SDK81_GROUP,SDK82_GROUP,SDK83_GROUP,SDK84_GROUP,SDK85_GROUP,SDK86_GROUP,SDK87_GROUP,SDK88_GROUP,SDK89_GROUP,SDK90_GROUP]);
+/** SDK91 combined current registration (APPEND-ONLY, UNPUBLISHED).
+ * Binds the actual combined implementation: canonical 8 GiB source-material
+ * policy, F1 image-original copy bound, native pthread C/build helper, the
+ * changed SDK producers/pins and their current tests. SDK1-90 keep their own
+ * bytes; only this new tail rebinds the current rows and appends the new
+ * test roles no earlier tuple owns. */
+const SDK91_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
+ '.github/workflows/qlever-readonly-normal-job.yml':'5561f30cde4c216794a6d3321f9b1183791371ce5ed0f1b553cc3b1f1bafe62e',
+ 'qlever/scripts/native/build_native_helper.py':'9b2b58276763446f79e59b6c194db9c1c1e37f68c35e589553837b2320a453d2',
+ 'qlever/scripts/native/lease_sweep_ext.c':'26194364e4de42493df08729945ae6b3769c87c08db4a759ed7f16ecb05a80cf',
+ 'qlever/scripts/sdk-generation-materials.py':'3ec34fd4cf5a7f3631e8e0eac7bdc03ac3924bb06ee35805590bc3d20aaf6167',
+ 'qlever/scripts/sdk-generation-multiprocess-bindings.py':'9e2722c042520bab3893abe8b8e32de42c246b0cd154b791d8444ca6801e04d3',
+ 'qlever/scripts/sdk-image-originals.py':'e79a6501f9be892961ca197d22c7715970b3ba6189ca8bbb54f2febd564ca4cd',
+ 'qlever/scripts/sdk-inner-materials.py':'cfebfc200b35241d4e5200eb2251910b32c2ee56894666098a046408df302091',
+ 'qlever/scripts/sdk-kernel-probe-controller.py':'7b426b635c1997d3d65f426e7a3f570d96168f23e7ee8ae015fe307b16242724',
+ 'qlever/scripts/sdk-toolchain-materials.py':'4cd85cd7266a1f64a6446d6ef933436085540ef0cca21e589d36c8706b6ba399',
+ 'qlever/scripts/sdk-upstream-source-materials.py':'864f9b74a66cfa686a1131f70612a8671313c194b380b1e93ec9ca469861c4ef',
+ 'qlever/tests/test_actual_flow.py':'34d3d372eeabdaab3d98f9b1f1322f54e32f08991bc20711d72dca8662943c69',
+ 'qlever/tests/test_native_lease_contract.py':'7ce489785aa463a8f701ee9c83407406eee6bff33043bdaf09572d1e7ead7134',
+ 'qlever/tests/test_native_lease_eintr.py':'5e6111d947dbbf53f3511e57e6879a907b6492a4913becb409ee5b4a4a00765c',
+ 'qlever/tests/test_sdk_execution_budget_diagnostic.py':'188a8feb835bf723ebcb7a9994955f7e40efcb9dfc2e8f0ab98b67edb3506022',
+ 'qlever/tests/test_sdk_image_originals.py':'357fbe0eadde8413b76e20ac8ef8a3c4b5c5b97a6b8e24fc17391b50de0541da',
+ 'qlever/tests/test_sdk_owned_input_generation.py':'ffc09677f453c1533c2c32f8cfa73fc86257d8191cb7207892991fc6df16f91c',
+ 'qlever/tests/test_sdk_ptrace_execution_library.py':'9c190365bca65e8a6f49fac126f5c5916b70dda5fc4421e4440f477cfec30397',
+ 'qlever/tests/test_sdk_upstream_source_materials.py':'1e0d727996d04481b802845cdea3eecf67f9c2ca3bdcc42a507053c9ebb098f6',
+ 'scripts/lib/module-artifact-limits.json':'5eb76b0cfcefc0b0352342fe0bf2d46dab2cbfa4a6f549af17c819e8cf90494c',
+ // Current registration test edited for the SDK91 API/combined tail; bound here
+ // because the SDK/linux current groups already own this test role.
+ 'tests/scripts/candidate-producer-attempt-binding.test.ts':'de138d61773efc330e3e6ed63cd819610e4133f197cf1b9991c4741f6d1a70e1'
+});
+const SDK91_NEW_ROWS=Object.freeze([
+ Object.freeze({path:'qlever/tests/test_actual_flow.py',sha256:SDK91_SOURCE_HASHES['qlever/tests/test_actual_flow.py']!}),
+ Object.freeze({path:'qlever/tests/test_native_lease_contract.py',sha256:SDK91_SOURCE_HASHES['qlever/tests/test_native_lease_contract.py']!}),
+ Object.freeze({path:'qlever/tests/test_native_lease_eintr.py',sha256:SDK91_SOURCE_HASHES['qlever/tests/test_native_lease_eintr.py']!}),
+ Object.freeze({path:'qlever/tests/test_sdk_execution_budget_diagnostic.py',sha256:SDK91_SOURCE_HASHES['qlever/tests/test_sdk_execution_budget_diagnostic.py']!}),
+ Object.freeze({path:'qlever/tests/test_sdk_image_originals.py',sha256:SDK91_SOURCE_HASHES['qlever/tests/test_sdk_image_originals.py']!}),
+ Object.freeze({path:'qlever/tests/test_sdk_ptrace_execution_library.py',sha256:SDK91_SOURCE_HASHES['qlever/tests/test_sdk_ptrace_execution_library.py']!}),
+ Object.freeze({path:'qlever/tests/test_sdk_upstream_source_materials.py',sha256:SDK91_SOURCE_HASHES['qlever/tests/test_sdk_upstream_source_materials.py']!})
+]);
+const rebindSdk91Rows=(rows:readonly GitHubSourceBinding[]|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:SDK91_SOURCE_HASHES[row.path]??row.sha256})));
+const SDK91_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK90_GROUP,
+ selectors:rebindSdk91Rows(SDK90_GROUP.selectors),
+ secondarySelectors:rebindSdk91Rows(SDK90_GROUP.secondarySelectors),
+ secondarySelectorStages:Object.freeze((SDK90_GROUP.secondarySelectorStages??[]).map(stage=>rebindSdk91Rows(stage))),
+ sourceBindings:Object.freeze([...rebindSdk91Rows(SDK90_GROUP.sourceBindings),...SDK91_NEW_ROWS])});
+export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP,SDK78_GROUP,SDK79_GROUP,SDK80_GROUP,SDK81_GROUP,SDK82_GROUP,SDK83_GROUP,SDK84_GROUP,SDK85_GROUP,SDK86_GROUP,SDK87_GROUP,SDK88_GROUP,SDK89_GROUP,SDK90_GROUP,SDK91_GROUP]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path))},
  ...QLEVER_SDK_EXECUTION_GROUPS,

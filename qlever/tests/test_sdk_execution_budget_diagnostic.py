@@ -59,6 +59,11 @@ class Tests(unittest.TestCase):
    self.assertEqual(s.generated_vma.reserved,4);self.assertEqual(s.domain_bytes,90)
    if isinstance(stream,io.StringIO):
     self.assertLess(len(stream.getvalue().encode()),4096);row=json.loads(stream.getvalue().split(' ',1)[1]);self.assertEqual(row['context']['writeOffset'],100);self.assertEqual(row['context']['originSequence'],42);self.assertEqual(len(row['context']['path']),128);self.assertEqual(sum(row['successfulClaimBytes'].values()),90)
+ def test_actual_8gib_generated_reservation_and_boundary(self):
+  s=Subject();s.maximum_bytes=8*1024**3;s.domain_bytes=3_517_282_930;s.generated_vma=type('V',(),dict(reserved=0))()
+  s.reserve_generated_bytes(190_714_272)
+  self.assertEqual(s.generated_vma.reserved,190_714_272)
+  self.assertEqual(s.domain_bytes,3_517_282_930)
  def test_reservation_success_does_not_inspect_context(self):
   s=Subject();s.budget_context=None;s.generated_vma=type('V',(),dict(reserved=4))();s.reserve_generated_bytes(6);self.assertEqual(s.generated_vma.reserved,10);self.assertEqual(s.domain_bytes,90)
 if __name__=='__main__':unittest.main()

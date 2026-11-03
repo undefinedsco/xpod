@@ -15,8 +15,8 @@ const row = (group: any, file: string) => [...all(group)].reverse().find((item: 
 
 describe('SDK88 phase-derived budget binding', () => {
   it('appends one current group and leaves SDK87 historical bytes untouched', () => {
-    expect(SDK).toHaveLength(90);
-    expect(LINUX).toHaveLength(91);
+    expect(SDK).toHaveLength(91);
+    expect(LINUX).toHaveLength(92);
     const old = SDK[86]!, next = SDK[87]!;
     expect(row(old, 'qlever/scripts/sdk-execution-budget.py').sha256).toBe('329194655827de1d03a31db5f311ba1cc59fd0ade7edf2ef48fcc8fae52ebfee');
     expect(row(next, 'qlever/scripts/sdk-execution-budget.py').sha256).toBe('a66aca9e68010a80cac474cb004c58c2244efe08f772c1215c74103dae68de80');

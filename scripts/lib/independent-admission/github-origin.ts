@@ -1229,10 +1229,19 @@ const apiOrm326JointGroup=Object.freeze({...apiFinalJointGroup,name:'api-orm-0.3
  selectors:Object.freeze([...apiFinalJointGroup.selectors,Object.freeze({path:ORM326_PATCH_26,sha256:ORM326_PATCH_26_SHA})]),
  secondarySelectors:rebindOrm326ApiRows(apiFinalJointGroup.secondarySelectors),
  sourceBindings:Object.freeze([...rebindOrm326ApiRows(apiFinalJointGroup.sourceBindings),Object.freeze({path:ORM326_PATCH_26,sha256:ORM326_PATCH_26_SHA})])});
-/** CURRENT API tuple. The published f803 group and its exact row value above
- * remain selectable and unchanged. */
-export const API_SERVICE_BUILD_SOURCE_BINDINGS=apiOrm326JointGroup.sourceBindings;
-export const API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS:readonly (GitHubSourceBindingGroup&{readonly name?:string})[]=Object.freeze([...PRE_BUILD_API_GROUPS,apiControlledDescriptorSourceGroup25,apiCaptureInputsTimingGroup,apiCapturePerformanceGroup,apiFinalJointGroup,apiOrm326JointGroup]);
+/** CURRENT combined capacity tuple (APPEND-ONLY): binds the canonical 8 GiB
+ * module limits file actually present in the live API TCB. apiOrm326JointGroup
+ * and every earlier API tuple keep their exact historical bytes. */
+const CURRENT_API_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
+ 'scripts/lib/module-artifact-limits.json':'5eb76b0cfcefc0b0352342fe0bf2d46dab2cbfa4a6f549af17c819e8cf90494c'});
+const rebindCurrentApiRows=(rows:readonly {readonly path:string;readonly sha256:string}[]|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:CURRENT_API_SOURCE_HASHES[row.path]??row.sha256})));
+const apiCurrentCombinedGroup=Object.freeze({...apiOrm326JointGroup,name:'api-current-combined-capacity',
+ selectors:rebindCurrentApiRows(apiOrm326JointGroup.selectors),
+ secondarySelectors:Object.freeze([...rebindCurrentApiRows(apiOrm326JointGroup.secondarySelectors),Object.freeze({path:'scripts/lib/module-artifact-limits.json',sha256:CURRENT_API_SOURCE_HASHES['scripts/lib/module-artifact-limits.json']!})]),
+ sourceBindings:rebindCurrentApiRows(apiOrm326JointGroup.sourceBindings)});
+/** CURRENT API tuple. The published f803/ORM groups above remain selectable and unchanged. */
+export const API_SERVICE_BUILD_SOURCE_BINDINGS=apiCurrentCombinedGroup.sourceBindings;
+export const API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS:readonly (GitHubSourceBindingGroup&{readonly name?:string})[]=Object.freeze([...PRE_BUILD_API_GROUPS,apiControlledDescriptorSourceGroup25,apiCaptureInputsTimingGroup,apiCapturePerformanceGroup,apiFinalJointGroup,apiOrm326JointGroup,apiCurrentCombinedGroup]);
 
 export const API_WORKSPACE_SOURCE_GROUPS=Object.freeze(API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS.filter(group=>group.sourceBindings.some(row=>row.path==='scripts/lib/api-scoped-dependency-state.ts')));
 

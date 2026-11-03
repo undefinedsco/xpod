@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 
 HERE=Path(__file__).resolve().parent
+LIMITS=json.loads((HERE.parents[1]/'scripts/lib/module-artifact-limits.json').read_text())
 
 def _load_helper():
     spec=importlib.util.spec_from_file_location('gen_cmake_file_api',HERE/'cmake_file_api.py')
@@ -209,7 +210,7 @@ def finalize(out,build,before_metadata,after_metadata,inventory,before,stages,ch
             size=path.stat().st_size
             if size>MEMBER:raise ValueError('CMake original member bound')
             total+=size
-    if total>4*1024**3:raise ValueError('CMake generation aggregate bound')
+    if total>LIMITS['sourceMaterialBytes']:raise ValueError('CMake generation aggregate bound')
     return commands.ref(directory/'final-materials.json',out),total
 
 if __name__=='__main__':

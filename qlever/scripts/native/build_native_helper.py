@@ -94,7 +94,7 @@ def main():
     if compiler['exit'] != 0:
         raise SystemExit('compiler identity probe failed: %d' % compiler['exit'])
 
-    argv = [cc, '-O2', '-fPIC', '-shared', '-Wall', '-Wextra', '-Werror', '-std=c11',
+    argv = [cc, '-O2', '-fPIC', '-shared', '-pthread', '-Wall', '-Wextra', '-Werror', '-std=c11',
             '-H', '-I' + include, '-o', target, source]
     build = run(argv, out_dir, os.path.join(out_dir, 'build.stdout'),
                 os.path.join(out_dir, 'build.stderr'))

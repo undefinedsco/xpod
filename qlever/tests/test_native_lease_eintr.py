@@ -88,8 +88,8 @@ int fcntl64(int fd, int cmd, ...)
     static fcntl_fn real = NULL;
     if (!real) real = (fcntl_fn)dlsym(RTLD_NEXT, "fcntl64");
     va_list ap; va_start(ap, cmd); void *arg = va_arg(ap, void *); va_end(ap);
-    if (cmd == F_GETLEASE && !done && armed_for("EINTR_SHIM_FCNTL")) {
-        done = 1;
+    if (cmd == F_GETLEASE && armed_for("EINTR_SHIM_FCNTL") &&
+        __sync_bool_compare_and_swap(&done, 0, 1)) {
         /* Deliver a REAL non-raising signal at the injection point, so the
          * interpreter sees a genuine signal event with the EINTR. */
         raise(SIGUSR1);
@@ -102,8 +102,9 @@ int fstat64(int fd, struct stat64 *buf)
 {
     static int (*real)(int, struct stat64 *) = NULL;
     if (!real) real = (int (*)(int, struct stat64 *))dlsym(RTLD_NEXT, "fstat64");
-    if (!done && armed_for("EINTR_SHIM_FSTAT")) {
-        done = 1; errno = EINTR; log_once("inject-fstat"); return -1;
+    if (armed_for("EINTR_SHIM_FSTAT") &&
+        __sync_bool_compare_and_swap(&done, 0, 1)) {
+        errno = EINTR; log_once("inject-fstat"); return -1;
     }
     return real(fd, buf);
 }
@@ -133,6 +134,40 @@ print("verdict=%s handlerRan=%d" % (tuple(v), seen["n"]))
 '''
 
 
+PROBE_PLAN = r"""
+import ctypes, fcntl, importlib.util, os, sys, tempfile
+ext_path, which, raising = sys.argv[1], sys.argv[2], sys.argv[3] == "1"
+spec = importlib.util.spec_from_file_location("lease_sweep_ext", ext_path)
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+d = tempfile.mkdtemp(dir=os.path.dirname(os.path.abspath(__file__)))
+f = os.path.join(d, "f")
+with open(f, "wb") as handle:
+    handle.write(b"x" * 64)
+fd = os.open(f, os.O_RDONLY)
+fcntl.fcntl(fd, fcntl.F_SETOWN, os.getpid())
+fcntl.fcntl(fd, fcntl.F_SETLEASE, fcntl.F_RDLCK)
+st = os.fstat(fd)
+want = (st.st_dev, st.st_ino, st.st_mode, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+rows = tuple((fd, want) for _ in range(1024))
+seen = {"n": 0}
+signal_ = __import__("signal")
+if raising:
+    def handler(signum, frame):
+        seen["n"] += 1
+        raise RuntimeError("raising plan EINTR handler")
+else:
+    def handler(signum, frame):
+        seen["n"] += 1
+signal_.signal(signal_.SIGUSR1, handler)
+ctypes.CDLL(None).setenv(("EINTR_SHIM_" + which).encode(), b"1", 1)
+try:
+    v = m.sweep_plan(m.plan_new(rows))
+    print("verdict=%s handlerRan=%d raised=0" % (tuple(v), seen["n"]))
+except RuntimeError as error:
+    print("verdict=None handlerRan=%d raised=1 error=%s" % (seen["n"], error))
+"""
+
+
 class EintrContract(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -150,22 +185,30 @@ class EintrContract(unittest.TestCase):
         cls.probe = os.path.join(cls.work, 'probe.py')
         with open(cls.probe, 'w') as handle:
             handle.write(PROBE)
+        cls.probe_plan = os.path.join(cls.work, 'probe_plan.py')
+        with open(cls.probe_plan, 'w') as handle:
+            handle.write(PROBE_PLAN)
 
-    def run_probe(self, which):
+    def run_probe(self, which, probe=None, raising=False):
+        probe = probe or self.probe
         log = os.path.join(self.work, 'shim-%s.log' % which)
         if os.path.isfile(log):
             os.unlink(log)
         env = dict(os.environ)
         env['LD_PRELOAD'] = self.shim
         env['EINTR_SHIM_LOG'] = log
-        completed = subprocess.run([sys.executable, self.probe, g().extension, which],
-                                   capture_output=True, text=True, env=env)
+        command = [sys.executable, probe, g().extension, which]
+        if probe == self.probe_plan:
+            command.append('1' if raising else '0')
+        completed = subprocess.run(command, capture_output=True, text=True, env=env)
         self.assertEqual(completed.returncode, 0,
                          'probe failed: %s' % completed.stderr[-800:])
         injected = False
         if os.path.isfile(log):
             with open(log) as handle:
-                injected = 'inject-' in handle.read()
+                injections = [line for line in handle if 'inject-' in line]
+            self.assertLessEqual(len(injections), 1, 'the shim must inject EINTR only once')
+            injected = bool(injections)
         return completed.stdout.strip(), injected
 
     def test_fcntl_eintr_is_retried_by_the_native_helper(self):
@@ -187,6 +230,18 @@ class EintrContract(unittest.TestCase):
         self.assertTrue(injected, 'the shim must actually have injected an EINTR')
         self.assertIn('verdict=(0, -1, 0)', out,
                       'fstat EINTR must also retry: %s' % out)
+
+    def test_parallel_plan_fcntl_eintr_nonraising_defers_and_succeeds(self):
+        out, injected = self.run_probe('FCNTL', probe=self.probe_plan, raising=False)
+        self.assertTrue(injected, 'the shim must actually have injected an EINTR')
+        self.assertIn('verdict=(0, -1, 0)', out, out)
+        self.assertIn('handlerRan=1', out, out)
+
+    def test_parallel_plan_fcntl_eintr_raising_keeps_handler_exception(self):
+        out, injected = self.run_probe('FCNTL', probe=self.probe_plan, raising=True)
+        self.assertTrue(injected, 'the shim must actually have injected an EINTR')
+        self.assertIn('raised=1', out, out)
+        self.assertIn('raising plan EINTR handler', out, out)
 
     def test_non_eintr_errno_still_sticky(self):
         # EBADF on a closed fd must still be a verdict, never an infinite retry.
