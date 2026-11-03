@@ -489,7 +489,7 @@
   },
   {
     "path": "qlever/scripts/sdk-ptrace-execution.py",
-    "sha256": "98cbdb76b0fdcddddfd95a62414588a05d084b9b22d472bd318cb740078d440c"
+    "sha256": "c1e0ca524adffd42075c2067b073a6bab45eafd0433b2ae3218067f0b29d6e30"
   },
   {
     "path": "qlever/scripts/sdk-ptrace-kernel.py",
@@ -1205,11 +1205,11 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-fetchcontent.ts",
-    "sha256": "8b44038a66c1554d71f738169a2617e47e468a40e06c63531dc9a21b024909f8"
+    "sha256": "eced1940c5ee3d718e4caf33e543ec3a24dafc7e8699ce51ff79f28d5076f2e6"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
-    "sha256": "c3b007ff712a0180dd04716c3d83c4c1a82a442f28e3faf4991e5a1af618355b"
+    "sha256": "e1cc8251ed2334b2bcbbb366b73739ac7e744540d49ea707450ddfb2e8c65ee0"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-inputs.ts",
@@ -1217,11 +1217,11 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-observed-tools.ts",
-    "sha256": "dc2d40d96c5ffdf0d9f1c288141237a4afb4d0115f2078f417a2bfbfc7d85d07"
+    "sha256": "d6ab83b17d2bdd32d54f55cf56ec69280efb545cb68f2134a8c06541e1b6a8a0"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "b58c9e5d6186aa7edb545d5cecc8b19edfb575d424fa8b224b3953d3982db853"
+    "sha256": "050a02ef65bf376ab432ef70f4f5e350b8f5a925079cf8dc2bb4bfabd6bee88b"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -2021,7 +2021,7 @@
   },
   {
     "path": "qlever/scripts/sdk-owned-input-generation.py",
-    "sha256": "d3bdcac27bcadcc1e714b603be9a1190181042bf9cce9a6f3e68a408ff7bed07"
+    "sha256": "c7775fef67f7b68ed846ed8c4e09788c520aec3849954c10f68f08b12a5415fc"
   },
   {
     "path": "qlever/tests/test_sdk_owned_input_generation.py",
@@ -2029,7 +2029,7 @@
   },
   {
     "path": "qlever/tests/run_sdk_owned_input_generation_gate.py",
-    "sha256": "394650d368656945971bf1a3df1861fdd6646fed6a6e196fc61df1a723783997"
+    "sha256": "5297b70188a9d7123b6b2c9f1c2ca00dedde7ade2f2d30b98c33bddac1e02b77"
   },
   {
     "path": ".github/workflows/ci.yml",

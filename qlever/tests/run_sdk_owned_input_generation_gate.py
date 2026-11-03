@@ -7,8 +7,9 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:sys.path.insert(0,str(ROOT))
 
-MODULE = 'qlever.tests.test_sdk_owned_input_generation'
+MODULES = ('qlever.tests.test_sdk_owned_input_generation', 'qlever.tests.test_sdk_pending_index_native')
 EXPECTED = frozenset({
+    'test_real_many_exit_tool_stop_phase_closes_with_empty_pending_index',
     'test_cross_phase', 'test_foreign_visible_write', 'test_foreign_held_lease',
     'test_peer_mapping', 'test_truncate', 'test_replay_mutations',
     'test_replay_truncate_mutations', 'test_ar', 'test_owned', 'test_idle_read_fd', 'test_mapped_then_unmapped_stays_immutable',
@@ -24,10 +25,10 @@ def ids(suite):
             yield item.id().rsplit('.', 1)[-1]
 
 def main():
-    module = importlib.import_module(MODULE)
-    suite = unittest.defaultTestLoader.loadTestsFromModule(module)
+    modules = [importlib.import_module(name) for name in MODULES]
+    suite = unittest.TestSuite(unittest.defaultTestLoader.loadTestsFromModule(module) for module in modules)
     actual = list(ids(suite))
-    print('SDK90 gate module=%s tests=%d cases=%s' % (MODULE, len(actual), ','.join(sorted(actual))), flush=True)
+    print('SDK90 gate modules=%s tests=%d cases=%s' % (','.join(MODULES), len(actual), ','.join(sorted(actual))), flush=True)
     if len(actual)!=len(EXPECTED) or len(set(actual))!=len(actual) or set(actual)!=EXPECTED:
         print('SDK90 gate case set differs: expected=%d actual=%d missing=%r extra=%r' % (len(EXPECTED),len(actual),sorted(EXPECTED-set(actual)),sorted(set(actual)-EXPECTED)), flush=True)
         return 1

@@ -58,6 +58,17 @@ class Observer:
         # The real owned-input generation hook is absent in these focused
         # old-hook fixtures; keep the production None disabled-generation shape.
         self.owned_input_generations = None
+        self._ensure_index()
+
+    _PENDING_FIELDS = backend.Observer._PENDING_FIELDS
+    _ensure_index = backend.Observer._ensure_index
+    _track_task = backend.Observer._track_task
+    _pending_add = backend.Observer._pending_add
+    _pending_discard = backend.Observer._pending_discard
+    _pending_first = backend.Observer._pending_first
+    _pending_has = backend.Observer._pending_has
+    _live_items = backend.Observer._live_items
+    _mark_exited = backend.Observer._mark_exited
 
     # --- stubs -----------------------------------------------------------
     def barrier(self):

@@ -101,7 +101,7 @@ class Runtime:
         owner = self.owner
         shape = open_shape(entry)
         if shape is not None and writable(shape[2]):
-            owner.tasks[pid]['generationOpenPending'] = entry['sequence']
+            owner.tasks[pid]['generationOpenPending'] = entry['sequence'];owner._pending_add(pid,'generationOpen')
         for item in self.active.values():
             if owner.tasks[pid]['fdTable'] == item['table']:
                 assert not fd_replacement(entry), 'FD replacement during generated mutation'
@@ -114,15 +114,17 @@ class Runtime:
                 if identity and identity[:2] == item['identity'][:2]:
                     assert pid == item['pid'] and descriptor == item['fd'] and entry['nr'] == self.api.profile(entry['arch'])['write'], 'unsupported generated mutation operation'
             if entry['nr'] == TRUNCATE[entry['arch']] and entry['args'][0] == item.get('fd') and pid == item['pid']:
-                owner.tasks[pid]['generationTruncatePending']=entry['sequence']
+                owner.tasks[pid]['generationTruncatePending']=entry['sequence'];owner._pending_add(pid,'generationTruncate')
 
     def pending(self):
         owner = self.owner
         if owner.exclusive is not None:
             return False
+        if not (owner.pending['generationOpen'] or owner.pending['generationTruncate']):
+            return False
         truncating=next(((pid,task) for pid,task in owner.tasks.items() if not task['exited'] and task.get('generationTruncatePending')),None)
         if truncating is not None:
-            pid,task=truncating;pending=task.pop('generationTruncatePending');entry=task.get('entry')
+            pid,task=truncating;pending=task.pop('generationTruncatePending');owner._pending_discard(pid,'generationTruncate');entry=task.get('entry')
             # The syscall exit may already have closed this task's entry before a
             # later pending_captures() drain observed the queued trigger. There is
             # no live truncate entry left to bind in that case; never index None.
@@ -144,7 +146,7 @@ class Runtime:
         if selected is None:
             return False
         pid, task = selected
-        pending = task.pop('generationOpenPending')
+        pending = task.pop('generationOpenPending');owner._pending_discard(pid,'generationOpen')
         entry = task.get('entry')
         # The matching exit may have cleared task['entry'] before this drain.
         # A queued trigger without its exact live entry is stale; do not turn a

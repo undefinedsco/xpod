@@ -221,7 +221,7 @@ test('only the genuinely new immutable-input-plan slice follows published2406', 
 
 test('the appended groups bind the actual frozen body and real module bytes', () => {
   // The current observer includes the verified regular-read source capture.
-  expect(sha(read(BODY))).toBe('98cbdb76b0fdcddddfd95a62414588a05d084b9b22d472bd318cb740078d440c');
+  expect(sha(read(BODY))).toBe('c1e0ca524adffd42075c2067b073a6bab45eafd0433b2ae3218067f0b29d6e30');
   for (const [name, groups] of Object.entries(families)) {
     // PUBLISHED f803 history ends at the f803 counts (SDK 74, i.e. indices 0..73).
     // Those tuples — including index 73 — are immutable published history: they are
@@ -358,7 +358,7 @@ test('the live canonical binds every actual row of the final combined tree', () 
     .toBe('a2cb860d7300d62931a354c90ade3a00ada1c831c37f719b24f77385de93e4fc');
   // The reviewed phase-syscall diagnostic plus its three CI-discovered tests.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-ptrace-execution.py')!.sha256)
-    .toBe('98cbdb76b0fdcddddfd95a62414588a05d084b9b22d472bd318cb740078d440c');
+    .toBe('c1e0ca524adffd42075c2067b073a6bab45eafd0433b2ae3218067f0b29d6e30');
   // Current VMA source includes typed private PCH mapping and window closure.
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-generated-vma-originals.py')!.sha256)
     .toBe('5848ad400abd8a814f89d1e871788edd7176e8aed19dd7f9b08288135bbe52d8');
@@ -371,7 +371,7 @@ test('the live canonical binds every actual row of the final combined tree', () 
   ] as const) expect(current.find((r) => r.path === p)!.sha256).toBe(h);
   for (const row of current) expect(sha(read(row.path))).toBe(row.sha256);
   const body = current.find((r) => r.path === BODY)!;
-  expect(body.sha256).toBe('98cbdb76b0fdcddddfd95a62414588a05d084b9b22d472bd318cb740078d440c');
+  expect(body.sha256).toBe('c1e0ca524adffd42075c2067b073a6bab45eafd0433b2ae3218067f0b29d6e30');
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-original-chunk-store.py')!.sha256)
     .toBe('c1930b0e71a114be8f0de05f17f3a6274303452b5a8590744e87653ffdf0a193');
 });
