@@ -967,7 +967,7 @@ class Observer(CapturesMixin):
         else:phase_budget_policy=budget_policy_module.policy_for_version(phase_budget_policy_version)
         self.phase_budget_policy=phase_budget_policy
         self.deadline_monotonic=deadline_monotonic;self.check_budget=check_budget;self.maximum_bytes=maximum_bytes;self.maximum_file_bytes=maximum_file_bytes;self.selected_names=selected_names
-        self.out=Path(out);self.capture_dir=self.out;self.source=str(source);self.build=str(build);self.tasks={};self.seq=0;self.records=[];self.initialize_capture_state();self.retained=set();self.producers={};self.write_states={};self.write_projections={};self.append_chains={};self.budget_context={};self.metadata_states=[];self.timespec_originals={};self.rename_records=[];self.consumers=[];self.raw=None;self.deadline=0;self.pausing=False;self.root=None;self.root_code=None;self.failures=[];self.current_phase=None;self.unknown_stops={};self.capture_bytes=0;self.capture_entities={};self.content_capture_pool={};self.snapshot_telemetry=None;self.snapshot_telemetry_completed=None;self.snapshot_telemetry_failure=None;self.mremap_proof_active=False;self.mremap_barriers=0;self.mremapDeferred=None;self.exclusive=None;self.wait_references=[]
+        self.out=Path(out);self.capture_dir=self.out;self.source=str(source);self.build=str(build);self.tasks={};self.task_order={};self.live_tasks=set();self._next_task_order=0;self.pending={name:set() for name in ('authority','tool','identity','bti','clone3','append','generationOpen','generationTruncate')};self.terminal_authorities=set();self._indexed_task_count=0;self.seq=0;self.records=[];self.initialize_capture_state();self.retained=set();self.producers={};self.write_states={};self.write_projections={};self.append_chains={};self.budget_context={};self.metadata_states=[];self.timespec_originals={};self.rename_records=[];self.consumers=[];self.raw=None;self.deadline=0;self.pausing=False;self.root=None;self.root_code=None;self.failures=[];self.current_phase=None;self.unknown_stops={};self.capture_bytes=0;self.capture_entities={};self.content_capture_pool={};self.snapshot_telemetry=None;self.snapshot_telemetry_completed=None;self.snapshot_telemetry_failure=None;self.mremap_proof_active=False;self.mremap_barriers=0;self.mremapDeferred=None;self.exclusive=None;self.wait_references=[]
         assert type(owned_input_generations) is bool and (not owned_input_generations or shared_tasks and capture_toolchain and stopped_writer_aliases),'owned generations require existing complete task/FD/write custody'
         self.owned_input_generations=owned_input_module.Runtime(self,SimpleNamespace(probe=probe,bindings=bindings,memory_policy=memory_policy,profile=profile,path_argument=path_argument,descriptor_flags=descriptor_flags)) if owned_input_generations else None
         self.lifetime_leases=None;self.lifetime_phase=None;self.lifetime_acquired={};self.lifetime_by_identity={};self.authority_observed=set()
@@ -981,6 +981,59 @@ class Observer(CapturesMixin):
         self.generated_vma_private_wait_mismatch=generated_vma_private_wait_mismatch
         self.generated_vma_shared_mm=generated_vma_shared_mm
         self.generated_vma_output=generated_vma_output;self.generated_vma=generated_vma_module.create_runtime(self,SimpleNamespace(generated_vma_module=generated_vma_module,single=single,SYSCALL=SYSCALL,INTERRUPT=INTERRUPT,state=state)) if generated_vma_output else None
+    _PENDING_FIELDS={'authority':'authorityPending','tool':'toolPending','identity':'identityNoopPending','bti':'btiPending','clone3':'clone3Pending','append':'appendBoundary','generationOpen':'generationOpenPending','generationTruncate':'generationTruncatePending'}
+    def _ensure_index(self):
+        if not hasattr(self,'pending') or not hasattr(self,'task_order') or not hasattr(self,'live_tasks'):
+            self.pending={name:set() for name in ('authority','tool','identity','bti','clone3','append','generationOpen','generationTruncate')}
+            self.task_order={};self.live_tasks=set();self._next_task_order=0;self.terminal_authorities=set();self._indexed_task_count=-1
+        if not hasattr(self,'terminal_authorities'):self.terminal_authorities=set()
+        if getattr(self,'_indexed_task_count',-1)==len(self.tasks):return
+        for pid,row in self.tasks.items():
+            if pid not in self.task_order:
+                self.task_order[pid]=self._next_task_order;self._next_task_order+=1
+            if row.get('exited'):self.live_tasks.discard(pid)
+            else:self.live_tasks.add(pid)
+            for kind,field in self._PENDING_FIELDS.items():
+                if row.get(field):self.pending[kind].add(pid)
+                else:self.pending[kind].discard(pid)
+            if row.get('terminalAuthority') and not row['terminalAuthority'].get('closed'):self.terminal_authorities.add(pid)
+        self._indexed_task_count=len(self.tasks)
+    def _track_task(self,pid,row):
+        self._ensure_index()
+        if pid not in self.task_order:
+            self.task_order[pid]=self._next_task_order;self._next_task_order+=1
+        self.tasks[pid]=row
+        self._indexed_task_count=len(self.tasks)
+        if row.get('exited'):
+            assert pid not in self.live_tasks,'exited task cannot enter live index'
+        else:
+            self.live_tasks.add(pid)
+        for kind,field in self._PENDING_FIELDS.items():
+            if row.get(field):self.pending[kind].add(pid)
+    def _pending_add(self,pid,kind):
+        self._ensure_index();self.pending[kind].add(pid)
+    def _pending_discard(self,pid,kind):
+        self._ensure_index();self.pending[kind].discard(pid)
+    def _pending_first(self,kind,require=None):
+        self._ensure_index();field=self._PENDING_FIELDS[kind];values=self.pending[kind]
+        for pid in sorted(values,key=lambda value:self.task_order.get(value,1<<60)):
+            task=self.tasks.get(pid)
+            if task is None or task.get('exited') or not task.get(field):
+                values.discard(pid);continue
+            if require is not None and not require(task):continue
+            return pid,task
+        return None
+    def _pending_has(self,kind):
+        return self._pending_first(kind) is not None
+    def _live_items(self):
+        self._ensure_index()
+        for pid in sorted(self.live_tasks,key=lambda value:self.task_order.get(value,1<<60)):
+            task=self.tasks.get(pid)
+            if task is not None:yield pid,task
+    def _mark_exited(self,pid):
+        self._ensure_index();self.live_tasks.discard(pid)
+        for kind in ('authority','tool','identity','bti','clone3','generationOpen','generationTruncate'):
+            self.pending[kind].discard(pid)
     def dependency_mountinfo(self):
         with open('/proc/self/mountinfo','rb') as stream:data=stream.read(self.tool_metadata_bytes+1)
         assert len(data)<=self.tool_metadata_bytes,'dependency actual mountinfo byte bound';return data
@@ -3628,7 +3681,8 @@ class Observer(CapturesMixin):
             observation=lease.observation
             observation['authority']['mountinfoOriginal']=self.tool_mountinfo_original(pid,observation['authority']['namespaces']['mnt']['identity'],lease.mounts)
             original=self.emit(dict(kind='toolchain-terminal-authority',pid=pid,eventSequence=event['sequence'],observation=observation))
-            self.tasks[pid]['terminalAuthority']=dict(lease=lease,event=event,original=original,closed=False)
+            self._ensure_index()
+            self.tasks[pid]['terminalAuthority']=dict(lease=lease,event=event,original=original,closed=False);self.terminal_authorities.add(pid)
         except BaseException:lease.close();raise
     def reap_terminal_task(self,pid,*,allow_pending=False):
         task=self.tasks[pid];terminal=task.get('terminalAuthority')
@@ -3913,7 +3967,7 @@ class Observer(CapturesMixin):
         if focus is not None and self.tasks[focus].get('terminalAuthority',{}).get('closed')and state(focus)=='Z':self.terminal_focus=None
         if getattr(self,'serialize_terminal_syscalls',False)and self.terminal_focus is None and self.exclusive is None:
             def candidates():
-                return [(pid,task)for pid,task in self.tasks.items()if not task['exited']and not task.get('terminalAuthority')and task.get('entry')and task['entry']['nr']in bindings.policy(task['entry']['arch'])['exits']]
+                return [(pid,task)for pid,task in self._live_items() if not task.get('terminalAuthority')and task.get('entry')and task['entry']['nr']in bindings.policy(task['entry']['arch'])['exits']]
             if candidates():
                 self.barrier()
                 pending=candidates();assert pending,'selected exit entry escaped all-stop'
@@ -3930,7 +3984,7 @@ class Observer(CapturesMixin):
         # resume, in what order, or how often. Rows stay in self.tasks: full
         # history, terminal authorities and closed/exited state are untouched.
         # Constant-factor saving only: this snapshot still scans every row.
-        for pid,row in [(p,t) for p,t in self.tasks.items() if not t['exited']]:
+        for pid,row in self._live_items():
             if getattr(self,'terminal_focus',None)is not None and pid!=self.terminal_focus and not row.get('terminalAuthority',{}).get('closed'):continue
             if self.generated_vma and self.generated_vma.owner is not None and pid!=self.generated_vma.owner:continue
             if self.exclusive and pid!=self.exclusive[0]:continue
@@ -3963,17 +4017,22 @@ class Observer(CapturesMixin):
                     self.check()
                     single.trace(SYSCALL,pid,0,signal_value);row['stopped']=False
     def close_terminal_authorities(self,barrier):
+        self._ensure_index()
         if not getattr(self,'terminal_exit_evidence',False):return
-        for pid,task in list(self.tasks.items()):
+        for pid in sorted(self.terminal_authorities,key=lambda value:self.task_order.get(value,1<<60)):
+            task=self.tasks.get(pid)
+            if task is None:continue
             terminal=task.get('terminalAuthority')
             if terminal and not terminal['closed']:
                 # The terminal closure row and the terminal lease close are
                 # external authority; full validation must precede both.
                 self.check_full()
                 terminal['closedRow']=self.emit(dict(kind='toolchain-terminal-authority-closed',pid=pid,eventSequence=terminal['event']['sequence'],originalSequence=terminal['original']['sequence'],barrierSequence=barrier['sequence'],actualWaitSequence=task.get('actualWaitSequence')))
-                terminal['closed']=True
+                terminal['closed']=True;self.terminal_authorities.discard(pid)
                 if task['exited']:
                     terminal['lease'].close()
+            elif terminal is None or terminal['closed']:
+                self.terminal_authorities.discard(pid)
     def capture_identity_noop_entry(self,pid,record,status):
         task=self.tasks[pid]
         assert self.exclusive is None and not self.pausing and not task.get('authorityPending'),'identity requires initialized exclusive authority boundary'
@@ -3990,24 +4049,30 @@ class Observer(CapturesMixin):
     def capture_queued_identity(self):
         if not getattr(self,'queued_identity_noop',False):return False
         assert self.exclusive is None and not self.pausing,'queued identity requires a quiescent dispatcher'
-        for pid,task in self.tasks.items():
-            pending=task.get('identityNoopPending')
-            if pending and not task['exited'] and not task.get('authorityPending'):
-                entry_sequence,status=pending;record=task['entry']
-                assert record is not None and record['sequence']==entry_sequence and task['stopped'],'queued identity lost its actual stopped entry'
-                self.capture_identity_noop_entry(pid,record,status)
-                del task['identityNoopPending']
-                return True
-        return False
+        selected=self._pending_first('identity',require=lambda task:not task.get('authorityPending'))
+        if selected is None:return False
+        pid,task=selected;pending=task['identityNoopPending'];entry_sequence,status=pending;record=task['entry']
+        assert record is not None and record['sequence']==entry_sequence and task['stopped'],'queued identity lost its actual stopped entry'
+        self.capture_identity_noop_entry(pid,record,status)
+        del task['identityNoopPending'];self._pending_discard(pid,'identity')
+        return True
     def checkpoint_append_boundaries(self):
-        if not any(task.get('appendBoundary') for task in self.tasks.values()):return
+        self._ensure_index()
+        if not self.pending['append']:return
         self.barrier()
-        for task in self.tasks.values():
+        # The barrier may add a directly-inserted fixture row. Reconcile the
+        # task-count index after it; this preserves the original all-task
+        # checkpoint semantics without the removed PID-retention feature.
+        self._ensure_index()
+        for pid in sorted(self.pending['append'],key=lambda value:self.task_order.get(value,1<<60)):
+            task=self.tasks.get(pid)
+            if task is None:continue
             # A peer may reach its exit while the all-stop barrier is assembled.
             # Preserve the actual causal entry rather than borrowing its later
             # mutable entry slot, which can already be closed at this point.
             boundary=task.pop('appendBoundary',None)
             if boundary is not None:self.checkpoint_appends('syscall-boundary',boundary)
+            if not task.get('appendBoundary'):self._pending_discard(pid,'append')
     def bti_held(self,pid,mappings):
         prior=[]
         for mapping in mappings:
@@ -4018,7 +4083,7 @@ class Observer(CapturesMixin):
             self.lifetime_leases.check(held['token']);prior.append(row['sequence'])
         return prior
     def capture_bti_pending(self):
-        selected=next(((pid,task) for pid,task in self.tasks.items() if task.get('btiPending') and not task['exited']),None)
+        selected=self._pending_first('bti')
         if selected is None:return False
         assert self.exclusive is None
         pid,task=selected;barrier=self.barrier();entry=task['entry']
@@ -4027,7 +4092,7 @@ class Observer(CapturesMixin):
         selected=memory_policy.bti_mappings(entry['arch'],entry['nr'],entry['args'],mappings,page_size)
         prior=self.bti_held(pid,selected)
         original=self.emit(dict(kind='bti-hardening-before',model='held-rx-bti-hardening-v1',pid=pid,entrySequence=entry['sequence'],barrierSequence=barrier['sequence'],pageSize=page_size,mapsOriginal=maps['original'],mappingSequences=prior))
-        task['btiOriginal']=(original,selected);del task['btiPending'];self.exclusive=(pid,entry['sequence'])
+        task['btiOriginal']=(original,selected);del task['btiPending'];self._pending_discard(pid,'bti');self.exclusive=(pid,entry['sequence'])
         return True
     def complete_bti(self,pid,entry,event):
         original,before=self.tasks[pid]['btiOriginal']
@@ -4489,7 +4554,7 @@ class Observer(CapturesMixin):
             print('SDK_CLONE3_ARGS_PARSE_REFUSED '+encoded,file=sys.stderr,flush=True)
         except BaseException:pass
     def capture_clone3_pending(self):
-        selected=next(((pid,task) for pid,task in self.tasks.items() if task.get('clone3Pending') and not task['exited']),None)
+        selected=self._pending_first('clone3')
         if selected is None:return False
         assert self.exclusive is None
         pid,task=selected;barrier=self.barrier();entry=task['entry']
@@ -4508,7 +4573,7 @@ class Observer(CapturesMixin):
         original=self.emit(dict(kind='kernel-clone3-args-original',model='stopped-clone3-args-v1',pid=pid,entrySequence=entry['sequence'],barrierSequence=barrier['sequence'],size=size,dataHex=data.hex(),sha256=hashlib.sha256(data).hexdigest(),flags=parsed['flags'],exitSignal=parsed['exitSignal'],threadMode=parsed.get('thread',False)))
         flags=parsed['flags']|parsed['exitSignal'];bindings.inspect_shared_clone_flags(flags)
         task['observedCloneFlags']=flags;task['cloneFlags']=flags;task['clone3Original']=original
-        del task['clone3Pending']
+        del task['clone3Pending'];self._pending_discard(pid,'clone3')
         self.emit(dict(kind='kernel-clone-flags',pid=pid,entrySequence=entry['sequence'],flags=flags,clone3OriginalSequence=original['sequence']))
         self.exclusive=(pid,entry['sequence'])
         self.emit(dict(kind='exclusive-clone3-resume',pid=pid,entrySequence=entry['sequence'],originalSequence=original['sequence']))
@@ -4541,10 +4606,11 @@ class Observer(CapturesMixin):
         self._pending_captures_original_body()
         return self.seq!=before
     def _pending_captures_original_body(self):
+        self._ensure_index()
         if self.generated_vma and getattr(self.generated_vma,'round',None) is not None:return
         if self.exclusive:return
         if getattr(self,'terminal_focus',None)is not None:
-            if any(t.get('terminalAuthority')and not t['terminalAuthority']['closed']for t in self.tasks.values()):self.instrument_substep('close_terminal_authorities',self.close_terminal_authorities,self.barrier())
+            if self.terminal_authorities:self.instrument_substep('close_terminal_authorities',self.close_terminal_authorities,self.barrier())
             return
         if self.generated_vma and self.generated_vma.owner is not None:
             pid=self.generated_vma.owner;task=self.tasks[pid]
@@ -4568,20 +4634,24 @@ class Observer(CapturesMixin):
             # pending field is an optional lookup. An exited row can never be
             # selected (the predicate requires not-exited either way), so hoisting
             # the guard only short-circuits rows that could not match.
-            selected=next(((pid,row) for pid,row in self.tasks.items() if not row['exited'] and row.get('authorityPending')),None)
+            selected=self._pending_first('authority')
             if selected is None:break
-            pid,task=selected;role,event_sequence=task['authorityPending'].pop(0);self.instrument_substep('capture_process_authority',self.capture_process_authority,pid,role,event_sequence)
+            pid,task=selected;role,event_sequence=task['authorityPending'].pop(0)
+            if not task['authorityPending']:self._pending_discard(pid,'authority')
+            self.instrument_substep('capture_process_authority',self.capture_process_authority,pid,role,event_sequence)
         if self.instrument_substep('capture_queued_identity',self.capture_queued_identity):return
-        if getattr(self,'terminal_exit_evidence',False) and any(t.get('terminalAuthority') and not t['terminalAuthority']['closed'] for t in self.tasks.values()):
+        if getattr(self,'terminal_exit_evidence',False) and self.terminal_authorities:
             self.instrument_substep('close_terminal_authorities',self.close_terminal_authorities,self.barrier())
         if self.instrument_substep('capture_queued_identity',self.capture_queued_identity):return
         self.instrument_substep('checkpoint_append_boundaries',self.checkpoint_append_boundaries)
         while self.capture_toolchain:
-            selected=next(((pid,row) for pid,row in self.tasks.items() if not row['exited'] and row.get('toolPending')),None)
+            selected=self._pending_first('tool')
             if selected is None:break
             pid,task=selected
             self.barrier();self.instrument_substep('checkpoint_appends',self.checkpoint_appends,'toolchain-access',task['entry']['sequence'] if task.get('entry') else None)
-            self.instrument_substep('observe_tool_stop',self.observe_tool_stop,pid,task['toolPending'].pop(0))
+            job=task['toolPending'].pop(0)
+            if not task['toolPending']:self._pending_discard(pid,'tool')
+            self.instrument_substep('observe_tool_stop',self.observe_tool_stop,pid,job)
         if self.instrument_substep('capture_bti_pending',self.capture_bti_pending):return
         if self.instrument_substep('capture_clone3_pending',self.capture_clone3_pending):return
         if self.owned_input_generations is not None and self.owned_input_generations.pending():return
@@ -4784,7 +4854,7 @@ class Observer(CapturesMixin):
             # exited and its wait record is still emitted, so no dead task is left
             # looking live merely because the proof failed.
             pending_absent=task.pop('absentLinkOperand',None)
-            task.update(exited=True,stopped=False);code=os.WEXITSTATUS(status) if os.WIFEXITED(status) else -os.WTERMSIG(status)
+            task.update(exited=True,stopped=False);self._mark_exited(pid);code=os.WEXITSTATUS(status) if os.WIFEXITED(status) else -os.WTERMSIG(status)
             wait=self.emit(dict(kind='actual-wait-exit',pid=pid,returnCode=code,**(dict(waitStatus=status) if getattr(self,'terminal_exit_evidence',False) else {}),**({'actualExecImage':task['diagnosticExec']} if 'diagnosticExec' in task else {})));self.wait_references.append(dict(pid=pid,sequence=wait['sequence'],returnCode=code,phase=self.current_phase))
             task['actualWaitSequence']=wait['sequence']
             terminal=task.get('terminalAuthority')
@@ -4800,14 +4870,16 @@ class Observer(CapturesMixin):
                 message=ctypes.c_ulong();single.trace(GETEVENTMSG,pid,0,ctypes.byref(message));extra=dict(waitStatus=status,exitStatus=int(message.value))
             observed_event=self.emit(dict(kind='ptrace-event',pid=pid,event=event,**extra))
             if extra:self.capture_exit_authority_at_stop(pid,status,observed_event)
-            if self.process_authority and event in [4,6] and not extra:task.setdefault('authorityPending',[]).append(('exec-stop' if event==4 else 'exit-stop',observed_event['sequence']))
+            if self.process_authority and event in [4,6] and not extra:
+                task.setdefault('authorityPending',[]).append(('exec-stop' if event==4 else 'exit-stop',observed_event['sequence']));self._pending_add(pid,'authority')
             if event==4:
                 actual_exe=os.readlink('/proc/'+str(pid)+'/exe');actual_identity=probe.identity(os.stat('/proc/'+str(pid)+'/exe'))
                 task['diagnosticExec']=dict(path=actual_exe[:4096],pathTruncated=len(actual_exe)>4096,pathSha256=hashlib.sha256(os.fsencode(actual_exe)).hexdigest(),identity=actual_identity,eventSequence=observed_event['sequence'],entrySequence=task.get('entry',{}).get('sequence'),scope='actual exec-stop image only; argv/environment not collected')
             if event==4 and self.shared_tasks:
                 prior=task['fdTable'];task['fdTable']=-observed_event['sequence'];self.emit(dict(kind='actual-exec-fd-table-unshare',pid=pid,eventSequence=observed_event['sequence'],priorFdTable=prior,fdTable=task['fdTable'],tgid=task['tgid']))
             if event==4:self.release_vfork_parent(pid,observed_event,'actual-exec')
-            if event==4 and self.capture_toolchain:task.setdefault('toolPending',[]).append(('exec',task.get('entry'),observed_event))
+            if event==4 and self.capture_toolchain:
+                task.setdefault('toolPending',[]).append(('exec',task.get('entry'),observed_event));self._pending_add(pid,'tool')
             if event in [1,2,3]:
                 child=ctypes.c_ulong();single.trace(GETEVENTMSG,pid,0,ctypes.byref(child));new=int(child.value);assert new not in self.tasks and len(self.tasks)<self.maximum_processes,'actual child/PID bound'
                 fields={}
@@ -4818,7 +4890,7 @@ class Observer(CapturesMixin):
                         assert entry['arch']==0xc000003e and entry['nr'] in [57,58],'unknown actual fork operation';flags=17|(0x4100 if entry['nr']==58 else 0)
                     ownership=bindings.inspect_shared_clone_flags(flags);tgid=task['tgid'] if ownership['sameThreadGroup'] else new;table=task['fdTable'] if ownership['sharedFdTable'] else new
                     assert self.actual_tgid(new)==tgid,'kernel child TGID differs from clone flags';fields=dict(tgid=tgid,fdTable=table)
-                self.tasks[new]=dict(stopped=False,exited=False,entry=None,initial=True,**(dict(authorityPending=[('initial-child',None)]) if self.process_authority else {}),**fields);self.emit(dict(kind='actual-child-binding',parentPid=pid,childPid=new,event=event,**(dict(cloneEntrySequence=task['entry']['sequence'],cloneFlags=flags,**fields) if self.shared_tasks else {})))
+                self._track_task(new,dict(stopped=False,exited=False,entry=None,initial=True,**(dict(authorityPending=[('initial-child',None)]) if self.process_authority else {}),**fields));self.emit(dict(kind='actual-child-binding',parentPid=pid,childPid=new,event=event,**(dict(cloneEntrySequence=task['entry']['sequence'],cloneFlags=flags,**fields) if self.shared_tasks else {})))
                 # The kernel child event establishes inherited executable memory;
                 # it is not a new exec-stop or a current named-file observation.
                 # Keep only the immediate inheritance edge, so clone depth cannot
@@ -4875,7 +4947,7 @@ class Observer(CapturesMixin):
                 assert self.exclusive is None,'identity entry crossed an active exclusive operation'
                 if getattr(self,'queued_identity_noop',False) and (self.pausing or task.get('authorityPending')):
                     assert task['stopped'] and not task.get('identityNoopPending'),'duplicate or nonstopped queued identity entry'
-                    task['identityNoopPending']=(record['sequence'],status)
+                    task['identityNoopPending']=(record['sequence'],status);self._pending_add(pid,'identity')
                     return
                 self.capture_identity_noop_entry(pid,record,status)
                 return
@@ -4898,10 +4970,10 @@ class Observer(CapturesMixin):
                     raise
             if self.generated_vma and self.generated_vma.classify(pid,record,lambda dirfd,address:path_argument(pid,dirfd,address)):return
             if self.capture_toolchain and memory_policy.bti_candidate(record['arch'],nr,args):
-                task['btiPending']=record['sequence'];return
+                task['btiPending']=record['sequence'];self._pending_add(pid,'bti');return
             if nr==435 and self.capture_toolchain:
                 assert self.shared_tasks,'clone3 original requires complete tracked task ownership'
-                task['clone3Pending']=record['sequence']
+                task['clone3Pending']=record['sequence'];self._pending_add(pid,'clone3')
                 return
             if nr in [policy['clone'],policy['clone3']]:
                 flags=args[0] if nr==policy['clone'] else single.trace(2,pid,args[0])&((1<<64)-1)
@@ -4921,22 +4993,27 @@ class Observer(CapturesMixin):
                 assert not(nr==436 and args[2]&2),'close_range UNSHARE FD ownership unsupported'
                 execs=[59,322] if kernel['arch']==0xc000003e else [221,281]
                 if nr in execs:assert pid==task['tgid'],'nonleader exec TID replacement unsupported before resume'
-            if self.append_chains and bindings.append_boundary_syscall(kernel['arch'],nr,args):task['appendBoundary']=record['sequence']
+            if self.append_chains and bindings.append_boundary_syscall(kernel['arch'],nr,args):
+                task['appendBoundary']=record['sequence'];self._pending_add(pid,'append')
             if nr==policy['read']:
                 try:read_identity=probe.identity(os.stat('/proc/'+str(pid)+'/fd/'+str(args[0])))
                 except FileNotFoundError:read_identity=None
-                if read_identity and tuple(read_identity[:2]) in self.append_chains:task['appendBoundary']=record['sequence']
+                if read_identity and tuple(read_identity[:2]) in self.append_chains:
+                    task['appendBoundary']=record['sequence'];self._pending_add(pid,'append')
             if nr==policy['mmap'] and args[2]&2 and args[3]&1:
                 try:self.syscall_rejection_diagnostic(pid,status,record,shared_mapping=True)
                 except BaseException:pass
                 raise AssertionError('shared writable mapping refused before resume')
-            if self.capture_toolchain and nr in policy['exec']:task.pop('toolExecLease',None);task.setdefault('toolPending',[]).append(('exec-before',record,None))
-            if self.capture_toolchain and nr in policy['protect'] and args[2]&4:task.setdefault('toolPending',[]).append(('protect-before',record,None))
+            if self.capture_toolchain and nr in policy['exec']:
+                task.pop('toolExecLease',None);task.setdefault('toolPending',[]).append(('exec-before',record,None));self._pending_add(pid,'tool')
+            if self.capture_toolchain and nr in policy['protect'] and args[2]&4:
+                task.setdefault('toolPending',[]).append(('protect-before',record,None));self._pending_add(pid,'tool')
             if self.capture_toolchain and nr==policy['mmap']:task.pop('toolMmapFd',None);task.pop('toolMmapLease',None)
             if self.capture_toolchain and nr==policy['mmap'] and not(args[3]&0x20) and args[4]<(1<<31):
                 try:task['toolMmapFd']=dict(fd=args[4],identity=probe.identity(os.stat('/proc/'+str(pid)+'/fd/'+str(args[4]))))
                 except FileNotFoundError:task['toolMmapFd']=None
-                if task['toolMmapFd'] and stat.S_ISREG(task['toolMmapFd']['identity'][2]):task.setdefault('toolPending',[]).append(('mmap-before',record,None))
+                if task['toolMmapFd'] and stat.S_ISREG(task['toolMmapFd']['identity'][2]):
+                    task.setdefault('toolPending',[]).append(('mmap-before',record,None));self._pending_add(pid,'tool')
             selected=None;fd=None
             if nr in [policy['read'],policy['write'],policy['close']] or nr in policy.get('reads',set()):fd=args[0];selected=fdpath(pid,fd)
             if nr==policy['mmap'] and args[4]<(1<<31):fd=args[4];selected=fdpath(pid,fd)
@@ -5100,8 +5177,10 @@ class Observer(CapturesMixin):
                     if old['nr']==rules['mmap']:task.pop('toolMmapFd',None);task.pop('toolMmapLease',None)
                     if old['nr'] in rules['protect']:task.pop('toolProtectBefore',None)
                     if old['nr'] in rules['exec']:task.pop('toolExecPath',None);task.pop('toolExecLease',None)
-                if not record['isError'] and record['result']>=0 and old['nr']==rules['mmap'] and (not(old['args'][3]&0x20) or old['args'][2]&4):task.setdefault('toolPending',[]).append(('mmap',old,record))
-                if not record['isError'] and record['result']==0 and old['nr'] in rules['protect'] and old['args'][2]&4:task.setdefault('toolPending',[]).append(('protect-after',old,record))
+                if not record['isError'] and record['result']>=0 and old['nr']==rules['mmap'] and (not(old['args'][3]&0x20) or old['args'][2]&4):
+                    task.setdefault('toolPending',[]).append(('mmap',old,record));self._pending_add(pid,'tool')
+                if not record['isError'] and record['result']==0 and old['nr'] in rules['protect'] and old['args'][2]&4:
+                    task.setdefault('toolPending',[]).append(('protect-after',old,record));self._pending_add(pid,'tool')
             if task.get('renameWindow') is not None:self.complete_rename(pid,old,record)
             if self.owned_input_generations is not None:self.owned_input_generations.exit(pid,old,record)
             if self.exclusive==(pid,old['sequence']):self.emit(dict(kind='exclusive-captured-syscall-exit',pid=pid,entrySequence=old['sequence'],result=record['result'],isError=record['isError']));self.exclusive=None
@@ -5142,8 +5221,7 @@ class Observer(CapturesMixin):
         """
         while True:
             progressed=self.pending_captures()
-            pending=any(not task['exited'] and (task.get('generationOpenPending') or task.get('generationTruncatePending'))
-                        for task in self.tasks.values())
+            pending=self._pending_has('generationOpen') or self._pending_has('generationTruncate')
             if not pending:return
             if not progressed:return
     def prepared_lease_capacity(self,phase):
@@ -5151,7 +5229,7 @@ class Observer(CapturesMixin):
     def phase_armed(self,name,command,cwd,env,stdoutPath,stderrPath):
         self.reset_owned_frames()
         capture_start=len(self.captures);started_ns=time.time_ns();stdout_path=Path(stdoutPath) if stdoutPath is not None else self.out/(name+'.stdout.raw');stderr_path=Path(stderrPath) if stderrPath is not None else self.out/(name+'.stderr.raw')
-        self.wait_references=[];self.tasks={};self.unknown_stops={};self.root_code=None;self.current_phase=name;self._phase_progress=PhaseProgress(name,self.deadline)
+        self.wait_references=[];self.tasks={};self.task_order={};self.live_tasks=set();self._next_task_order=0;self.pending={kind:set() for kind in self.pending};self.terminal_authorities=set();self._indexed_task_count=0;self.unknown_stops={};self.root_code=None;self.current_phase=name;self._phase_progress=PhaseProgress(name,self.deadline)
         self.resource_call(self.resource_bind)
         self.raw=EncodedShardedRaw(self,name,self.shard_bytes or self.maximum_file_bytes) if self.compressed_raw else ShardedRaw(self.out,name,self.shard_bytes) if self.shard_bytes else open(self.out/(name+'.syscalls.original.jsonl'),'xb')
         self.raw_encoder=probe.IndexedRawEncoderV2() if self.indexed_raw_records else None
@@ -5209,7 +5287,7 @@ class Observer(CapturesMixin):
                 os._exit(70)
         os.close(stdout_write);os.close(stderr_write);self.pump_errors=[]
         pumps=[BoundedPipePump(stdout_read,stdout_path,self.maximum_stdio_bytes,lambda count:self.claim(count,category='stdio'),self.pump_errors),BoundedPipePump(stderr_read,stderr_path,self.maximum_stdio_bytes,lambda count:self.claim(count,category='stdio'),self.pump_errors)]
-        root_pgid=os.getpgid(child);self.root=child;self.tasks[child]=dict(stopped=False,exited=False,entry=None,initial=True,**(dict(authorityPending=[('initial-root',None)]) if self.process_authority else {}),**(dict(tgid=child,fdTable=child) if self.shared_tasks else {}))
+        root_pgid=os.getpgid(child);self.root=child;self._track_task(child,dict(stopped=False,exited=False,entry=None,initial=True,**(dict(authorityPending=[('initial-root',None)]) if self.process_authority else {}),**(dict(tgid=child,fdTable=child) if self.shared_tasks else {})))
         try:
             # Created only here, in the parent after fork: the child must never
             # inherit a lease FD or SIGIO ownership.
