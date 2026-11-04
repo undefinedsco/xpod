@@ -1585,6 +1585,12 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
       // their required helper/receipt exists. Same caller/job contract.
       {workflowSha256:'00e09a37a3f05ead93a245370f02e3af5c0d432d5c4674e1de0555743e4c2157',
       jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // APPEND-ONLY: current ci.yml adds the required ownership-cohort
+      // zero-skip regression gate. Same registered caller/job contract and the
+      // same exact source group; every earlier reviewed version remains exact.
+      {workflowSha256:'7752a8dd9a38c32e90881078d581cef7b7ef163713259a0fa1c38043e3887c15',
+      jobName:()=>callerNames[0]!,
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,
     sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS,

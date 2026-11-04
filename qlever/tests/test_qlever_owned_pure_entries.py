@@ -88,21 +88,25 @@ class OwnedPureEntries(common.Base):
         actual = self.o.check_owned_entry
         def full():
             self.o.check_owned_entry = actual
-            return self.o.check()
+            return self.o.check_full()
         self.o.check_owned_entry = full
         try:return function()
         finally:self.o.check_owned_entry = actual
 
     def test_owned_entries_remove_only_leading_native_and_keep_all_local_work(self):
         self.arm()
-        for function, expected in [(self.o.verify_task_ownership, 1), (self.note, 1)]:
+        # verify_task_ownership's valid outer closing uses the sticky/nonlease
+        # guard, so its normal path has zero native sweeps. The forced control
+        # below calls the real check_full() at entry; note keeps its one-sweep
+        # closing. Forced counts are therefore ownership=1 and note=2.
+        for function, expected, forced in [(self.o.verify_task_ownership, 0, 1), (self.note, 1, 2)]:
             self.native_audits = self.budgets = self.local_checks = 0
             previous = self.full_first_entry(function)
             old = (self.native_audits, self.budgets, self.local_checks)
             self.native_audits = self.budgets = self.local_checks = 0
             current = function()
             self.assertEqual(self.native_audits, expected)
-            self.assertEqual(old[0], expected)
+            self.assertEqual(old[0], forced)
             self.assertEqual((self.budgets, self.local_checks), old[1:])
             if isinstance(current, list):self.assertEqual(current, previous)
             else:
@@ -152,10 +156,20 @@ class OwnedPureEntries(common.Base):
             return result
         return patch.object(core, 'state', side_effect=body)
 
-    def test_ownership_actual_lease_loss_refused_by_full_closing(self):
+    def test_ownership_explicit_unlock_defers_refusal_to_final_complete(self):
+        # F_UNLCK is an observer-owned explicit unlock; it emits no SIGIO. The
+        # exact outer ownership call may therefore return privately, but the
+        # retained full check must reject the loss before any acceptance.
         self.arm(); self.ownership_fault()
-        with self.assertRaises(core.lifetime_leases.LeaseError):self.o.verify_task_ownership()
-        self.assertEqual(self.native_audits, 1)
+        ownership = self.o.verify_task_ownership()
+        self.assertTrue(ownership)
+        self.assertEqual(self.o.seq, 0, 'no accepted artifact before the retained full closing')
+        self.assertEqual(self.native_audits, 0,
+                         'explicit unlock is not a sticky SIGIO notification')
+        with self.assertRaises(core.lifetime_leases.LeaseError):
+            self.o.check_full()
+        self.assertEqual(self.native_audits, 1,
+                         'retained full closing refuses the deferred loss')
 
     def test_note_actual_lease_loss_refused_before_emit(self):
         self.arm()
@@ -168,7 +182,11 @@ class OwnedPureEntries(common.Base):
         self.arm(); primary = OSError(5, 'owned TGID primary'); self.ownership_fault(primary)
         with self.assertRaises(OSError) as got:self.o.verify_task_ownership()
         self.assertIs(got.exception, primary)
-        self.assertEqual(self.native_audits, 1)
+        self.assertEqual(self.native_audits, 0, 'outer guard failure cannot replace the primary')
+        with self.assertRaises(core.lifetime_leases.LeaseError):
+            self.o.check_full()
+        self.assertEqual(self.native_audits, 1,
+                         'retained full closing still observes the explicit loss')
 
     def test_note_primary_object_survives_failed_closing(self):
         self.arm(); primary = OSError(5, 'owned state primary')
@@ -215,7 +233,7 @@ class OwnedPureEntries(common.Base):
         def census(path):
             result = actual(path)
             if str(path).endswith('/task'):
-                self.assertEqual(self.native_audits, 1)
+                self.assertEqual(self.native_audits, 0, 'final census follows the sticky guard closing')
                 raise primary
             return result
         with patch.object(core.os, 'listdir', side_effect=census):

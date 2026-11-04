@@ -347,7 +347,7 @@ jobs:
               'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_owned_entries_remove_only_leading_native_and_keep_all_local_work',
               'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_outside_window_retains_full_two_and_five',
               'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_equal_distinct_waiter_cannot_inherit_coalescing',
-              'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_ownership_actual_lease_loss_refused_by_full_closing',
+              'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_ownership_explicit_unlock_defers_refusal_to_final_complete',
               'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_note_actual_lease_loss_refused_before_emit',
               'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_ownership_primary_object_survives_failed_closing',
               'qlever.tests.test_qlever_owned_pure_entries.OwnedPureEntries.test_note_primary_object_survives_failed_closing',
@@ -426,6 +426,66 @@ jobs:
 
           if __name__ == '__main__':
               sys.exit(main())
+          PYGATE
+
+      - name: SDK barrier snapshot ownership regressions (required, no skip)
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD" python3 -B - <<'PYGATE'
+          import sys
+          import unittest
+
+          MODULE = 'qlever.tests.test_sdk_ownership_cohort'
+          REQUIRED = frozenset({
+              MODULE + '.BarrierSnapshot.test_stable_history_order_and_observable_sequence',
+              MODULE + '.BarrierSnapshot.test_row_status_mutation_is_read_at_the_original_body_point',
+              MODULE + '.BarrierSnapshot.test_second_snapshot_sees_insert_delete_and_pid_row_replacement',
+              MODULE + '.BarrierSnapshot.test_non_plain_mapping_keeps_items_callback_and_never_copies',
+              MODULE + '.BarrierSnapshot.test_primary_exception_identity_and_pausing_cleanup',
+              MODULE + '.OuterWindowClosing.test_valid_outer_window_avoids_global_sweep_and_keeps_guard',
+              MODULE + '.OuterWindowClosing.test_outer_window_sticky_guard_refusal',
+              MODULE + '.OuterWindowClosing.test_outer_window_nonlease_refusal',
+              MODULE + '.OuterWindowClosing.test_outer_window_primary_exception_survives_guard_failure',
+              MODULE + '.OuterWindowClosing.test_outer_window_loses_eligibility_on_waiter_phase_deadline_claim',
+              MODULE + '.OuterWindowClosing.test_outer_window_loses_eligibility_on_thread_change',
+              MODULE + '.OuterWindowClosing.test_outer_window_wrong_tgid_census_fd_slot_still_refuse',
+              MODULE + '.RealOuterWindowClosing.test_outer_window_defers_global_ownership_then_complete_rejects_mutated_unrelated_lease',
+              MODULE + '.RealOuterWindowClosing.test_outer_window_sticky_sigio_refuses_before_result_escapes',
+          })
+          suite = unittest.defaultTestLoader.loadTestsFromName(MODULE)
+
+          def walk(value):
+              if isinstance(value, unittest.TestSuite):
+                  for child in value:
+                      yield from walk(child)
+              else:
+                  yield value
+
+          discovered = frozenset(case.id() for case in walk(suite))
+          if not discovered:
+              print('REQUIRED GATE FAILED: zero tests loaded', file=sys.stderr)
+              sys.exit(1)
+          missing = REQUIRED - discovered
+          if missing:
+              print('REQUIRED GATE FAILED: missing cases: ' + ', '.join(sorted(missing)), file=sys.stderr)
+              sys.exit(1)
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          problems = []
+          if result.skipped:
+              problems.append('skipped=%d' % len(result.skipped))
+          if result.failures:
+              problems.append('failures=%d' % len(result.failures))
+          if result.errors:
+              problems.append('errors=%d' % len(result.errors))
+          if result.testsRun != len(discovered):
+              problems.append('testsRun=%d expected=%d' % (result.testsRun, len(discovered)))
+          if not result.wasSuccessful():
+              problems.append('wasSuccessful=False')
+          if problems:
+              print('REQUIRED GATE FAILED: ' + ', '.join(problems), file=sys.stderr)
+              for case, why in result.skipped:
+                  print('  skipped: %s -> %s' % (case.id(), why), file=sys.stderr)
+              sys.exit(1)
+          print('REQUIRED GATE OK: %d/%d cases ran, 0 skipped' % (result.testsRun, len(discovered)))
           PYGATE
 
       - name: Install ripgrep differential oracle

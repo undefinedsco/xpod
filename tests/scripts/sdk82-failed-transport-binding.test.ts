@@ -29,7 +29,7 @@ import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as API} from '../../scripts/lib/
 import {CLI_SOURCE_VERSION_GROUPS as CLI} from '../../scripts/lib/independent-admission/source-rules';
 import {selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import {decodeCatalog} from './sdk-helper-catalog.fixture';
-import {CURRENT_CANONICAL_SOURCE_ROWS} from './source-binding-group.fixture';
+import {CURRENT_CANONICAL_SOURCE_ROWS, CURRENT_HELPER_GROUP_COUNTS, CURRENT_OBSERVER_GROUPS, CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
 
 const ROOT=path.resolve(import.meta.dirname,'../..');
 const whole=(g:unknown)=>createHash('sha256').update(JSON.stringify(g)).digest('hex');
@@ -63,9 +63,12 @@ it('every published whole prefix is byte-identical to the captured 7863 baseline
   // LIVE frontier (SDK83 appended): the historical SDK82 slice is proven by its
   // own frozen prefix below, not by these current lengths.
   // LIVE frontier (SDK84 appended); this slice is proven by its frozen prefix.
-  expect(SDK).toHaveLength(91);expect(LINUX).toHaveLength(92);
-  expect(CONSUMER).toHaveLength(99);expect(CI).toHaveLength(196);
-  expect(API).toHaveLength(30);expect(CLI).toHaveLength(13);
+  expect(SDK).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.sdk);
+  expect(LINUX).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.linux);
+  expect(CONSUMER).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.consumer);
+  expect(CI).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.ci);
+  expect(API).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.api);
+  expect(CLI).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.cli);
   prefix(SDK.slice(0,81),OLD_SDK_GROUPS,'sdk');
   prefix(LINUX.slice(0,82),OLD_LINUX_GROUPS,'linux');
   prefix(CONSUMER.slice(0,97),OLD_CONSUMER_GROUPS,'consumer');
@@ -82,7 +85,12 @@ it('helper and readonly registries keep every captured whole vector',()=>{
     const live=helper(file,name);
     // Frozen vector proves the historical PREFIX; the live frontier is asserted
     // explicitly so a later append can never look like a rewritten history.
-    expect(live.length,name).toBe({REVIEWED_OBSERVER_GROUPS:63,REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT:43,REVIEWED_HELPER_GROUPS_CURRENT:46}[name as 'REVIEWED_OBSERVER_GROUPS']);
+    const expected = name === 'REVIEWED_OBSERVER_GROUPS'
+      ? CURRENT_OBSERVER_GROUPS
+      : name === 'REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT'
+        ? CURRENT_HELPER_GROUP_COUNTS.controller
+        : CURRENT_HELPER_GROUP_COUNTS.fetch;
+    expect(live.length,name).toBe(expected);
     for(let i=0;i<hashes.length;i++) expect(whole(live[i]),`${name}[${i}]`).toBe(hashes[i]);
   }
   const readonly=helper('qlever-sdk-readonly-executor.ts','REVIEWED_READONLY_HELPER_GROUPS');

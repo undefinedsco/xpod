@@ -22,7 +22,7 @@ import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as API} from '../../scripts/lib/
 import {CLI_SOURCE_VERSION_GROUPS as CLI} from '../../scripts/lib/independent-admission/source-rules';
 import {selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import {decodeCatalog} from './sdk-helper-catalog.fixture';
-import {CURRENT_CANONICAL_SOURCE_ROWS} from './source-binding-group.fixture';
+import {CURRENT_CANONICAL_SOURCE_ROWS, CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
 
 const ROOT=path.resolve(import.meta.dirname,'../..');
 const whole=(g:unknown)=>createHash('sha256').update(JSON.stringify(g)).digest('hex');
@@ -48,9 +48,12 @@ const prefix=(groups:readonly unknown[],hashes:readonly string[],label:string)=>
 };
 
 it('every published whole prefix is byte-identical to the captured baseline',()=>{
-  expect(SDK).toHaveLength(91);expect(LINUX).toHaveLength(92);
-  expect(CONSUMER).toHaveLength(99);expect(CI).toHaveLength(196);
-  expect(API).toHaveLength(30);expect(CLI).toHaveLength(13);
+  expect(SDK).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.sdk);
+  expect(LINUX).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.linux);
+  expect(CONSUMER).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.consumer);
+  expect(CI).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.ci);
+  expect(API).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.api);
+  expect(CLI).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.cli);
   prefix(SDK,OLD_SDK_GROUPS,'sdk');prefix(LINUX,OLD_LINUX_GROUPS,'linux');
   prefix(CONSUMER,OLD_CONSUMER_GROUPS,'consumer');prefix(CI,OLD_CI_GROUPS,'ci');
   prefix(API,OLD_API_GROUPS,'api');prefix(CLI,OLD_CLI_GROUPS,'cli');
