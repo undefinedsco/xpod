@@ -15,9 +15,9 @@ on:
   workflow_dispatch:
     inputs:
       scenario:
-        description: 'sweep = existing bounded native check; backing = 7,526-row overlay-vs-ext4 A/B'
+        description: 'sweep = existing bounded native check; backing = overlay-vs-ext4 A/B; fanout = helper workers 1/2/4 with 0/2 idle Python threads'
         type: choice
-        options: [sweep, backing]
+        options: [sweep, backing, fanout]
         default: sweep
 permissions:
   contents: read
@@ -252,5 +252,183 @@ jobs:
         with:
           name: native-lease-backing-${{ github.run_id }}-${{ github.run_attempt }}
           path: .test-data/native-lease-backing
+          if-no-files-found: warn
+          retention-days: 7
+
+  fanout:
+    name: fanout (Linux x64)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.scenario == 'fanout' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout (read-only, no persisted credentials)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Fanout 1/2/4 x idle threads 0/2, same 7,526 rows
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC="$GITHUB_WORKSPACE"
+          OUT="$SRC/.test-data/native-lease-fanout"
+          CTX="$RUNNER_TEMP/native-lease-fanout-context"
+          RID="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          LABEL="org.xpod.native-lease-fanout=${RID}"
+          PREFIX="xpod-native-lease-fanout-${RID}"
+          BASE='debian:trixie-20260803-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258'
+          IMAGE_TAGS=(); IMAGE_IDS=()
+          STAGE=init; resources_owned=0
+          rm -rf "$OUT" "$CTX"
+          mkdir -p "$OUT/runs" "$OUT/variants" "$OUT/receipts" "$OUT/images"
+          cleanup() {
+            local failed=0 c id tag
+            [ "$resources_owned" -eq 1 ] || return 0
+            timeout 20 docker info >/dev/null 2>&1 || return 1
+            for c in $(docker ps -aq --filter "label=$LABEL" 2>/dev/null || true); do docker rm -f "$c" >/dev/null 2>&1 || failed=1; done
+            for id in ${IMAGE_IDS[@]+"${IMAGE_IDS[@]}"}; do if [ "$(docker image inspect -f '{{ index .Config.Labels "org.xpod.native-lease-fanout" }}' "$id" 2>/dev/null || true)" = "$RID" ]; then docker image rm --no-prune "$id" >/dev/null 2>&1 || failed=1; fi; done
+            for tag in ${IMAGE_TAGS[@]+"${IMAGE_TAGS[@]}"}; do if [ "$(docker image inspect -f '{{ index .Config.Labels "org.xpod.native-lease-fanout" }}' "$tag" 2>/dev/null || true)" = "$RID" ]; then docker image rm --no-prune "$tag" >/dev/null 2>&1 || failed=1; fi; done
+            rm -rf "$CTX"
+            return "$failed"
+          }
+          finish() {
+            status=$?; cstatus=0; cleanup || cstatus=$?
+            if [ "$status" -eq 0 ] && [ "$cstatus" -ne 0 ]; then status=1; fi
+            if [ "$status" -eq 0 ]; then ok=true; else ok=false; fi
+            printf '{"kind":"native-lease-fanout-report","ok":%s,"status":%d,"cleanupStatus":%d,"stage":"%s","runId":"%s","sha":"%s"}\n' "$ok" "$status" "$cstatus" "$STAGE" "$RID" "$GITHUB_SHA" > "$OUT/report.json"
+            exit "$status"
+          }
+          trap finish EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          deadline=$((SECONDS+1020))
+          check() { [ "$SECONDS" -lt "$deadline" ] || { STAGE=deadline; echo 'global deadline' >&2; exit 124; }; }
+          bounded() { check; local limit=$1; shift; [ $((deadline-SECONDS)) -lt "$limit" ] && limit=$((deadline-SECONDS)); timeout "$limit" "$@"; }
+          for w in 1 2 4; do
+            if docker image inspect "xpod-native-lease-fanout:${RID}-w${w}" >/dev/null 2>&1; then STAGE=preflight; echo 'image name already exists' >&2; exit 1; fi
+          done
+          resources_owned=1
+          for rel in qlever/scripts/native/lease_sweep_ext.c qlever/scripts/native/lease_sweep_binding.py qlever/scripts/native/build_native_helper.py qlever/scripts/sdk-tool-lifetime-leases.py scripts/diagnostics/native-lease-sweep.py scripts/diagnostics/native-lease-backing.py; do install -D -m 600 "$SRC/$rel" "$CTX/base/$rel"; done
+          cp "$CTX/base/qlever/scripts/native/lease_sweep_ext.c" "$CTX/original.c"
+          ( cd "$SRC" && sha256sum qlever/scripts/native/lease_sweep_ext.c qlever/scripts/native/lease_sweep_binding.py qlever/scripts/native/build_native_helper.py qlever/scripts/sdk-tool-lifetime-leases.py ) | jq -Rn '[inputs|split("  ")|{(.[1]):.[0]}]|add|{canonicalHashes:.}' > "$OUT/source.json"
+          ORIG_SHA=$(sha256sum "$CTX/original.c" | cut -d' ' -f1)
+          [ "$(grep -c '^#define SWEEP_MAX_WORKERS 4$' "$CTX/original.c")" -eq 1 ]
+          cat > "$CTX/Dockerfile" <<'DOCKER'
+          ARG BASE_IMAGE
+          FROM ${BASE_IMAGE}
+          RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-install-recommends python3 python3-dev clang-19 build-essential ca-certificates && rm -rf /var/lib/apt/lists/*
+          ARG WORKERS
+          COPY . /src
+          RUN python3 -I -B /src/qlever/scripts/native/build_native_helper.py /src/qlever/scripts/native/lease_sweep_ext.c /src/qlever/scripts/native --cc clang-19 && chmod 0755 /src/qlever/scripts/native/lease_sweep_ext*.so
+          WORKDIR /probe
+          RUN python3 -I -B /src/scripts/diagnostics/native-lease-backing.py generate
+          RUN printf '{"workers": %s, "kind": "fanout-variant"}\n' "$WORKERS" > /probe/variant.json
+          ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+          DOCKER
+          for w in 1 2 4; do
+            STAGE="variant-w${w}"; check
+            mkdir -p "$CTX/w$w"; cp -a "$CTX/base/." "$CTX/w$w/"
+            VAR="$CTX/w$w/qlever/scripts/native/lease_sweep_ext.c"
+            [ "$(grep -c '^#define SWEEP_MAX_WORKERS 4$' "$VAR")" -eq 1 ]
+            if [ "$w" -ne 4 ]; then sed -i "s/^#define SWEEP_MAX_WORKERS 4$/#define SWEEP_MAX_WORKERS $w/" "$VAR"; fi
+            [ "$(grep -c "^#define SWEEP_MAX_WORKERS $w$" "$VAR")" -eq 1 ]
+            EFF_SHA=$(sha256sum "$VAR" | cut -d' ' -f1)
+            diff -u "$CTX/original.c" "$VAR" > "$OUT/variants/w$w.diff" || true
+            CHANGED=$(grep -c '^[+-][^+-]' "$OUT/variants/w$w.diff" || true)
+            if [ "$w" -eq 4 ]; then
+              [ "$CHANGED" -eq 0 ]; cmp "$CTX/original.c" "$VAR"; KIND='head-default'
+            else
+              [ "$CHANGED" -eq 2 ]
+              grep -qx -- '-#define SWEEP_MAX_WORKERS 4' "$OUT/variants/w$w.diff"
+              grep -qx -- "+#define SWEEP_MAX_WORKERS $w" "$OUT/variants/w$w.diff"
+              KIND='one-line-constant'
+            fi
+            jq -n --argjson workers "$w" --argjson changed "$CHANGED" --arg kind "$KIND" --arg original "$ORIG_SHA" --arg effective "$EFF_SHA" --arg diff "variants/w$w.diff" --arg old '#define SWEEP_MAX_WORKERS 4' --arg new "#define SWEEP_MAX_WORKERS $w" '{workers:$workers,originalSourceSha256:$original,effectiveSourceSha256:$effective,changedLines:$changed,patchKind:$kind,originalDefine:$old,effectiveDefine:$new,diffPath:$diff}' > "$OUT/variants/w$w.json"
+            TAG="xpod-native-lease-fanout:${RID}-w${w}"; IMAGE_TAGS+=("$TAG")
+            bounded 600 docker build --platform linux/amd64 --label "$LABEL" --build-arg BASE_IMAGE="$BASE" --build-arg WORKERS="$w" -f "$CTX/Dockerfile" -t "$TAG" "$CTX/w$w"
+            IMAGE_ID=$(docker image inspect -f '{{.Id}}' "$TAG"); IMAGE_IDS+=("$IMAGE_ID")
+            docker image inspect "$IMAGE_ID" > "$OUT/images/w$w.json"
+            bounded 60 docker run --rm --name "${PREFIX}-receipt-w$w" --label "$LABEL" --network none "$IMAGE_ID" cat /src/qlever/scripts/native/build.receipt.json > "$OUT/receipts/w$w.json"
+            jq --arg tag "$TAG" --arg id "$IMAGE_ID" --arg receipt "receipts/w$w.json" --arg elf "$(jq -r '.output.sha256' "$OUT/receipts/w$w.json")" --arg receiptSha "$(sha256sum "$OUT/receipts/w$w.json" | cut -d' ' -f1)" '. + {imageTag:$tag,imageId:$id,receiptPath:$receipt,elfSha256:$elf,receiptSha256:$receiptSha}' "$OUT/variants/w$w.json" > "$OUT/variants/w$w.tmp" && mv "$OUT/variants/w$w.tmp" "$OUT/variants/w$w.json"
+          done
+          jq -s '.' "$OUT"/variants/w1.json "$OUT"/variants/w2.json "$OUT"/variants/w4.json > "$OUT/variants.json"
+          ID1=$(jq -r '.[]|select(.workers==1)|.imageId' "$OUT/variants.json"); ID2=$(jq -r '.[]|select(.workers==2)|.imageId' "$OUT/variants.json"); ID4=$(jq -r '.[]|select(.workers==4)|.imageId' "$OUT/variants.json")
+          case_workers=(1 2 4 1 2 4); case_threads=(0 0 0 2 2 2)
+          orders=("0 1 2 3 4 5" "5 4 3 2 1 0" "1 2 3 4 5 0" "4 3 2 1 0 5" "2 3 4 5 0 1")
+          order=0
+          for round in 0 1 2 3 4; do
+            trial=$((round+1))
+            for idx in ${orders[$round]}; do
+              w=${case_workers[$idx]}; bg=${case_threads[$idx]}; order=$((order+1))
+              case "$w" in 1) id=$ID1;; 2) id=$ID2;; 4) id=$ID4;; esac
+              check
+              bounded 300 docker run --rm --name "${PREFIX}-w${w}t${bg}-r${trial}" --label "$LABEL" --platform linux/amd64 \
+                --read-only --network none --cpus 4 --memory 4g --pids-limit 256 --ulimit nofile=16384:16384 \
+                --security-opt no-new-privileges "$id" python3 -I -B -u /src/scripts/diagnostics/native-lease-backing.py arm \
+                --arm A --background-threads "$bg" --trial "$trial" --order "$order" --max-seconds 240 \
+                > "$OUT/runs/w${w}t${bg}-r${trial}.json"
+            done
+          done
+          STAGE=summary; check
+          jq -s --slurpfile src "$OUT/source.json" --slurpfile variants "$OUT/variants.json" '
+          def med: sort|.[length/2|floor];
+          def variant($w): $variants[0][]|select(.workers==$w);
+          def stats($w;$bg):
+            [.[]|select(.variant.workers==$w and .backgroundThreads.requested==$bg)] as $r
+            | {case:"w\($w)t\($bg)",workers:$w,backgroundThreads:$bg,runs:($r|length),
+               trialMedianMs:[$r[]|.timing.medianSecondsPerSweep*1000],
+               wallMsPerSweep:([$r[]|.timing.medianSecondsPerSweep*1000]|med),
+               wallMinMs:([$r[]|.timing.medianSecondsPerSweep*1000]|min),
+               wallMaxMs:([$r[]|.timing.medianSecondsPerSweep*1000]|max),
+               spreadMs:(([ $r[]|.timing.medianSecondsPerSweep*1000 ]|max)-([ $r[]|.timing.medianSecondsPerSweep*1000 ]|min)),
+               cpuMsPerSweep:([$r[]|((.resource.userSeconds+.resource.systemSeconds)/200*1000)]|med),
+               cpuMinMs:([$r[]|((.resource.userSeconds+.resource.systemSeconds)/200*1000)]|min),
+               cpuMaxMs:([$r[]|((.resource.userSeconds+.resource.systemSeconds)/200*1000)]|max),
+               cpuSpreadMs:(([$r[]|((.resource.userSeconds+.resource.systemSeconds)/200*1000)]|max)-([$r[]|((.resource.userSeconds+.resource.systemSeconds)/200*1000)]|min)),
+               threadStarted:([$r[].backgroundThreads.started]|unique),
+               threadWaiting:([$r[].backgroundThreads.waiting]|unique),
+               environment:$r[0].environment,rootEnvironment:$r[0].rootEnvironment,
+               native:$r[0].native,corpus:$r[0].corpus,checks:$r[0].checks,controls:$r[0].controls};
+          . as $runs |
+          ((length==30) and
+          ([.[]|select(.variant.workers==1 and .backgroundThreads.requested==0)]|length)==5 and
+          ([.[]|select(.variant.workers==2 and .backgroundThreads.requested==0)]|length)==5 and
+          ([.[]|select(.variant.workers==4 and .backgroundThreads.requested==0)]|length)==5 and
+          ([.[]|select(.variant.workers==1 and .backgroundThreads.requested==2)]|length)==5 and
+          ([.[]|select(.variant.workers==2 and .backgroundThreads.requested==2)]|length)==5 and
+          ([.[]|select(.variant.workers==4 and .backgroundThreads.requested==2)]|length)==5 and
+          ([.[].variant.workers]|sort|unique)==[1,2,4] and
+          all($variants[0][];.originalSourceSha256==$src[0].canonicalHashes["qlever/scripts/native/lease_sweep_ext.c"] and .originalDefine=="#define SWEEP_MAX_WORKERS 4" and (.effectiveDefine|startswith("#define SWEEP_MAX_WORKERS ")) and (.elfSha256|length)>0 and (.receiptSha256|length)>0 and (if .workers==4 then .changedLines==0 and .patchKind=="head-default" and .effectiveSourceSha256==.originalSourceSha256 else .changedLines==2 and .patchKind=="one-line-constant" and .effectiveSourceSha256!=.originalSourceSha256 end)) and
+          all(.[];. as $r|$r.variant.workers as $w|$r.backgroundThreads.requested as $bg|
+            .ok and .error==null and
+            .checks.leaseCount==7526 and .checks.planRows==7526 and .checks.sixFieldIdentity and .checks.realReadLeases and .checks.nativePlanBuilt and
+            .timing.iterations==200 and .timing.trials==1 and (.timing.allSecondsPerSweep|length)==1 and (.timing.medianSecondsPerSweep>0) and
+            .canonicalHashes["qlever/scripts/native/lease_sweep_ext.c"]==(variant($w).effectiveSourceSha256) and
+            .canonicalHashes["qlever/scripts/native/lease_sweep_binding.py"]==$src[0].canonicalHashes["qlever/scripts/native/lease_sweep_binding.py"] and
+            .canonicalHashes["qlever/scripts/native/build_native_helper.py"]==$src[0].canonicalHashes["qlever/scripts/native/build_native_helper.py"] and
+            .canonicalHashes["qlever/scripts/sdk-tool-lifetime-leases.py"]==$src[0].canonicalHashes["qlever/scripts/sdk-tool-lifetime-leases.py"] and
+            .native.sourceSha256==(variant($w).effectiveSourceSha256) and .native.elfReceiptSha256==.native.elfSha256 and .native.elfSha256==(variant($w).elfSha256) and .native.receiptSha256==(variant($w).receiptSha256) and
+            .controls.allOk and .controls.fullIdentityRejected and .controls.fullReleasedLeaseRejected and (.controls.checks|length)==3 and
+            .backgroundThreads.started==$bg and .backgroundThreads.waiting==$bg and .backgroundThreads.aliveBeforeTiming and .backgroundThreads.stopped and .backgroundThreads.joined and
+            .environment.sourceMountType=="overlay" and .environment.sourceMountPoint=="/" and .environment.sourceMountReadOnlyObserved and
+            .rootEnvironment.sourceMountType=="overlay" and .rootEnvironment.sourceMountReadOnlyObserved and
+            .environment.cgroupCpuMax=="400000 100000" and .environment.cgroupMemoryMax=="4294967296" and
+            (.environment.machine=="x86_64" or .environment.machine=="amd64") and (.environment.python|startswith("3.13.")) and .corpus.count==7526
+          ) and ([.[].corpus]|unique|length)==1) as $valid
+          | if $valid then $runs |
+              {ok:true,kind:"native-lease-fanout-summary",DIAGNOSTIC_NOT_QUALIFICATION:true,generatedAt:(now|todate),
+               rows:7526,sweepsPerTrial:200,warmups:2,trialsPerCase:5,
+               cases:[stats(1;0),stats(2;0),stats(4;0),stats(1;2),stats(2;2),stats(4;2)],
+               variants:$variants[0],source:$src[0].canonicalHashes,
+               trialOrder:([.[]|{case:("w\(.variant.workers)t\(.backgroundThreads.requested)"),trial:.trial,order:.order}]|sort_by(.order)),
+               allControlsPassed:true,decision:"MEASUREMENT_ONLY_NO_FANOUT_OR_RELEASE_CLAIM",
+               limitations:["GitHub ubuntu-24.04 x64 runner, not the failed production host.","Synthetic 64-byte overlay corpus; no ext4 comparison in this experiment.","Idle Python threads only; no product executor change.","No 734-target SDK compile, no RC acceptance, no end-to-end claim."]}
+            else error("fanout validation failed") end
+          ' "$OUT"/runs/*.json > "$OUT/summary.json"
+      - name: Upload fanout evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-lease-fanout-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .test-data/native-lease-fanout
           if-no-files-found: warn
           retention-days: 7

@@ -25,6 +25,7 @@ import shutil
 import stat
 import sys
 import sysconfig
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -32,6 +33,7 @@ from pathlib import Path
 ROWS, SWEEPS, WARMUPS = 7526, 200, 2
 CORPUS, VOLUME = '/probe/corpus', '/probe/volume'
 MANIFEST, SRC = '/probe/corpus.manifest.json', '/src'
+VARIANT = '/probe/variant.json'
 HELPERS = SRC + '/scripts/diagnostics/native-lease-sweep.py'
 LEASES = SRC + '/qlever/scripts/sdk-tool-lifetime-leases.py'
 
@@ -123,6 +125,56 @@ def populate():
     ok = actual == expected
     print_json({'ok': ok, 'manifest': actual, 'environment': env})
     return 0 if ok else 1
+
+
+def start_background_threads(count):
+    meta = {'requested': count, 'started': 0, 'waiting': 0,
+            'aliveBeforeTiming': count == 0, 'stopped': count == 0, 'joined': count == 0}
+    if count == 0:
+        return None, meta
+    stop = threading.Event()
+    lock = threading.Lock()
+    waiting = [0]
+    def idle():
+        with lock:
+            waiting[0] += 1
+        stop.wait()
+    threads = [threading.Thread(target=idle, name='fanout-idle-%d' % i, daemon=True)
+               for i in range(count)]
+    for thread in threads:
+        thread.start()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        with lock:
+            ready = waiting[0]
+        if ready == count:
+            break
+        time.sleep(0.01)
+    meta['started'] = len(threads)
+    meta['waiting'] = ready
+    meta['aliveBeforeTiming'] = bool(ready == count and all(t.is_alive() for t in threads))
+    if not meta['aliveBeforeTiming']:
+        stop.set()
+        for thread in threads:
+            thread.join(timeout=5)
+        raise Failure('background threads not alive and waiting')
+    return (stop, threads), meta
+
+
+def stop_background_threads(state, meta):
+    if state is None:
+        meta['stopped'] = True
+        meta['joined'] = True
+        return meta
+    stop, threads = state
+    stop.set()
+    for thread in threads:
+        thread.join(timeout=5)
+    meta['stopped'] = True
+    meta['joined'] = all(not thread.is_alive() for thread in threads)
+    if not meta['joined']:
+        raise Failure('background threads did not join')
+    return meta
 
 
 def install_rows(lease_set, corpus):
@@ -238,7 +290,8 @@ def arm(args):
               'warmups': WARMUPS, 'startedAt': now(), 'completedAt': None,
               'error': None, 'controls': {}, 'checks': {}, 'timing': {},
               'resource': {}, 'environment': {}, 'rootEnvironment': {},
-              'canonicalHashes': {}, 'native': {}, 'corpus': {}, 'closeError': None}
+              'canonicalHashes': {}, 'native': {}, 'corpus': {}, 'closeError': None,
+              'variant': {}, 'backgroundThreads': {}}
     lease_set = None
     try:
         helpers = load_helpers()
@@ -247,6 +300,11 @@ def arm(args):
         result['corpus'] = actual
         if actual != expected:
             raise Failure('corpus manifest differs from image manifest')
+        variant = ({'workers': 4, 'source': 'backing-default'} if not Path(VARIANT).exists()
+                   else json.loads(Path(VARIANT).read_text()))
+        if variant.get('workers') not in (1, 2, 4):
+            raise Failure('helper fanout variant differs')
+        result['variant'] = variant
         env = helpers.observe_environment(corpus)
         root_env = helpers.observe_environment('/')
         result['environment'], result['rootEnvironment'] = env, root_env
@@ -305,9 +363,15 @@ def arm(args):
         }
         if time.monotonic() > deadline:
             raise TimeoutError('arm deadline before timing')
-        usage_before = resource.getrusage(resource.RUSAGE_SELF)
-        timing = helpers.timed_batch(lease_set.check, SWEEPS, 1, warmup=WARMUPS)
-        usage_after = resource.getrusage(resource.RUSAGE_SELF)
+        thread_state, thread_meta = start_background_threads(args.background_threads)
+        result['backgroundThreads'] = thread_meta
+        try:
+            usage_before = resource.getrusage(resource.RUSAGE_SELF)
+            timing = helpers.timed_batch(lease_set.check, SWEEPS, 1, warmup=WARMUPS)
+            usage_after = resource.getrusage(resource.RUSAGE_SELF)
+        finally:
+            result['backgroundThreads'] = stop_background_threads(thread_state, thread_meta)
+            thread_state = None
         result['timing'] = timing
         result['resource'] = {
             'userSeconds': usage_after.ru_utime - usage_before.ru_utime,
@@ -344,6 +408,7 @@ def main(argv=None):
     parser.add_argument('--trial', type=int, default=1)
     parser.add_argument('--order', type=int, default=1)
     parser.add_argument('--max-seconds', type=int, default=240)
+    parser.add_argument('--background-threads', type=int, choices=[0, 2], default=0)
     args = parser.parse_args(argv)
     try:
         if args.mode == 'generate':
