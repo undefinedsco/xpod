@@ -9,9 +9,16 @@ on:
   pull_request:
     paths:
       - 'scripts/diagnostics/native-lease-sweep.py'
+      - 'scripts/diagnostics/native-lease-backing.py'
       - 'qlever/scripts/native/**'
       - '.github/workflows/native-lease-sweep-diagnostic.yml'
   workflow_dispatch:
+    inputs:
+      scenario:
+        description: 'sweep = existing bounded native check; backing = 7,526-row overlay-vs-ext4 A/B'
+        type: choice
+        options: [sweep, backing]
+        default: sweep
 permissions:
   contents: read
 concurrency:
@@ -20,6 +27,7 @@ concurrency:
 jobs:
   measure:
     name: measure (${{ matrix.arch }})
+    if: ${{ github.event_name == 'pull_request' || inputs.scenario == 'sweep' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     strategy:
@@ -96,4 +104,153 @@ jobs:
             .test-data/diag/report.json
             .test-data/diag/build.receipt.json
           if-no-files-found: error
+          retention-days: 7
+
+  backing:
+    name: backing (Linux x64)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.scenario == 'backing' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout (read-only, no persisted credentials)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: 7,526-row overlay-vs-ext4 A/B
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC="$GITHUB_WORKSPACE"
+          OUT="$SRC/.test-data/native-lease-backing"
+          CTX="$RUNNER_TEMP/native-lease-backing-context"
+          RID="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          LABEL="org.xpod.native-lease-backing=${RID}"
+          IMAGE="xpod-native-lease-backing:${RID}"
+          VOL="xpod-native-lease-backing-${RID}-corpus"
+          PREFIX="xpod-native-lease-backing-${RID}"
+          BASE='debian:trixie-20260803-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258'
+          STAGE=init
+          resources_owned=0
+          rm -rf "$OUT" "$CTX"
+          mkdir -p "$OUT/runs" "$CTX/qlever/scripts/native" "$CTX/scripts/diagnostics"
+          cleanup() {
+            local failed=0 c
+            [ "$resources_owned" -eq 1 ] || return 0
+            timeout 20 docker info >/dev/null 2>&1 || return 1
+            for c in $(docker ps -aq --filter "label=$LABEL" 2>/dev/null || true); do docker rm -f "$c" >/dev/null 2>&1 || failed=1; done
+            if [ "$(docker image inspect -f '{{ index .Config.Labels "org.xpod.native-lease-backing" }}' "$IMAGE" 2>/dev/null || true)" = "$RID" ]; then docker image rm --no-prune "$IMAGE" >/dev/null 2>&1 || failed=1; fi
+            if [ "$(docker volume inspect -f '{{ index .Labels "org.xpod.native-lease-backing" }}' "$VOL" 2>/dev/null || true)" = "$RID" ]; then docker volume rm "$VOL" >/dev/null 2>&1 || failed=1; fi
+            rm -rf "$CTX"
+            return "$failed"
+          }
+          finish() {
+            status=$?; cstatus=0; cleanup || cstatus=$?
+            if [ "$status" -eq 0 ] && [ "$cstatus" -ne 0 ]; then status=1; fi
+            if [ "$status" -eq 0 ]; then ok=true; else ok=false; fi
+            printf '{"kind":"native-lease-backing-report","ok":%s,"status":%d,"cleanupStatus":%d,"stage":"%s","runId":"%s","sha":"%s","image":"%s","volume":"%s"}\n' "$ok" "$status" "$cstatus" "$STAGE" "$RID" "$GITHUB_SHA" "$IMAGE" "$VOL" > "$OUT/report.json"
+            exit "$status"
+          }
+          trap finish EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          deadline=$((SECONDS+1020))
+          check() { [ "$SECONDS" -lt "$deadline" ] || { STAGE=deadline; echo 'global deadline' >&2; exit 124; }; }
+          bounded() { check; local limit=$1; shift; [ $((deadline-SECONDS)) -lt "$limit" ] && limit=$((deadline-SECONDS)); timeout "$limit" "$@"; }
+          if docker image inspect "$IMAGE" >/dev/null 2>&1; then STAGE=preflight; echo 'image name already exists' >&2; exit 1; fi
+          if docker volume inspect "$VOL" >/dev/null 2>&1; then STAGE=preflight; echo 'volume name already exists' >&2; exit 1; fi
+          resources_owned=1
+          for rel in qlever/scripts/native/lease_sweep_ext.c qlever/scripts/native/lease_sweep_binding.py qlever/scripts/native/build_native_helper.py qlever/scripts/sdk-tool-lifetime-leases.py scripts/diagnostics/native-lease-sweep.py scripts/diagnostics/native-lease-backing.py; do install -D -m 600 "$SRC/$rel" "$CTX/$rel"; done
+          ( cd "$SRC" && sha256sum qlever/scripts/native/lease_sweep_ext.c qlever/scripts/native/lease_sweep_binding.py qlever/scripts/native/build_native_helper.py qlever/scripts/sdk-tool-lifetime-leases.py ) | jq -Rn '[inputs|split("  ")|{(.[1]):.[0]}]|add|{canonicalHashes:.}' > "$OUT/source.json"
+          cat > "$CTX/Dockerfile" <<'DOCKER'
+          ARG BASE_IMAGE
+          FROM ${BASE_IMAGE}
+          RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-install-recommends python3 python3-dev clang-19 build-essential ca-certificates && rm -rf /var/lib/apt/lists/*
+          COPY . /src
+          RUN python3 -I -B /src/qlever/scripts/native/build_native_helper.py /src/qlever/scripts/native/lease_sweep_ext.c /src/qlever/scripts/native --cc clang-19 && chmod 0755 /src/qlever/scripts/native/lease_sweep_ext*.so
+          WORKDIR /probe
+          RUN python3 -I -B /src/scripts/diagnostics/native-lease-backing.py generate
+          ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+          DOCKER
+          STAGE=build; bounded 600 docker build --platform linux/amd64 --label "$LABEL" --build-arg BASE_IMAGE="$BASE" -t "$IMAGE" "$CTX"
+          docker image inspect "$IMAGE" > "$OUT/image.json"
+          IMAGE_ID=$(docker image inspect -f '{{.Id}}' "$IMAGE")
+          STAGE=receipt; bounded 60 docker run --rm --name "${PREFIX}-receipt" --label "$LABEL" --network none "$IMAGE_ID" cat /src/qlever/scripts/native/build.receipt.json > "$OUT/build.receipt.json"
+          STAGE=volume; bounded 60 docker volume create --label "$LABEL" "$VOL"
+          STAGE=populate; bounded 300 docker run --rm --name "${PREFIX}-populate" --label "$LABEL" --platform linux/amd64 --read-only --network none --cpus 2 --memory 2g --pids-limit 128 --mount "type=volume,src=$VOL,dst=/probe/volume" "$IMAGE_ID" python3 -I -B -u /src/scripts/diagnostics/native-lease-backing.py populate | tee "$OUT/prep-volume.json"
+          STAGE=arms
+          i=0
+          for pair in A:1 B:1 B:2 A:2 A:3 B:3 B:4 A:4 A:5 B:5; do
+            arm=${pair%:*}; trial=${pair#*:}; i=$((i+1))
+            extra=()
+            if [ "$arm" = B ]; then extra=(--mount "type=volume,src=$VOL,dst=/probe/volume,readonly"); fi
+            bounded 300 docker run --rm --name "${PREFIX}-${arm}${trial}" --label "$LABEL" --platform linux/amd64 \
+              --read-only --network none --cpus 4 --memory 4g --pids-limit 256 \
+              --ulimit nofile=16384:16384 --security-opt no-new-privileges "${extra[@]}" "$IMAGE_ID" \
+              python3 -I -B -u /src/scripts/diagnostics/native-lease-backing.py arm \
+              --arm "$arm" --trial "$trial" --order "$i" --max-seconds 240 > "$OUT/runs/${arm}${trial}.json"
+          done
+          STAGE=summary; check
+          jq -s --slurpfile src "$OUT/source.json" '
+          def med: sort | .[length/2|floor];
+          def arm($n):
+            [.[]|select(.arm==$n)] as $r
+            | [ $r[].timing.medianSecondsPerSweep*1000 ] as $ms
+            | {runs:($r|length), trialMedianMs:$ms, wallMsPerSweep:($ms|med),
+               wallMinMs:($ms|min), wallMaxMs:($ms|max), spreadMs:(($ms|max)-($ms|min)),
+               cpuMsPerSweep:([$r[]|((.resource.userSeconds+.resource.systemSeconds)/200*1000)]|med)};
+          . as $runs |
+          ((length==10) and
+          ([.[]|select(.arm=="A")]|length)==5 and
+          ([.[]|select(.arm=="B")]|length)==5 and
+          all(.[]; .ok == true and .error == null and
+            .checks.leaseCount==7526 and .checks.planRows==7526 and
+            .checks.sixFieldIdentity and .checks.realReadLeases and .checks.nativePlanBuilt and
+            .timing.iterations==200 and .timing.trials==1 and
+            (.timing.allSecondsPerSweep|length)==1 and
+            .canonicalHashes==$src[0].canonicalHashes and
+            .native.extensionLoaded and .native.bindingLoaded and
+            .native.elfReceiptSha256==.native.elfSha256 and
+            .controls.allOk and .controls.fullIdentityRejected and
+            .controls.fullReleasedLeaseRejected and (.controls.checks|length)==3 and
+            .environment.sourceMountReadOnlyObserved and
+            .rootEnvironment.sourceMountReadOnlyObserved and
+            .rootEnvironment.sourceMountType=="overlay" and
+            .environment.sourceMountType==(if .arm=="A" then "overlay" else "ext4" end) and
+            .environment.sourceMountPoint==(if .arm=="A" then "/" else "/probe/volume" end) and
+            .environment.cgroupCpuMax=="400000 100000" and
+            .environment.cgroupMemoryMax=="4294967296" and
+            (.environment.machine=="x86_64" or .environment.machine=="amd64") and
+            (.environment.python|startswith("3.13.")) and
+            .corpus.count==7526) and
+          ([.[].corpus]|unique|length)==1 and
+          ([.[].native]|unique|length)==1) as $valid
+          | if $valid then $runs |
+              (arm("A")) as $a | (arm("B")) as $b
+              | ($b.wallMsPerSweep-$a.wallMsPerSweep) as $diff
+              | ([$a.spreadMs,$b.spreadMs]|max) as $noise
+              | ($diff|if .<0 then -. else . end) as $abs
+              | {ok:true, kind:"native-lease-backing-summary", generatedAt:(now|todate),
+                 rows:7526, sweepsPerTrial:200, warmups:2, trialsPerArm:5,
+                 trialOrder:([.[]|{arm,trial,order}]|sort_by(.order)),
+                 arms:{A:$a,B:$b},
+                 comparison:{bMinusAMsPerSweep:$diff,
+                   bOverARatio:($b.wallMsPerSweep/$a.wallMsPerSweep),
+                   noiseBandMs:$noise,
+                   decision:(if $abs<=$noise then "no_material_signal_within_local_noise" elif $diff<0 then "b_faster_candidate_unconfirmed" else "b_slower_candidate_unconfirmed" end),
+                   decisionRule:"material only if |B-A| exceeds the larger A/A or B/B trial-median spread; candidate signal is not significance and not end-to-end"},
+                 allControlsPassed:true, corpus:.[0].corpus,
+                 canonicalHashes:$src[0].canonicalHashes, native:.[0].native,
+                 mounts:{A:([.[]|select(.arm=="A")|.environment][0]),B:([.[]|select(.arm=="B")|.environment][0])},
+                 cgroup:{cgroupCpuMax:.[0].environment.cgroupCpuMax,cgroupMemoryMax:.[0].environment.cgroupMemoryMax},
+                 costAttribution:{status:"BACKING_MEASURED_45_PERCENT_ATTRIBUTION_UNKNOWN",note:"Short Linux x64 backing measurement only; no 734 compile, no production 45% attribution, no end-to-end claim."},
+                 limitations:["GitHub ubuntu-24.04 x64 runner, not the failed production host.","Synthetic 64-byte corpus, not the failed-run inode composition.","No 734-target SDK compile; no executor/mount contract observation."]}
+            else error("backing validation failed") end
+          ' "$OUT"/runs/*.json > "$OUT/summary.json"
+      - name: Upload backing evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-lease-backing-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .test-data/native-lease-backing
+          if-no-files-found: warn
           retention-days: 7
