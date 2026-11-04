@@ -81,7 +81,9 @@ test('the frozen f803 snapshot is the published canonical bytes and the moving c
     'qlever/tests/test_sdk_execution_budget_diagnostic.py',
     'qlever/tests/test_sdk_image_originals.py',
     'qlever/tests/test_sdk_ptrace_execution_library.py',
-    'qlever/tests/test_sdk_upstream_source_materials.py']);
+    'qlever/tests/test_sdk_upstream_source_materials.py',
+    // SDK92 appends the previously unbound ownership cohort regression.
+    'qlever/tests/test_sdk_ownership_cohort.py']);
   expect(new Set(current.map(row => row.path)).size).toBe(current.length);
 });
 
