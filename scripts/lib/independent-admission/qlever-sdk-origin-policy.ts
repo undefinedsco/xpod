@@ -2488,7 +2488,8 @@ const SDK91_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK90_GROUP,
  * keep their exact bytes. */
 const SDK92_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  'qlever/scripts/sdk-ptrace-execution.py':'e7809ce84224c25cf36623cebc2933031e035011f2792530b668b5e554f4377e',
- '.github/workflows/ci.yml':'7752a8dd9a38c32e90881078d581cef7b7ef163713259a0fa1c38043e3887c15'
+ '.github/workflows/ci.yml':'7752a8dd9a38c32e90881078d581cef7b7ef163713259a0fa1c38043e3887c15',
+ 'tests/scripts/candidate-producer-attempt-binding.test.ts':'38395665f84e0ea065457e2bb032ee2b4536518073375bf04066453bfb2dbc28'
 });
 const SDK92_NEW_ROWS=Object.freeze([
  Object.freeze({path:'qlever/tests/test_sdk_ownership_cohort.py',sha256:'16067af34b82a69741b8d52ff7d1eb4425e04e1275c91e1151001548e992315b'})

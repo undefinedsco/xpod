@@ -18,7 +18,7 @@ import path from 'node:path';
 import {it,expect} from 'vitest';
 import {QLEVER_SDK_EXECUTION_GROUPS as SDK,QLEVER_LINUX_EXECUTION_GROUPS as LINUX} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import {selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
-import {CURRENT_CANONICAL_SOURCE_ROWS} from './source-binding-group.fixture';
+import {CURRENT_CANONICAL_SOURCE_ROWS, CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
 
 const ROOT=path.resolve(import.meta.dirname,'../..');
 const whole=(g:unknown)=>createHash('sha256').update(JSON.stringify(g)).digest('hex');
@@ -109,7 +109,7 @@ it('the latest live SDK90 group binds the actual current build-contract bytes',(
   // equal today's working tree. It complements the frozen SDK84 historical case
   // above instead of asking that published tuple to follow a later edit.
   const latest=SDK[SDK.length-1]!;
-  expect(SDK).toHaveLength(91);
+  expect(SDK).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.sdk);
   expect(whole(LINUX[LINUX.length-1]!)).toBe(whole(latest));
   // three role occurrences: inherited source binding, inherited stage-0 secondary
   // selector, and the appended final stage — all must carry the same live bytes.

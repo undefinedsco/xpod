@@ -4,6 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { decodeCatalog } from './sdk-helper-catalog.fixture';
 import { QLEVER_SDK_EXECUTION_GROUPS as SDK, QLEVER_LINUX_EXECUTION_GROUPS as LINUX } from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
+import { CURRENT_SOURCE_GROUP_COUNTS } from './source-binding-group.fixture';
 
 const ROOT = path.resolve(import.meta.dirname, '../..');
 const sha = (file: string) => createHash('sha256').update(readFileSync(path.join(ROOT, file))).digest('hex');
@@ -15,8 +16,8 @@ const row = (group: any, file: string) => [...all(group)].reverse().find((item: 
 
 describe('SDK88 phase-derived budget binding', () => {
   it('appends one current group and leaves SDK87 historical bytes untouched', () => {
-    expect(SDK).toHaveLength(91);
-    expect(LINUX).toHaveLength(92);
+    expect(SDK).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.sdk);
+    expect(LINUX).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.linux);
     const old = SDK[86]!, next = SDK[87]!;
     expect(row(old, 'qlever/scripts/sdk-execution-budget.py').sha256).toBe('329194655827de1d03a31db5f311ba1cc59fd0ade7edf2ef48fcc8fae52ebfee');
     expect(row(next, 'qlever/scripts/sdk-execution-budget.py').sha256).toBe('a66aca9e68010a80cac474cb004c58c2244efe08f772c1215c74103dae68de80');
