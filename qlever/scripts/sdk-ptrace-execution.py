@@ -1570,6 +1570,11 @@ class Observer(CapturesMixin):
         # its 1024-slot cap still run for every owner below, at the original point.
         counts={}
         for row in live.values():counts[row['fdTable']]=counts.get(row['fdTable'],0)+1
+        # Capture only the exact outer claim that was already armed at entry.
+        # This local object identity, not a cache, decides whether the closing
+        # audit may use the sticky/nonlease guard; any replacement or changed
+        # waiter/thread/phase/deadline falls back to the complete sweep.
+        entry_claim=self._outer_lease_coalesce if self.outer_lease_window_owned() else None
         self.check_owned_entry()
         primary=None
         try:
@@ -1582,7 +1587,7 @@ class Observer(CapturesMixin):
                 shared=counts[row['fdTable']]>1
                 descriptors=[] if shared else None
                 # This whole live cohort is already bracketed by the entry and
-                # finally self.check_full() below, so each member's read-only FD name
+                # finally closing audit below, so each member's read-only FD name
                 # scan pays only the cheap deadline/stdio refusal. Standalone
                 # bounded_fd_slots keeps its full entry/finally guards.
                 for value in bounded_fd_slot_names(pid,self.check_deadline):
@@ -1596,7 +1601,18 @@ class Observer(CapturesMixin):
             primary=error
             raise
         finally:
-            try:self.check_full()
+            use_guard=False
+            if entry_claim is not None and getattr(self,'_outer_lease_coalesce',None) is entry_claim:
+                try:
+                    use_guard=(not self.read_frame_any()
+                               and getattr(self,'owned_maps_frame',None) is None
+                               and getattr(self,'owned_emit_record_frame',None) is None
+                               and self.outer_lease_window_owned())
+                except Exception:
+                    use_guard=False
+            try:
+                if use_guard:self.check()
+                else:self.check_full()
             except BaseException:
                 if primary is None:raise
         for tgid,tids in groups.items():assert sorted(int(value) for value in os.listdir('/proc/'+str(tgid)+'/task'))==sorted(tids+[pid for pid in excluded if self.tasks[pid]['tgid']==tgid]),'unregistered or missing actual TGID task'
@@ -1626,10 +1642,15 @@ class Observer(CapturesMixin):
         return self.read_body(read_aliases)
     def barrier(self):
         return self.instrument('barrier',self.barrier_original)
+    def _barrier_task_snapshot(self):
+        # Shallow exact-dict copy keeps row refs/order and the old snapshot's
+        # insert/delete/replace shield without allocating one tuple per row.
+        tasks=self.tasks
+        return tasks.copy().items() if type(tasks) is dict else list(tasks.items())
     def barrier_original(self):
         self.pausing=True
         try:
-            for pid,row in list(self.tasks.items()):
+            for pid,row in self._barrier_task_snapshot():
                 if not row['stopped'] and not row['exited']:
                     try:single.trace(INTERRUPT,pid)
                     except OSError as error:
@@ -1639,7 +1660,7 @@ class Observer(CapturesMixin):
                 return getattr(self,'serialize_terminal_syscalls',False)and terminal and terminal['closed']and terminal.get('resumed')and state(pid)=='Z'
             while self.unknown_stops or any(not row['stopped']and not row['exited']and not terminal_peer(pid,row)for pid,row in self.tasks.items()):
                 pid,status=self.wait_one();self.event(pid,status,False)
-            for pid,row in list(self.tasks.items()):
+            for pid,row in self._barrier_task_snapshot():
                 terminal=row.get('terminalAuthority')
                 if not row['exited'] and terminal and state(pid)=='Z':self.reap_terminal_task(pid,allow_pending=getattr(self,'serialize_terminal_syscalls',False))
             known=[];terminal_peers=[]

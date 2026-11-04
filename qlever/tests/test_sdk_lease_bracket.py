@@ -99,7 +99,7 @@ class SourceSafetyTest(unittest.TestCase):
                 entry=[call for call in calls if call.func.attr=='check_owned_entry']
                 full=[call for call in calls if call.func.attr=='check_full']
                 self.assertEqual(len(entry),1,'one exact owned-window entry policy')
-                self.assertEqual(len(full),1,'one unconditional complete closing audit')
+                self.assertEqual(len(full),1,'one explicit full fallback in finally')
                 guard=[sub for sub in node.body if isinstance(sub,ast.Try)]
                 self.assertEqual(len(guard),1,'one exception-safe ownership body')
                 self.assertLess(entry[0].lineno,guard[0].lineno,'entry precedes the pure body')
@@ -107,7 +107,7 @@ class SourceSafetyTest(unittest.TestCase):
                          if isinstance(call,ast.Call) and isinstance(call.func,ast.Attribute)
                          and isinstance(call.func.value,ast.Name) and call.func.value.id=='self'
                          and call.func.attr=='check_full']
-                self.assertEqual(len(closing),1,'actual complete closing call is inside outer finally')
+                self.assertEqual(len(closing),1,'actual explicit full fallback is inside outer finally')
                 continue
             self.assertIn('self.check()',text,name+' must bracket')
             # the trailing full check must be in a finally so exceptions still run it
