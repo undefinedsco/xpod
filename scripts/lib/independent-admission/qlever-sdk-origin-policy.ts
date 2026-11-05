@@ -2511,13 +2511,13 @@ const SDK92_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK91_GROUP,
  * candidate workflow SHA and the declared normal recipe bytes.
  */
 export const QLEVER_SDK_NORMAL_CANDIDATE_WORKFLOW='.github/workflows/candidate.yml';
-export const QLEVER_SDK_NORMAL_CANDIDATE_WORKFLOW_SHA='b96671e07a938f8a2c8f340fa70ffdbace0963e9850e7335842a551b6cb9215a';
+export const QLEVER_SDK_NORMAL_CANDIDATE_WORKFLOW_SHA='1446b2ceb6c53b8888e07d0b822854b934c95d508f93dfd901a4687e28d22d9d';
 const QLEVER_NORMAL_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  '.dockerignore':'e2cf7881f77766082998d206a6c853a474fa906d9feba3e16dc9467b797fb836',
  '.github/workflows/publish-qlever-runtime-sdk.yml':'db1b81d967936dfeaaa8da875ab3be4106ebc8328cf344d444a585139fd6b0b2',
  '.github/workflows/qlever-readonly-normal-job.yml':'c6a7772bccc84504a7e2173272f8ce895341ad51faf13df73a94fcb30b5a2dcc',
  'qlever/scripts/sdk-image-originals.py':'83f8cd466345939457b9caad7047bd1966ffe1817f3399fa21b6a0ed6f7d7fba',
- '.github/workflows/candidate.yml':'b96671e07a938f8a2c8f340fa70ffdbace0963e9850e7335842a551b6cb9215a',
+ '.github/workflows/candidate.yml':'1446b2ceb6c53b8888e07d0b822854b934c95d508f93dfd901a4687e28d22d9d',
  'qlever/scripts/resolve-runtime-sdk-build.sh':'0a89741f16f0a3b153e859240ca7f0131c26568f09e29244c3b75043f7ec8f53',
  'qlever/scripts/sdk-service-image-originals.py':'07e57e3ba61af095f33fc6c417918d2d9b49322f1911baa4498794934dd902c1',
  'scripts/check-candidate-service-sdk-source.ts':'9a47b7343249ffd8b28b3f047cce63d0c908fe059bf14a65e60b00d369e25e02',
@@ -2551,7 +2551,7 @@ const SDK93_GROUP:GitHubSourceBindingGroup=Object.freeze({
 });
 export const QLEVER_NORMAL_BUILD_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([SDK93_GROUP]);
 export const QLEVER_SDK_NORMAL_SOURCE_BINDINGS:readonly GitHubSourceBinding[]=Object.freeze([
- Object.freeze({path:'.github/workflows/candidate.yml',sha256:'b96671e07a938f8a2c8f340fa70ffdbace0963e9850e7335842a551b6cb9215a'}),
+ Object.freeze({path:'.github/workflows/candidate.yml',sha256:'1446b2ceb6c53b8888e07d0b822854b934c95d508f93dfd901a4687e28d22d9d'}),
  Object.freeze({path:'.github/workflows/publish-qlever-runtime-sdk.yml',sha256:'db1b81d967936dfeaaa8da875ab3be4106ebc8328cf344d444a585139fd6b0b2'}),
  Object.freeze({path:'docker/qlever-runtime-sdk/Dockerfile.normal',sha256:'d5c976deffdd077ca2082189979bdcc7e552001022425c14bec489700e3629a7'}),
  Object.freeze({path:'docker/qlever-runtime-sdk/Dockerfile.normal.incremental',sha256:'e20fe581d37bb299e34e05686eee742ac7b2c83fd2786529c6f09b6bbfaec00f'}),

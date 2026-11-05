@@ -18,7 +18,7 @@ producer job 的终态判定以**保留的原始 job 记录**为准，而不是�
 
 Windows 保留平台默认 shell/PATH。完整 build 产生的 UI 变化由 Vite 与验收器共用 `ui/build-targets.json` 声明输出边界：旧的 tracked 输出删除记录与本次 Rollup/publicDir 产物清单分别验证，保留完整 Git 状态；源码、锁文件和未知静态文件漂移继续阻断。不能通过忽略整个 `static/` 绕过源码检查。
 
-`candidate.yml` 通过 reusable workflow 在 RC 前置检查前要求矩阵成功；finalize 再校验 exact SHA、同次 RC run 的全部通道及原始日志/pack 摘要，并将 `compat.receipt.json` 和原件一并放入 `release-acceptance-${GITHUB_SHA}` 的 `compat/`。`release.yml` 从同一个 accepted artifact 重验 `legacy-root-compat`，不接受另一轮矩阵或手填通过标记。部分重跑按每条通道的最新实际 attempt 判定，不能退回旧的成功 attempt。
+`candidate.yml` 通过 reusable workflow 让完整 18 条矩阵与只读 RC 前置检查并行运行；SDK 解析/构建不等待矩阵结果，共享 RC 的 `deploy_and_accept` 显式依赖矩阵成功后才允许变更。finalize 再校验 exact SHA、同次 RC run 的全部通道及原始日志/pack 摘要，并将 `compat.receipt.json` 和原件一并放入 `release-acceptance-${GITHUB_SHA}` 的 `compat/`。`release.yml` 从同一个 accepted artifact 重验 `legacy-root-compat`，不接受另一轮矩阵或手填通过标记。部分重跑按每条通道的最新实际 attempt 判定，不能退回旧的成功 attempt。
 
 2026-10-15 的 [run 38750639516](https://github.com/undefinedsco/xpod/actions/runs/38750639516) 实际 checkout 为 `0b5aad17fdc2bd17b017d3d2a3119c062689ed90`，事件 head 为 `1ac0526d676e59a240a1bd3f665ea54b275d2fa3`。Node 9/9 成功（包含 Windows 22/24/25），Bun 9/9 失败，verify 阻断。Windows tar listing 和正常 UI 输出误判未再现；原 Bun registry 安装兼容阻塞仍未解决，不能将 wrapper 修复或矩阵拆分视为整体兼容/发布资格通过。具体 GNU tar/PATH 根因仍未由旧失败日志证明。
 
@@ -573,8 +573,9 @@ GHA 缓存（scope `qlever-runtime-sdk`）和"复用已有 SDK 镜像"两条增�
   既有 profile 契约不变）；
 - SDK 的 build source SHA 与当前 app consumer SHA 分开绑定：复用旧 SDK 不要求
   旧 SDK revision 等于仅 app 变化的新提交，app master 记录 SDK 自己的
-  source/run/head 与当前 app 关系；当前候选的 18 条兼容与 29 项检查在 SDK 解析
-  **之后**针对当前 app + 选中 SDK digest 运行，不能反过来作为 SDK 重建前置。
+  source/run/head 与当前 app 关系；当前候选的 18 条兼容与 29 项检查与 SDK 解析
+  **并行**，其中 18 条兼容是共享 RC 部署的显式前置、29 项检查在部署验收阶段运行，
+  不能反过来作为 SDK 解析/构建前置。
 
 **`normal-build-v1` 明确保留与移除的证明**：保留精确 source SHA、profile/target、
 完整 64-hex 输入身份、patch/dependency/toolchain recipe 字节、不可变 OCI

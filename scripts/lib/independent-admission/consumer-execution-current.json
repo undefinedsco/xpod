@@ -1221,7 +1221,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "cb55b14fce9115a938ca780932a0e010fa01f96379046db06cd389a5287002b7"
+    "sha256": "129202100edd0ccd479c0891c065b65ddd2b3a259d62f4421ebde829dd386061"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
