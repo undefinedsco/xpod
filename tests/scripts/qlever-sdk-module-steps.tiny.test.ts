@@ -14,7 +14,7 @@ const root=process.env.XPOD_ORIGIN_SOURCE_FIXTURE??path.resolve(import.meta.dir,
 const readonlyGroup=QLEVER_SDK_EXECUTION_GROUPS.at(-2)!;
 const readonlyBytes=new Map<string,Buffer>();
 for(const row of [...readonlyGroup.selectors,...(readonlyGroup.secondarySelectors??[]),...(readonlyGroup.secondarySelectorStages??[]).flat(),...readonlyGroup.sourceBindings]){
- if(!readonlyBytes.has(row.path))readonlyBytes.set(row.path,execFileSync('git',['show','HEAD:'+row.path],{maxBuffer:64*1024*1024}));
+ if(!readonlyBytes.has(row.path))readonlyBytes.set(row.path,execFileSync('git',['show','c1040404:'+row.path],{maxBuffer:64*1024*1024}));
 }
 let fixtureId=200;
 async function scenario(skip?:string,revision?:string,missing?:string,modified?:string,legacyJob=false,nested=false,requestedOut?:string[]){

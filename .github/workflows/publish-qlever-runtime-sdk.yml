@@ -234,7 +234,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "${SDK_PROFILE}" == service-trixie ]]; then
-            python3 qlever/scripts/sdk-normal-build-proof.py identity               --source . --source-commit "${SOURCE_COMMIT}"               --profile "${SDK_PROFILE}" --target "${SDK_TARGET}"               --profile-identity "${SDK_PROFILE_IDENTITY}"               --dockerfile "${NORMAL_DOCKERFILE}"               --out "${RUNNER_TEMP}/qlever-normal-input.json"
+            python3 qlever/scripts/sdk-normal-build-proof.py identity               --source . --source-commit "${SOURCE_COMMIT}"               --profile "${SDK_PROFILE}" --target "${SDK_TARGET}"               --profile-identity "${SDK_PROFILE_IDENTITY}"               --dockerfile "${NORMAL_DOCKERFILE}"               --prior-sdk-digest "${PRIOR_SDK_DIGEST}"               --out "${RUNNER_TEMP}/qlever-normal-input.json"
           else
             inputs_hash="$({ printf '%s\n' '${SDK_PROFILE}:${SDK_TARGET}:${SDK_PROFILE_IDENTITY}'; git rev-parse "${SOURCE_COMMIT}:qlever"; git rev-parse "${SOURCE_COMMIT}:docker/qlever-runtime-sdk"; } | sha256sum | cut -c1-12)"
             echo "tag=qlever-inputs-${inputs_hash}" >> "${GITHUB_OUTPUT}"

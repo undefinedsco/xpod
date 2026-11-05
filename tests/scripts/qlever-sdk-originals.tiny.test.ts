@@ -1,6 +1,6 @@
 import {test,expect} from 'bun:test';
 import {CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
-import {inspectQleverSdkArtifactReference,inspectQleverSdkMasterBinding,qleverSdkOriginalsView,collectRelatedQleverSdkOriginals,inspectQleverSdkAppAcquisition} from '../../scripts/lib/independent-admission/qlever-sdk-originals';
+import {inspectQleverSdkArtifactReference,inspectQleverSdkMasterBinding,qleverSdkOriginalsView,collectRelatedQleverSdkOriginals,inspectQleverSdkAppAcquisition,inspectRoutedQleverSdkReference} from '../../scripts/lib/independent-admission/qlever-sdk-originals';
 import {QLEVER_LINUX_EXECUTION_GROUPS,QLEVER_SDK_B_SOURCE_BINDINGS,QLEVER_SDK_EXECUTION_GROUPS} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import {selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import {completeObserved} from './source-binding-group.fixture';
@@ -46,6 +46,14 @@ test('APP->SDK acquisition accepts verified normal reuse across runs/attempts an
  expect(()=>acquire(locator(),app(),jobs([{...selection[0],conclusion:'skipped'},selection[1]]))).toThrow(/selection step/);
 });
 
+test('routed module path explicitly rejects normal locators while preserving the legacy same-run contract',()=>{
+ const base={artifactId:7,artifactSha256:'4'.repeat(64),sourceSha,runId:10,runAttempt:2,runHeadSha,target:'linux-x64',sdkProfile:'module-bookworm-gcc12',sdkBuildExecutionModel:'controller-readonly-v1',sdkImageReferenceByDigest:sdkImage,master:{path:'materials.json',bytes:123,sha256:'e'.repeat(64)}};
+ const native={sourceSha,runId:10,runAttempt:2,runHeadSha,target:'linux-x64' as const,sdkImage};
+ expect(inspectRoutedQleverSdkReference({sdkArtifact:base,sdkImage},native).runId).toBe(10);
+ expect(()=>inspectRoutedQleverSdkReference({sdkArtifact:{...base,sdkBuildExecutionModel:'normal-build-v1'},sdkImage},native)).toThrow(/routed module path/);
+ expect(()=>inspectRoutedQleverSdkReference({sdkArtifact:{sdkBuildExecutionModel:'normal-build-v1'},sdkImage},native)).toThrow(/routed module path/);
+ expect(()=>inspectRoutedQleverSdkReference({sdkArtifact:{...base,runAttempt:1},sdkImage},native)).toThrow(/exact SDK artifact/);
+});
 test('SDK origin source recipes remain whole versioned groups',()=>{
  for(const group of QLEVER_LINUX_EXECUTION_GROUPS)expect(selectGitHubSourceBindingGroup(QLEVER_LINUX_EXECUTION_GROUPS,completeObserved(QLEVER_LINUX_EXECUTION_GROUPS,group))).toBe(group);
  const mixed=new Map(QLEVER_LINUX_EXECUTION_GROUPS[0]!.selectors.map(row=>[sourceBindingKey(row),row.sha256]));const next=QLEVER_LINUX_EXECUTION_GROUPS[1]!.selectors.find(row=>row.path==='.github/workflows/publish-qlever-runtime-sdk.yml')!;mixed.set(sourceBindingKey(next),next.sha256);expect(()=>selectGitHubSourceBindingGroup(QLEVER_LINUX_EXECUTION_GROUPS,mixed)).toThrow();

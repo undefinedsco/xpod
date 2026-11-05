@@ -5,7 +5,7 @@ import {inspectNormalBuildSdkMasterBinding,inspectNormalBuildIndexSelection,NORM
 import {inspectQleverSdkMasterBinding,inspectQleverSdkArtifactReference} from '../../scripts/lib/independent-admission/qlever-sdk-originals';
 import {inspectCandidateServiceJobChain} from '../../scripts/lib/independent-admission/qlever-sdk-service-relationship';
 import {QLEVER_NORMAL_BUILD_GROUPS,QLEVER_SDK_EXECUTION_GROUPS,QLEVER_SDK_NORMAL_SOURCE_BINDINGS} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
-import {completeObserved} from './source-binding-group.fixture';
+import {CURRENT_CANONICAL_SOURCE_ROWS,completeObserved} from './source-binding-group.fixture';
 import {selectGitHubSourceBindingGroup,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import gates from '../../scripts/lib/independent-admission/normal-sdk-gates.json';
 
@@ -110,13 +110,36 @@ test('artifact names stringify validated integer run coordinates',()=>{
 });
 test('normal verifier and selector are byte-bound by canonical and producer source policies',()=>{
  const current=JSON.parse(readFileSync(new URL('../../scripts/lib/independent-admission/consumer-execution-current.json',import.meta.url),'utf8')) as {path:string;sha256:string}[];
- for(const path of ['scripts/lib/independent-admission/qlever-sdk-normal-build.ts','scripts/select-normal-sdk-proof.ts']){
+ for(const path of ['scripts/lib/independent-admission/qlever-sdk-normal-build.ts','scripts/select-normal-sdk-proof.ts','qlever/scripts/validate-prior-sdk.py']){
   expect(current.filter(row=>row.path===path)).toHaveLength(1);
   expect(current.find(row=>row.path===path)!.sha256).toBe(sha(readFileSync(path)));
   expect(QLEVER_SDK_NORMAL_SOURCE_BINDINGS.filter(row=>row.path===path)).toHaveLength(1);
   expect(QLEVER_SDK_NORMAL_SOURCE_BINDINGS.find(row=>row.path===path)!.sha256).toBe(sha(readFileSync(path)));
   expect(QLEVER_NORMAL_BUILD_GROUPS[0]!.sourceBindings.filter(row=>row.path===path)).toHaveLength(1);
  }
+});
+test('flat normal producer list binds the shared collector once without duplicating SDK93 rows',()=>{
+ const collector='qlever/scripts/sdk-image-originals.py';
+ const sourceSha='83f8cd466345939457b9caad7047bd1966ffe1817f3399fa21b6a0ed6f7d7fba';
+ // The normal origin observer fetches the flat list directly; the collector is
+ // already an SDK93 selector, so membership must be added once without a new
+ // duplicate row or a new canonical path.
+ expect(QLEVER_SDK_NORMAL_SOURCE_BINDINGS).toHaveLength(23);
+ const paths=QLEVER_SDK_NORMAL_SOURCE_BINDINGS.map(row=>row.path);
+ expect(new Set(paths).size).toBe(paths.length);
+ const flat=QLEVER_SDK_NORMAL_SOURCE_BINDINGS.filter(row=>row.path===collector);
+ expect(flat).toHaveLength(1);
+ expect(flat[0]!.sha256).toBe(sourceSha);
+ expect(flat[0]!.sha256).toBe(sha(readFileSync(collector)));
+ const normal=QLEVER_NORMAL_BUILD_GROUPS[0]!;
+ const groupRows=[...normal.selectors,...(normal.secondarySelectors??[]),...(normal.secondarySelectorStages??[]).flat(),...normal.sourceBindings].filter(row=>row.path===collector);
+ expect(groupRows).toHaveLength(1);
+ expect(groupRows[0]!.sha256).toBe(sourceSha);
+ const canonical=JSON.parse(readFileSync(new URL('../../scripts/lib/independent-admission/consumer-execution-current.json',import.meta.url),'utf8')) as {path:string;sha256:string}[];
+ expect(canonical).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
+ const canonicalRows=canonical.filter(row=>row.path===collector);
+ expect(canonicalRows).toHaveLength(1);
+ expect(canonicalRows[0]!.sha256).toBe(sourceSha);
 });
 test('normal SDK reference accepts its own producer run but legacy controller still requires the app run',()=>{
  const master={path:'materials.json' as const,bytes:10,sha256:'c'.repeat(64)};

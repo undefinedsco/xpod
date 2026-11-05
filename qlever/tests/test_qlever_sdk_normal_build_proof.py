@@ -28,6 +28,7 @@ FILES = [
     'qlever/scripts/build-qlever-runtime-sdk.sh',
     'qlever/scripts/qlever_compiler_profile.py',
     'qlever/scripts/sync-patched-source.py',
+    'qlever/scripts/validate-prior-sdk.py',
     'qlever/scripts/check-qlever-real-adapter-build.cjs',
     'qlever/scripts/check-qlever-real-runtime.cjs',
     'qlever/scripts/check-qlever-upstream-patches.cjs',
@@ -120,7 +121,7 @@ class NormalBuildProof(unittest.TestCase):
             baseline = self.body(root, commit)['inputHash']
             for name in ['.dockerignore', 'scripts/lib/module-artifact-limits.json', 'scripts/lib/independent-admission/normal-sdk-gates.json', 'scripts/agentfs-native-ci/supervise.py',
                          'docker/qlever-local-runtime/Dockerfile', 'docker/qlever-runtime-sdk/Dockerfile.normal',
-                         'qlever/qlever.lock.json', 'qlever/scripts/build-qlever-runtime-sdk.sh']:
+                         'qlever/qlever.lock.json', 'qlever/scripts/build-qlever-runtime-sdk.sh','qlever/scripts/validate-prior-sdk.py']:
                 path = root / name
                 original = path.read_bytes()
                 if name.endswith('.json'):

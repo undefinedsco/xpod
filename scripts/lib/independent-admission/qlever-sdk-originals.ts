@@ -90,6 +90,15 @@ export function inspectQleverSdkAppAcquisition(input:{sdkLocator:any;target:'lin
  const reference=inspectQleverSdkArtifactReference(input.sdkLocator,{sourceSha:input.sdkLocator.sourceSha,runId:input.native.runId,runAttempt:input.native.runAttempt,target:input.target,sdkImage:input.sdkImage,sdkProfile:'service-trixie'});
  return Object.freeze({reference,coordinates:Object.freeze({schemaVersion:1 as const,sourceSha:reference.sourceSha,runHeadSha:reference.runHeadSha??input.native.runHeadSha,runId:reference.runId,runAttempt:reference.runAttempt,artifactId:reference.artifactId,artifactSha256:reference.artifactSha256}),buildExecutionModel:model});
 }
+/** Routed CSS/local module materials still emit the legacy
+ * controller-readonly-v1 locator. A normal-build-v1 locator on this path has no
+ * current-cache job-chain contract, so reject it explicitly rather than adding a
+ * parallel cache branch or accepting it without the service-path checks. */
+export function inspectRoutedQleverSdkReference(final:any,native:{sourceSha:string;runId:number;runAttempt:number;runHeadSha:string;target?:string}):QleverSdkArtifactReference {
+ if(final?.sdkArtifact?.sdkBuildExecutionModel==='normal-build-v1')return fail('normal-build-v1 SDK locator is not supported on routed module path');
+ if(!final?.sdkArtifact||typeof final.sdkArtifact.sourceSha!=='string')return fail('routed SDK locator missing');
+ return inspectQleverSdkArtifactReference(final.sdkArtifact,{sourceSha:final.sdkArtifact.sourceSha,runId:native.runId,runAttempt:native.runAttempt,target:native.target,sdkImage:final.sdkImage,sdkProfile:'module-bookworm-gcc12'});
+}
 export function qleverSdkArtifactAcquisition(nativeOriginals:CollectedNativeOriginalsCapability):Readonly<{reference:QleverSdkArtifactReference;coordinates:ArtifactAcquisitionInput;buildExecutionModel:'controller-readonly-v1'|'normal-build-v1'}>{
  const native=nativeOriginalsView(nativeOriginals);
  if(native&&isCandidateServiceImageGitHubOrigin(native.origin)){
@@ -104,7 +113,7 @@ export function qleverSdkArtifactAcquisition(nativeOriginals:CollectedNativeOrig
  assertCollectedNativeOriginalCustody(nativeOriginals);
  const final=JSON.parse(native.readOriginal('native-build-materials.json',8*1024**2).toString());
  if(final.sourceSha!==native.originFacts.sourceSha||Number(final.runId)!==native.originFacts.runId||Number(final.runAttempt)!==native.originFacts.runAttempt||final.target!==native.originFacts.target)return fail('native producer tuple mismatch');
- const reference=inspectQleverSdkArtifactReference(final.sdkArtifact,{...native.originFacts,sourceSha:final.sdkArtifact.sourceSha,sdkImage:final.sdkImage});
+ const reference=inspectRoutedQleverSdkReference(final,native.originFacts);
  const coordinates:ArtifactAcquisitionInput={schemaVersion:1,sourceSha:reference.sourceSha,runHeadSha:reference.runHeadSha??native.originFacts.runHeadSha,runId:reference.runId,runAttempt:reference.runAttempt,artifactId:reference.artifactId,artifactSha256:reference.artifactSha256};
  return Object.freeze({reference,coordinates:Object.freeze(coordinates),buildExecutionModel:reference.sdkBuildExecutionModel??'controller-readonly-v1'});
 }

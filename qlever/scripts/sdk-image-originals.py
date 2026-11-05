@@ -113,7 +113,7 @@ def copy_inner(cid,destination):
 def capture_context(out,deadline):
     out=Path(out).resolve();out.mkdir(parents=True,exist_ok=False);budget=budgets.ExecutionBudget(deadline);stages=[]
     for name,argv in [('context-head',['git','rev-parse','HEAD']),('context-clean',['git','status','--porcelain','--untracked-files=all']),
-        ('context-files',['git','ls-files','-z','--','.dockerignore','qlever','docker/qlever-runtime-sdk','docker/qlever-local-runtime','scripts/agentfs-native-ci/supervise.py','scripts/lib/module-artifact-limits.json'])]:
+        ('context-files',['git','ls-files','-z','--','.dockerignore','qlever','docker/qlever-runtime-sdk','docker/qlever-local-runtime','scripts/agentfs-native-ci/supervise.py','scripts/lib/module-artifact-limits.json','scripts/lib/independent-admission/normal-sdk-gates.json'])]:
         stages.append(commands.capture(name,argv,out,Path.cwd(),timeout=budget.timeout(30,1200)))
     if (out/stages[0]['stdout']['path']).read_text().strip()!=os.environ['GITHUB_SHA'] or (out/stages[1]['stdout']['path']).read_text().strip():
         raise ValueError('SDK context must be the exact clean workflow source')

@@ -40,8 +40,30 @@ class ModuleContextTests(unittest.TestCase):
         exceptions = [rule for rule in self.rules if rule.startswith('!docker/')]
         self.assertEqual(set(exceptions), {'!docker/', '!docker/qlever-runtime-sdk/', '!docker/qlever-local-runtime/',
             '!docker/qlever-runtime-sdk/Dockerfile.module-bookworm', '!docker/qlever-local-runtime/Dockerfile.module-bookworm',
-            '!docker/qlever-runtime-sdk/Dockerfile', '!docker/qlever-local-runtime/Dockerfile'})
+            '!docker/qlever-runtime-sdk/Dockerfile', '!docker/qlever-local-runtime/Dockerfile',
+            '!docker/qlever-runtime-sdk/Dockerfile.normal', '!docker/qlever-runtime-sdk/Dockerfile.normal.incremental'})
         self.assertNotIn('!docker/**', self.rules)
+
+    def test_normal_sdk_recipes_have_exact_context_exceptions(self):
+        for file in ['docker/qlever-runtime-sdk/Dockerfile.normal',
+                     'docker/qlever-runtime-sdk/Dockerfile.normal.incremental']:
+            self.assertTrue((ROOT / file).is_file())
+            self.assertIn('!' + file, self.rules)
+        self.assertIn('!qlever/', self.rules)
+        self.assertNotIn('!docker/**', self.rules)
+        self.assertNotIn('!scripts/**', self.rules)
+        self.assertNotIn('!scripts/', self.rules)
+        for dockerfile in ['docker/qlever-runtime-sdk/Dockerfile.normal',
+                           'docker/qlever-runtime-sdk/Dockerfile.normal.incremental']:
+            recipe = (ROOT / dockerfile).read_text()
+            sources = re.findall(r'^COPY\s+((?:docker/|scripts/|\.dockerignore)\S*)', recipe, re.M)
+            self.assertTrue(sources)
+            for source in sources:
+                with self.subTest(dockerfile=dockerfile, source=source):
+                    self.assertIn('!' + source, self.rules)
+                    self.assertTrue((ROOT / source).is_file())
+            self.assertIn('COPY scripts/lib/independent-admission/normal-sdk-gates.json', recipe)
+            self.assertIn('COPY scripts/agentfs-native-ci/supervise.py', recipe)
 
     def test_every_module_sdk_docker_recipe_copy_has_an_exact_context_exception(self):
         recipe = '\n'.join((ROOT / file).read_text() for file in ['docker/qlever-runtime-sdk/Dockerfile.module-bookworm','docker/qlever-runtime-sdk/Dockerfile'])

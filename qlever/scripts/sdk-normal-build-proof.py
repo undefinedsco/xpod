@@ -52,6 +52,7 @@ RECIPE_FILES = (
     'qlever/scripts/build-qlever-runtime-sdk.sh',
     'qlever/scripts/qlever_compiler_profile.py',
     'qlever/scripts/sync-patched-source.py',
+    'qlever/scripts/validate-prior-sdk.py',
     'qlever/scripts/check-qlever-real-adapter-build.cjs',
     'qlever/scripts/check-qlever-real-runtime.cjs',
     'qlever/scripts/check-qlever-upstream-patches.cjs',

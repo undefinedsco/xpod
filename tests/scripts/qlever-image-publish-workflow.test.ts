@@ -334,6 +334,56 @@ it('fails closed on a malformed retained normal proof and only skips selection w
   expect(select['continue-on-error']).toBeUndefined();
 });
 
+it('runs the actual sdk_inputs shell with the prior digest and keeps cold/incremental identities distinct', async () => {
+  const workflow = await load('.github/workflows/publish-qlever-runtime-sdk.yml');
+  const step = byId(workflow, 'sdk_inputs');
+  expect(step.run).toContain('--prior-sdk-digest "${PRIOR_SDK_DIGEST}"');
+  const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).stdout.trim();
+  expect(head).toMatch(/^[a-f0-9]{40}$/u);
+  const root = mkdtempSync(path.join(repoRoot, '.test-data/qlever-inputs-shell-'));
+  const run = (prior: string) => {
+    const runner = path.join(root, `runner-${prior ? prior.slice(-4) : 'cold'}`);
+    mkdirSync(runner);
+    const result = spawnSync('/bin/bash', ['-c', step.run], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        SOURCE_COMMIT: head,
+        SDK_PROFILE: 'service-trixie',
+        SDK_TARGET: 'linux-x64',
+        SDK_PROFILE_IDENTITY: 'profile-identity',
+        NORMAL_DOCKERFILE: 'docker/qlever-runtime-sdk/Dockerfile.normal',
+        PRIOR_SDK_DIGEST: prior,
+        RUNNER_TEMP: runner,
+        GITHUB_OUTPUT: path.join(runner, 'github-output'),
+        GITHUB_STEP_SUMMARY: path.join(runner, 'summary'),
+      },
+    });
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    return JSON.parse(readFileSync(path.join(runner, 'qlever-normal-input.json'), 'utf8'));
+  };
+  try {
+    const priorA = `sha256:${'1'.repeat(64)}`;
+    const priorB = `sha256:${'2'.repeat(64)}`;
+    const cold = run('');
+    const a = run(priorA);
+    const b = run(priorB);
+    expect(cold.recipe).toEqual({ kind: 'cold', dockerfile: 'docker/qlever-runtime-sdk/Dockerfile.normal', priorImage: null });
+    expect(a.recipe).toEqual({ kind: 'incremental', dockerfile: 'docker/qlever-runtime-sdk/Dockerfile.normal.incremental', priorImage: priorA });
+    expect(b.recipe).toEqual({ kind: 'incremental', dockerfile: 'docker/qlever-runtime-sdk/Dockerfile.normal.incremental', priorImage: priorB });
+    for (const value of [cold.inputHash, a.inputHash, b.inputHash]) expect(value).toMatch(/^[a-f0-9]{64}$/u);
+    expect(new Set([cold.inputHash, a.inputHash, b.inputHash]).size).toBe(3);
+    // The candidate finder and selector consume the SAME distinct identity
+    // output, so a retained cold proof cannot be selected for an explicit
+    // incremental prior request.
+    expect(byId(workflow, 'normal_proof').env.INPUT_HASH).toBe('${{ steps.sdk_inputs.outputs.input_hash }}');
+    expect(byId(workflow, 'resolve').env.QELEVER_INPUTS_TAG).toBe('${{ steps.sdk_inputs.outputs.tag }}');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 60000);
+
 describe('module SDK actual image gate', () => {
   it('uses the same builder, inputs and deadline and requires originals before upload', async () => {
     const workflow = await load('.github/workflows/publish-qlever-runtime-sdk.yml');
