@@ -58,15 +58,18 @@ describe('SDK88 phase-derived budget binding', () => {
     }[file]);
   });
 
-  it('binds the current SDK88 candidate workflow in every current binding location', () => {
-    const current = SDK[87]!;
+  it('keeps SDK88 historical candidate bytes while the current normal group binds current bytes', () => {
+    const frozen = SDK[87]!;
     const candidate = '.github/workflows/candidate.yml';
     const expected = '4411f065fba095c9f3bb6c3962a668cb26c869b80ea702860d50fb89397077bb';
-    expect(current.sourceBindings[0]).toEqual({path: candidate, sha256: expected});
-    expect(current.candidateServiceRelationship!.workflowSha256).toBe(expected);
-    expect(current.outerExecutor!.additionalWorkflows!.find((row: any) => row.path === candidate)!.sha256).toBe(expected);
-    expect(current.secondarySelectorStages![1]![0]).toEqual({path: candidate, sha256: expected});
-    expect(sha(candidate)).toBe(expected);
+    expect(frozen.sourceBindings[0]).toEqual({path: candidate, sha256: expected});
+    expect(frozen.candidateServiceRelationship!.workflowSha256).toBe(expected);
+    expect(frozen.outerExecutor!.additionalWorkflows!.find((row: any) => row.path === candidate)!.sha256).toBe(expected);
+    expect(frozen.secondarySelectorStages![1]![0]).toEqual({path: candidate, sha256: expected});
+    const current = SDK.at(-1)!;
+    expect(current.candidateServiceRelationship!.sdkBuildExecutionModel).toBe('normal-build-v1');
+    expect(current.candidateServiceRelationship!.workflowSha256).toBe(sha(candidate));
+    expect(current.sourceBindings.find((row: any) => row.path === candidate)!.sha256).toBe(sha(candidate));
   });
 
   it('binds the explicit new policy declaration and rejects unknown/missing policy', () => {

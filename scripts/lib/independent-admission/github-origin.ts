@@ -1,5 +1,5 @@
 import {inspectReviewedSdkOuterExecutorOrigin,type QleverSdkOuterExecutorOriginAuthority} from './qlever-sdk-outer-authority';
-import {QLEVER_SDK_WORKFLOW,QLEVER_SDK_WORKFLOW_SHA,QLEVER_SDK_EXECUTION_GROUPS,QLEVER_LINUX_EXECUTION_GROUPS,QLEVER_READONLY_SDK_WORKFLOW_SHA,QLEVER_SERVICE_SDK_WORKFLOW_SHA,QLEVER_CURRENT_SDK_WORKFLOW_SHA} from './qlever-sdk-origin-policy';
+import {QLEVER_SDK_WORKFLOW,QLEVER_SDK_WORKFLOW_SHA,QLEVER_SDK_EXECUTION_GROUPS,QLEVER_LINUX_EXECUTION_GROUPS,QLEVER_READONLY_SDK_WORKFLOW_SHA,QLEVER_SERVICE_SDK_WORKFLOW_SHA,QLEVER_CURRENT_SDK_WORKFLOW_SHA,QLEVER_SDK_NORMAL_CANDIDATE_WORKFLOW_SHA,QLEVER_SDK_NORMAL_SOURCE_BINDINGS} from './qlever-sdk-origin-policy';
 import {acquireOwnedSecondaryBindings,selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey,type GitHubSourceBindingGroup} from './github-source-binding-groups';
 import {immutableGitContentsEndpoint,cachedGitContentsOriginal,retainGitContentsOriginal} from './github-immutable-original-cache';
 import {QLEVER_LINUX_SOURCE_BINDINGS} from './qlever-linux-origin-policy';
@@ -107,6 +107,8 @@ interface OriginPolicy {
   issueSdkOuterAuthority?:true;
   target?: string;
   sourceBindings?: readonly { path: string; sha256: string; reviewedSha256?: readonly string[]; ref?:'run-head' }[];
+  /** Same trusted run/job closure additional artifact (normal proof index). */
+  additionalArtifact?:Readonly<{id:number;digest:string;name:string}>;
 }
 /** Same issuer, independently authenticated candidate image-artifact role.
  * A producer JSON selector cannot enroll a source tree in this role. */
@@ -1465,7 +1467,28 @@ export async function observeQleverSdkGitHubOrigin(input:ArtifactAcquisitionInpu
   artifactNames:row=>[`qlever-sdk-originals-${target}-${row.sourceSha}-${row.runId}-${row.runAttempt}`],
   jobName:()=>legacyName,requiredStep:'Bind actual SDK image and build originals',requiredSteps:legacySteps,
   sourceGroupJobContract:group=>group?.outerExecutor?{name:readonlyName,requiredStep:'Bind actual readonly SDK image and build originals',requiredSteps:readonlySteps}:{name:legacyName,requiredStep:'Bind actual SDK image and build originals',requiredSteps:legacySteps},
-  sourceBindingGroups:QLEVER_SDK_EXECUTION_GROUPS,issueSdkOuterAuthority:true,
+  sourceBindingGroups:QLEVER_SDK_EXECUTION_GROUPS.filter(group=>group.candidateServiceRelationship?.sdkBuildExecutionModel!=='normal-build-v1'),issueSdkOuterAuthority:true,
+ });
+ nativeOrigins.add(observation);sdkOrigins.add(observation);return observation;
+}
+
+/** Normal-build-v1 SDK artifact origin. The ordinary candidate job is a real
+ * GitHub job with real artifact custody but no ptrace/lease observer. This
+ * policy binds the exact candidate workflow bytes, the ordinary SDK recipe
+ * bytes and the normal job/step/artifact tuple. It never issues the readonly
+ * outer-controller authority. */
+export async function observeQleverSdkNormalBuildGitHubOrigin(input:ArtifactAcquisitionInput,target:string,options:{token?:string;proofArtifact?:Readonly<{id:number;digest:string;name:string}>}={}):Promise<GitHubOriginObservation>{
+ if(target!=='linux-x64')return fail('normal SDK build target differs');
+ const steps=['Resolve the QLever build inputs identity','Capture normal SDK build proof and originals','Upload the exact normal SDK build proof'];
+ const observation=await observeGitHubOrigin(input,options,{
+  workflowPath:'.github/workflows/candidate.yml',workflowSha256:QLEVER_SDK_NORMAL_CANDIDATE_WORKFLOW_SHA,
+  events:['push','workflow_dispatch'],requiredBranch:'staging',stagingPushWorkflowSha256s:[QLEVER_SDK_NORMAL_CANDIDATE_WORKFLOW_SHA],
+  allowRunningRun:true,allowCandidateProducerFailure:true,sourceMayDiffer:true,workflowRef:'run-head',target,
+  artifactNames:row=>[`qlever-sdk-originals-service-trixie-${target}-${row.sourceSha}-${row.runId}-${row.runAttempt}`],
+  jobName:()=> 'publish_qlever_runtime_sdk / publish',
+  requiredStep:steps[2]!,requiredSteps:steps,
+  ...(options.proofArtifact?{additionalArtifact:options.proofArtifact}:{}),
+  sourceBindings:QLEVER_SDK_NORMAL_SOURCE_BINDINGS,
  });
  nativeOrigins.add(observation);sdkOrigins.add(observation);return observation;
 }
@@ -1740,6 +1763,14 @@ async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { t
   if (matching.length !== 1) fail('unique producer job required');
   const job = matching[0];
   const created = Date.parse(artifact.created_at), start = Date.parse(job.started_at), end = Date.parse(job.completed_at);
+  if(policy.additionalArtifact){
+    const extra=await read('additional-artifact.original.json',`actions/artifacts/${policy.additionalArtifact.id}`);
+    const extraCreated=Date.parse(extra.created_at);
+    if(extra.id!==policy.additionalArtifact.id||extra.name!==policy.additionalArtifact.name||extra.expired!==false
+      ||extra.digest!=='sha256:'+policy.additionalArtifact.digest||extra.workflow_run?.id!==input.runId
+      ||extra.workflow_run?.head_sha!==input.runHeadSha||!positive(extra.size_in_bytes)||extra.size_in_bytes>16*1024**2
+      ||!Number.isFinite(extraCreated)||extraCreated<start||extraCreated>end)fail('additional proof artifact is not from the same trusted producer run');
+  }
   if (!observedGitHubJobWindowAccepted(job,artifact,input)
     || !job.steps?.some((step: any) => step.name === (selectedJobContract?.requiredStep??policy.requiredStep)
       && step.status === 'completed' && step.conclusion === 'success')

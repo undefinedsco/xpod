@@ -133,7 +133,7 @@ test('actual lane entry refuses a mismatched Node before executing any packaging
     const receipt=JSON.parse(fs.readFileSync(path.join(out,'lane.receipt.json'),'utf8'));assert.equal(receipt.steps.length,0);assert.ok(receipt.failure);
   } finally {fs.rmSync(out,{recursive:true,force:true});}
 });
-test('actual YAML keeps standalone triggers, strict matrix, RC-before-production dependency and same accepted proof', () => {
+test('actual YAML keeps standalone triggers, strict matrix, parallel SDK/compat lanes and the deployment join with same accepted proof', () => {
   const names=['legacy-root-compat','ci','candidate','release'];
   const parsed=names.map(name=>{const result=spawnSync('bun',['-e','console.log(JSON.stringify(Bun.YAML.parse(require("node:fs").readFileSync(process.argv[1],"utf8"))))',path.resolve('.github/workflows/'+name+'.yml')],{encoding:'utf8'});assert.equal(result.status,0,result.stderr);return JSON.parse(result.stdout);});
   const [compat,ci,candidate,release]=parsed;
@@ -141,8 +141,20 @@ test('actual YAML keeps standalone triggers, strict matrix, RC-before-production
   assert.deepEqual(candidate.on.push.branches,['staging']);assert.equal(candidate.jobs.legacy_root_compat.uses,'./.github/workflows/legacy-root-compat.yml');
   assert.equal(compat.jobs.lanes['timeout-minutes'],30);assert.equal(compat.jobs.lanes.strategy['fail-fast'],false);assert.equal(compat.jobs.lanes['continue-on-error'],undefined);
   assert.equal(compat.jobs.lanes.strategy.matrix,'${{ fromJSON(needs.plan.outputs.matrix) }}');assert.equal(ci.jobs['package-smoke'],undefined);assert.equal(ci.jobs['package-smoke-bun'],undefined);
-  const depends=(job,target)=>{const needs=candidate.jobs[job].needs;return (Array.isArray(needs)?needs:[needs]).filter(Boolean).some(name=>name===target||depends(name,target));};
-  for(const job of ['rc_prerequisites','publish_qlever_runtime_sdk','publish_qlever_local_runtime','build_qlever_macos_runtime','build_image','deploy_and_accept','finalize_acceptance'])assert.ok(depends(job,'legacy_root_compat'),job);
+  const directNeeds=job=>{const needs=candidate.jobs[job].needs;return (Array.isArray(needs)?needs:[needs]).filter(Boolean);};
+  const depends=(job,target)=>directNeeds(job).some(name=>name===target||depends(name,target));
+  assert.equal(rootCompatLanes().length,18);assert.equal(new Set(rootCompatLanes().map(row=>row.id)).size,18);
+  // The read-only RC preflight and SDK lookup/build must not wait for the 18 compatibility lanes.
+  for(const job of ['rc_prerequisites','publish_qlever_runtime_sdk','publish_qlever_local_runtime','build_qlever_macos_runtime','build_image','observe_service_sdk_source'])
+    assert.equal(depends(job,'legacy_root_compat'),false,job);
+  // The shared-RC mutation entry is the explicit mandatory compatibility join; no conditional bypass.
+  assert.equal(directNeeds('deploy_and_accept').filter(name=>name==='legacy_root_compat').length,1);
+  assert.equal(candidate.jobs.deploy_and_accept.if,undefined);
+  assert.equal(candidate.jobs.deploy_and_accept['continue-on-error'],undefined);
+  assert.equal(candidate.jobs.legacy_root_compat.if,undefined);
+  assert.equal(candidate.jobs.legacy_root_compat['continue-on-error'],undefined);
+  // Final acceptance retains the compatibility success gate.
+  assert.equal(directNeeds('finalize_acceptance').filter(name=>name==='legacy_root_compat').length,1);
   const finalize=candidate.jobs.finalize_acceptance.steps;const upload=finalize.find(step=>step.with?.name==='release-acceptance-${{ github.sha }}');assert.equal(upload.with.path,'${{ runner.temp }}/accepted-release/');
   assert.ok(finalize.some(step=>step.run?.includes('verify-root-compat')));assert.ok(finalize.some(step=>step.run?.includes('accepted-release/compat')));
   const guard=release.jobs.promotion_guard.steps.find(step=>step.id==='acceptance').run;

@@ -426,6 +426,10 @@ export function inspectCandidateServiceSdkOriginPartition(input:{
  need(master.identity?.runId===artifact.runId&&master.identity?.runAttempt===artifact.runAttempt,'SDK master identity run/attempt differs');
  need(master.identity?.target===artifact.target&&master.identity?.sdkProfile===artifact.sdkProfile,'SDK master identity target/profile differs');
  need(master.releaseAccepted===false,'SDK master must not claim release acceptance');
+ const model=artifact.sdkBuildExecutionModel;
+ need(model===undefined||model==='controller-readonly-v1'||model==='normal-build-v1','app master SDK build execution model');
+ need(model===undefined?master.buildExecutionModel===undefined||master.buildExecutionModel==='controller-readonly-v1':master.buildExecutionModel===model,
+  'app master SDK build execution model differs from the SDK master');
  // 4. The observed image originals must hash to that digest (root manifest).
  const manifest=master.image?.manifestOriginal;
  need(manifest&&/^[a-f0-9]{64}$/u.test(String(manifest.sha256)),'SDK root manifest original');

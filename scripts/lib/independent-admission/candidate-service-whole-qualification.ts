@@ -239,6 +239,8 @@ export async function observeCandidateServiceWholeQualification(input:WholeServi
   // verified with zero pending rather than inferred from a boolean.
   sdkSourceAdmissionVerified:true as const,
   sdkSourceAdmissionPending:Object.freeze([]) as readonly string[],
+  sdkProvenanceModel:String(sdkAdmission.facts.sdkBuildExecutionModel??'controller-readonly-v1'),
+  sdkSyscallProvenanceVerified:sdkAdmission.facts.sdkSyscallSourceReadInventoryVerified===true,
   sdkSourceAdmissionFactKeys:Object.freeze(Object.keys(sdkAdmission.facts).sort()),
  });
 

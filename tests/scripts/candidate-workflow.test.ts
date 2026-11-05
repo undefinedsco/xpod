@@ -355,7 +355,7 @@ esac
     const preflight = workflow.jobs.rc_prerequisites;
     const runText = jobRunText(workflow, 'rc_prerequisites');
 
-    expect(preflight.needs).toEqual(['metadata', 'legacy_root_compat']);
+    expect(preflight.needs).toEqual(['metadata']);
     expect(preflight.environment).toBe('rc');
     expect(preflight.env.KUBE_CONFIG_DATA).toBe('${{ secrets.KUBE_CONFIG_DATA }}');
     expect(preflight.env.SEALOS_NAMESPACE).toBe('${{ vars.SEALOS_NAMESPACE }}');
@@ -368,6 +368,34 @@ esac
     expect(runText).toContain('api-rc.undefineds.cn');
     expect(runText).toContain('auth can-i create deployments');
     expect(runText).not.toContain('get secret xpod-rc-tls');
+  });
+
+  it('runs SDK lookup/build parallel to the 18 compatibility lanes and joins them at shared-RC deployment', async () => {
+    const workflow = await loadWorkflow();
+    const jobs = workflow.jobs;
+    const ancestors = (name: string, seen = new Set<string>()): Set<string> => {
+      for (const need of [jobs[name]?.needs ?? []].flat()) {
+        if (!seen.has(need)) { seen.add(need); ancestors(need, seen); }
+      }
+      return seen;
+    };
+    // The read-only RC preflight does not wait for compatibility.
+    expect(jobs.rc_prerequisites.needs).toEqual(['metadata']);
+    expect([...ancestors('rc_prerequisites')]).not.toContain('legacy_root_compat');
+    // SDK lookup/build and the image/observer chain cannot depend on the current
+    // 18-lane compatibility result; they may run while it is still in progress.
+    for (const name of ['publish_qlever_runtime_sdk', 'publish_qlever_local_runtime', 'build_image', 'observe_service_sdk_source']) {
+      expect([...ancestors(name)], name).not.toContain('legacy_root_compat');
+    }
+    // The shared-RC mutation entry is the explicit mandatory join: a failed or
+    // skipped 18-lane matrix skips deployment, with no always/failure/continue.
+    expect(jobs.deploy_and_accept.needs).toEqual(['metadata', 'build_image', 'observe_service_sdk_source', 'legacy_root_compat']);
+    expect(jobs.deploy_and_accept.if).toBeUndefined();
+    expect(jobs.deploy_and_accept['continue-on-error']).not.toBe(true);
+    expect(jobs.legacy_root_compat.if).toBeUndefined();
+    expect(jobs.legacy_root_compat['continue-on-error']).not.toBe(true);
+    // Final acceptance also retains the compatibility success gate.
+    expect(jobs.finalize_acceptance.needs).toContain('legacy_root_compat');
   });
 
   it('runs the read-only shared-package reuse preflight before artifact jobs and never publishes', async () => {
@@ -490,7 +518,7 @@ esac
     const runText = jobRunText(workflow, 'deploy_and_accept');
 
     expect(deploy.environment).toBe('rc');
-    expect(deploy.needs).toEqual([ 'metadata', 'build_image', 'observe_service_sdk_source' ]);
+    expect(deploy.needs).toEqual([ 'metadata', 'build_image', 'observe_service_sdk_source', 'legacy_root_compat' ]);
     expect(deploy.if).toBeUndefined();
     expect(workflow.jobs.observe_service_sdk_source['continue-on-error']).not.toBe(true);
     expect(jobRunText(workflow, 'observe_service_sdk_source')).toContain('--require-qualification');
@@ -1364,7 +1392,7 @@ describe('public Release transport contract', () => {
   it('keeps build and qualification needs, read-only identity and no private fixture acquisition', async () => {
     const workflow = await loadWorkflow(); const job = workflow.jobs.deploy_and_accept;
     const gate = job.steps.find((entry: any) => entry.name === 'Require independent exact-pair Private17 admission before RC mutation');
-    expect(job.needs).toEqual(['metadata', 'build_image', 'observe_service_sdk_source']); expect(job.permissions.contents).toBe('read');
+    expect(job.needs).toEqual(['metadata', 'build_image', 'observe_service_sdk_source', 'legacy_root_compat']); expect(job.permissions.contents).toBe('read');
     expect(gate.env.GH_TOKEN).toBe('${{ github.token }}');
     expect(gate.env.PRIVATE17_ADMISSION_SHA256).toBe('${{ vars.XPOD_PRIVATE17_ADMISSION_SHA256 }}');
     expect(gate.run).toContain('--acquire-private17-admission'); expect(gate.run).toContain('mktemp -d');

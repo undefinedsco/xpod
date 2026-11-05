@@ -1,6 +1,6 @@
 import {test,expect} from 'bun:test';
 import {CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
-import {inspectQleverSdkArtifactReference,inspectQleverSdkMasterBinding,qleverSdkOriginalsView,collectRelatedQleverSdkOriginals} from '../../scripts/lib/independent-admission/qlever-sdk-originals';
+import {inspectQleverSdkArtifactReference,inspectQleverSdkMasterBinding,qleverSdkOriginalsView,collectRelatedQleverSdkOriginals,inspectQleverSdkAppAcquisition,inspectRoutedQleverSdkReference} from '../../scripts/lib/independent-admission/qlever-sdk-originals';
 import {QLEVER_LINUX_EXECUTION_GROUPS,QLEVER_SDK_B_SOURCE_BINDINGS,QLEVER_SDK_EXECUTION_GROUPS} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import {selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import {completeObserved} from './source-binding-group.fixture';
@@ -18,6 +18,41 @@ test('SDK data reference/master checks bind exact producer tuple/image and every
  expect(()=>inspectQleverSdkMasterBinding({...master,identity:{...master.identity,sourceSha:'0'.repeat(40)}},reference,runHeadSha,members)).toThrow();
  expect(()=>inspectQleverSdkMasterBinding(master,reference,runHeadSha,[...members,{path:'unbound.raw',bytes:1,sha256:'2'.repeat(64),mode:0o400}])).toThrow('every original');
  expect(()=>inspectQleverSdkMasterBinding({...master,image:{...master.image,platform:'linux/arm64'}},reference,runHeadSha,members)).toThrow();
+});
+test('APP->SDK acquisition accepts verified normal reuse across runs/attempts and keeps legacy same-run strictness',()=>{
+ const appSource='d'.repeat(40),appHead='e'.repeat(40);
+ const locator=(over:any={})=>({artifactId:7,artifactSha256:'4'.repeat(64),sourceSha:'a'.repeat(40),runId:100,runAttempt:2,runHeadSha:'b'.repeat(40),target:'linux-x64',sdkProfile:'service-trixie',sdkBuildExecutionModel:'normal-build-v1',sdkImageReferenceByDigest:sdkImage,master:{path:'materials.json',bytes:123,sha256:'e'.repeat(64)},...over});
+ const app=(over:any={})=>({sourceSha:appSource,runId:200,runAttempt:2,runHeadSha:appHead,producerJobId:3,...over});
+ const selection=[{name:'Find the retained normal SDK build proof candidate',status:'completed',conclusion:'success'},{name:'Select and authenticate the retained normal SDK proof',status:'completed',conclusion:'success'}];
+ const job=(id:number,name:string,start:number,extra:any={})=>({id,name,run_id:200,run_attempt:2,head_sha:appSource,status:'completed',conclusion:'success',started_at:new Date(start).toISOString(),completed_at:new Date(start+1000).toISOString(),...extra});
+ const jobs=(steps:any[]=selection)=>[job(1,'publish_qlever_runtime_sdk / publish',1000,{steps}),job(2,'publish_qlever_local_runtime / publish',3000),job(3,'build_image',4000)];
+ const contract={workflowSha256:'f'.repeat(64),sdkJob:'publish_qlever_runtime_sdk / publish',localRuntimeJob:'publish_qlever_local_runtime / publish',serviceJob:'build_image'};
+ const acquire=(sdk:any,native:any=app(),jobRows:any=jobs())=>inspectQleverSdkAppAcquisition({sdkLocator:sdk,target:'linux-x64',sdkImage,native,jobs:jobRows.map((row:any)=>({...row,head_sha:native.sourceSha})),contract});
+ // Old complete SDK run reused by a new app run.
+ expect(acquire(locator()).coordinates).toMatchObject({sourceSha:'a'.repeat(40),runId:100,runAttempt:2,runHeadSha:'b'.repeat(40)});
+ // Same app run, older successful SDK attempt.
+ expect(acquire(locator({runId:200,runAttempt:1})).coordinates.runAttempt).toBe(1);
+ // Different app source but the same full native inputs: own SDK source is retained.
+ expect(acquire(locator({runId:200,runAttempt:1,sourceSha:'a'.repeat(40)}),app({sourceSha:'f'.repeat(40)})).coordinates.sourceSha).toBe('a'.repeat(40));
+ // Fresh same-run build needs no cache-selection steps.
+ expect(acquire(locator({sourceSha:appSource,runId:200,runAttempt:2,runHeadSha:appHead}),app(),jobs([])).coordinates.runId).toBe(200);
+ // Legacy/controller mode still requires the app run/attempt.
+ expect(()=>acquire(locator({sdkBuildExecutionModel:'controller-readonly-v1'}),app())).toThrow(/exact SDK artifact/);
+ // Normal metadata and current cache-step tampering still fail closed.
+ for(const bad of [locator({runHeadSha:'bad'}),locator({sourceSha:'bad'}),locator({artifactId:0}),locator({sdkImageReferenceByDigest:'ghcr.io/undefinedsco/xpod-qlever-sdk@sha256:'+'9'.repeat(64)})]){
+  expect(()=>acquire(bad)).toThrow();
+ }
+ expect(()=>acquire(locator(),app(),jobs(selection.slice(1)))).toThrow(/selection step/);
+ expect(()=>acquire(locator(),app(),jobs([{...selection[0],conclusion:'skipped'},selection[1]]))).toThrow(/selection step/);
+});
+
+test('routed module path explicitly rejects normal locators while preserving the legacy same-run contract',()=>{
+ const base={artifactId:7,artifactSha256:'4'.repeat(64),sourceSha,runId:10,runAttempt:2,runHeadSha,target:'linux-x64',sdkProfile:'module-bookworm-gcc12',sdkBuildExecutionModel:'controller-readonly-v1',sdkImageReferenceByDigest:sdkImage,master:{path:'materials.json',bytes:123,sha256:'e'.repeat(64)}};
+ const native={sourceSha,runId:10,runAttempt:2,runHeadSha,target:'linux-x64' as const,sdkImage};
+ expect(inspectRoutedQleverSdkReference({sdkArtifact:base,sdkImage},native).runId).toBe(10);
+ expect(()=>inspectRoutedQleverSdkReference({sdkArtifact:{...base,sdkBuildExecutionModel:'normal-build-v1'},sdkImage},native)).toThrow(/routed module path/);
+ expect(()=>inspectRoutedQleverSdkReference({sdkArtifact:{sdkBuildExecutionModel:'normal-build-v1'},sdkImage},native)).toThrow(/routed module path/);
+ expect(()=>inspectRoutedQleverSdkReference({sdkArtifact:{...base,runAttempt:1},sdkImage},native)).toThrow(/exact SDK artifact/);
 });
 test('SDK origin source recipes remain whole versioned groups',()=>{
  for(const group of QLEVER_LINUX_EXECUTION_GROUPS)expect(selectGitHubSourceBindingGroup(QLEVER_LINUX_EXECUTION_GROUPS,completeObserved(QLEVER_LINUX_EXECUTION_GROUPS,group))).toBe(group);

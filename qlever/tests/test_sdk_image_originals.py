@@ -80,8 +80,12 @@ class ImageOriginalsTest(unittest.TestCase):
             def git(*args):return subprocess.check_output(['git','-c','core.hooksPath=/dev/null',*args],cwd=repo,stderr=subprocess.DEVNULL,text=True).strip()
             (repo/'scripts/lib').mkdir(parents=True);limits=b'{"sourceMaterialBytes":4294967296}\n'
             (repo/'scripts/lib/module-artifact-limits.json').write_bytes(limits)
+            (repo/'scripts/lib').mkdir(parents=True,exist_ok=True)
+            (repo/'scripts/lib/independent-admission').mkdir(parents=True,exist_ok=True)
+            gates=b'{"gates":1}\n'
+            (repo/'scripts/lib/independent-admission/normal-sdk-gates.json').write_bytes(gates)
             (repo/'scripts/unrelated-secret.txt').write_text('excluded')
-            git('init');git('add','qlever/input.h','.dockerignore','scripts/lib/module-artifact-limits.json','scripts/unrelated-secret.txt')
+            git('init');git('add','qlever/input.h','.dockerignore','scripts/lib/module-artifact-limits.json','scripts/lib/independent-admission/normal-sdk-gates.json','scripts/unrelated-secret.txt')
             git('-c','user.name=SDK fixture','-c','user.email=sdk-fixture@example.invalid','commit','-m','fixture')
             sha=git('rev-parse','HEAD');old=Path.cwd()
             try:
@@ -90,9 +94,10 @@ class ImageOriginalsTest(unittest.TestCase):
                     module.capture_context(root/'originals',str(int(time.time())+12000))
                 context=json.loads((root/'originals/context-originals.json').read_text())
                 self.assertEqual(context['sourceSha'],sha)
-                self.assertEqual(len(context['files']),3)
+                self.assertEqual(len(context['files']),4)
                 with tarfile.open(root/'originals/context.original.tar') as bundle:
                     self.assertEqual(bundle.extractfile('scripts/lib/module-artifact-limits.json').read(),limits)
+                    self.assertEqual(bundle.extractfile('scripts/lib/independent-admission/normal-sdk-gates.json').read(),gates)
                     self.assertNotIn('scripts/unrelated-secret.txt',bundle.getnames())
                 self.assertTrue((root/'originals/context.original.tar').is_file())
             finally:os.chdir(old)

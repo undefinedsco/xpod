@@ -18,7 +18,7 @@ producer job 的终态判定以**保留的原始 job 记录**为准，而不是�
 
 Windows 保留平台默认 shell/PATH。完整 build 产生的 UI 变化由 Vite 与验收器共用 `ui/build-targets.json` 声明输出边界：旧的 tracked 输出删除记录与本次 Rollup/publicDir 产物清单分别验证，保留完整 Git 状态；源码、锁文件和未知静态文件漂移继续阻断。不能通过忽略整个 `static/` 绕过源码检查。
 
-`candidate.yml` 通过 reusable workflow 在 RC 前置检查前要求矩阵成功；finalize 再校验 exact SHA、同次 RC run 的全部通道及原始日志/pack 摘要，并将 `compat.receipt.json` 和原件一并放入 `release-acceptance-${GITHUB_SHA}` 的 `compat/`。`release.yml` 从同一个 accepted artifact 重验 `legacy-root-compat`，不接受另一轮矩阵或手填通过标记。部分重跑按每条通道的最新实际 attempt 判定，不能退回旧的成功 attempt。
+`candidate.yml` 通过 reusable workflow 让完整 18 条矩阵与只读 RC 前置检查并行运行；SDK 解析/构建不等待矩阵结果，共享 RC 的 `deploy_and_accept` 显式依赖矩阵成功后才允许变更。finalize 再校验 exact SHA、同次 RC run 的全部通道及原始日志/pack 摘要，并将 `compat.receipt.json` 和原件一并放入 `release-acceptance-${GITHUB_SHA}` 的 `compat/`。`release.yml` 从同一个 accepted artifact 重验 `legacy-root-compat`，不接受另一轮矩阵或手填通过标记。部分重跑按每条通道的最新实际 attempt 判定，不能退回旧的成功 attempt。
 
 2026-10-15 的 [run 38750639516](https://github.com/undefinedsco/xpod/actions/runs/38750639516) 实际 checkout 为 `0b5aad17fdc2bd17b017d3d2a3119c062689ed90`，事件 head 为 `1ac0526d676e59a240a1bd3f665ea54b275d2fa3`。Node 9/9 成功（包含 Windows 22/24/25），Bun 9/9 失败，verify 阻断。Windows tar listing 和正常 UI 输出误判未再现；原 Bun registry 安装兼容阻塞仍未解决，不能将 wrapper 修复或矩阵拆分视为整体兼容/发布资格通过。具体 GNU tar/PATH 根因仍未由旧失败日志证明。
 
@@ -545,18 +545,47 @@ GHA 缓存（scope `qlever-runtime-sdk`）和"复用已有 SDK 镜像"两条增�
 `release/*`（或 `workflow_dispatch`）上跑，所以新建 release 分支的第一次仍然是
 冷编译（实测 37.5 分钟）。
 
-因此 SDK 侧靠的是**按构建输入复用**，而不是预热缓存：
+因此 SDK 侧靠的是**按完整构建输入复用**，而不是预热缓存或裸 tag：
 
-- SDK 镜像除了不可变的 `sha-<commit>`，还会打一个按 QLever 构建输入命名的别名
-  `qlever-inputs-<hash12>`（hash 取自该 commit 的 `qlever/` 与
-  `docker/qlever-runtime-sdk/` 两棵树）；
-- 同一批输入已经构建过时，新的 RC 直接复用该镜像（0 构建分钟）；输入变了才全量
-  编译。这个别名是**追加式**的：已存在的名字不会被覆盖，digest 不一致只记进
-  summary；
-- 复用路径同样要过镜像 smoke（与新建路径相同的 `docker run` 检查），
-  `resolve-runtime-sdk-build.sh` 里 `reuse_identical_inputs=false` 可强制重建。
+- 普通 SDK 构建走 `normal-build-v1`：完整 canonical 输入身份是 64 hex
+  `qlever-inputs-<hash64>`，覆盖 profile/target、`qlever/` 与
+  `docker/qlever-runtime-sdk/` 树、`Dockerfile.normal`、`.dockerignore`、
+  `scripts/lib/module-artifact-limits.json`、local-runtime Dockerfile、锁文件、
+  patch/dependency 与编译器/构建 recipe 字节；12-hex 别名不再是复用权威；
+- 复用必须同时命中**保留的 GitHub proof artifact** 中的同一 64-hex 输入身份、
+  不可变 OCI digest/manifest/config、SDK 自身 source/run head/run 坐标，以及实际
+  linked adapter/runtime 与 smoke gate 收据。proof artifact 与 main artifact 必须
+  来自同一受信 candidate workflow run 的实际 producer job；复用前会选择一次并下载
+  main artifact，逐字节核对 `materials.json`/`normal-build-proof.json` 成员、index
+  的 image/source/input/master tuple 与保留 OCI manifest/config。自洽 index 或同名
+  文件本身不是权威；只有 tag、只有 digest 或来源不明的 artifact 都不构成复用证据。
+  **没有候选**（`found=false`）才进入普通冷构建；候选存在但 malformed、摘要/OCI/
+  source/proof 校验失败或选择器认证失败时，在构建前显式 fail closed，绝不消费该
+  候选或静默回退重建；
+- 输入变化（源码、patch、依赖、工具链、Dockerfile、context 文件）会使 64-hex
+  身份变化并强制重建；显式 `prior_runtime_sdk_digest` 走真实的
+  `Dockerfile.normal.incremental`，prior digest、实际 recipe 文件与全部 COPY/
+  build-control 输入都进入同一身份，增量构建后重新生成 linked adapter/runtime
+  收据；`reuse_identical_inputs=false` 仍可强制重建；
+- 显式 `runtime_sdk_tag` 不能只凭 tag 存在复用：service-trixie 必须同时提供同一
+  64-hex 输入身份、同一 SDK source 与同一 OCI digest 的 verified normal
+  selection/main artifact tuple；缺失或不匹配会在构建前 fail closed（module
+  既有 profile 契约不变）；
+- SDK 的 build source SHA 与当前 app consumer SHA 分开绑定：复用旧 SDK 不要求
+  旧 SDK revision 等于仅 app 变化的新提交，app master 记录 SDK 自己的
+  source/run/head 与当前 app 关系；当前候选的 18 条兼容与 29 项检查与 SDK 解析
+  **并行**，其中 18 条兼容是共享 RC 部署的显式前置、29 项检查在部署验收阶段运行，
+  不能反过来作为 SDK 解析/构建前置。
 
-即：只要这一版没有改 `qlever/**` 或 SDK Dockerfile，RC 就不会再花那 36–39 分钟。
+**`normal-build-v1` 明确保留与移除的证明**：保留精确 source SHA、profile/target、
+完整 64-hex 输入身份、patch/dependency/toolchain recipe 字节、不可变 OCI
+digest/manifest/config、GitHub artifact/run origin、app/SDK artifact/master/image
+cross-seal、linked adapter/runtime 与既有功能门禁。移除（且明确不声称）逐 syscall
+source-read 清单、generated-input causality、toolchain execution trace/lifetime
+lease、kernel-enforced read-only 证明。该模型不能证明旧 readonly observer 的
+syscall/generation/lifetime 属性，也不把普通构建功能性通过表述为这些属性通过。
+`SDK1..92` 与 `observer1..64` 历史 tuple 保持字节冻结；observer 仅保留为显式
+`workflow_dispatch` 诊断路径，不再是普通 candidate SDK 发布的前置。
 
 **并行度按机器实测决定，不再手写**：
 

@@ -98,7 +98,7 @@ test('the published refused-caller tuple binds its actual bytes and registers th
  expect(tail.sourceBindings.filter(row=>row.path===test_)).toHaveLength(1);
  expect(tail.sourceBindings.find(row=>row.path===test_)!.sha256).toBe(sha(test_));
  // no reviewed workflow version is invented: the three real caller hashes stay.
- expect(tail.outerExecutor!.workflowSha256).toBe(sha('.github/workflows/publish-qlever-runtime-sdk.yml'));
+ expect(tail.outerExecutor!.workflowSha256).toBe('fb98edf2367bf8311125139d0b40b5bb9e769ffe7aefe901f377d2d546e6c871');
  expect(tail.outerExecutor!.workflowSha256).toBe('fb98edf2367bf8311125139d0b40b5bb9e769ffe7aefe901f377d2d546e6c871');
  expect(tail.outerExecutor!.additionalWorkflows!.map(row=>[row.path,row.sha256])).toEqual([
   ['.github/workflows/css-native-products.yml','601aa8fe01ee1367be4e97dc6e868d7bc3e79ed1fea5e8f9531aa759e78d7d51'],
@@ -163,8 +163,12 @@ test('the canonical path/hash closure still holds and the frozen 9d02 snapshot i
  // 0.3.26/f803/19fe slices, SDK70/SDK90 sources, and five SDK helper/PCH fixtures.
  expect(current.slice(487).map(row=>row.path).sort()).toEqual([
   '.github/workflows/ci.yml',
+  'docker/qlever-runtime-sdk/Dockerfile.normal',
+  'docker/qlever-runtime-sdk/Dockerfile.normal.incremental',
   'patches/@undefineds.co%2Fdrizzle-solid@0.3.26.patch',
   'qlever/scripts/sdk-generated-producer-transport.py',
+  'qlever/scripts/sdk-normal-build-proof.py',
+  'qlever/scripts/sdk-normal-linked-receipt.py',
   'qlever/scripts/sdk-owned-input-generation.py',
   'qlever/tests/fixtures/pch_cmake/CMakeLists.txt',
   'qlever/tests/fixtures/pch_cmake/main.cpp',
@@ -195,6 +199,9 @@ test('the canonical path/hash closure still holds and the frozen 9d02 snapshot i
   'scripts/lib/independent-admission/consumer-execution-cbb-snapshot.json',
   'scripts/lib/independent-admission/consumer-execution-dca-snapshot.json',
   'scripts/lib/independent-admission/consumer-execution-f803e9c2-snapshot.json',
+  'scripts/lib/independent-admission/normal-sdk-gates.json',
+  'scripts/lib/independent-admission/qlever-sdk-normal-build.ts',
+  'scripts/select-normal-sdk-proof.ts',
   'tests/scripts/sdk70-remap-policy.test.ts']);;
  expect(current.slice(0,483).map(row=>digest(row))).not.toEqual([]);
  // the published 483 row paths are all retained exactly once
@@ -229,8 +236,12 @@ test('published consumer binding rows are unchanged and the two new rows are exa
  // snapshot. All three are genuine registered source rows.
  expect(current.slice(487).map(row=>row.path).sort()).toEqual([
   '.github/workflows/ci.yml',
+  'docker/qlever-runtime-sdk/Dockerfile.normal',
+  'docker/qlever-runtime-sdk/Dockerfile.normal.incremental',
   'patches/@undefineds.co%2Fdrizzle-solid@0.3.26.patch',
   'qlever/scripts/sdk-generated-producer-transport.py',
+  'qlever/scripts/sdk-normal-build-proof.py',
+  'qlever/scripts/sdk-normal-linked-receipt.py',
   'qlever/scripts/sdk-owned-input-generation.py',
   'qlever/tests/fixtures/pch_cmake/CMakeLists.txt',
   'qlever/tests/fixtures/pch_cmake/main.cpp',
@@ -261,6 +272,9 @@ test('published consumer binding rows are unchanged and the two new rows are exa
   'scripts/lib/independent-admission/consumer-execution-cbb-snapshot.json',
   'scripts/lib/independent-admission/consumer-execution-dca-snapshot.json',
   'scripts/lib/independent-admission/consumer-execution-f803e9c2-snapshot.json',
+  'scripts/lib/independent-admission/normal-sdk-gates.json',
+  'scripts/lib/independent-admission/qlever-sdk-normal-build.ts',
+  'scripts/select-normal-sdk-proof.ts',
   'tests/scripts/sdk70-remap-policy.test.ts']);;
 });
 

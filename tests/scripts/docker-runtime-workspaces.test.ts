@@ -1,4 +1,6 @@
 import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 describe('Docker runtime workspace packaging', () => {
@@ -37,6 +39,33 @@ describe('Docker runtime workspace packaging', () => {
     expect(runtimeStage).not.toContain('COPY --from=build /app/desktop');
     expect(runtimeStage).not.toContain('COPY --from=build /app/ui');
     expect(runtimeStage).toContain('XPOD_QLEVER_LOCAL_RUNTIME_COMMAND=/opt/xpod/qlever/bin/xpod_qlever_local_runtime');
+  });
+
+  it('includes every exact normal SDK cold/incremental COPY source in the build context', async () => {
+    const ignore = await readFile(new URL('../../.dockerignore', import.meta.url), 'utf8');
+    const lines = ignore.split(/\r?\n/u);
+    expect(lines.includes('!scripts/')).toBe(false);
+    expect(lines.includes('!scripts/**')).toBe(false);
+    for (const file of [
+      '.dockerignore',
+      'scripts/lib/module-artifact-limits.json',
+      'scripts/lib/independent-admission/normal-sdk-gates.json',
+      'scripts/agentfs-native-ci/supervise.py',
+      'docker/qlever-runtime-sdk/Dockerfile.normal',
+      'docker/qlever-runtime-sdk/Dockerfile.normal.incremental',
+      'docker/qlever-local-runtime/Dockerfile',
+    ]) {
+      expect(existsSync(path.join(new URL('../../', import.meta.url).pathname, file)), file).toBe(true);
+      expect(lines.filter(line => line === `!${file}`), file).toHaveLength(1);
+    }
+    expect(lines).toContain('!qlever/');
+    const dockerfiles = await Promise.all(['Dockerfile.normal', 'Dockerfile.normal.incremental'].map(file =>
+      readFile(new URL(`../../docker/qlever-runtime-sdk/${file}`, import.meta.url), 'utf8')));
+    for (const dockerfile of dockerfiles) {
+      expect(dockerfile).toContain('COPY scripts/lib/independent-admission/normal-sdk-gates.json');
+      expect(dockerfile).toContain('COPY scripts/lib/module-artifact-limits.json');
+      expect(dockerfile).toContain('COPY scripts/agentfs-native-ci/supervise.py');
+    }
   });
 
   it('starts compose services through Bun instead of Node', async () => {

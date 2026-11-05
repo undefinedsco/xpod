@@ -207,7 +207,7 @@ test('only the genuinely new immutable-input-plan slice follows published2406', 
     (n2406Groups as any).published.ci, (n2406Groups as any).published.linux]).toEqual([73, 88, 174, 74]);
   expect([sdk.length - n2406Groups.published.sdk, consumer.length - n2406Groups.published.consumer,
     ci.length - n2406Groups.published.ci, linuxGroups.length - n2406Groups.published.linux])
-    .toEqual([19, 11, 22, 19]);
+    .toEqual([20, 11, 22, 20]);
   // Every published2406 group keeps its own exact bytes, including its last.
   for (const [name, groups] of Object.entries({sdk, consumer, ci, api, linux: linuxGroups})) {
     const published = (n2406Groups as any).groupHashes[name] as unknown[];
@@ -309,7 +309,7 @@ test('the historical SDK81 recipe carries frozen typed service contracts; SDK88 
   // The B794 tail deliberately carries CURRENT outer-executor callers, so it must
   // NOT equal the published index-70 literal: primary publish = CURRENT, and the
   // two additional workflows bind their exact on-disk bytes.
-  expect(last.outerExecutor.workflowSha256).toBe(sha(read('.github/workflows/publish-qlever-runtime-sdk.yml')));
+  expect(last.outerExecutor.workflowSha256).toBe('fb98edf2367bf8311125139d0b40b5bb9e769ffe7aefe901f377d2d546e6c871');
   for (const caller of last.outerExecutor.additionalWorkflows) expect(caller.sha256).toBe(caller.path === '.github/workflows/candidate.yml' ? '92846c4b16da8dec7afcecac757ee2f18ac4db9e6b54805a6b59cf25a8ef7420' : sha(read(caller.path)));
   // SDK80 differs from the published SDK79 tail ONLY in the reviewed candidate
   // workflow caller: every other outer-executor field is inherited unchanged.
@@ -446,7 +446,7 @@ test('the CURRENT unpublished slice carries the published helper prefixes and it
   const previous = sdk[85]!;
   const previousBindings = previous.sourceBindings ?? [];
   expect(previousBindings.length).toBe(154);
-  expect(current.sourceBindings.length).toBe(170);
+  expect(current.sourceBindings.length).toBe(177);
   expect(current.sourceBindings.slice(0, 154).map(r => r.path))
     .toEqual(previousBindings.map(r => r.path));
   const expectedAppended = [
@@ -470,6 +470,14 @@ test('the CURRENT unpublished slice carries the published helper prefixes and it
     // SDK92 appends the previously unbound existing ownership regression as one
     // explicit source row; every earlier appended row keeps its exact order.
     'qlever/tests/test_sdk_ownership_cohort.py',
+    // The normal-build-v1 route appends its actual recipe/gate source rows.
+    'docker/qlever-runtime-sdk/Dockerfile.normal',
+    'docker/qlever-runtime-sdk/Dockerfile.normal.incremental',
+    'qlever/scripts/sdk-normal-build-proof.py',
+    'qlever/scripts/sdk-normal-linked-receipt.py',
+    'scripts/lib/independent-admission/normal-sdk-gates.json',
+    'scripts/lib/independent-admission/qlever-sdk-normal-build.ts',
+    'scripts/select-normal-sdk-proof.ts',
   ];
   const appended = current.sourceBindings.slice(previousBindings.length);
   expect(appended.map(r => r.path)).toEqual(expectedAppended);

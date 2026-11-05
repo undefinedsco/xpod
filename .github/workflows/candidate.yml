@@ -79,7 +79,8 @@ jobs:
       source-sha: ${{ needs.metadata.outputs.sourceSha }}
 
   rc_prerequisites:
-    needs: [metadata, legacy_root_compat]
+    # Read-only RC preflight: it must not wait for the 18 compatibility lanes.
+    needs: [metadata]
     runs-on: ubuntu-latest
     environment: rc
     env:
@@ -158,10 +159,10 @@ jobs:
     permissions:
       contents: read
       packages: write
+      actions: read
     with:
       source_commit: ${{ needs.metadata.outputs.sourceSha }}
       sdk_profile: service-trixie
-      readonly_executor: true
 
   publish_qlever_local_runtime:
     needs: publish_qlever_runtime_sdk
@@ -282,6 +283,11 @@ jobs:
           SDK_ARTIFACT_DIGEST: ${{ needs.publish_qlever_runtime_sdk.outputs.sdk_artifact_digest }}
           SDK_MASTER_BYTES: ${{ needs.publish_qlever_runtime_sdk.outputs.sdk_master_bytes }}
           SDK_MASTER_SHA256: ${{ needs.publish_qlever_runtime_sdk.outputs.sdk_master_sha256 }}
+          SDK_SOURCE_SHA: ${{ needs.publish_qlever_runtime_sdk.outputs.sdk_source_sha }}
+          SDK_RUN_HEAD_SHA: ${{ needs.publish_qlever_runtime_sdk.outputs.sdk_run_head_sha }}
+          SDK_RUN_ID: ${{ needs.publish_qlever_runtime_sdk.outputs.sdk_run_id }}
+          SDK_RUN_ATTEMPT: ${{ needs.publish_qlever_runtime_sdk.outputs.sdk_run_attempt }}
+          SDK_BUILD_MODEL: ${{ needs.publish_qlever_runtime_sdk.outputs.sdk_build_model }}
           NATIVE_RUNTIME_ARTIFACT_ID: ${{ needs.publish_qlever_local_runtime.outputs.native_runtime_artifact_id }}
           NATIVE_RUNTIME_ARTIFACT_DIGEST: ${{ needs.publish_qlever_local_runtime.outputs.native_runtime_artifact_digest }}
           NATIVE_RUNTIME_MASTER_BYTES: ${{ needs.publish_qlever_local_runtime.outputs.native_runtime_master_bytes }}
@@ -297,6 +303,8 @@ jobs:
             --local-runtime-image "$LOCAL_RUNTIME_IMAGE" --sdk-image "$SDK_IMAGE" \
             --sdk-artifact-id "$SDK_ARTIFACT_ID" --sdk-artifact-digest "$SDK_ARTIFACT_DIGEST" \
             --sdk-master-bytes "$SDK_MASTER_BYTES" --sdk-master-sha256 "$SDK_MASTER_SHA256" \
+            --sdk-source-sha "$SDK_SOURCE_SHA" --sdk-run-head-sha "$SDK_RUN_HEAD_SHA" \
+            --sdk-run-id "$SDK_RUN_ID" --sdk-run-attempt "$SDK_RUN_ATTEMPT" --sdk-build-model "$SDK_BUILD_MODEL" \
             --native-runtime-artifact-id "$NATIVE_RUNTIME_ARTIFACT_ID" --native-runtime-artifact-digest "$NATIVE_RUNTIME_ARTIFACT_DIGEST" \
             --native-runtime-master-bytes "$NATIVE_RUNTIME_MASTER_BYTES" --native-runtime-master-sha256 "$NATIVE_RUNTIME_MASTER_SHA256" \
             --root-manifest-before "$RUNNER_TEMP/service-source-manifests/before/package.json" \
@@ -368,7 +376,9 @@ jobs:
           if-no-files-found: error
 
   deploy_and_accept:
-    needs: [metadata, build_image, observe_service_sdk_source]
+    # Mandatory shared-RC mutation join: the 18 compatibility lanes must pass
+    # before this job can mutate the shared RC. SDK lookup/build stays parallel.
+    needs: [metadata, build_image, observe_service_sdk_source, legacy_root_compat]
     runs-on: ubuntu-latest
     environment: rc
     concurrency:

@@ -83,7 +83,15 @@ test('the frozen f803 snapshot is the published canonical bytes and the moving c
     'qlever/tests/test_sdk_ptrace_execution_library.py',
     'qlever/tests/test_sdk_upstream_source_materials.py',
     // SDK92 appends the previously unbound ownership cohort regression.
-    'qlever/tests/test_sdk_ownership_cohort.py']);
+    'qlever/tests/test_sdk_ownership_cohort.py',
+    // The normal-build-v1 route appends its actual recipe/gate source rows.
+    'docker/qlever-runtime-sdk/Dockerfile.normal',
+    'qlever/scripts/sdk-normal-build-proof.py',
+    'scripts/lib/independent-admission/normal-sdk-gates.json',
+    'docker/qlever-runtime-sdk/Dockerfile.normal.incremental',
+    'qlever/scripts/sdk-normal-linked-receipt.py',
+    'scripts/lib/independent-admission/qlever-sdk-normal-build.ts',
+    'scripts/select-normal-sdk-proof.ts']);
   expect(new Set(current.map(row => row.path)).size).toBe(current.length);
 });
 

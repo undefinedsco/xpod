@@ -150,6 +150,8 @@ export async function observeCandidateServiceSdkSource(argv:readonly string[],re
    bunSha256:pipeline.bunView?.executableSha256,bunTarget:pipeline.bunView?.target,
    networkIsolation:pipeline.replayView?.networkIsolation,pipelineStages:pipeline.stages,
    sdkSourceAdmissionVerified:sdkVerified,
+   sdkProvenanceModel:String(observation.facts.sdkBuildExecutionModel??'controller-readonly-v1'),
+   sdkSyscallProvenanceVerified:observation.facts.sdkSyscallSourceReadInventoryVerified===true,
    pending:Object.freeze(reportPending),
    rootMutationObservation:{facts:rootMutation.facts,pending:rootMutation.pending},
    packOutputObservation:{facts:pack.facts,pending:pack.pending},
