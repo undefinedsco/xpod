@@ -88,6 +88,24 @@ on:
         value: ${{ jobs.readonly_publish.outputs.sdk_master_sha256 || jobs.publish.outputs.sdk_master_sha256 }}
       sdk_master_bytes:
         value: ${{ jobs.readonly_publish.outputs.sdk_master_bytes || jobs.publish.outputs.sdk_master_bytes }}
+      sdk_source_sha:
+        description: Actual SDK build source revision (independent of the current app consumer SHA)
+        value: ${{ jobs.publish.outputs.sdk_source_sha }}
+      sdk_run_head_sha:
+        description: Actual SDK build workflow run head revision
+        value: ${{ jobs.publish.outputs.sdk_run_head_sha }}
+      sdk_run_id:
+        description: Actual SDK build run id
+        value: ${{ jobs.publish.outputs.sdk_run_id }}
+      sdk_run_attempt:
+        description: Actual SDK build run attempt
+        value: ${{ jobs.publish.outputs.sdk_run_attempt }}
+      sdk_build_model:
+        description: Explicit SDK build execution model
+        value: ${{ jobs.publish.outputs.sdk_build_model }}
+      sdk_input_hash:
+        description: Canonical 64-hex SDK build input identity
+        value: ${{ jobs.publish.outputs.sdk_input_hash }}
 
 permissions:
   contents: read
@@ -139,6 +157,10 @@ jobs:
   publish:
     if: ${{ github.event_name != 'pull_request' && !inputs.readonly_executor }}
     needs: resolve_target
+    permissions:
+      contents: read
+      packages: write
+      actions: read
     env:
       SDK_IMAGE: ghcr.io/${{ github.repository_owner }}/xpod-qlever-sdk${{ needs.resolve_target.outputs.repository_profile_suffix }}${{ needs.resolve_target.outputs.repository_suffix }}
     runs-on: ${{ needs.resolve_target.outputs.runner }}
@@ -147,10 +169,16 @@ jobs:
       image: ${{ steps.publish.outputs.image }}
       digest: ${{ steps.publish.outputs.digest }}
       tag: ${{ steps.resolve.outputs.tag }}
-      sdk_artifact_id: ${{ steps.sdk_upload.outputs.artifact-id }}
-      sdk_artifact_digest: ${{ steps.sdk_upload.outputs.artifact-digest }}
-      sdk_master_sha256: ${{ steps.sdk_originals.outputs.master_sha256 }}
-      sdk_master_bytes: ${{ steps.sdk_originals.outputs.master_bytes }}
+      sdk_artifact_id: ${{ steps.normal_emit.outputs.sdk_artifact_id || steps.sdk_upload.outputs.artifact-id }}
+      sdk_artifact_digest: ${{ steps.normal_emit.outputs.sdk_artifact_digest || steps.sdk_upload.outputs.artifact-digest }}
+      sdk_master_sha256: ${{ steps.normal_emit.outputs.sdk_master_sha256 || steps.sdk_originals.outputs.master_sha256 }}
+      sdk_master_bytes: ${{ steps.normal_emit.outputs.sdk_master_bytes || steps.sdk_originals.outputs.master_bytes }}
+      sdk_source_sha: ${{ steps.normal_emit.outputs.sdk_source_sha || steps.source.outputs.commit }}
+      sdk_run_head_sha: ${{ steps.normal_emit.outputs.sdk_run_head_sha || steps.source.outputs.run_head_sha }}
+      sdk_run_id: ${{ steps.normal_emit.outputs.sdk_run_id || github.run_id }}
+      sdk_run_attempt: ${{ steps.normal_emit.outputs.sdk_run_attempt || github.run_attempt }}
+      sdk_build_model: ${{ steps.normal_emit.outputs.sdk_build_model || 'controller-readonly-v1' }}
+      sdk_input_hash: ${{ steps.normal_emit.outputs.sdk_input_hash || steps.sdk_inputs.outputs.input_hash }}
     steps:
       - name: Resolve immutable source commit
         id: source
@@ -172,6 +200,7 @@ jobs:
           echo "deadline=$(( $(date +%s) + 21000 ))" >> "${GITHUB_OUTPUT}"
           identity=$(SDK_SOURCE_COMMIT="$source_commit" python3 -c 'import json,os,pathlib;e=json.loads(pathlib.Path(os.environ["GITHUB_EVENT_PATH"]).read_text());print(json.dumps(dict(sourceSha=os.environ["SDK_SOURCE_COMMIT"],runHeadSha=e.get("pull_request",{}).get("head",{}).get("sha",os.environ["GITHUB_SHA"]),runId=int(os.environ["GITHUB_RUN_ID"]),runAttempt=int(os.environ["GITHUB_RUN_ATTEMPT"]),target=os.environ["SDK_TARGET"],sdkProfile=os.environ["SDK_PROFILE"]),separators=(",",":")))')
           echo "identity=$identity" >> "$GITHUB_OUTPUT"
+          echo "run_head_sha=$(printf '%s' "$identity" | python3 -c 'import json,sys;print(json.load(sys.stdin)["runHeadSha"])')" >> "$GITHUB_OUTPUT"
 
       - name: Check out the source
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -197,11 +226,51 @@ jobs:
         shell: bash
         env:
           SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
+          SDK_PROFILE: ${{ needs.resolve_target.outputs.sdk_profile }}
+          SDK_TARGET: ${{ needs.resolve_target.outputs.target }}
+          SDK_PROFILE_IDENTITY: ${{ needs.resolve_target.outputs.sdk_profile_identity }}
+          NORMAL_DOCKERFILE: docker/qlever-runtime-sdk/Dockerfile.normal
+          PRIOR_SDK_DIGEST: ${{ inputs.prior_runtime_sdk_digest }}
         run: |
           set -euo pipefail
-          inputs_hash="$({ printf '%s\n' '${{ needs.resolve_target.outputs.sdk_profile }}:${{ needs.resolve_target.outputs.target }}:${{ needs.resolve_target.outputs.sdk_profile_identity }}'; git rev-parse "${SOURCE_COMMIT}:qlever"; git rev-parse "${SOURCE_COMMIT}:docker/qlever-runtime-sdk"; } | sha256sum | cut -c1-12)"
-          echo "tag=qlever-inputs-${inputs_hash}" >> "${GITHUB_OUTPUT}"
-          echo "QLever build inputs: qlever-inputs-${inputs_hash}" >> "${GITHUB_STEP_SUMMARY}"
+          if [[ "${SDK_PROFILE}" == service-trixie ]]; then
+            python3 qlever/scripts/sdk-normal-build-proof.py identity               --source . --source-commit "${SOURCE_COMMIT}"               --profile "${SDK_PROFILE}" --target "${SDK_TARGET}"               --profile-identity "${SDK_PROFILE_IDENTITY}"               --dockerfile "${NORMAL_DOCKERFILE}"               --out "${RUNNER_TEMP}/qlever-normal-input.json"
+          else
+            inputs_hash="$({ printf '%s\n' '${SDK_PROFILE}:${SDK_TARGET}:${SDK_PROFILE_IDENTITY}'; git rev-parse "${SOURCE_COMMIT}:qlever"; git rev-parse "${SOURCE_COMMIT}:docker/qlever-runtime-sdk"; } | sha256sum | cut -c1-12)"
+            echo "tag=qlever-inputs-${inputs_hash}" >> "${GITHUB_OUTPUT}"
+          fi
+          echo "QLever build inputs: $(python3 -c 'import json,os;print(json.load(open(os.environ["RUNNER_TEMP"]+"/qlever-normal-input.json"))["inputHash"])' 2>/dev/null || true)" >> "${GITHUB_STEP_SUMMARY}"
+
+
+      - name: Find the retained normal SDK build proof candidate
+        id: normal_proof
+        if: ${{ needs.resolve_target.outputs.sdk_profile == 'service-trixie' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          SDK_PROFILE: ${{ needs.resolve_target.outputs.sdk_profile }}
+          SDK_TARGET: ${{ needs.resolve_target.outputs.target }}
+          INPUT_HASH: ${{ steps.sdk_inputs.outputs.input_hash }}
+        run: |
+          set -euo pipefail
+          python3 qlever/scripts/sdk-normal-build-proof.py candidate \
+            --repository "${REPOSITORY}" --profile "${SDK_PROFILE}" --target "${SDK_TARGET}" \
+            --input-hash "${INPUT_HASH}" --out "${RUNNER_TEMP}/sdk-normal-proof-candidate"
+
+      - name: Select and authenticate the retained normal SDK proof
+        id: normal_select
+        if: ${{ steps.normal_proof.outputs.found == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE_PATH: ${{ steps.normal_proof.outputs.candidate_path }}
+        run: |
+          set -euo pipefail
+          bun scripts/select-normal-sdk-proof.ts \
+            --candidate "${CANDIDATE_PATH}" \
+            --out "${RUNNER_TEMP}/sdk-normal-selection.json" \
+            --acquisition "${RUNNER_TEMP}/sdk-normal-selection-acquisition"
 
       - name: Verify runtime SDK source and fixture contracts
         run: |
@@ -239,9 +308,11 @@ jobs:
           REQUESTED_SDK_TAG: ${{ inputs.runtime_sdk_tag }}
           PRIOR_SDK_DIGEST: ${{ inputs.prior_runtime_sdk_digest }}
           QELEVER_INPUTS_TAG: ${{ steps.sdk_inputs.outputs.tag }}
+          QELEVER_NORMAL_SELECTION: ${{ steps.normal_select.outputs.found == 'true' && steps.normal_select.outputs.selection_path || '' }}
           REUSE_IDENTICAL_INPUTS: ${{ needs.resolve_target.outputs.sdk_profile == 'service-trixie' && 'true' || 'false' }}
           SDK_IMAGE: ${{ env.SDK_IMAGE }}
-          RUNTIME_DOCKERFILE: ${{ needs.resolve_target.outputs.sdk_dockerfile }}
+          SDK_PROFILE: ${{ needs.resolve_target.outputs.sdk_profile }}
+          RUNTIME_DOCKERFILE: ${{ needs.resolve_target.outputs.sdk_profile == 'service-trixie' && 'docker/qlever-runtime-sdk/Dockerfile.normal' || needs.resolve_target.outputs.sdk_dockerfile }}
           XPOD_SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
         run: |
           if [[ '${{ needs.resolve_target.outputs.sdk_profile }}' != service-trixie && -n "$PRIOR_SDK_DIGEST" ]]; then
@@ -275,6 +346,7 @@ jobs:
             XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ steps.resolve.outputs.prior_image }}
             XPOD_QLEVER_SDK_DEADLINE_UNIX=${{ steps.source.outputs.deadline }}
             XPOD_QLEVER_SDK_IDENTITY=${{ steps.source.outputs.identity }}
+            XPOD_QLEVER_NORMAL_INPUT_HASH=${{ steps.sdk_inputs.outputs.input_hash }}
 
       - name: Build the exact runtime SDK image
         id: build
@@ -300,6 +372,7 @@ jobs:
             XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ steps.resolve.outputs.prior_image }}
             XPOD_QLEVER_SDK_DEADLINE_UNIX=${{ steps.source.outputs.deadline }}
             XPOD_QLEVER_SDK_IDENTITY=${{ steps.source.outputs.identity }}
+            XPOD_QLEVER_NORMAL_INPUT_HASH=${{ steps.sdk_inputs.outputs.input_hash }}
 
       - name: Build actual cold module SDK with owned raw streams
         id: module_build
@@ -315,15 +388,35 @@ jobs:
           BUILDX_METADATA_WARNINGS: 'true'
         run: python3 qlever/scripts/sdk-image-originals.py build --builder '${{ steps.sdk_buildx.outputs.name }}' --out "$RUNNER_TEMP/sdk-originals" --deadline '${{ steps.source.outputs.deadline }}'
 
+      - name: Verify the retained normal SDK OCI digest
+        if: needs.resolve_target.outputs.sdk_profile == 'service-trixie' && steps.resolve.outputs.build != 'true' && steps.resolve.outputs.image_ref != ''
+        shell: bash
+        env:
+          REUSED_IMAGE: ${{ steps.resolve.outputs.image_ref }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "${REUSED_IMAGE}" >/dev/null
+
       - name: Smoke the exact SDK image before publishing
         if: needs.resolve_target.outputs.sdk_profile == 'service-trixie'
         # A reused image is verified exactly like a freshly built one: reuse claims
         # the inputs are identical, and this is what checks the claim is usable.
         shell: bash
+        env:
+          BUILD_IMAGE: ${{ steps.resolve.outputs.build }}
+          REUSED_IMAGE: ${{ steps.resolve.outputs.image_ref }}
+          SDK_TAG: ${{ steps.resolve.outputs.tag }}
         run: |
           set -euo pipefail
+          if [[ "${BUILD_IMAGE}" == 'true' ]]; then
+            image="${SDK_IMAGE}:${SDK_TAG}"
+          elif [[ -n "${REUSED_IMAGE}" ]]; then
+            image="${REUSED_IMAGE}"
+          else
+            image="${SDK_IMAGE}:${SDK_TAG}"
+          fi
           docker run --rm --entrypoint /bin/sh \
-            "${SDK_IMAGE}:${{ steps.resolve.outputs.tag }}" -ceu '
+            "${image}" -ceu '
               test -f /opt/qlever-sdk/source/src/libqlever/Qlever.h
               test -f /opt/qlever-sdk/build/.xpod-build-identity
               test -f /opt/qlever-sdk/build/.xpod-build-contract.json
@@ -360,6 +453,7 @@ jobs:
             XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ steps.resolve.outputs.prior_image }}
             XPOD_QLEVER_SDK_DEADLINE_UNIX=${{ steps.source.outputs.deadline }}
             XPOD_QLEVER_SDK_IDENTITY=${{ steps.source.outputs.identity }}
+            XPOD_QLEVER_NORMAL_INPUT_HASH=${{ steps.sdk_inputs.outputs.input_hash }}
 
       - name: Push exact tested module SDK from the same builder cache
         id: module_push
@@ -391,11 +485,14 @@ jobs:
         shell: bash
         env:
           BUILD_IMAGE: ${{ steps.resolve.outputs.build }}
+          REUSED_IMAGE: ${{ steps.resolve.outputs.image_ref }}
           PUSHED_DIGEST: ${{ steps.module_push.outputs.digest || steps.push.outputs.digest }}
         run: |
           set -euo pipefail
           if [[ "${BUILD_IMAGE}" == 'true' ]]; then
             digest="${PUSHED_DIGEST}"
+          elif [[ -n "${REUSED_IMAGE}" ]]; then
+            digest="${REUSED_IMAGE##*@}"
           else
             tag="${SDK_IMAGE}:${{ steps.resolve.outputs.tag }}"
             digest="$(docker buildx imagetools inspect "${tag}" \
@@ -429,6 +526,132 @@ jobs:
             echo "kept=${alias_tag} (already ${alias_digest}; this run produced ${{ steps.publish.outputs.digest }})" >> "${GITHUB_OUTPUT}"
           fi
           docker buildx imagetools inspect "${alias_tag}" >/dev/null
+
+      - name: Capture normal SDK build proof and originals
+        id: normal_originals
+        if: steps.resolve.outputs.build == 'true' && needs.resolve_target.outputs.sdk_profile == 'service-trixie'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_SHA: ${{ steps.source.outputs.commit }}
+          SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
+          SDK_IMAGE_REF: ${{ steps.publish.outputs.image }}
+          SDK_INPUT_IDENTITY: ${{ steps.sdk_inputs.outputs.identity_path }}
+          SDK_INPUT_HASH: ${{ steps.sdk_inputs.outputs.input_hash }}
+          SDK_PROFILE: ${{ needs.resolve_target.outputs.sdk_profile }}
+          SDK_TARGET: ${{ needs.resolve_target.outputs.target }}
+          RUN_HEAD_SHA: ${{ steps.source.outputs.run_head_sha }}
+          RESOLVED_DOCKERFILE: ${{ steps.resolve.outputs.dockerfile }}
+          PRIOR_IMAGE: ${{ steps.resolve.outputs.prior_image }}
+          DEADLINE: ${{ steps.source.outputs.deadline }}
+        run: |
+          set -euo pipefail
+          python3 qlever/scripts/sdk-normal-build-proof.py collect \
+            --source "$GITHUB_WORKSPACE" --source-commit "${SOURCE_COMMIT}" \
+            --profile "${SDK_PROFILE}" --target "${SDK_TARGET}" \
+            --identity "${SDK_INPUT_IDENTITY}" --input-hash "${SDK_INPUT_HASH}" \
+            --image "${SDK_IMAGE_REF}" --run-head-sha "${RUN_HEAD_SHA}" \
+            --dockerfile "${RESOLVED_DOCKERFILE}" \
+            --prior-sdk-digest "${PRIOR_IMAGE##*@}" --deadline "${DEADLINE}" \
+            --out "$RUNNER_TEMP/sdk-normal-originals"
+
+      - name: Upload the exact normal SDK build originals
+        timeout-minutes: 10
+        id: normal_upload
+        if: steps.resolve.outputs.build == 'true' && needs.resolve_target.outputs.sdk_profile == 'service-trixie'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: qlever-sdk-originals-service-trixie-${{ needs.resolve_target.outputs.target }}-${{ steps.source.outputs.commit }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sdk-normal-originals/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Write the normal SDK proof index
+        id: normal_index
+        if: steps.resolve.outputs.build == 'true' && needs.resolve_target.outputs.sdk_profile == 'service-trixie'
+        shell: bash
+        env:
+          MASTER_BYTES: ${{ steps.normal_originals.outputs.master_bytes }}
+          MASTER_SHA256: ${{ steps.normal_originals.outputs.master_sha256 }}
+          ARTIFACT_ID: ${{ steps.normal_upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.normal_upload.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          python3 qlever/scripts/sdk-normal-build-proof.py index \
+            --proof "$RUNNER_TEMP/sdk-normal-originals/normal-build-proof.json" \
+            --out "$RUNNER_TEMP/sdk-normal-proof-index" \
+            --artifact-id "${ARTIFACT_ID}" --artifact-digest "${ARTIFACT_DIGEST}" \
+            --master-bytes "${MASTER_BYTES}" --master-sha256 "${MASTER_SHA256}"
+
+      - name: Upload the exact normal SDK build proof
+        timeout-minutes: 10
+        id: normal_proof_upload
+        if: steps.resolve.outputs.build == 'true' && needs.resolve_target.outputs.sdk_profile == 'service-trixie'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: qlever-sdk-normal-proof-${{ needs.resolve_target.outputs.sdk_profile }}-${{ needs.resolve_target.outputs.target }}-${{ steps.sdk_inputs.outputs.input_hash }}
+          path: ${{ runner.temp }}/sdk-normal-proof-index/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Emit normal SDK provenance outputs
+        id: normal_emit
+        if: needs.resolve_target.outputs.sdk_profile == 'service-trixie'
+        shell: bash
+        env:
+          BUILD_IMAGE: ${{ steps.resolve.outputs.build }}
+          PROOF_FOUND: ${{ steps.normal_select.outputs.found }}
+          BUILT_ARTIFACT_ID: ${{ steps.normal_upload.outputs.artifact-id }}
+          BUILT_ARTIFACT_DIGEST: ${{ steps.normal_upload.outputs.artifact-digest }}
+          BUILT_MASTER_BYTES: ${{ steps.normal_originals.outputs.master_bytes }}
+          BUILT_MASTER_SHA256: ${{ steps.normal_originals.outputs.master_sha256 }}
+          BUILT_SOURCE_SHA: ${{ steps.source.outputs.commit }}
+          BUILT_RUN_HEAD_SHA: ${{ steps.source.outputs.run_head_sha }}
+          BUILT_RUN_ID: ${{ github.run_id }}
+          BUILT_RUN_ATTEMPT: ${{ github.run_attempt }}
+          BUILT_INPUT_HASH: ${{ steps.sdk_inputs.outputs.input_hash }}
+          REUSED_ARTIFACT_ID: ${{ steps.normal_select.outputs.artifact_id }}
+          REUSED_ARTIFACT_DIGEST: ${{ steps.normal_select.outputs.artifact_digest }}
+          REUSED_MASTER_BYTES: ${{ steps.normal_select.outputs.master_bytes }}
+          REUSED_MASTER_SHA256: ${{ steps.normal_select.outputs.master_sha256 }}
+          REUSED_SOURCE_SHA: ${{ steps.normal_select.outputs.source_sha }}
+          REUSED_RUN_HEAD_SHA: ${{ steps.normal_select.outputs.run_head_sha }}
+          REUSED_RUN_ID: ${{ steps.normal_select.outputs.run_id }}
+          REUSED_RUN_ATTEMPT: ${{ steps.normal_select.outputs.run_attempt }}
+          REUSED_INPUT_HASH: ${{ steps.normal_select.outputs.input_hash }}
+        run: |
+          set -euo pipefail
+          if [[ "${BUILD_IMAGE}" == 'true' ]]; then
+            artifact_id="${BUILT_ARTIFACT_ID}"; artifact_digest="${BUILT_ARTIFACT_DIGEST#sha256:}"
+            master_bytes="${BUILT_MASTER_BYTES}"; master_sha256="${BUILT_MASTER_SHA256}"
+            source_sha="${BUILT_SOURCE_SHA}"; run_head_sha="${BUILT_RUN_HEAD_SHA}"
+            run_id="${BUILT_RUN_ID}"; run_attempt="${BUILT_RUN_ATTEMPT}"; input_hash="${BUILT_INPUT_HASH}"
+          elif [[ "${PROOF_FOUND}" == 'true' ]]; then
+            artifact_id="${REUSED_ARTIFACT_ID}"; artifact_digest="${REUSED_ARTIFACT_DIGEST#sha256:}"
+            master_bytes="${REUSED_MASTER_BYTES}"; master_sha256="${REUSED_MASTER_SHA256}"
+            source_sha="${REUSED_SOURCE_SHA}"; run_head_sha="${REUSED_RUN_HEAD_SHA}"
+            run_id="${REUSED_RUN_ID}"; run_attempt="${REUSED_RUN_ATTEMPT}"; input_hash="${REUSED_INPUT_HASH}"
+          else
+            echo '::error::The ordinary SDK route requires a freshly built normal proof or a retained proof artifact; a bare image tag is not admission evidence.' >&2
+            exit 64
+          fi
+          for value in "${artifact_id}" "${master_bytes}"; do [[ "$value" =~ ^[1-9][0-9]*$ ]] || exit 64; done
+          for value in "${artifact_digest}" "${master_sha256}" "${input_hash}"; do [[ "$value" =~ ^[a-f0-9]{64}$ ]] || exit 64; done
+          for value in "${source_sha}" "${run_head_sha}"; do [[ "$value" =~ ^[a-f0-9]{40}$ ]] || exit 64; done
+          {
+            echo "sdk_artifact_id=${artifact_id}"
+            echo "sdk_artifact_digest=${artifact_digest}"
+            echo "sdk_master_bytes=${master_bytes}"
+            echo "sdk_master_sha256=${master_sha256}"
+            echo "sdk_source_sha=${source_sha}"
+            echo "sdk_run_head_sha=${run_head_sha}"
+            echo "sdk_run_id=${run_id}"
+            echo "sdk_run_attempt=${run_attempt}"
+            echo "sdk_build_model=normal-build-v1"
+            echo "sdk_input_hash=${input_hash}"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: Bind actual SDK image and build originals
         id: sdk_originals

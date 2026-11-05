@@ -10,7 +10,10 @@ export interface CandidateServiceRelationshipContract {
  readonly workflowSha256:string;
  readonly serviceJob:'build_image';
  readonly localRuntimeJob:'publish_qlever_local_runtime / publish';
- readonly sdkJob:'publish_qlever_runtime_sdk / readonly_publish / published_sdk / sdk';
+ readonly sdkJob:string;
+ readonly sdkBuildExecutionModel?:'controller-readonly-v1'|'normal-build-v1';
+ readonly sdkRequiredStep?:string;
+ readonly sdkRequiredSteps?:readonly string[];
 }
 function need(value:unknown,why:string):asserts value {if(!value)throw Error('Service SDK relationship: '+why);}
 const digest=(raw:Buffer)=>createHash('sha256').update(raw).digest('hex');
@@ -67,7 +70,7 @@ export function inspectCandidateServiceOriginalUniverse(view:CollectedNativeOrig
 }
 /** Exact job-row mechanics. Inputs here must be the existing private GitHub
  * acquisition originals, never a producer-provided job summary. */
-export function inspectCandidateServiceJobChain(input:{jobs:readonly any[];contract:CandidateServiceRelationshipContract;sourceSha:string;runId:number;runAttempt:number;producerJobId:number}):Readonly<{sdkJobId:number;localRuntimeJobId:number;serviceJobId:number}> {
+export function inspectCandidateServiceJobChain(input:{jobs:readonly any[];contract:CandidateServiceRelationshipContract;sourceSha:string;runId:number;runAttempt:number;producerJobId:number;normalCache?:boolean}):Readonly<{sdkJobId:number;localRuntimeJobId:number;serviceJobId:number}> {
  const {contract}=input;
  function exact(name:string):any {
   const rows=input.jobs.filter(row=>row.name===name);need(rows.length===1,'unique exact same-run ancestor job');const row=rows[0];
@@ -75,6 +78,13 @@ export function inspectCandidateServiceJobChain(input:{jobs:readonly any[];contr
   const start=Date.parse(row.started_at),end=Date.parse(row.completed_at);need(Number.isFinite(start)&&Number.isFinite(end)&&end>=start,'actual bounded job window');return {...row,start,end};
  }
  const sdk=exact(contract.sdkJob),local=exact(contract.localRuntimeJob),service=exact(contract.serviceJob);
+ if(input.normalCache){
+  need(Array.isArray(sdk.steps),'normal cache SDK job steps unavailable');
+  for(const name of ['Find the retained normal SDK build proof candidate','Select and authenticate the retained normal SDK proof']){
+   const rows=sdk.steps.filter((step:any)=>step?.name===name);
+   need(rows.length===1&&rows[0].status==='completed'&&rows[0].conclusion==='success','normal cache SDK selection step did not succeed: '+name);
+  }
+ }
  need(service.id===input.producerJobId&&new Set([sdk.id,local.id,service.id]).size===3&&sdk.end<=local.start&&local.end<=service.start,'actual SDK/local-runtime/service ancestor order');
  return Object.freeze({sdkJobId:sdk.id,localRuntimeJobId:local.id,serviceJobId:service.id});
 }

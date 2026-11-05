@@ -1,11 +1,21 @@
 import {test,expect} from 'bun:test';
 import fs from 'node:fs';
 import {createHash} from 'node:crypto';
+import {execFileSync} from 'node:child_process';
 import path from 'node:path';
 import oldSdk from '../fixtures/independent-admission/sdk-b-86cd-originals.json';
 import oldTree from '../fixtures/independent-admission/sdk-86cd-tree-originals.json';
 import {observeQleverSdkGitHubOrigin,isQleverSdkGitHubOrigin,githubOriginFacts} from '../../scripts/lib/independent-admission/github-origin';
+import {QLEVER_SDK_EXECUTION_GROUPS} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 const root=process.env.XPOD_ORIGIN_SOURCE_FIXTURE??path.resolve(import.meta.dir,'../..'),source='9'.repeat(40),digest='8'.repeat(64),workflow='.github/workflows/publish-qlever-runtime-sdk.yml';
+// This suite tests the reviewed module/readonly producer shape. SDK92 is the
+// explicit observed model; serve its exact base-HEAD bytes instead of silently
+// assuming the appended normal group is the module producer.
+const readonlyGroup=QLEVER_SDK_EXECUTION_GROUPS.at(-2)!;
+const readonlyBytes=new Map<string,Buffer>();
+for(const row of [...readonlyGroup.selectors,...(readonlyGroup.secondarySelectors??[]),...(readonlyGroup.secondarySelectorStages??[]).flat(),...readonlyGroup.sourceBindings]){
+ if(!readonlyBytes.has(row.path))readonlyBytes.set(row.path,execFileSync('git',['show','HEAD:'+row.path],{maxBuffer:64*1024*1024}));
+}
 let fixtureId=200;
 async function scenario(skip?:string,revision?:string,missing?:string,modified?:string,legacyJob=false,nested=false,requestedOut?:string[]){
  const workflow=nested?'.github/workflows/css-native-products.yml':'.github/workflows/publish-qlever-runtime-sdk.yml';
@@ -20,7 +30,7 @@ async function scenario(skip?:string,revision?:string,missing?:string,modified?:
   else if(relative.startsWith('contents/')){const name=relative.slice(9);requested.push(name);if(name===missing)return new Response(JSON.stringify({message:'Not Found'}),{status:404});
    if(revision&&oldSdk.missing.includes(name))return new Response(JSON.stringify({message:'Not Found'}),{status:404});
    const retained=(oldSdk.originals as Record<string,string>)[name]??(oldTree.originals as Record<string,string>)[name];
-   const original=revision&&name==='scripts/agentfs-native-ci/supervise.py'?fs.readFileSync(path.join(import.meta.dir,'../fixtures/independent-admission/pre-pack-supervisor.original.txt')):revision&&name==='.github/workflows/css-native-source.yml'?fs.readFileSync(path.join(import.meta.dir,'../fixtures/independent-admission/css-native-source-pre-readonly.original.yml')):revision&&name===workflow?fs.readFileSync(path.join(import.meta.dir,'../fixtures/independent-admission/sdk-publisher-pre-readonly.original.yml')):revision&&retained?Buffer.from(retained,'base64'):revision&&name==='qlever/scripts/verify-local-runtime-artifacts.py'?fs.readFileSync(path.join(import.meta.dir,'../fixtures/independent-admission/pre-sdk47-runtime-verifier.original.py')):fs.readFileSync(path.join(root,name));
+   const original=!revision&&readonlyBytes.has(name)?readonlyBytes.get(name)!:revision&&name==='scripts/agentfs-native-ci/supervise.py'?fs.readFileSync(path.join(import.meta.dir,'../fixtures/independent-admission/pre-pack-supervisor.original.txt')):revision&&name==='.github/workflows/css-native-source.yml'?fs.readFileSync(path.join(import.meta.dir,'../fixtures/independent-admission/css-native-source-pre-readonly.original.yml')):revision&&name===workflow?fs.readFileSync(path.join(import.meta.dir,'../fixtures/independent-admission/sdk-publisher-pre-readonly.original.yml')):revision&&retained?Buffer.from(retained,'base64'):revision&&name==='qlever/scripts/verify-local-runtime-artifacts.py'?fs.readFileSync(path.join(import.meta.dir,'../fixtures/independent-admission/pre-sdk47-runtime-verifier.original.py')):fs.readFileSync(path.join(root,name));
    if(!original.length)return new Response(JSON.stringify({message:'Not Found'}),{status:404});
    body={type:'file',path:name,encoding:'base64',content:(name===modified?Buffer.from('modified helper'):original).toString('base64')};}
   else if(relative==='actions/artifacts/24')body={id:24,expired:false,workflow_run:{id:22,head_sha:source},digest:'sha256:'+digest,size_in_bytes:100,name:`qlever-sdk-originals-linux-x64-${source}-22-1`,created_at:'2026-10-17T00:01:00Z'};

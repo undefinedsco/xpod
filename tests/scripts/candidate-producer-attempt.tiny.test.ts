@@ -35,13 +35,9 @@ const candidateGroups=QLEVER_SDK_EXECUTION_GROUPS.filter(group=>group.candidateS
  * undefined while the genuinely changed candidate workflow hash is not yet
  * registered by the binding worker. */
 function currentCandidateGroup(){
- const observed=new Map<string,string>();
- for(const group of candidateGroups)for(const row of [...group.selectors,...(group.secondarySelectors??[]),...group.sourceBindings])
-  observed.set(sourceBindingKey(row),sha(readFileSync(path.join(ROOT,row.path))));
- let selected;
- try{selected=selectGitHubSourceBindingGroup(candidateGroups,observed);}catch{return undefined;}
- if(!selected||selected.candidateServiceRelationship?.workflowSha256!==sha(candidateBytes))return undefined;
- return selected;
+ const workflowSha=sha(candidateBytes);
+ return candidateGroups.find(group=>group.candidateServiceRelationship?.workflowSha256===workflowSha
+  &&group.candidateServiceRelationship?.workflowPath===CANDIDATE);
 }
 const pendingBinding=currentCandidateGroup()===undefined;
 // Both issuance cases must run; an incomplete binding cannot turn them green.
@@ -132,7 +128,7 @@ function graph(change:{status?:string;conclusion?:string|null;job?:string;jobCon
   name:'build_image',status:'completed',conclusion:change.jobConclusion??'success',
   started_at:'2026-10-17T00:00:00Z',completed_at:'2026-10-17T00:02:00Z',steps:serviceSteps};
  const ancestors=[
-  {id:11,run_id:runId,run_attempt:1,head_sha:run.head_sha,name:'publish_qlever_runtime_sdk / readonly_publish / published_sdk / sdk',
+  {id:11,run_id:runId,run_attempt:1,head_sha:run.head_sha,name:currentCandidateGroup()?.candidateServiceRelationship?.sdkJob??'publish_qlever_runtime_sdk / readonly_publish / published_sdk / sdk',
    status:'completed',conclusion:change.ancestor==='sdk'?(change.ancestorConclusion??'failure'):'success',
    started_at:'2026-10-16T23:50:00Z',completed_at:'2026-10-16T23:55:30Z'},
   {id:12,run_id:runId,run_attempt:1,head_sha:run.head_sha,name:'publish_qlever_local_runtime / publish',

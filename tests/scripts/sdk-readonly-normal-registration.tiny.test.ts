@@ -15,9 +15,10 @@ test('readonly SDK21 adds a complete producer group and preserves all 9b64 histo
   for(const item of old){const preserved=groups.filter(group=>sha(JSON.stringify(group.sourceBindings))===item.sourceBindingsSha256&&JSON.stringify(group.selectors)===JSON.stringify(item.selectors));expect(preserved).toHaveLength(1);const own=preserved[0]!;const group=select(groups,completeObserved(groups,own));expect(group.selectors).toEqual(item.selectors);expect((group.secondarySelectors??[]).filter(row=>!(['scripts/lib/independent-admission/qlever-sdk-origin-policy.ts','qlever/scripts/sdk-readonly-executor.py','scripts/lib/independent-admission/qlever-sdk-debian-index.ts'].includes(row.path)))).toEqual(item.secondarySelectors.filter(row=>!(['scripts/lib/independent-admission/qlever-sdk-origin-policy.ts','qlever/scripts/sdk-readonly-executor.py','scripts/lib/independent-admission/qlever-sdk-debian-index.ts'].includes(row.path))));
    for(const role of group.secondarySelectors??[]){const owned=[...item.selectors,...item.secondarySelectors,...group.sourceBindings].find(row=>key(row)===key(role));expect(owned?.sha256).toBe(role.sha256);}expect(sha(JSON.stringify(group.sourceBindings))).toBe(item.sourceBindingsSha256);}
  }
- const group=S.at(-1)!;expect(group.outerExecutor).toBeDefined();expect(group.sourceBindings.some(row=>row.path.endsWith('sdk-readonly-collection.py'))).toBe(true);
+ const readonlyGroup=S.at(-2)!;expect(readonlyGroup.outerExecutor).toBeDefined();expect(readonlyGroup.sourceBindings.some(row=>row.path.endsWith('sdk-readonly-collection.py'))).toBe(true);
  for(const old of S.slice(0,20))expect(old.outerExecutor).toBeUndefined();
- for(const row of [...group.selectors,...group.sourceBindings,...current])expect(sha(fs.readFileSync(path.join(root,row.path)))).toBe(row.sha256);
+ const currentGroup=S.at(-1)!;
+ for(const row of [...currentGroup.selectors,...currentGroup.sourceBindings,...current])expect(sha(fs.readFileSync(path.join(root,row.path)))).toBe(row.sha256);
  expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
 });
 test('real primary then shared secondary resolver rejects missing and changed roles across all historical and current trees',()=>{

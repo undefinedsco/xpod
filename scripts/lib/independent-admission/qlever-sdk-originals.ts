@@ -1,10 +1,11 @@
 import {inspectCandidateServiceRelationship,inspectCandidateServiceJobChain} from './qlever-sdk-service-relationship';
 import {isCandidateServiceImageGitHubOrigin} from './github-origin';
 import {QLEVER_SDK_EXECUTION_GROUPS} from './qlever-sdk-origin-policy';
+import {NORMAL_BUILD_MODEL,inspectNormalBuildSdkMasterBinding} from './qlever-sdk-normal-build';
 import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import {acquireNativeAdmissionOriginals,type ArtifactAcquisitionInput} from '../../acquire-independent-product-input';
-import {observeQleverSdkGitHubOrigin,isQleverSdkGitHubOrigin,githubOriginFacts,githubOriginOriginals,observedGitHubAncestorJobAccepted} from './github-origin';
+import {observeQleverSdkGitHubOrigin,observeQleverSdkNormalBuildGitHubOrigin,isQleverSdkGitHubOrigin,githubOriginFacts,githubOriginOriginals,observedGitHubAncestorJobAccepted} from './github-origin';
 import {collectNativeAdmissionOriginals,nativeOriginalsView,assertCollectedNativeOriginalCustody,compactCollectedNativeOriginals} from './native-original-collector';
 import type {CollectedNativeOriginalsCapability,CollectedNativeOriginalsView} from './native-originals';
 import type {CollectedArtifactMember} from './artifact-contract';
@@ -14,16 +15,21 @@ const digest=(body:Buffer)=>createHash('sha256').update(body).digest('hex');
 const image=(value:unknown):value is string=>typeof value==='string'&&/^ghcr\.io\/undefinedsco\/[a-z0-9_.-]+@sha256:[a-f0-9]{64}$/u.test(value);
 export interface QleverSdkArtifactReference {
  readonly artifactId:number;readonly artifactSha256:string;readonly sourceSha:string;readonly runId:number;readonly runAttempt:number;
- readonly target:'linux-x64'|'linux-arm64';readonly sdkProfile:'module-bookworm-gcc12'|'service-trixie';readonly sdkImageReferenceByDigest:string;
+ readonly target:'linux-x64'|'linux-arm64';readonly sdkProfile:'module-bookworm-gcc12'|'service-trixie';readonly sdkBuildExecutionModel?:'controller-readonly-v1'|'normal-build-v1';readonly runHeadSha?:string;readonly sdkImageReferenceByDigest:string;
  readonly master:Readonly<{path:'materials.json';bytes:number;sha256:string}>;
 }
 /** Data checks only. The operational entry derives this value from actual
  * retained native originals, never from a caller's JSON locator. */
 export function inspectQleverSdkArtifactReference(value:any,native:{sourceSha:string;runId:number;runAttempt:number;target?:string;sdkImage:unknown;sdkProfile?:'module-bookworm-gcc12'|'service-trixie'}):QleverSdkArtifactReference {
- if(!value||!positive(value.artifactId)||!/^[a-f0-9]{64}$/u.test(value.artifactSha256)||value.sourceSha!==native.sourceSha||value.runId!==native.runId||value.runAttempt!==native.runAttempt||value.target!==native.target||!['linux-x64','linux-arm64'].includes(value.target)||value.sdkProfile!==(native.sdkProfile??'module-bookworm-gcc12')||!image(value.sdkImageReferenceByDigest)||value.sdkImageReferenceByDigest!==native.sdkImage||value.master?.path!=='materials.json'||!positive(value.master.bytes)||value.master.bytes>8*1024**2||!/^[a-f0-9]{64}$/u.test(value.master.sha256))return fail('exact SDK artifact/master/runtime tuple required');
- return Object.freeze({artifactId:value.artifactId,artifactSha256:value.artifactSha256,sourceSha:value.sourceSha,runId:value.runId,runAttempt:value.runAttempt,target:value.target,sdkProfile:value.sdkProfile,sdkImageReferenceByDigest:value.sdkImageReferenceByDigest,master:Object.freeze({...value.master})});
+ if(!value||!positive(value.artifactId)||!/^[a-f0-9]{64}$/u.test(value.artifactSha256)||!value.sourceSha||!/^[a-f0-9]{40}$/u.test(value.sourceSha)||!positive(value.runId)||!positive(value.runAttempt)||value.target!==native.target||!['linux-x64','linux-arm64'].includes(value.target)||value.sdkProfile!==(native.sdkProfile??'module-bookworm-gcc12')||!image(value.sdkImageReferenceByDigest)||value.sdkImageReferenceByDigest!==native.sdkImage||value.master?.path!=='materials.json'||!positive(value.master.bytes)||value.master.bytes>8*1024**2||!/^[a-f0-9]{64}$/u.test(value.master.sha256))return fail('exact SDK artifact/master/runtime tuple required');
+ const normal=value.sdkBuildExecutionModel==='normal-build-v1';
+ if(value.sdkBuildExecutionModel!==undefined&&!['controller-readonly-v1','normal-build-v1'].includes(value.sdkBuildExecutionModel))return fail('unknown SDK build execution model');
+ if(normal){if(!/^[a-f0-9]{40}$/u.test(value.runHeadSha))return fail('exact SDK build run head required');}
+ else{if(value.sourceSha!==native.sourceSha||value.runId!==native.runId||value.runAttempt!==native.runAttempt)return fail('exact SDK artifact/master/runtime tuple required');
+  if(value.runHeadSha!==undefined&&!/^[a-f0-9]{40}$/u.test(value.runHeadSha))return fail('exact SDK build run head required');}
+ return Object.freeze({artifactId:value.artifactId,artifactSha256:value.artifactSha256,sourceSha:value.sourceSha,runId:value.runId,runAttempt:value.runAttempt,target:value.target,sdkProfile:value.sdkProfile,...(value.sdkBuildExecutionModel!==undefined?{sdkBuildExecutionModel:value.sdkBuildExecutionModel}:{}),...(value.runHeadSha!==undefined?{runHeadSha:value.runHeadSha}:{}),sdkImageReferenceByDigest:value.sdkImageReferenceByDigest,master:Object.freeze({...value.master})});
 }
-export function inspectQleverSdkMasterBinding(master:any,reference:QleverSdkArtifactReference,runHeadSha:string,members:readonly CollectedArtifactMember[]):void {
+export function inspectQleverSdkMasterBinding(master:any,reference:QleverSdkArtifactReference,runHeadSha:string,members:readonly CollectedArtifactMember[],readOriginal?:(name:string,maximum:number)=>Buffer):void {
  const expected={sourceSha:reference.sourceSha,runHeadSha,runId:reference.runId,runAttempt:reference.runAttempt,target:reference.target,sdkProfile:reference.sdkProfile};
  if(master?.schemaVersion!==1||master.kind!=='qlever-linux-sdk-originals'||!isDeepStrictEqual(master.identity,expected)||master.image?.referenceByDigest!==reference.sdkImageReferenceByDigest||master.image?.manifestDigest!==reference.sdkImageReferenceByDigest.split('@')[1]||master.image?.platform!=='linux/'+(reference.target==='linux-x64'?'amd64':'arm64')||!/^sha256:[a-f0-9]{64}$/u.test(master.image?.configDigest)||master.releaseAccepted!==false||!Array.isArray(master.originals)||!master.originals.length||master.originals.length>50000)return fail('SDK master identity/image/original set mismatch');
  const actual=new Map(members.map(row=>[row.path,row]));const seen=new Set<string>();
@@ -31,6 +37,14 @@ export function inspectQleverSdkMasterBinding(master:any,reference:QleverSdkArti
  for(const row of master.originals)ref(row);
  const expectedNames=members.filter(row=>row.path!=='materials.json').map(row=>row.path);
  if(seen.size!==expectedNames.length||expectedNames.some(name=>!seen.has(name)))fail('SDK master must bind every original ZIP file');
+ if(master.buildExecutionModel!==undefined){
+  if(master.buildExecutionModel!==NORMAL_BUILD_MODEL)fail('unsupported explicit SDK build execution model');
+  inspectNormalBuildSdkMasterBinding({master,reference,runHeadSha,members,readOriginal:(name,maximum)=>{
+   const member=actual.get(name);if(!member||member.bytes>maximum)fail('normal SDK original missing');
+   if(!readOriginal)return fail('normal SDK original reader unavailable');return readOriginal(name,maximum);
+  }});
+  return;
+ }
  for(const row of [master.sourceContext,master.inputs?.before,master.inputs?.after,master.buildkit?.metadata,master.buildkit?.record,...(master.inputs?.shards??[])]){const bound=actual.get(row?.path);if(!bound||!seen.has(row.path)||bound.bytes!==row.bytes||bound.sha256!==row.sha256)fail('SDK source/build original reference missing');}
  if(!Array.isArray(master.inputs?.shards)||!master.inputs.shards.length||!Array.isArray(master.stages)||!master.stages.length)fail('SDK build/input originals unavailable');
 }
@@ -65,7 +79,18 @@ function job(view:CollectedNativeOriginalsView):any {
  const rows=githubOriginOriginals(view.origin).filter(row=>/^jobs(?:-page-\d+)?\.original\.json$/u.test(row.name)).flatMap(row=>JSON.parse(row.data.toString()).jobs??[]);
  const matches=rows.filter((row:any)=>row.id===view.originFacts.producerJobId);if(matches.length!==1)return fail('unique actual producer job original required');return matches[0];
 }
-export function qleverSdkArtifactAcquisition(nativeOriginals:CollectedNativeOriginalsCapability):Readonly<{reference:QleverSdkArtifactReference;coordinates:ArtifactAcquisitionInput}>{
+/** Shared APP->SDK locator path used by the operational acquisition. The
+ * current app candidate job chain is inspected here; the SDK's own producer
+ * run/attempt and artifact origin are authenticated later by the dedicated
+ * normal/readonly observer. */
+export function inspectQleverSdkAppAcquisition(input:{sdkLocator:any;target:'linux-x64'|'linux-arm64';sdkImage:unknown;native:{sourceSha:string;runId:number;runAttempt:number;runHeadSha:string;producerJobId:number};jobs:readonly any[];contract:any}):Readonly<{reference:QleverSdkArtifactReference;coordinates:ArtifactAcquisitionInput;buildExecutionModel:'controller-readonly-v1'|'normal-build-v1'}>{
+ const model=input.sdkLocator.sdkBuildExecutionModel??'controller-readonly-v1';
+ const normalCache=model==='normal-build-v1'&&(input.sdkLocator.sourceSha!==input.native.sourceSha||input.sdkLocator.runId!==input.native.runId||input.sdkLocator.runAttempt!==input.native.runAttempt);
+ inspectCandidateServiceJobChain({jobs:input.jobs,contract:input.contract,sourceSha:input.native.sourceSha,runId:input.native.runId,runAttempt:input.native.runAttempt,producerJobId:input.native.producerJobId,normalCache});
+ const reference=inspectQleverSdkArtifactReference(input.sdkLocator,{sourceSha:input.sdkLocator.sourceSha,runId:input.native.runId,runAttempt:input.native.runAttempt,target:input.target,sdkImage:input.sdkImage,sdkProfile:'service-trixie'});
+ return Object.freeze({reference,coordinates:Object.freeze({schemaVersion:1 as const,sourceSha:reference.sourceSha,runHeadSha:reference.runHeadSha??input.native.runHeadSha,runId:reference.runId,runAttempt:reference.runAttempt,artifactId:reference.artifactId,artifactSha256:reference.artifactSha256}),buildExecutionModel:model});
+}
+export function qleverSdkArtifactAcquisition(nativeOriginals:CollectedNativeOriginalsCapability):Readonly<{reference:QleverSdkArtifactReference;coordinates:ArtifactAcquisitionInput;buildExecutionModel:'controller-readonly-v1'|'normal-build-v1'}>{
  const native=nativeOriginalsView(nativeOriginals);
  if(native&&isCandidateServiceImageGitHubOrigin(native.origin)){
   assertCollectedNativeOriginalCustody(nativeOriginals);const relation=inspectCandidateServiceRelationship(native);
@@ -73,30 +98,25 @@ export function qleverSdkArtifactAcquisition(nativeOriginals:CollectedNativeOrig
   const contracts=QLEVER_SDK_EXECUTION_GROUPS.map(group=>group.candidateServiceRelationship).filter(contract=>contract?.workflowSha256===workflowSha);
   if(contracts.length!==1)return fail('unique exact candidate service relationship contract required');
   const jobs=githubOriginOriginals(native.origin).filter(row=>/^jobs(?:-page-\d+)?\.original\.json$/u.test(row.name)).flatMap(row=>JSON.parse(row.data.toString()).jobs??[]);
-  inspectCandidateServiceJobChain({jobs,contract:contracts[0]!,sourceSha:native.originFacts.sourceSha,runId:native.originFacts.runId,runAttempt:native.originFacts.runAttempt,producerJobId:native.originFacts.producerJobId});
-  // The APP master names the exact SDK artifact/image tuple. The SDK is an
-  // INDEPENDENT origin: its own source commit is unrelated to the app commit,
-  // so the app origin facts are merged only for run/attempt/target identity,
-  // and the SDK source SHA is taken from the SDK locator itself.
-  const sdkLocator=relation.sdkArtifact;
-  const reference=inspectQleverSdkArtifactReference(sdkLocator,{...native.originFacts,sourceSha:sdkLocator.sourceSha,target:relation.target,sdkImage:relation.sdkImage,sdkProfile:'service-trixie'});
-  return Object.freeze({reference,coordinates:Object.freeze({schemaVersion:1 as const,sourceSha:reference.sourceSha,runHeadSha:native.originFacts.runHeadSha,runId:reference.runId,runAttempt:reference.runAttempt,artifactId:reference.artifactId,artifactSha256:reference.artifactSha256})});
+  return inspectQleverSdkAppAcquisition({sdkLocator:relation.sdkArtifact,target:relation.target,sdkImage:relation.sdkImage,native:native.originFacts,jobs,contract:contracts[0]!});
  }
  if(!native||isQleverSdkGitHubOrigin(native.origin)||native.originFacts.workflowPath!=='.github/workflows/css-native-products.yml')return fail('actual routed native runtime originals required');
  assertCollectedNativeOriginalCustody(nativeOriginals);
  const final=JSON.parse(native.readOriginal('native-build-materials.json',8*1024**2).toString());
  if(final.sourceSha!==native.originFacts.sourceSha||Number(final.runId)!==native.originFacts.runId||Number(final.runAttempt)!==native.originFacts.runAttempt||final.target!==native.originFacts.target)return fail('native producer tuple mismatch');
- const reference=inspectQleverSdkArtifactReference(final.sdkArtifact,{...native.originFacts,sdkImage:final.sdkImage});
- const coordinates:ArtifactAcquisitionInput={schemaVersion:1,sourceSha:reference.sourceSha,runHeadSha:native.originFacts.runHeadSha,runId:reference.runId,runAttempt:reference.runAttempt,artifactId:reference.artifactId,artifactSha256:reference.artifactSha256};
- return Object.freeze({reference,coordinates:Object.freeze(coordinates)});
+ const reference=inspectQleverSdkArtifactReference(final.sdkArtifact,{...native.originFacts,sourceSha:final.sdkArtifact.sourceSha,sdkImage:final.sdkImage});
+ const coordinates:ArtifactAcquisitionInput={schemaVersion:1,sourceSha:reference.sourceSha,runHeadSha:reference.runHeadSha??native.originFacts.runHeadSha,runId:reference.runId,runAttempt:reference.runAttempt,artifactId:reference.artifactId,artifactSha256:reference.artifactSha256};
+ return Object.freeze({reference,coordinates:Object.freeze(coordinates),buildExecutionModel:reference.sdkBuildExecutionModel??'controller-readonly-v1'});
 }
 
 /** Same native-byte issuer and range transport; this receiver adds SDK/master
  * relationship custody, never Debian source, ABI or legal approval. */
 export async function collectRelatedQleverSdkOriginals(input:{nativeOriginals:CollectedNativeOriginalsCapability;output:string;token?:string}):Promise<CollectedNativeOriginalsCapability>{
  const native=nativeOriginalsView(input.nativeOriginals)!;
- const {reference,coordinates}=qleverSdkArtifactAcquisition(input.nativeOriginals);
- const origin=await observeQleverSdkGitHubOrigin(coordinates,reference.target,reference.sdkProfile==='service-trixie'?'candidate-service':'css-native-products',{token:input.token});
+ const {reference,coordinates,buildExecutionModel}=qleverSdkArtifactAcquisition(input.nativeOriginals);
+ const origin=buildExecutionModel==='normal-build-v1'
+  ?await observeQleverSdkNormalBuildGitHubOrigin(coordinates,reference.target,{token:input.token})
+  :await observeQleverSdkGitHubOrigin(coordinates,reference.target,reference.sdkProfile==='service-trixie'?'candidate-service':'css-native-products',{token:input.token});
  if(reference.sdkProfile==='service-trixie'){const {acquireCandidateServiceOriginals}=await import('../../acquire-independent-product-input');await acquireCandidateServiceOriginals(coordinates,input.output,origin,{token:input.token});}else await acquireNativeAdmissionOriginals(coordinates,input.output,{token:input.token});
  const capability=await collectNativeAdmissionOriginals({githubOrigin:origin,acquisitionRoot:input.output});
  try{
@@ -105,9 +125,9 @@ export async function collectRelatedQleverSdkOriginals(input:{nativeOriginals:Co
   const member=view.members.find(row=>row.path===reference.master.path);if(!member||member.bytes!==reference.master.bytes||member.sha256!==reference.master.sha256)fail('original SDK master reference mismatch');
   const bytes=view.readOriginal('materials.json',8*1024**2);if(digest(bytes)!==reference.master.sha256)fail('original SDK master SHA mismatch');
   const master=JSON.parse(bytes.toString());
-  inspectQleverSdkMasterBinding(master,reference,coordinates.runHeadSha,view.members);
+  inspectQleverSdkMasterBinding(master,reference,coordinates.runHeadSha,view.members,(name,maximum)=>view.readOriginal(name,maximum));
   inspectImageOriginals(master,reference,view);
-  if(master.buildExecutionModel!==undefined||master.readonlyExecutor!==undefined){
+  if(master.buildExecutionModel==='controller-readonly-v1'||master.readonlyExecutor!==undefined){
    const authority=githubOriginFacts(view.origin)?.sdkOuterExecutorAuthority;
    if(master.buildExecutionModel!=='controller-readonly-v1'||!authority||master.buildkit?.recordKind!=='controller-owned-readonly-normal-route-original-v1'||master.buildkit?.record?.path!=='normal-route.original.json'||master.readonlyExecutor?.path!=='readonly-executor/collection.json')fail('new readonly SDK requires actual reviewed outer issuer provenance');
    const normal=JSON.parse(view.readOriginal(master.buildkit.record.path,4*1024**2).toString());

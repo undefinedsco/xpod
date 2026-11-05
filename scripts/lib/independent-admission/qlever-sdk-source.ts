@@ -11,6 +11,7 @@ import { inspectSdkInputOwnership } from './qlever-sdk-inputs';
 import { inspectSdkBuildExecution, SdkTrackedPhaseOriginalsUnobserved, SDK_TRACKED_PHASE_UNOBSERVED } from './qlever-sdk-execution';
 import { inspectSdkSymlinkOriginals } from './qlever-sdk-symlinks';
 import { qleverSdkOriginalsView } from './qlever-sdk-originals';
+import {NORMAL_BUILD_MODEL,observeQleverSdkNormalBuildAdmission} from './qlever-sdk-normal-build';
 import { qleverSdkUpstreamGitObservation } from './qlever-sdk-upstream-source';
 import { qleverSdkFetchContentByteRows } from './qlever-sdk-fetchcontent';
 import { captureLegalFileIdentity, assertLegalFileIdentity,resolveExecutableIdentityPath} from './legal-file-custody';
@@ -252,6 +253,26 @@ export function inspectSdkCompositeSourceRetirement(input:{
  * byte-mechanics API; only this path consumes independent signature authority. */
 export async function observeQleverSdkSourceAdmission(input: {sdkOriginals: unknown; source: unknown; remainingMilliseconds?: number}) {
   const sdk = qleverSdkOriginalsView(input.sdkOriginals), source = derivedSourceView(input.source);
+  if (sdk) {
+    try {
+      const raw = sdk.readOriginal(sdk.masterReference.path, 8 * 1024 ** 2);
+      const master = JSON.parse(raw.toString());
+      if (master?.buildExecutionModel === NORMAL_BUILD_MODEL) {
+        try {
+          const normal = await observeQleverSdkNormalBuildAdmission({sdkOriginals: input.sdkOriginals, source: input.source});
+          sourceAdmissions.set(normal, Object.freeze({sdkOriginals: input.sdkOriginals, source: input.source, result: normal}));
+          return normal;
+        } catch (error) {
+          const failedFacts: Readonly<Record<string, unknown>> = Object.freeze({sdkBuildExecutionModel: NORMAL_BUILD_MODEL, sdkNormalBuildAdmissionVerified: false, sdkSourceCompletenessVerified: false,
+            sdkSourceAdmissionScope: 'normal-build-v1 admission failed; no syscall or legacy observer proof is substituted'});
+          const failed = Object.freeze({verified: false as const, model: NORMAL_BUILD_MODEL,
+            facts: failedFacts, pending: Object.freeze([(error as Error).message]), assertCurrent: () => {}});
+          sourceAdmissions.set(failed, Object.freeze({sdkOriginals: input.sdkOriginals, source: input.source, result: failed}));
+          return failed;
+        }
+      }
+    } catch { /* Malformed masters remain on the existing fail-closed legacy path. */ }
+  }
   const pending = new Set<string>(), facts: Record<string, unknown> = {sdkSourceCompletenessVerified: false};
   let signatureObservation: Readonly<Record<string, unknown>> | undefined;
   let signatureGetter: typeof import('./qlever-sdk-debian-signature').qleverSdkDebianSignatureObservation | undefined;
