@@ -2566,6 +2566,48 @@ const SDK94_LOCAL_RUNTIME_STAGE=Object.freeze([
 const SDK94_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK93_GROUP,
   secondarySelectorStages:Object.freeze([...(SDK93_GROUP.secondarySelectorStages??[]),SDK94_LOCAL_RUNTIME_STAGE]),
   sourceBindings:Object.freeze(SDK93_GROUP.sourceBindings.map(row=>Object.freeze({...row,sha256:SDK94_SOURCE_HASHES[row.path]??row.sha256})))});
+/** SDK95 is the CURRENT consumer. SDK93 (published producer) and SDK94 stay the
+ * exact same objects at their existing indices and keep their array order. SDK95
+ * derives SDK94 and rebinds only what the ordinary local-runtime route moved:
+ *
+ *   - css-native-source.yml gained `actions: read`;
+ *   - publish-qlever-local-runtime.yml now invokes the ordinary collector;
+ *   - check-candidate-service-sdk-source.ts dispatches the issued native view;
+ *   - the ordinary collector and its consumer-side inspector are new files.
+ *
+ * The inherited local-runtime stage is REPLACED so SDK94's workflow bytes still
+ * resolve to SDK94, and the css source stage is APPENDED so SDK94's css bytes
+ * also still resolve to SDK94. Only a tree carrying BOTH new bytes resolves to
+ * SDK95; a mixed tree matches no recipe. There is no `latest` fallback. */
+const SDK95_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
+  '.github/workflows/publish-qlever-local-runtime.yml':'8aeabaa0feb942f384956779735b4c090f7a2b4a0ec457b8cc94cf48554e0aae',
+  '.github/workflows/css-native-source.yml':'02e0cd66d8c964e34db83a39112053ee690f5692c45da6201e08d40e2ed28a29',
+  'scripts/check-candidate-service-sdk-source.ts':'1b94be53c32dba156c37ffabbe6589eeddd9f0706c52bc7e1978df19215e39c7',
+  'scripts/lib/independent-admission/candidate-service-native-runtime-originals.ts':'377df9477cf1fe000640b360285c53d15d299ecbef240550a720696a0a41e032',
+  'scripts/lib/normal-local-runtime-smoke-cases.json':'95c86ca051aeceec413d5bd741769f9907adbd847af06c0f3a794380a017a208',
+  'scripts/collect-normal-local-runtime-originals.py':'785e8d039ff01f5cb45ca99d788bb7381949609b6902d9ef8780b7dc83329f2e',
+});
+const SDK95_LOCAL_RUNTIME_STAGE=Object.freeze([
+  Object.freeze({path:'.github/workflows/publish-qlever-local-runtime.yml',sha256:SDK95_SOURCE_HASHES['.github/workflows/publish-qlever-local-runtime.yml']!}),
+]);
+const SDK95_CSS_SOURCE_STAGE=Object.freeze([
+  Object.freeze({path:'.github/workflows/css-native-source.yml',sha256:SDK95_SOURCE_HASHES['.github/workflows/css-native-source.yml']!}),
+]);
+// New implementation rows are APPENDED after the inherited ones, so no
+// historical path changes position inside the recipe.
+const SDK95_NEW_ROWS=Object.freeze([
+  Object.freeze({path:'scripts/lib/independent-admission/candidate-service-native-runtime-originals.ts',sha256:SDK95_SOURCE_HASHES['scripts/lib/independent-admission/candidate-service-native-runtime-originals.ts']!}),
+  Object.freeze({path:'scripts/collect-normal-local-runtime-originals.py',sha256:SDK95_SOURCE_HASHES['scripts/collect-normal-local-runtime-originals.py']!}),
+  Object.freeze({path:'scripts/lib/normal-local-runtime-smoke-cases.json',sha256:SDK95_SOURCE_HASHES['scripts/lib/normal-local-runtime-smoke-cases.json']!}),
+]);
+const SDK95_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK94_GROUP,
+  secondarySelectorStages:Object.freeze([
+    ...(SDK94_GROUP.secondarySelectorStages??[]).slice(0,-1),
+    SDK95_LOCAL_RUNTIME_STAGE,
+    SDK95_CSS_SOURCE_STAGE]),
+  sourceBindings:Object.freeze([
+    ...SDK94_GROUP.sourceBindings.map(row=>Object.freeze({...row,sha256:SDK95_SOURCE_HASHES[row.path]??row.sha256})),
+    ...SDK95_NEW_ROWS])});
 export const QLEVER_NORMAL_BUILD_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([SDK93_GROUP]);
 export const QLEVER_SDK_NORMAL_SOURCE_BINDINGS:readonly GitHubSourceBinding[]=Object.freeze([
  Object.freeze({path:'.github/workflows/candidate.yml',sha256:'1446b2ceb6c53b8888e07d0b822854b934c95d508f93dfd901a4687e28d22d9d'}),
@@ -2621,7 +2663,7 @@ export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=O
  ...QLEVER_SDK_EXECUTION_GROUPS,
 ]);
 /** Consumer-only lists derive the published execution groups and append the
- * reviewed current SDK94 consumer tuple. QLEVER_SDK_EXECUTION_GROUPS itself
- * stays at exactly SDK1..93 for the published producer contract. */
-export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP]);
-export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP]);
+ * reviewed SDK94 and current SDK95 consumer tuples. QLEVER_SDK_EXECUTION_GROUPS
+ * itself stays at exactly SDK1..93 for the published producer contract. */
+export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP]);
+export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP]);

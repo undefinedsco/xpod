@@ -17,6 +17,7 @@ import {inspectDebianBinaryCore} from './qlever-sdk-debian-binary';
 import {captureLegalFileIdentity, assertLegalFileIdentity,resolveExecutableIdentityPath} from './legal-file-custody';
 import {joinNativeInputSnapshots, type NativeInputSnapshot, type NativeInputCovered} from './candidate-service-native-input-join';
 import {qleverSdkUpstreamGitObservation} from './qlever-sdk-upstream-source';
+import normalSmokeCases from '../normal-local-runtime-smoke-cases.json';
 
 const MAXIMUM = 128 * 1024 ** 2, META = 4 * 1024 ** 2, RANGE = 64 * 1024;
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
@@ -103,6 +104,17 @@ export async function observeCandidateServiceNativeRuntimeOriginals(input: Input
   };
   const masterRow = members.get('materials.json'); need(masterRow, 'actual materials.json required');
   const masterRef = reference(masterRow), master = JSON.parse(read(masterRef).toString());
+  // PROOF-MODEL DISPATCH. A legacy master (no proofModel) keeps the original
+  // controller-readonly interpretation byte-for-byte. A master that declares a
+  // model MUST declare the ordinary one; adding a model field to legacy bytes
+  // can never buy a different reading, and the normal observer re-derives every
+  // fact from the actual held originals instead of trusting the declaration.
+  if (master.proofModel !== undefined || master.kind === NORMAL_RUNTIME_KIND) {
+    need(master.proofModel === NORMAL_RUNTIME_MODEL && master.kind === NORMAL_RUNTIME_KIND,
+      'declared native runtime proof model differs from its retained master kind');
+    return observeNormalLocalRuntime({masterRef, master, read, native, source, sdk, admission,
+      current, reference, members, publish(observation, view) { issued.set(observation, {input, view, current}); }});
+  }
   need(master.schemaVersion === 1 && master.kind === 'candidate-service-native-runtime-originals', 'native master schema');
   const identity = master.identity;
   need(identity?.target === 'linux-x64' || identity?.target === 'linux-arm64', 'supported native target');
@@ -444,6 +456,329 @@ export async function observeCandidateServiceNativeRuntimeOriginals(input: Input
   return observation;
 }
 
+
+/** Ordinary-model constants. These are consumer-side names only; the producer
+ * records them in the retained master so a legacy master can never be re-read
+ * as an ordinary one merely by adding fields at the consumer. */
+export const NORMAL_RUNTIME_MODEL = 'normal-runtime-v1' as const;
+export const NORMAL_RUNTIME_KIND = 'candidate-service-normal-runtime-originals' as const;
+const NORMAL_NON_CLAIMS = ['generatedInputCausality', 'kernelReadOnlyEnforcement',
+  'syscallSourceReadInventory', 'toolchainExecutionLifetime'] as const;
+const NORMAL_RECIPE_PATHS = ['docker/qlever-local-runtime/Dockerfile',
+  'qlever/scripts/run-focused-native-build.sh', 'qlever/qlever.lock.json'] as const;
+const NORMAL_MEMBER_ROOT = '/opt/xpod/qlever';
+// The ordinary focused build's COPY scope. This is the same declared scope the
+// host enumerates with `git ls-files`; requiring the consumer-side set to equal
+// it prevents a pruned inventory from masquerading as a complete input union.
+const NORMAL_SOURCE_SCOPE = ['LICENSE', 'qlever/cmake', 'qlever/include',
+  'qlever/qlever.lock.json', 'qlever/patches', 'qlever/qlever_adapter',
+  'qlever/qlever_local_runtime', 'qlever/rdf_protocol', 'qlever/rdf_sqlite_backend',
+  'qlever/scripts', 'docker/qlever-local-runtime/Dockerfile'] as const;
+const inNormalScope = (name: string) => NORMAL_SOURCE_SCOPE.some(root =>
+  name === root || name.startsWith(root + '/'));
+
+function normalNeed(value: unknown, why: string): asserts value {
+  if (!value) throw Error('Normal runtime evidence: ' + why);
+}
+const NORMAL_SMOKE_PREFIX = ['docker', 'run', '--rm', '-i', '--network', 'none',
+  '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+  '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m'] as const;
+function smokePayload(stdout: string, stderr: string) {
+  normalNeed(typeof stderr === 'string', 'actual smoke stderr required');
+  let rows: any[];
+  try { rows = stdout.split('\n').filter(line => line.trim()).map(line => JSON.parse(line)); }
+  catch (error) { throw Error('Normal runtime evidence: smoke stdout is not JSON lines: ' + String(error).slice(0, 256)); }
+  const ready = rows.filter(row => row?.type === 'ready');
+  normalNeed(ready.length === 1 && Number.isInteger(ready[0].adapterAbiVersion)
+    && Number.isInteger(ready[0].physicalBackendAbiVersion), 'actual ready/ABI smoke required');
+  for (const smokeCase of normalSmokeCases) {
+    const id = smokeCase.request.id;
+    const hits = rows.filter(row => row?.id === id);
+    normalNeed(hits.length === 1 && hits[0]?.type === 'result'
+      && hits[0]?.result?.status === 'ok',
+      'actual semantic smoke result required: ' + id);
+    let body: any;
+    try { body = JSON.parse(hits[0].result.body); }
+    catch { throw Error('Normal runtime evidence: invalid SPARQL result body: ' + id); }
+    normalNeed(isDeepStrictEqual(body?.results?.bindings, smokeCase.bindings),
+      'exact semantic smoke bindings required: ' + id);
+  }
+  normalNeed(!rows.some(row => row?.type === 'error'), 'smoke reported a protocol error');
+  return {adapterAbiVersion: ready[0].adapterAbiVersion,
+    physicalBackendAbiVersion: ready[0].physicalBackendAbiVersion,
+    resultIds: normalSmokeCases.map(row => row.request.id)};
+}
+
+/** Validate and issue the ORDINARY local-runtime evidence. Every predicate is
+ * derived from retained bytes plus the already-issued SDK/source/native
+ * capabilities; the master's own declarations are never authority. */
+export interface NormalLocalRuntimeReadContext {
+  read(value: any, maximum?: number): Buffer;
+  reference(value: any): any;
+  members: Map<string, any>;
+  native: any;
+  source: any;
+  sdk: any;
+  admission: any;
+  current(): void;
+}
+/** Pure ordinary-model validation over already-retained bytes. It reads only
+ * through the caller's bounded `read`/`reference` closures and never invokes a
+ * process, so a test can exercise every predicate without a fake child. */
+export function inspectNormalLocalRuntimeMaster(masterRef: any, master: any, context: NormalLocalRuntimeReadContext) {
+  const {read, reference, members, native, source, sdk, admission, current} = context;
+  normalNeed(master.schemaVersion === 1 && master.kind === NORMAL_RUNTIME_KIND
+    && master.proofModel === NORMAL_RUNTIME_MODEL, 'normal master schema/model');
+  const identity = master.identity ?? {};
+  normalNeed(identity.sourceSha === source.sourceSha && identity.sourceSha === native.originFacts.sourceSha
+    && identity.runId === native.originFacts.runId && identity.runAttempt === native.originFacts.runAttempt,
+    'normal master source/run coordinates differ from the actual local-runtime job');
+  normalNeed((identity.target === 'linux-x64' || identity.target === 'linux-arm64')
+    && identity.target === native.originFacts.target, 'same supported normal target as the native origin');
+  normalNeed(identity.sdkProfile === 'service-trixie', 'actual service-trixie SDK profile required');
+  normalNeed(identity.job === 'publish',
+    'normal master must name the fixed local-runtime publish job');
+  normalNeed(/^[a-f0-9]{64}$/u.test(String(identity.sdkInputHash ?? ''))
+    && master.sdkInputHash === identity.sdkInputHash, 'canonical normal SDK input hash required');
+  normalNeed(/^ghcr\.io\/undefinedsco\/xpod-qlever-sdk@sha256:[a-f0-9]{64}$/u.test(String(identity.sdkImage ?? ''))
+    && /^ghcr\.io\/undefinedsco\/xpod-qlever-local-runtime@sha256:[a-f0-9]{64}$/u.test(String(identity.runtimeImage ?? ''))
+    && /^sha256:[a-f0-9]{64}$/u.test(String(identity.runtimeConfigDigest ?? '')), 'immutable SDK/runtime image and config digests required');
+  normalNeed(master.runtimeImage === identity.runtimeImage
+    && master.runtimeConfigDigest === identity.runtimeConfigDigest, 'normal master duplicated identity differs');
+  normalNeed(master.releaseAccepted === false && Array.isArray(master.pending) && master.pending.length === 0,
+    'normal master must not claim release acceptance or carry pending prerequisites');
+  normalNeed(master.guarantees && typeof master.guarantees === 'object'
+    && JSON.stringify(Object.keys(master.guarantees).sort()) === JSON.stringify([...NORMAL_NON_CLAIMS].sort())
+    && NORMAL_NON_CLAIMS.every(key => master.guarantees[key] === false), 'normal non-claims must stay explicit and false');
+  normalNeed(typeof master.scope === 'string' && /does NOT prove/iu.test(master.scope), 'normal scope must state its non-claims');
+
+  // SDK provenance: the retained SDK master must be the same immutable image and
+  // the same normal-build producer tuple. This is a join of already-issued
+  // capabilities, not a second claim minted from this JSON.
+  const sdkMaster = JSON.parse(sdk.readOriginal(sdk.masterReference.path, META).toString());
+  normalNeed(sdkMaster?.kind === 'qlever-linux-sdk-originals'
+    && sdkMaster.buildExecutionModel === 'normal-build-v1', 'actual normal-build-v1 SDK master required');
+  normalNeed(sdkMaster.image?.referenceByDigest === identity.sdkImage, 'normal master SDK image differs from the retained SDK');
+  normalNeed(sdkMaster.identity?.sourceSha === sdk.originFacts.sourceSha
+    && sdkMaster.identity?.runId === sdk.originFacts.runId
+    && sdkMaster.identity?.runAttempt === sdk.originFacts.runAttempt
+    && sdkMaster.identity?.sdkProfile === identity.sdkProfile
+    && sdkMaster.identity?.target === identity.target, 'normal master SDK provenance differs from the retained SDK');
+  normalNeed(sdk.originFacts.sourceSha !== undefined && sdk.originFacts.artifactId > 0, 'same issued SDK origin required');
+  // The producer job original is retained by the same authenticated GitHub
+  // origin as the native archive. A reusable workflow reports its API name as
+  // `<caller> / <job>`, so only the final segment must be this master's job.
+  const jobs = native.metadataOriginals
+    .filter((row: any) => /^jobs(?:-page-\d+)?\.original\.json$/u.test(row.name))
+    .flatMap((row: any) => {
+      const expected = native.originFacts.originals.find((value: any) => value.name === row.name);
+      normalNeed(expected && expected.bytes === row.data.length && expected.sha256 === hash(row.data),
+        'actual job API originals');
+      return JSON.parse(row.data.toString()).jobs ?? [];
+    })
+    .filter((row: any) => row.id === native.originFacts.producerJobId);
+  normalNeed(jobs.length === 1 && String(jobs[0].name ?? '').split(' / ').at(-1) === identity.job
+    && jobs[0].conclusion === 'success', 'same successful local-runtime producer job');
+  normalNeed(admission?.verified === true && admission?.facts?.sdkBuildExecutionModel === 'normal-build-v1'
+    && admission?.facts?.sdkNormalBuildAdmissionVerified === true,
+    'genuine verified normal-build-v1 SDK admission required');
+  normalNeed(sdkMaster.normalBuild?.inputHash === identity.sdkInputHash,
+    'normal master canonical SDK input hash differs from the retained SDK proof');
+
+  // Recipe files must equal bytes actually tracked in the SAME immutable source
+  // checkout; a caller JSON cannot declare a different recipe.
+  const recipe = master.recipe;
+  normalNeed(recipe && typeof recipe === 'object' && /^[a-f0-9]{40}$/u.test(String(recipe.qleverTree ?? '')),
+    'actual qlever tree identity required');
+  for (const path of NORMAL_RECIPE_PATHS) {
+    normalNeed(/^[a-f0-9]{64}$/u.test(String(recipe[path] ?? '')), 'normal recipe hash required: ' + path);
+    normalNeed(source.trackedPaths.includes(path), 'normal recipe path is not tracked: ' + path);
+    const bytes = source.readTracked(path);
+    normalNeed(hash(bytes) === recipe[path], 'normal recipe bytes differ from the immutable source: ' + path);
+  }
+  const inventoryRef = master.sourceInventory;
+  normalNeed(inventoryRef && inventoryRef.path === 'source-inventory.json', 'actual source inventory original required');
+  const inventory = JSON.parse(read(inventoryRef).toString());
+  normalNeed(Array.isArray(inventory) && inventory.length > 0 && inventory.length <= 100000,
+    'bounded actual source inventory required');
+  // The ordinary model makes NO syscall read claim. What it can state honestly
+  // is the COMPLETE DECLARED build input union: every Git-tracked file in the
+  // focused Dockerfile COPY scope, re-hashed from the same immutable checkout.
+  // Legal/ABI consumers get that union as the conservative provenance of every
+  // runtime output; they must not read it as per-output causality.
+  const expectedInputs = source.trackedPaths.filter(inNormalScope).sort();
+  normalNeed(JSON.stringify(inventory.map((row: any) => String(row?.path ?? '')).sort())
+    === JSON.stringify(expectedInputs.map((name: string) => './' + name)),
+    'declared build input inventory is not the complete fixed COPY scope');
+  const union: any[] = [];
+  for (const row of inventory) {
+    normalNeed(row && typeof row.path === 'string' && row.path.startsWith('./')
+      && /^[a-f0-9]{64}$/u.test(String(row.sha256 ?? ''))
+      && Number.isSafeInteger(row.bytes) && row.bytes >= 0
+      && Number.isInteger(row.mode) && row.mode >= 0 && row.mode <= 0o7777,
+      'typed declared build input required');
+    const sourcePath = row.path.slice(2);
+    normalNeed(source.trackedPaths.includes(sourcePath), 'declared input is not tracked: ' + sourcePath);
+    const bytes = source.readTracked(sourcePath);
+    normalNeed(bytes.length === row.bytes && hash(bytes) === row.sha256,
+      'declared build input bytes differ from the immutable checkout: ' + sourcePath);
+    union.push(Object.freeze({path: '/workspace/xpod/' + sourcePath, bytes: row.bytes,
+      sha256: row.sha256, mode: row.mode, kind: 'reads' as const, via: 'git' as const,
+      scope: 'complete-declared-build-input-union'}));
+  }
+  const declaredUnion = Object.freeze(union);
+
+  // Runtime member inventory: closed, typed, and containing the actual executable.
+  const runtimeMembers = master.runtimeMembers;
+  normalNeed(runtimeMembers && typeof runtimeMembers === 'object' && !Array.isArray(runtimeMembers),
+    'complete normal runtime members required');
+  const runtime: any[] = [];
+  for (const [name, raw] of Object.entries(runtimeMembers)) {
+    current(); normalNeed(relative(name), 'runtime relative path');
+    const row = raw as any;
+    normalNeed(row && ['file', 'directory', 'symlink'].includes(row.type)
+      && Number.isInteger(row.mode) && row.mode >= 0 && row.mode <= 0o7777
+      && Number.isSafeInteger(row.bytes) && row.bytes >= 0, 'typed normal runtime member');
+    const absolute = NORMAL_MEMBER_ROOT + '/' + name;
+    if (row.type === 'file') {
+      normalNeed(/^[a-f0-9]{64}$/u.test(String(row.sha256 ?? '')), 'normal runtime file sha256');
+      reference({...row, path: 'artifact/runtime/' + name});
+      runtime.push({path: absolute, type: 'file', mode: row.mode, bytes: row.bytes, sha256: row.sha256});
+    } else {
+      normalNeed(row.bytes === 0, 'structural normal member has zero bytes');
+      if (row.type === 'symlink') {
+        normalNeed(typeof row.target === 'string' && row.target, 'normal link target required');
+        const resolved = path.posix.resolve(path.posix.dirname(absolute), row.target);
+        normalNeed(resolved === NORMAL_MEMBER_ROOT || resolved.startsWith(NORMAL_MEMBER_ROOT + '/'),
+          'normal runtime link escape');
+      }
+      runtime.push({path: absolute, type: row.type, mode: row.mode, bytes: 0,
+        ...(row.type === 'symlink' ? {target: row.target} : {})});
+    }
+  }
+  normalNeed(runtime.some(row => row.path === NORMAL_MEMBER_ROOT + '/bin/xpod_qlever_local_runtime' && row.type === 'file'),
+    'actual normal runtime executable member required');
+
+  // Closed original set: no orphan, no unregistered body, no duplicate member.
+  normalNeed(Array.isArray(master.originals) && master.originals.length > 0, 'normal original inventory required');
+  const names = new Set<string>();
+  let total = masterRef.bytes;
+  for (const row of master.originals) {
+    current(); const ref = reference(row);
+    normalNeed(!names.has(ref.path) && ref.path !== 'materials.json', 'unique normal original reference');
+    names.add(ref.path); total += ref.bytes;
+    normalNeed(total <= MAXIMUM, 'normal original byte bound');
+  }
+  normalNeed(master.retainedOriginalBytes === total - masterRef.bytes, 'normal retained byte total differs');
+  normalNeed(members.size === names.size + 1
+    && [...names].every(name => members.has(name)), 'normal originals are not the complete member set');
+  for (const row of runtime) if (row.type === 'file')
+    normalNeed(names.has('artifact/runtime/' + row.path.slice(NORMAL_MEMBER_ROOT.length + 1)),
+      'normal runtime file lacks its retained original');
+
+  // Functional smoke: exact command, actual wait/exit, and the original streams.
+  const smoke = master.smoke;
+  normalNeed(smoke && smoke.evidence && smoke.commandReceipt && smoke.stdout && smoke.stderr,
+    'normal functional smoke originals required');
+  const smokeRaw = JSON.parse(read(smoke.evidence).toString());
+  normalNeed(smokeRaw.schemaVersion === 1 && smokeRaw.kind === 'normal-local-runtime-functional-smoke'
+    && smokeRaw.proofModel === NORMAL_RUNTIME_MODEL, 'normal functional smoke schema/model');
+  normalNeed(Array.isArray(smokeRaw.command)
+    && JSON.stringify(smokeRaw.command.slice(0, NORMAL_SMOKE_PREFIX.length)) === JSON.stringify([...NORMAL_SMOKE_PREFIX])
+    && smokeRaw.command[NORMAL_SMOKE_PREFIX.length] === '--name'
+    && /^xpod-normal-runtime-smoke-[a-f0-9]{16}$/u.test(String(smokeRaw.command[NORMAL_SMOKE_PREFIX.length + 1]))
+    && smokeRaw.command[NORMAL_SMOKE_PREFIX.length + 2] === '--mount'
+    && String(smokeRaw.command[NORMAL_SMOKE_PREFIX.length + 3] ?? '').startsWith('type=bind,src=')
+    && smokeRaw.command[NORMAL_SMOKE_PREFIX.length + 4] === identity.runtimeImage
+    && smokeRaw.command.at(-2) === '--sqlite-path' && smokeRaw.command.length === NORMAL_SMOKE_PREFIX.length + 7,
+    'normal functional smoke is not the expected immutable-image execution');
+  normalNeed(smokeRaw.exit === 0 && smokeRaw.signal === null && smokeRaw.actualWait === true
+    && smokeRaw.rawClosedBeforeHash === true && smokeRaw.ownedGroupAbsentAfterWait === true,
+    'normal functional smoke did not actually run and close successfully');
+  const mount = /^type=bind,src=(\/[^,\r\n\0]+),dst=\/data$/u
+    .exec(String(smokeRaw.command[NORMAL_SMOKE_PREFIX.length + 3]));
+  normalNeed(mount && path.posix.normalize(mount[1]!) === mount[1]
+    && smokeRaw.command.at(-1) === '/data/runtime-smoke.sqlite',
+    'normal smoke must use its owned database mount');
+  normalNeed(JSON.stringify(smokeRaw.stdout) === JSON.stringify(smoke.stdout)
+    && JSON.stringify(smokeRaw.stderr) === JSON.stringify(smoke.stderr)
+    && JSON.stringify(smokeRaw.commandReceipt) === JSON.stringify(smoke.commandReceipt),
+    'normal smoke reference set differs');
+  const stdout = read(smoke.stdout, 4 * 1024 ** 2).toString();
+  const stderr = read(smoke.stderr, 1024 ** 2).toString();
+  const receipt = JSON.parse(read(smoke.commandReceipt).toString());
+  const driver = receipt.command;
+  normalNeed(Array.isArray(driver) && driver.length === 5
+    && driver[0] === 'python3' && driver[1] === '-B'
+    && typeof driver[2] === 'string' && driver[2].startsWith('/')
+    && path.posix.normalize(driver[2]) === driver[2]
+    && driver[2].endsWith('/scripts/collect-normal-local-runtime-originals.py')
+    && driver[3] === '--smoke-session' && typeof driver[4] === 'string',
+    'normal smoke must execute the reviewed sequential protocol driver');
+  normalNeed(isDeepStrictEqual(JSON.parse(driver[4]), smokeRaw.command),
+    'normal smoke driver argv differs from its actual immutable-image command');
+  normalNeed(receipt.schemaVersion === 1 && receipt.actualWait === true && receipt.exit === 0
+    && receipt.signal === null && receipt.rawClosedBeforeHash === true
+    && receipt.stdout?.bytes === smoke.stdout.bytes && receipt.stdout?.sha256 === smoke.stdout.sha256
+    && receipt.stderr?.bytes === smoke.stderr.bytes && receipt.stderr?.sha256 === smoke.stderr.sha256,
+    'normal smoke command receipt differs from its raw originals');
+  const facts = smokePayload(stdout, stderr);
+  normalNeed(JSON.stringify(facts) === JSON.stringify(smokeRaw.facts), 'normal smoke facts differ from the retained raw streams');
+
+  const refs = new Map<string, any>();
+  for (const row of master.originals) refs.set(row.path, reference(row));
+  const assertCurrent = () => {
+    current();
+    const raw = sdk.readOriginal(sdk.masterReference.path, META);
+    normalNeed(hash(raw) === sdk.masterReference.sha256, 'normal SDK master changed');
+    normalNeed(native.readOriginal('materials.json', META).length === masterRef.bytes,
+      'normal native master changed');
+    for (const row of master.originals) {
+      const ref = reference(row);
+      normalNeed(refs.get(row.path)?.sha256 === ref.sha256, 'normal original reference changed');
+    }
+  };
+  assertCurrent();
+  const runtimeByName = new Map<string, any>(runtime.map(row => [row.path.slice(NORMAL_MEMBER_ROOT.length + 1), row]));
+  const view: CandidateServiceNativeRuntimeOriginalView = Object.freeze({
+    identity: Object.freeze({...identity}),
+    members: Object.freeze(runtime),
+    sourceArchives: Object.freeze([]) as unknown as readonly ArchiveCoordinate[],
+    inputBindingsForMember(name: string) {
+      assertCurrent();
+      // Conservative COMPLETE DECLARED build-input union for this actual runtime
+      // member. This is provenance of the recipe scope, explicitly not a
+      // syscall-observed per-output read set; the master's nonClaims say so.
+      normalNeed(runtimeByName.has(name), 'actual normal runtime member required');
+      return declaredUnion as readonly CandidateServiceNativeInputBinding[];
+    },
+    assertCurrent,
+    readSourceArchiveRange(): Buffer {
+      throw Error('Normal runtime evidence has no syscall-derived Debian source archive');
+    },
+    readMemberRange(name: string, offset: number, length: number) {
+      assertCurrent();
+      const row = runtimeByName.get(name);
+      normalNeed(row && row.type === 'file', 'exact normal runtime member required');
+      normalNeed(Number.isSafeInteger(offset) && offset >= 0 && Number.isSafeInteger(length)
+        && length >= 0 && length <= RANGE && offset + length <= row.bytes, 'bounded normal member range');
+      return Buffer.from(native.readOriginalRange('artifact/runtime/' + name, offset, length));
+    },
+  });
+  const observation = Object.freeze({schemaVersion: 1, kind: NORMAL_RUNTIME_KIND,
+    proofModel: NORMAL_RUNTIME_MODEL, identity: view.identity, pending: [] as readonly string[]});
+  return Object.freeze({observation, view,
+    facts: Object.freeze({identity: view.identity, runtimeMembers: view.members,
+      smokeFacts: facts, nonClaims: Object.freeze([...NORMAL_NON_CLAIMS]),
+      inputUnionScope: 'complete-declared-build-input-union'})});
+}
+function observeNormalLocalRuntime(input: NormalLocalRuntimeReadContext & {
+  masterRef: any; master: any; publish(observation: object, view: CandidateServiceNativeRuntimeOriginalView): void;
+}) {
+  const inspected = inspectNormalLocalRuntimeMaster(input.masterRef, input.master, input);
+  input.publish(inspected.observation, inspected.view);
+  return inspected.observation;
+}
 export function candidateServiceNativeRuntimeOriginalsView(value: unknown, originals: unknown, source: unknown, sdkOriginals: unknown, sdkAdmission: unknown) {
   if (!value || typeof value !== 'object') return undefined;
   const row = issued.get(value);

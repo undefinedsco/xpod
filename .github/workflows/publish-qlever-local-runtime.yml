@@ -111,7 +111,12 @@ jobs:
               --profile-identity "${SDK_PROFILE_IDENTITY}" \
               --dockerfile "${NORMAL_DOCKERFILE}" \
               --out "${RUNNER_TEMP}/qlever-normal-input.json"
-            tag="qlever-inputs-$(python3 -c 'import json,os;print(json.load(open(os.environ["RUNNER_TEMP"]+"/qlever-normal-input.json"))["inputHash"])')"
+            input_hash="$(python3 -c 'import json,os;print(json.load(open(os.environ["RUNNER_TEMP"]+"/qlever-normal-input.json"))["inputHash"])')"
+            tag="qlever-inputs-${input_hash}"
+            # The retention step consumes the SAME canonical identity this step
+            # derived from the immutable source. It is not caller input, not a
+            # second alias and not a place to guess the SDK build run.
+            echo "input_hash=${input_hash}" >> "${GITHUB_OUTPUT}"
           else
             # module-bookworm-gcc12 keeps its original 12-hex local alias and its
             # separate module recipe; that profile never opts into normal reuse.
@@ -350,14 +355,19 @@ jobs:
         if: needs.resolve_target.outputs.sdk_profile == 'service-trixie'
         shell: bash
         env:
+          SOURCE_SHA: ${{ github.sha }}
           PRIOR_SDK_IMAGE: ${{ inputs.prior_sdk_image }}
           RUNTIME_IMAGE: ${{ steps.publish.outputs.image }}
+          SDK_INPUT_HASH: ${{ steps.inputs.outputs.input_hash }}
+          RUNTIME_TARGET: ${{ needs.resolve_target.outputs.target }}
         run: |
           set -euo pipefail
-          python3 qlever/scripts/sdk-service-native-runtime-host.py \
-            --source-sha "${GITHUB_SHA}" \
+          python3 scripts/collect-normal-local-runtime-originals.py \
+            --source-sha "${SOURCE_SHA}" \
             --sdk-image "${PRIOR_SDK_IMAGE}" \
             --runtime-image "${RUNTIME_IMAGE}" \
+            --sdk-input-hash "${SDK_INPUT_HASH}" \
+            --target "${RUNTIME_TARGET}" \
             --run-id "${GITHUB_RUN_ID}" --run-attempt "${GITHUB_RUN_ATTEMPT}" \
             --job publish \
             --out "${RUNNER_TEMP}/candidate-service-native-runtime" \
@@ -383,6 +393,18 @@ jobs:
           name: candidate-service-native-runtime-${{ needs.resolve_target.outputs.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/candidate-service-native-runtime/
           if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload failed native runtime diagnostics
+        if: failure() && steps.native_originals.outcome == 'failure'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: candidate-native-runtime-diagnostics-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          include-hidden-files: true
+          path: |
+            ${{ runner.temp }}/candidate-service-native-runtime/
+            ${{ github.workspace }}/.test-data/service-qualification/native-runtime/normal-*/
+          if-no-files-found: warn
           retention-days: 7
 
       - name: Record the deployable image

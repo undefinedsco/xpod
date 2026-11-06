@@ -587,6 +587,15 @@ syscall/generation/lifetime 属性，也不把普通构建功能性通过表述�
 `SDK1..92` 与 `observer1..64` 历史 tuple 保持字节冻结；observer 仅保留为显式
 `workflow_dispatch` 诊断路径，不再是普通 candidate SDK 发布的前置。
 
+普通 SDK 的 local runtime 验收使用 `normal-runtime-v1`，不再调用要求旧
+`profile/inputs.json`、ptrace 或 lifetime lease 的收集器。验收保留同一
+source/run/target、SDK 输入身份与不可变镜像、runtime 镜像/config、完整运行文件
+清单，以及真实执行并等待结束的功能测试原始输出；SOURCE、ABI、LEGAL 和候选
+产品检查仍须分别通过。该模型只提供声明的构建输入范围，不声称逐输出的 syscall
+读取或生成因果。异步 runtime 的测试必须逐条等待查询结果，全部返回后才能发送
+shutdown；提前关闭会取消仍在排队的查询。失败时保留独立诊断附件，并撤销未完成的
+master，诊断附件不能作为发布通过的证据。
+
 **并行度按机器实测决定，不再手写**：
 
 | 作业 | runner | 实测 | 并行度 |

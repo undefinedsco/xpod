@@ -438,7 +438,10 @@ test('the CURRENT unpublished slice carries the published helper prefixes and it
   // PR124 appended the 56th current observer tuple and the lease-evidence
   // diagnostic appended the 57th; the 55 already-published ones remain.
   expect(helpers.length).toBe(CURRENT_OBSERVER_GROUPS);
-  const current = consumerSdk.at(-1)!;
+  // This suite pins the SDK87-era slice that is now FROZEN history. It must not
+  // follow `at(-1)`: later consumer appends (SDK95) are separate versions and
+  // must never be pulled into a historical assertion.
+  const current = consumerSdk[93]!;
   const sec = current.secondarySelectors ?? [];
   expect(sec.length).toBeGreaterThanOrEqual(17);
   // SDK86's 154 bindings are historical. CURRENT SDK87 appends the two

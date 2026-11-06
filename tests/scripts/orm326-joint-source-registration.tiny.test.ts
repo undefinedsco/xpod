@@ -91,7 +91,11 @@ test('the frozen f803 snapshot is the published canonical bytes and the moving c
     'docker/qlever-runtime-sdk/Dockerfile.normal.incremental',
     'qlever/scripts/sdk-normal-linked-receipt.py',
     'scripts/lib/independent-admission/qlever-sdk-normal-build.ts',
-    'scripts/select-normal-sdk-proof.ts']);
+    'scripts/select-normal-sdk-proof.ts',
+    // The ordinary local-runtime route appends its new collector and the shared
+    // smoke-case declaration at the canonical tail; earlier rows keep position.
+    'scripts/collect-normal-local-runtime-originals.py',
+    'scripts/lib/normal-local-runtime-smoke-cases.json']);
   expect(new Set(current.map(row => row.path)).size).toBe(current.length);
 });
 

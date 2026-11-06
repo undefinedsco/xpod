@@ -14,6 +14,7 @@ import {observeQleverSdkSourceAdmission,qleverSdkSourceAdmissionView} from './li
 import {observeCandidateServiceRootMutation} from './lib/independent-admission/candidate-service-root-mutation';
 import {observeCandidateServicePackOutput} from './lib/independent-admission/candidate-service-pack-output';
 import {collectRelatedCandidateServiceNativeRuntimeOriginals} from './lib/independent-admission/candidate-service-native-runtime-related';
+import {observeCandidateServiceNativeRuntimeOriginals} from './lib/independent-admission/candidate-service-native-runtime-originals';
 import {readCandidateServiceRelationship} from './lib/independent-admission/qlever-sdk-service-relationship';
 import {createCandidateServiceQualificationBudget} from './lib/independent-admission/candidate-service-qualification-budget';
 import {observeCandidateServiceRuntimeArtifact} from './lib/independent-admission/candidate-service-runtime-artifact';
@@ -87,6 +88,17 @@ export async function observeCandidateServiceSdkSource(argv:readonly string[],re
   const pack=await observeCandidateServicePackOutput({originals:native,source,budget});budget.check();pack?.assertCurrent();
   const observation=await observeQleverSdkSourceAdmission({sdkOriginals:sdk,source,remainingMilliseconds:budget.remainingMs()});
   budget.check();observation.assertCurrent();pack?.assertCurrent();rootMutation.assertCurrent();
+  // The native runtime capability is byte custody only. Its interpreted view is
+  // issued by the ONE private observer for the SAME originals/source/SDK
+  // admission handles, which is what the SOURCE/ABI/LEGAL axes resolve. The
+  // observer dispatches strictly on the retained proof model: legacy masters
+  // keep the legacy trace interpretation, ordinary masters use the ordinary
+  // evidence. A capability passed as the view resolves to undefined by design.
+  const nativeQualification=nativeRuntime===undefined?undefined
+   :await observeCandidateServiceNativeRuntimeOriginals({originals:nativeRuntime,source,sdkOriginals:sdk,
+     sdkAdmission:observation,budget});
+  if(nativeRuntime!==undefined&&nativeQualification===undefined)
+   throw Error('Candidate service qualification pending: the declared native runtime artifact has no issued proof-model view');
   assertDerivedSourceCurrent(source);assertCollectedNativeOriginalCustody(native);budget.check();
   const runtimeArtifact=await observeCandidateServiceRuntimeArtifact({originals:native,source,budget});
   if(!runtimeArtifact)throw Error('Genuine whole-service runtime artifact observation required');
@@ -99,7 +111,7 @@ export async function observeCandidateServiceSdkSource(argv:readonly string[],re
   // Hold the single release callback. If the pipeline already threw, its own
   // catch released; if it returned, ownership transfers to this CLI.
   releaseOwnedScopes=pipeline.releaseMaterialized;
-  const nativeContext={qualification:nativeRuntime,originals:native,sdkOriginals:sdk,sdkAdmission:observation};
+  const nativeContext={qualification:nativeQualification,originals:nativeRuntime,sdkOriginals:sdk,sdkAdmission:observation};
   aggregateInput={originals:native,source,sdk,runtimeArtifact,pack,
    materialized:pipeline.materialized,materializedInput:pipeline.materializedInput,
    replay:pipeline.replay,nativeContext,budget};
