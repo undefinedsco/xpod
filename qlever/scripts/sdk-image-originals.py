@@ -37,7 +37,16 @@ class SafeRegistryRedirect(urllib.request.HTTPRedirectHandler):
         return redirected
 
 
-def registry_originals(reference,target,out,transport=None,budget=None):
+def registry_originals(reference,target,out,transport=None,budget=None,reserve_seconds=600):
+    """Fetch exact registry originals with the caller's retained deadline reserve.
+
+    `reserve_seconds` is how many seconds of the shared budget must still remain
+    before each registry read, so the caller can keep its own cleanup/retention
+    headroom. The default 600 preserves the historical behaviour of every older
+    caller; the service collector explicitly asks for 0 because its workflow
+    deadline is only 120 seconds and it already funds its own retained writes.
+    """
+    if type(reserve_seconds) is not int or reserve_seconds<0:raise ValueError('Invalid SDK registry reserve seconds')
     if transport is None:transport=urllib.request.build_opener(SafeRegistryRedirect).open
     match=re.fullmatch(r'ghcr\.io/([a-z0-9_./-]+)@sha256:([a-f0-9]{64})',reference)
     if not match or '..' in match[1].split('/'):raise ValueError('Exact GHCR SDK image digest required')
@@ -47,11 +56,11 @@ def registry_originals(reference,target,out,transport=None,budget=None):
     if credential:headers['Authorization']='Basic '+base64.b64encode((actor+':'+credential).encode()).decode()
     token_url='https://ghcr.io/token?'+urllib.parse.urlencode(dict(service='ghcr.io',scope='repository:'+repository+':pull'))
     def get(url,headers,maximum=4*1024**2):
-        if budget is not None:budget.check(600)
+        if budget is not None:budget.check(reserve_seconds)
         with transport(urllib.request.Request(url,headers=headers),timeout=20) as response:
             chunks=[];size=0
             while True:
-                if budget is not None:budget.check(600)
+                if budget is not None:budget.check(reserve_seconds)
                 block=response.read1(min(65536,maximum-size+1))
                 if not block:break
                 size+=len(block)

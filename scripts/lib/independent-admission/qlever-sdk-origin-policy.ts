@@ -2687,6 +2687,34 @@ const SDK98_METADATA_PRODUCER_STAGE=Object.freeze([
 const SDK98_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK97_GROUP,
   secondarySelectorStages:Object.freeze([...(SDK97_GROUP.secondarySelectorStages??[]),SDK98_METADATA_PRODUCER_STAGE]),
   sourceBindings:Object.freeze(SDK97_GROUP.sourceBindings.map(row=>Object.freeze({...row,sha256:SDK98_SOURCE_HASHES[row.path]??row.sha256})))});
+/** SDK99 is the CURRENT consumer for the RC376 SDK registry reserve fix.
+ * SDK98 is a consumed baseline (RC375) and stays byte-identical. The changed
+ * product path `qlever/scripts/sdk-image-originals.py` is a PRIMARY SELECTOR of
+ * every historical consumer tuple (via sdkBSelectorPaths), not a sourceBindings
+ * row, so advancing that one selector is the only correct discriminator.
+ *
+ * Probed in memory over tree-accurate observations:
+ *   - with only SDK1..98, the CURRENT tree has ZERO primary survivors (every
+ *     historical tuple still pins the old producer bytes), so the tree would be
+ *     refused outright;
+ *   - sourceBindings-only insertion leaves both trees throwing
+ *     'observed value differs from owned';
+ *   - appending a stage over the same path throws 'conflicting owned secondary
+ *     original' because the key is already a selector.
+ * Advancing the selector gives old tree -> SDK98, current tree -> SDK99 and
+ * refuses the mixed tree. No stage is appended and no historical bytes move. */
+const SDK99_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
+  'qlever/scripts/sdk-image-originals.py':'c0661c70d8224d741d86e1105a3ab9b4b3ed6d645764d7bcf7ad2e6c67cb1f37',
+  'qlever/tests/test_sdk_image_originals.py':'5faf5b67f548f7d696a1e2e6e3e34232269e470b4f5cf1681693cca99b7f9abb',
+  // The readonly-normal live controller now pins the same corrected producer, so
+  // the reviewed workflow bytes moved with it. This row was already carried by
+  // SDK98; only the SDK99 (unpublished) copy advances, as the da3e2b65 precedent
+  // did when a collector source and its live pin changed together.
+  '.github/workflows/qlever-readonly-normal-job.yml':'256ab4ddbdadef555884e4dc1ad93c328b41467f2220a2a13e252639a0fe639f',
+});
+const SDK99_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK98_GROUP,
+  selectors:Object.freeze(SDK98_GROUP.selectors.map(row=>Object.freeze({...row,sha256:SDK99_SOURCE_HASHES[row.path]??row.sha256}))),
+  sourceBindings:Object.freeze(SDK98_GROUP.sourceBindings.map(row=>Object.freeze({...row,sha256:SDK99_SOURCE_HASHES[row.path]??row.sha256})))});
 export const QLEVER_NORMAL_BUILD_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([SDK93_GROUP]);
 export const QLEVER_SDK_NORMAL_SOURCE_BINDINGS:readonly GitHubSourceBinding[]=Object.freeze([
  Object.freeze({path:'.github/workflows/candidate.yml',sha256:'1446b2ceb6c53b8888e07d0b822854b934c95d508f93dfd901a4687e28d22d9d'}),
@@ -2749,7 +2777,28 @@ const QLEVER_NORMAL_DOCKERIGNORE_GROUP:GitHubSourceBindingGroup=Object.freeze({
   sourceBindings:Object.freeze(QLEVER_NORMAL_CURRENT_GROUP.sourceBindings.map(row=>
     Object.freeze({...row,sha256:row.path==='.dockerignore'?QLEVER_NORMAL_DOCKERIGNORE_HASH:row.sha256}))),
 });
-export const QLEVER_NORMAL_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([QLEVER_NORMAL_PREVIOUS_GROUP,QLEVER_NORMAL_CURRENT_GROUP,QLEVER_NORMAL_DOCKERIGNORE_GROUP]);
+/** Normal producer group 4: the RC376 registry reserve fix changes
+ * `qlever/scripts/sdk-image-originals.py`, which the normal SDK capture really
+ * executes (sdk-normal-build-proof.py loads it and calls registry_originals),
+ * and which lives inside the qlever/ tree hashed as `qleverTree`. A new input
+ * identity H is therefore genuinely expected for this source; the previous
+ * H1636 proof must never be relabelled onto the new bytes.
+ *
+ * Unlike the consumer tuples, this path is a plain sourceBinding in every normal
+ * group, so one APPENDED stage over it is the correct normal-route discriminator.
+ * Probed in memory: appended stage -> old tree group 3, new tree group 4; a new
+ * PRIMARY selector instead makes the new tree throw 'observed value differs from
+ * owned' because group 3 still matches primary. Groups 1..3 stay byte-identical
+ * and no identity recipe, workflow or Dockerfile changes. */
+const QLEVER_NORMAL_REGISTRY_PRODUCER_HASH='c0661c70d8224d741d86e1105a3ab9b4b3ed6d645764d7bcf7ad2e6c67cb1f37';
+const QLEVER_NORMAL_REGISTRY_PRODUCER_GROUP:GitHubSourceBindingGroup=Object.freeze({
+  ...QLEVER_NORMAL_DOCKERIGNORE_GROUP,
+  secondarySelectorStages:Object.freeze([...(QLEVER_NORMAL_DOCKERIGNORE_GROUP.secondarySelectorStages??[]),
+    Object.freeze([Object.freeze({path:'qlever/scripts/sdk-image-originals.py',sha256:QLEVER_NORMAL_REGISTRY_PRODUCER_HASH})])]),
+  sourceBindings:Object.freeze(QLEVER_NORMAL_DOCKERIGNORE_GROUP.sourceBindings.map(row=>
+    Object.freeze({...row,sha256:row.path==='qlever/scripts/sdk-image-originals.py'?QLEVER_NORMAL_REGISTRY_PRODUCER_HASH:row.sha256}))),
+});
+export const QLEVER_NORMAL_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([QLEVER_NORMAL_PREVIOUS_GROUP,QLEVER_NORMAL_CURRENT_GROUP,QLEVER_NORMAL_DOCKERIGNORE_GROUP,QLEVER_NORMAL_REGISTRY_PRODUCER_GROUP]);
 
 export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP,SDK78_GROUP,SDK79_GROUP,SDK80_GROUP,SDK81_GROUP,SDK82_GROUP,SDK83_GROUP,SDK84_GROUP,SDK85_GROUP,SDK86_GROUP,SDK87_GROUP,SDK88_GROUP,SDK89_GROUP,SDK90_GROUP,SDK91_GROUP,SDK92_GROUP,SDK93_GROUP]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
@@ -2757,8 +2806,8 @@ export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=O
  ...QLEVER_SDK_EXECUTION_GROUPS,
 ]);
 /** Consumer-only lists derive the published execution groups and append the
- * frozen SDK94..SDK97 tuples plus the current SDK98 tuple.
+ * frozen SDK94..SDK98 tuples plus the current SDK99 tuple.
  * QLEVER_SDK_EXECUTION_GROUPS itself stays at exactly SDK1..93 for the published
  * producer contract. */
-export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP]);
-export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP]);
+export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP]);
+export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP]);
