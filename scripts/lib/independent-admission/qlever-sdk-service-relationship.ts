@@ -1,4 +1,5 @@
 import {createHash} from 'node:crypto';
+import {createRequire} from 'node:module';
 import {isDeepStrictEqual} from 'node:util';
 import type {CollectedNativeOriginalsView} from './native-originals';
 import {nativeOriginalsView,assertCollectedNativeOriginalCustody} from './native-original-collector';
@@ -17,6 +18,10 @@ export interface CandidateServiceRelationshipContract {
 }
 function need(value:unknown,why:string):asserts value {if(!value)throw Error('Service SDK relationship: '+why);}
 const digest=(raw:Buffer)=>createHash('sha256').update(raw).digest('hex');
+// The pack observation set is not one metadata original; the producer owns this
+// closed bound and exports it, so the reader imports the same number instead of
+// restating it.
+const PACK_OBSERVATION_METADATA_BYTES:number=createRequire(import.meta.url)('../../service-pack-originals.cjs').OBSERVATION_BOUNDS.metadataBytes;
 /** Byte custody only. Typed pack paths select a streaming read bound; they do
  * not establish pack input resolution, transformation, source or legal facts. */
 export function inspectCandidateServiceOriginalUniverse(view:CollectedNativeOriginalsView,master:any):void {
@@ -45,6 +50,11 @@ export function inspectCandidateServiceOriginalUniverse(view:CollectedNativeOrig
  const pack=master.packInputObservation;
  if(pack!==undefined){
   need(pack?.schemaVersion===1&&pack.kind==='actual-stopped-service-image-pack-inputs'&&Array.isArray(pack.bodies)&&pack.bodies.length<=512,'typed pack stream layout');
+  // The pack metadata archive is one typed TAR stream: the index plus every
+  // object original, framed, bounded by the producer's own observation bound.
+  // It legitimately exceeds one metadata original; per-member bounds are still
+  // enforced by service_pack_sidecar_tar when the archive is parsed.
+  permit(pack.stage?.stdout,/^stages\/service-output-copy-pack-inputs\/stdout\.raw$/u,PACK_OBSERVATION_METADATA_BYTES);
   permit(pack.phase?.stage?.stdout,/^stages\/service-output-copy-pack-phase\/stdout\.raw$/u);
   for(const row of pack.bodies){permit(row.original,/^output\/service-pack-bodies\/objects\/[0-9]{4}-[a-f0-9]{64}\.original$/u);permit(row.rawTarOriginal,/^stages\/service-output-copy-pack-body-[0-9]{4}\/stdout\.raw$/u);need(isDeepStrictEqual(row.rawTarOriginal,row.stage?.stdout),'same actual body stage stdout');}
  }

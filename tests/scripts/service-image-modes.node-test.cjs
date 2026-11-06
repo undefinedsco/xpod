@@ -224,3 +224,33 @@ test('owned Cloud alone receives per-run strict32B test root keys accepted by th
   assert.equal(result.error,undefined);assert.equal(result.status,0,'Owned Cloud key contract failed; raw import output withheld');assert(result.stdout.includes('OWNED_CLOUD_KEY_CONTRACT_OK'));
   const source=fs.readFileSync(path.resolve('scripts/accept-service-image-modes.ts'),'utf8');assert(source.includes('ownedModeSecretCellEnvironment(mode, service.environment)'));assert(source.includes("writeFile(composeFile, JSON.stringify(configuration), { mode: 0o600 })"));
 }));
+
+// RC379 ordered managed-local bootstrap. The readiness/fail-fast behaviour is
+// driven for real in tests/scripts/service-image-modes-bootstrap.test.ts; here we
+// pin the matrix wiring: one responsibility for both startups, local never in
+// the infrastructure/cloud invocation, Cloud recreated for derived policy.
+test('both initial and policy-recreation startup use the ordered responsibility', () => {
+  const runner = fs.readFileSync(path.resolve('scripts/accept-service-image-modes.ts'), 'utf8');
+  const calls = runner.match(/await startOrderedTopology\(/g) ?? [];
+  assert.equal(calls.length, 2, 'initial and policy-recreation startup must both be ordered');
+  assert.ok(runner.includes("await startOrderedTopology('start-base-topology', false)"));
+  assert.ok(runner.includes('await startOrderedTopology(`start-${kind}`, true)'));
+  // The infrastructure/cloud invocation must never include local.
+  const infraStart = runner.indexOf('startInfrastructureAndCloud: () => forceRecreate');
+  assert.notEqual(infraStart, -1, 'infrastructure/cloud compose invocation missing');
+  const infraBlock = runner.slice(infraStart, runner.indexOf('awaitCloudApiReady:', infraStart));
+  assert.ok(!infraBlock.includes("'local'"), 'local must not start with infrastructure/cloud');
+  assert.ok(infraBlock.includes("'postgres', 'redis', 'minio', 'cloud'"));
+  // Derived policy must actually recreate Cloud but not the databases.
+  assert.ok(infraBlock.includes("'--force-recreate', '--no-deps'"));
+  // Readiness must be the real Cloud API, not CSS OIDC discovery or process status.
+  assert.ok(runner.includes("new URL('api/service-info', urls.cloud)"));
+  assert.ok(!runner.includes("new URL('.well-known/openid-configuration', urls.cloud)"));
+  assert.ok(runner.includes('awaitCloudApiReady: () => waitCloudApiReady()'));
+  assert.ok(runner.includes('awaitLocalRegistration: () => waitManagedLocalRegistration()'));
+  // Both phases share one readiness helper bounded by the existing command budget.
+  assert.equal((runner.match(/awaitReadiness\(/g) ?? []).length, 2);
+  assert.equal((runner.match(/budgetMs: LIMITS\.commandMs/g) ?? []).length, 2);
+  // Facts survive into the private safe report only for the current failure.
+  assert.ok(runner.includes('error instanceof ManagedLocalBootstrapError ? error.facts : undefined'));
+});
