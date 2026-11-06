@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "published": {
+    "sdk": 93,
+    "sourceCommit": "8659baf188c3595a47928e8432c5f5fa897ae7ee",
+    "runId": 42133351932,
+    "sdk93GroupSha256": "eadffb8dc9b6b4965a2d99bdac22e48f64388150830219c27f65dbaef5e0033f",
+    "normalFlatBindingsSha256": "2da25785a276a8e6b37ee85576debe174d1fd66b61b2b0b5a50f0ff91a4880ef",
+    "sources": {
+      ".github/workflows/publish-qlever-local-runtime.yml": "cf6822cf0c8c204267f959a8b233daa144d4dcbbc394d02ff706a3c29a397715",
+      "scripts/lib/independent-admission/qlever-sdk-normal-build.ts": "b2fa80d50edf78347eb83416d93255a43a8c0054e66f2476743f975a07aec69a"
+    }
+  }
+}

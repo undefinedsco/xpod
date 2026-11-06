@@ -1,6 +1,5 @@
 import {test,expect} from 'bun:test';
 import {createHash} from 'node:crypto';
-import {execFileSync} from 'node:child_process';
 import {readFileSync} from 'node:fs';
 import path from 'node:path';
 import {
@@ -13,24 +12,28 @@ import {
 import {completeObserved} from './source-binding-group.fixture';
 import {selectGitHubSourceBindingGroup,sourceBindingKey,type GitHubSourceBindingGroup} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import currentCanonical from '../../scripts/lib/independent-admission/consumer-execution-current.json';
+import publishedSdk93 from './fixtures/published-sdk93-source-binding-versioning.json';
 
 const ROOT=path.resolve(import.meta.dir,'../..');
 const sha=(value:Buffer|string)=>createHash('sha256').update(value).digest('hex');
 const disk=(name:string)=>sha(readFileSync(path.join(ROOT,name)));
-const committed=(name:string)=>sha(execFileSync('git',['-C',ROOT,'show',`HEAD:${name}`]));
 const row=(group:GitHubSourceBindingGroup,file:string)=>group.sourceBindings.filter(value=>value.path===file);
 const LOCAL_RUNTIME='.github/workflows/publish-qlever-local-runtime.yml';
 const VERIFIER='scripts/lib/independent-admission/qlever-sdk-normal-build.ts';
-const OLD_LOCAL_RUNTIME='cf6822cf0c8c204267f959a8b233daa144d4dcbbc394d02ff706a3c29a397715';
+/** Published SDK93 bytes, frozen at source 8659. Never read from HEAD: a clean
+ * PR checkout already contains the current bytes, and shallow/merged checkouts
+ * have no local parent to compare against. */
+const OLD_LOCAL_RUNTIME=publishedSdk93.published.sources[LOCAL_RUNTIME];
+const OLD_VERIFIER=publishedSdk93.published.sources[VERIFIER];
 const NEW_LOCAL_RUNTIME='78e15d1a7606d1f8467858e4958c1f70e52bec8a01d76b797a5ba24cebb21332';
-const OLD_VERIFIER='b2fa80d50edf78347eb83416d93255a43a8c0054e66f2476743f975a07aec69a';
 const NEW_VERIFIER='8fbf265127bf81d96418950d4b5729064e72d95da03de1986c6a286a2c61e1ab';
 const observe=(groups:readonly GitHubSourceBindingGroup[],group:GitHubSourceBindingGroup)=>completeObserved(groups,group);
 
 test('SDK93 stays the exact published producer and SDK94 is an additive consumer',()=>{
   expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(93);
   const published=QLEVER_SDK_EXECUTION_GROUPS.at(-1)!;
-  expect(sha(JSON.stringify(published))).toBe('eadffb8dc9b6b4965a2d99bdac22e48f64388150830219c27f65dbaef5e0033f');
+  expect(publishedSdk93.published.sdk).toBe(93);
+  expect(sha(JSON.stringify(published))).toBe(publishedSdk93.published.sdk93GroupSha256);
   expect(row(published,LOCAL_RUNTIME).map(value=>value.sha256)).toEqual([OLD_LOCAL_RUNTIME]);
   expect(row(published,VERIFIER).map(value=>value.sha256)).toEqual([OLD_VERIFIER]);
   expect(QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(94);
@@ -43,9 +46,7 @@ test('SDK93 stays the exact published producer and SDK94 is an additive consumer
   expect(row(consumer,LOCAL_RUNTIME).map(value=>value.sha256)).toEqual([NEW_LOCAL_RUNTIME]);
   expect(row(consumer,VERIFIER).map(value=>value.sha256)).toEqual([NEW_VERIFIER]);
   expect(disk(LOCAL_RUNTIME)).toBe(NEW_LOCAL_RUNTIME);
-  expect(committed(LOCAL_RUNTIME)).toBe(OLD_LOCAL_RUNTIME);
   expect(disk(VERIFIER)).toBe(NEW_VERIFIER);
-  expect(committed(VERIFIER)).toBe(OLD_VERIFIER);
   expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-1)).toBe(consumer);
 });
 
@@ -73,11 +74,15 @@ test('normal producer old flat 8659 bytes and current verifier bytes have unique
   expect(row(next!,VERIFIER).map(value=>value.sha256)).toEqual([NEW_VERIFIER]);
   expect(row(old!,LOCAL_RUNTIME)).toEqual([]);
   expect(row(next!,LOCAL_RUNTIME)).toEqual([]);
-  for(const binding of QLEVER_SDK_NORMAL_SOURCE_BINDINGS)expect(committed(binding.path)).toBe(binding.sha256);
-  for(const binding of next!.sourceBindings){
-    if(binding.path===VERIFIER)expect(disk(binding.path)).toBe(binding.sha256);
-    else expect(committed(binding.path)).toBe(binding.sha256);
+  // The published flat list is frozen by its aggregate bytes, so every row is
+  // still protected even though only the verifier differs from the live tree.
+  expect(sha(JSON.stringify(QLEVER_SDK_NORMAL_SOURCE_BINDINGS))).toBe(publishedSdk93.published.normalFlatBindingsSha256);
+  for(const binding of QLEVER_SDK_NORMAL_SOURCE_BINDINGS){
+    if(binding.path===VERIFIER)expect(binding.sha256).toBe(OLD_VERIFIER);
+    else expect(disk(binding.path)).toBe(binding.sha256);
   }
+  // The current group is the live consumer tree, so every row must match disk.
+  for(const binding of next!.sourceBindings)expect(disk(binding.path)).toBe(binding.sha256);
   expect(selectGitHubSourceBindingGroup(QLEVER_NORMAL_SOURCE_GROUPS,observe(QLEVER_NORMAL_SOURCE_GROUPS,old!))).toBe(old);
   expect(selectGitHubSourceBindingGroup(QLEVER_NORMAL_SOURCE_GROUPS,observe(QLEVER_NORMAL_SOURCE_GROUPS,next!))).toBe(next);
   const oldVersion=new Map(observe(QLEVER_NORMAL_SOURCE_GROUPS,next!));
