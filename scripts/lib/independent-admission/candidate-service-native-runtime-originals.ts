@@ -483,6 +483,14 @@ function normalNeed(value: unknown, why: string): asserts value {
 const NORMAL_SMOKE_PREFIX = ['docker', 'run', '--rm', '-i', '--network', 'none',
   '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
   '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m'] as const;
+/** Canonical `uid:gid`: both sides unsigned decimal, no leading zero unless the
+ * value is exactly "0", no sign, no whitespace, bounded to the Docker daemon's accepted ID range. */
+function isCanonicalSmokeUser(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  const match = /^(0|[1-9][0-9]{0,9}):(0|[1-9][0-9]{0,9})$/u.exec(value);
+  // Docker rejects uid/gid values above 2147483647, even though uid_t is wider.
+  return match !== null && Number(match[1]) <= 0x7fffffff && Number(match[2]) <= 0x7fffffff;
+}
 function smokePayload(stdout: string, stderr: string) {
   normalNeed(typeof stderr === 'string', 'actual smoke stderr required');
   let rows: any[];
@@ -685,18 +693,25 @@ export function inspectNormalLocalRuntimeMaster(masterRef: any, master: any, con
     && smokeRaw.proofModel === NORMAL_RUNTIME_MODEL, 'normal functional smoke schema/model');
   normalNeed(Array.isArray(smokeRaw.command)
     && JSON.stringify(smokeRaw.command.slice(0, NORMAL_SMOKE_PREFIX.length)) === JSON.stringify([...NORMAL_SMOKE_PREFIX])
-    && smokeRaw.command[NORMAL_SMOKE_PREFIX.length] === '--name'
-    && /^xpod-normal-runtime-smoke-[a-f0-9]{16}$/u.test(String(smokeRaw.command[NORMAL_SMOKE_PREFIX.length + 1]))
-    && smokeRaw.command[NORMAL_SMOKE_PREFIX.length + 2] === '--mount'
-    && String(smokeRaw.command[NORMAL_SMOKE_PREFIX.length + 3] ?? '').startsWith('type=bind,src=')
-    && smokeRaw.command[NORMAL_SMOKE_PREFIX.length + 4] === identity.runtimeImage
-    && smokeRaw.command.at(-2) === '--sqlite-path' && smokeRaw.command.length === NORMAL_SMOKE_PREFIX.length + 7,
+    // The smoke user is the collector's own uid:gid, in canonical unsigned
+    // decimal form. It keeps the 0700 bind mount private yet writable; the
+    // image default (root) cannot write it on a real Linux kernel under
+    // --cap-drop ALL. Values must be plain decimals: no signs, no padding, no
+    // ranges, no names, no environment substitution.
+    && smokeRaw.command[NORMAL_SMOKE_PREFIX.length] === '--user'
+    && isCanonicalSmokeUser(smokeRaw.command[NORMAL_SMOKE_PREFIX.length + 1])
+    && smokeRaw.command[NORMAL_SMOKE_PREFIX.length + 2] === '--name'
+    && /^xpod-normal-runtime-smoke-[a-f0-9]{16}$/u.test(String(smokeRaw.command[NORMAL_SMOKE_PREFIX.length + 3]))
+    && smokeRaw.command[NORMAL_SMOKE_PREFIX.length + 4] === '--mount'
+    && String(smokeRaw.command[NORMAL_SMOKE_PREFIX.length + 5] ?? '').startsWith('type=bind,src=')
+    && smokeRaw.command[NORMAL_SMOKE_PREFIX.length + 6] === identity.runtimeImage
+    && smokeRaw.command.at(-2) === '--sqlite-path' && smokeRaw.command.length === NORMAL_SMOKE_PREFIX.length + 9,
     'normal functional smoke is not the expected immutable-image execution');
   normalNeed(smokeRaw.exit === 0 && smokeRaw.signal === null && smokeRaw.actualWait === true
     && smokeRaw.rawClosedBeforeHash === true && smokeRaw.ownedGroupAbsentAfterWait === true,
     'normal functional smoke did not actually run and close successfully');
   const mount = /^type=bind,src=(\/[^,\r\n\0]+),dst=\/data$/u
-    .exec(String(smokeRaw.command[NORMAL_SMOKE_PREFIX.length + 3]));
+    .exec(String(smokeRaw.command[NORMAL_SMOKE_PREFIX.length + 5]));
   normalNeed(mount && path.posix.normalize(mount[1]!) === mount[1]
     && smokeRaw.command.at(-1) === '/data/runtime-smoke.sqlite',
     'normal smoke must use its owned database mount');

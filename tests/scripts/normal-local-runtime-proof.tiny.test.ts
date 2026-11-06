@@ -52,8 +52,8 @@ function fixture(options: {body?: (id: string) => string} = {}) {
   put('smoke/child/stderr.raw', stderrBytes);
   const command = ['docker', 'run', '--rm', '-i', '--network', 'none', '--read-only',
     '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
-    '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m', '--name',
-    'xpod-normal-runtime-smoke-0123456789abcdef', '--mount',
+    '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m', '--user', '1001:1001',
+    '--name', 'xpod-normal-runtime-smoke-0123456789abcdef', '--mount',
     'type=bind,src=/x/smoke,dst=/data', runtimeImage, '--sqlite-path',
     '/data/runtime-smoke.sqlite'];
   // The consumer now requires the reviewed sequential driver, never the old
@@ -224,6 +224,75 @@ test('rejects a rewritten runtime member, smoke stream or recipe bytes', () => {
   const revoked = fixture();
   revoked.revoke();
   expect(() => inspect(revoked)).toThrow();
+});
+
+test('rejects a non-canonical smoke user or a driver receipt that differs from it', () => {
+  const rebuild = (patch: (command: string[], receipt: any) => void) => {
+    const value = fixture();
+    const evidenceName = 'smoke/functional-smoke.json';
+    const receiptName = 'smoke/child/command.receipt.json';
+    const evidence: any = JSON.parse(value.members.get(evidenceName)!.toString());
+    const receipt: any = JSON.parse(value.members.get(receiptName)!.toString());
+    patch(evidence.command, receipt);
+    receipt.command = ['python3', '-B', collector, '--smoke-session', JSON.stringify(evidence.command)];
+    value.rewrite(receiptName, JSON.stringify(receipt));
+    value.rewrite(evidenceName, JSON.stringify(evidence));
+    value.master.smoke.evidence = {path: evidenceName,
+      bytes: value.members.get(evidenceName)!.length, sha256: sha(value.members.get(evidenceName)!)};
+    value.master.smoke.commandReceipt = {path: receiptName,
+      bytes: value.members.get(receiptName)!.length,
+      sha256: sha(value.members.get(receiptName)!)};
+    const originals = value.master.originals as any[];
+    for (const row of originals) {
+      const body = value.members.get(row.path);
+      if (body) { row.bytes = body.length; row.sha256 = sha(body); }
+    }
+    value.master.retainedOriginalBytes = originals.reduce((n: number, row: any) => n + row.bytes, 0);
+    const masterBytes = Buffer.from(JSON.stringify(value.master));
+    value.members.set('materials.json', masterBytes);
+    value.masterRef = {path: 'materials.json', bytes: masterBytes.length, sha256: sha(masterBytes)};
+    return value;
+  };
+  for (const user of ['1001', '1001:', ':1001', '-1:1001', '01001:1001',
+    '1001:01001', ' 1001:1001', '1001:1001 ', '1001:1001:0', '1001.5:1001',
+    'root:root', '1001:1001\n', '2147483648:1001', '1001:2147483648', '4000000000:1001', '4294967295:1001', '4294967296:1001']) {
+    const value = rebuild(command => { command[command.indexOf('--user') + 1] = user; });
+    expect(() => inspect(value)).toThrow(/functional smoke/u);
+  }
+  // Canonical user but a driver receipt naming the old default (root): the
+  // command is well-formed yet the driver would run a different uid:gid.
+  const mismatch = fixture();
+  const receiptName = 'smoke/child/command.receipt.json';
+  const evidenceName = 'smoke/functional-smoke.json';
+  const receipt: any = JSON.parse(mismatch.members.get(receiptName)!.toString());
+  const dockerArgv = JSON.parse(receipt.command[4]);
+  dockerArgv[dockerArgv.indexOf('--user') + 1] = '0:0';
+  receipt.command[4] = JSON.stringify(dockerArgv);
+  mismatch.rewrite(receiptName, JSON.stringify(receipt));
+  const evidence: any = JSON.parse(mismatch.members.get(evidenceName)!.toString());
+  evidence.commandReceipt = {path: receiptName,
+    bytes: mismatch.members.get(receiptName)!.length,
+    sha256: sha(mismatch.members.get(receiptName)!)};
+  mismatch.rewrite(evidenceName, JSON.stringify(evidence));
+  mismatch.master.smoke.commandReceipt = evidence.commandReceipt;
+  mismatch.master.smoke.evidence = {path: evidenceName,
+    bytes: mismatch.members.get(evidenceName)!.length,
+    sha256: sha(mismatch.members.get(evidenceName)!)};
+  for (const row of mismatch.master.originals as any[]) {
+    const body = mismatch.members.get(row.path);
+    if (body) { row.bytes = body.length; row.sha256 = sha(body); }
+  }
+  mismatch.master.retainedOriginalBytes =
+    (mismatch.master.originals as any[]).reduce((n, row) => n + row.bytes, 0);
+  const masterBytes = Buffer.from(JSON.stringify(mismatch.master));
+  mismatch.members.set('materials.json', masterBytes);
+  mismatch.masterRef = {path: 'materials.json', bytes: masterBytes.length, sha256: sha(masterBytes)};
+  expect(() => inspect(mismatch)).toThrow(/driver argv|functional smoke/u);
+  // And the command itself must really be the tampered one, proving the throw
+  // came from the uid:gid comparison rather than an unrelated reference drift.
+  const driverArgv = JSON.parse(JSON.parse(
+    mismatch.members.get(receiptName)!.toString()).command[4]);
+  expect(driverArgv[driverArgv.indexOf('--user') + 1]).toBe('0:0');
 });
 
 test('the normal collector CLI fails closed on unbounded or non-immutable inputs', () => {

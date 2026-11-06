@@ -27,6 +27,9 @@ const collector = path.join(repoRoot, 'scripts/collect-normal-local-runtime-orig
 const SDK_IMAGE = 'ghcr.io/undefinedsco/xpod-qlever-sdk@sha256:' + 'd'.repeat(64);
 const RUNTIME_IMAGE = 'ghcr.io/undefinedsco/xpod-qlever-local-runtime@sha256:' + 'e'.repeat(64);
 const CONFIG_DIGEST = 'sha256:' + 'f'.repeat(64);
+const OWNER_UID = process.getuid!();
+const OWNER_GID = process.getgid!();
+const SMOKE_USER = `${OWNER_UID}:${OWNER_GID}`;
 const SMOKE_CASES_FILE = path.join(repoRoot, 'scripts/lib/normal-local-runtime-smoke-cases.json');
 
 const DOCKER_FIXTURE = String.raw`#!/usr/bin/env python3
@@ -37,7 +40,30 @@ def out(text): sys.stdout.write(text)
 def run_runtime(argv):
     mount=next((a for a in argv if a.startswith('type=bind,src=')),'')
     bind=mount.split('src=',1)[1].split(',',1)[0] if mount else '/nonexistent'
+    # The real Linux kernel refuses root (the image default) writing a 0700
+    # directory owned by the collector uid; --cap-drop ALL removes the bypass.
+    # Only the exact owning uid:gid may proceed, and the directory must still
+    # be 0700 - the collector must not relax it to make the smoke pass.
+    user=argv[argv.index('--user')+1] if '--user' in argv else ''
+    expected=os.environ['FAKE_EXPECT_USER']
     fd=0; buf=b''
+    def refuse(code,message):
+        sys.stdout.write(json.dumps({'type':'error','id':'','code':code,'message':message},
+                                    separators=(',',':'))+'\n')
+        sys.stdout.flush()
+        return 1
+    if user!=expected:
+        return refuse('container_user_mismatch','container user '+user+' != collector '+expected)
+    try:
+        owner=os.stat(bind)
+    except OSError:
+        return refuse('mount_missing','owned database mount missing')
+    if (owner.st_uid,owner.st_gid)!=(int(expected.split(':')[0]),int(expected.split(':')[1])):
+        return refuse('mount_owner','bind mount is not owned by the collector uid:gid')
+    if owner.st_mode & 0o777 != 0o700:
+        return refuse('mount_mode','smoke directory mode %o is not 0700' % (owner.st_mode & 0o777))
+    if not os.access(bind,os.W_OK):
+        return refuse('mount_denied','collector uid cannot write its own smoke directory')
     def send(row):
         sys.stdout.write(json.dumps(row,separators=(',',':'))+'\n'); sys.stdout.flush()
     def line():
@@ -273,6 +299,7 @@ function produce(root: string, mode = 'pass', target = 'linux-x64') {
       FAKE_RUNTIME_MODE: mode,
       FAKE_CONFIG_DIGEST: CONFIG_DIGEST,
       FAKE_SMOKE_CASES: path.join(repoRoot, 'scripts/lib/normal-local-runtime-smoke-cases.json'),
+      FAKE_EXPECT_USER: SMOKE_USER,
       FAKE_DOCKER_LOG: path.join(root, 'docker.log'),
       PYTHONDONTWRITEBYTECODE: '1',
     },
@@ -309,6 +336,17 @@ test('real producer orchestration feeds the real inspector and binds the async r
     expect(JSON.parse(receipt.command[4])).toEqual(ctx.master.smoke && JSON.parse(
       ctx.files.get('functional-smoke.json')!.toString()).command);
 
+    // The smoke runs as THIS collector's uid:gid, which is what makes the 0700
+    // bind mount writable on a real Linux kernel without relaxing its mode.
+    const smokeArgv = JSON.parse(receipt.command[4]);
+    expect(smokeArgv[smokeArgv.indexOf('--user') + 1]).toBe(SMOKE_USER);
+    const smokeDir = statSync(path.join(produced.out, 'smoke'));
+    expect(smokeDir.mode & 0o777).toBe(0o700);
+    expect([smokeDir.uid, smokeDir.gid]).toEqual([OWNER_UID, OWNER_GID]);
+    // The fixture runtime enforces the kernel rule: a mismatched --user or a
+    // relaxed mode exits non-zero, so a green run is real evidence.
+    expect(ctx.files.has('functional-smoke.json')).toBe(true);
+
     const inspected = inspectNormalLocalRuntimeMaster(ctx.masterRef, ctx.master, ctx.view as any);
     expect(inspected.observation.proofModel).toBe(NORMAL_RUNTIME_MODEL);
     expect(inspected.observation.pending).toEqual([]);
@@ -329,11 +367,12 @@ test('the controlled async runtime aborts a burst, but the driver never sends on
     const runtime = path.join(produced.bin, 'docker');
     // Reproduce the historical race directly: three queries and shutdown in one
     // burst against the same async runtime must abort before any result.
-    const burst = spawnSync('python3', [runtime, 'run', '--name',
+    const burst = spawnSync('python3', [runtime, 'run', '--user', SMOKE_USER, '--name',
       'xpod-normal-runtime-smoke-ffffffffffffffff', '--mount',
       `type=bind,src=${path.join(root, 'out-pass')}/smoke,dst=/data`, RUNTIME_IMAGE,
       '--sqlite-path', '/data/runtime-smoke.sqlite'], {
       env: {...process.env, FAKE_SMOKE_CASES: SMOKE_CASES_FILE,
+        FAKE_EXPECT_USER: SMOKE_USER,
         FAKE_RUNTIME_MODE: 'pass', PYTHONDONTWRITEBYTECODE: '1'},
       input: [
         '{"id":"fts","type":"query","sparql":"q1"}',
@@ -439,17 +478,19 @@ test('the real driver process waits for each result and never races shutdown', (
     mkdirSync(bin);
     writeExecutable(path.join(bin, 'docker'), DOCKER_FIXTURE);
     const smoke = path.join(root, 'smoke');
-    mkdirSync(smoke);
+    mkdirSync(smoke, {mode: 0o700});
+    chmodSync(smoke, 0o700);
     writeFileSync(path.join(smoke, 'runtime-smoke.sqlite'), 'fixture');
     const dockerArgv = ['docker', 'run', '--rm', '-i', '--network', 'none', '--read-only',
       '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
-      '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m', '--name',
+      '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m', '--user', SMOKE_USER, '--name',
       'xpod-normal-runtime-smoke-0123456789abcdef', '--mount',
       'type=bind,src=' + smoke + ',dst=/data', RUNTIME_IMAGE,
       '--sqlite-path', '/data/runtime-smoke.sqlite'];
     const env = {...process.env, PATH: bin + ':' + (process.env.PATH ?? ''),
       FAKE_RUNTIME_MODE: 'pass', FAKE_CONFIG_DIGEST: CONFIG_DIGEST,
-      FAKE_SMOKE_CASES: SMOKE_CASES_FILE, PYTHONDONTWRITEBYTECODE: '1'};
+      FAKE_SMOKE_CASES: SMOKE_CASES_FILE, FAKE_EXPECT_USER: SMOKE_USER,
+      PYTHONDONTWRITEBYTECODE: '1'};
     const run = (mode: string) => spawnSync('python3', ['-B', collector, '--smoke-session',
       JSON.stringify(dockerArgv)], {encoding: 'utf8', timeout: 60000,
       env: {...env, FAKE_RUNTIME_MODE: mode}});
@@ -532,3 +573,42 @@ test('a failing smoke still removes its own named container', () => {
     cleanup(root);
   }
 }, 300000);
+
+test('the fixture runtime itself refuses root or a relaxed 0700 directory', () => {
+  const root = mkdtempSync(path.join(repoRoot, '.test-data/normal-runtime-owner-'));
+  try {
+    const bin = path.join(root, 'bin');
+    mkdirSync(bin);
+    writeExecutable(path.join(bin, 'docker'), DOCKER_FIXTURE);
+    const smoke = path.join(root, 'smoke');
+    mkdirSync(smoke, {mode: 0o700});
+    chmodSync(smoke, 0o700);
+    writeFileSync(path.join(smoke, 'runtime-smoke.sqlite'), 'fixture');
+    const base = ['run', '--rm', '-i', '--network', 'none', '--read-only',
+      '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+      '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m',
+      '--mount', 'type=bind,src=' + smoke + ',dst=/data', RUNTIME_IMAGE,
+      '--sqlite-path', '/data/runtime-smoke.sqlite'];
+    const env = {...process.env, FAKE_RUNTIME_MODE: 'pass',
+      FAKE_SMOKE_CASES: SMOKE_CASES_FILE, FAKE_EXPECT_USER: SMOKE_USER,
+      PYTHONDONTWRITEBYTECODE: '1'};
+    const drive = (argv: string[]) => spawnSync('python3',
+      [path.join(bin, 'docker'), ...argv], {input: '{"type":"shutdown"}\n',
+        encoding: 'utf8', timeout: 60000, env});
+    // Image default (root) with the collector's 0700 mount: refused, exit 1,
+    // and the fixture runtime reports the ownership reason explicitly.
+    const asRoot = drive(base);
+    expect(asRoot.status).not.toBe(0);
+    expect(asRoot.stdout).toContain('container_user_mismatch');
+    // Owner uid:gid: accepted.
+    const asOwner = drive(['run', '--user', SMOKE_USER, ...base.slice(1)]);
+    expect(asOwner.status).toBe(0);
+    // Relaxing the mode is NOT the fix: an 0755 directory is refused too.
+    chmodSync(smoke, 0o755);
+    const relaxed = drive(['run', '--user', SMOKE_USER, ...base.slice(1)]);
+    expect(relaxed.status).not.toBe(0);
+    expect(relaxed.stdout).toContain('mount_mode');
+  } finally {
+    cleanup(root);
+  }
+}, 120000);

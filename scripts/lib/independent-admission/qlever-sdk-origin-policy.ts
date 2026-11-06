@@ -2583,9 +2583,9 @@ const SDK95_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
   '.github/workflows/publish-qlever-local-runtime.yml':'8aeabaa0feb942f384956779735b4c090f7a2b4a0ec457b8cc94cf48554e0aae',
   '.github/workflows/css-native-source.yml':'02e0cd66d8c964e34db83a39112053ee690f5692c45da6201e08d40e2ed28a29',
   'scripts/check-candidate-service-sdk-source.ts':'1b94be53c32dba156c37ffabbe6589eeddd9f0706c52bc7e1978df19215e39c7',
-  'scripts/lib/independent-admission/candidate-service-native-runtime-originals.ts':'377df9477cf1fe000640b360285c53d15d299ecbef240550a720696a0a41e032',
+  'scripts/lib/independent-admission/candidate-service-native-runtime-originals.ts':'b3ac091a8c34a488967d01bc7d999924cf91679881da15783d3392059bb09bb7',
   'scripts/lib/normal-local-runtime-smoke-cases.json':'95c86ca051aeceec413d5bd741769f9907adbd847af06c0f3a794380a017a208',
-  'scripts/collect-normal-local-runtime-originals.py':'785e8d039ff01f5cb45ca99d788bb7381949609b6902d9ef8780b7dc83329f2e',
+  'scripts/collect-normal-local-runtime-originals.py':'8611b720ee1439d81b8e0a93ee45d039b8b03949f5675f6f040546b2acfe5303',
 });
 const SDK95_LOCAL_RUNTIME_STAGE=Object.freeze([
   Object.freeze({path:'.github/workflows/publish-qlever-local-runtime.yml',sha256:SDK95_SOURCE_HASHES['.github/workflows/publish-qlever-local-runtime.yml']!}),

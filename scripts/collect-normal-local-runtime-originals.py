@@ -325,9 +325,16 @@ def collect(value):
         database = smoke_dir / 'runtime-smoke.sqlite'
         verifier.create_smoke_database(database)
         os.chmod(database, 0o666)
+        # The smoke runs as the SAME owning uid/gid as this collector, so the
+        # 0700 smoke directory (and the SQLite file inside it) stays readable to
+        # the runtime without relaxing its mode. The image's default user is
+        # root, which a real Linux kernel refuses to let write a 0700 non-root
+        # bind mount under --cap-drop ALL; a Mac bind mount hides that.
+        smoke_user = f'{os.getuid()}:{os.getgid()}'
         command = ['docker', 'run', '--rm', '-i', '--network', 'none', '--read-only',
                    '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
                    '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m',
+                   '--user', smoke_user,
                    '--name', smoke_name,
                    '--mount', 'type=bind,src=' + str(smoke_dir) + ',dst=/data',
                    value.runtime_image, '--sqlite-path', '/data/runtime-smoke.sqlite']

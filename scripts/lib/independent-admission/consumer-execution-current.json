@@ -1221,7 +1221,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "e8e9410c7822489ac12540ff32fb7b244db29a3c19c0e18867f5137c10c406f8"
+    "sha256": "8fac4469e5f8dc1e178e7df8e63ac88371b357eaed797ca3855b0adc66c0cb80"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -1757,7 +1757,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/candidate-service-native-runtime-originals.ts",
-    "sha256": "377df9477cf1fe000640b360285c53d15d299ecbef240550a720696a0a41e032"
+    "sha256": "b3ac091a8c34a488967d01bc7d999924cf91679881da15783d3392059bb09bb7"
   },
   {
     "path": "scripts/lib/independent-admission/candidate-service-native-runtime-related.ts",
@@ -2113,7 +2113,7 @@
   },
   {
     "path": "scripts/collect-normal-local-runtime-originals.py",
-    "sha256": "785e8d039ff01f5cb45ca99d788bb7381949609b6902d9ef8780b7dc83329f2e"
+    "sha256": "8611b720ee1439d81b8e0a93ee45d039b8b03949f5675f6f040546b2acfe5303"
   },
   {
     "path": "scripts/lib/normal-local-runtime-smoke-cases.json",
