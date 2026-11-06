@@ -116,4 +116,82 @@ class Tests(unittest.TestCase):
   self.fixture();self.ret.total=80*1024**2
   with self.assertRaisesRegex(ValueError,'pending service-pack-body'):self.run_observe()
   self.assertNotIn('copy-pack-body',self.calls)
+ def test_pack_archive_bound_comes_from_the_producer_observation_contract(self):
+  # RC378: the real pack index was 1,192,704 bytes with 111 object originals
+  # totalling 3,732,882 bytes, so the archive exceeded 4MiB (one META) and the
+  # producer-side RLIMIT truncated it at exactly 4194304 bytes. The producer's
+  # own closed bound for one observation set is OBSERVATION_BOUNDS.metadataBytes.
+  self.assertEqual(m.pack_bindings.PACK_OBSERVATION_RECORDS,2048)
+  self.assertEqual(m.pack_bindings.PACK_OBSERVATION_METADATA_BYTES,8*1024**2)
+  self.assertGreater(m.pack_bindings.PACK_OBSERVATION_METADATA_BYTES,m.META)
+  # Plan and worker agree on that same bound, and no new caller argument exists.
+  context=dict(image='ghcr.io/undefinedsco/xpod@'+'a'*64,cid='c'*64,name='xpod-service-output-'+'d'*32,nonce='d'*32,source='/s',sourceSha='a'*40)
+  record=dict(schemaVersion=1,kind='actual-stopped-service-image-pack-inputs',imageReferenceByDigest=context['image'],containerId=context['cid'],stage=dict(name='service-output-copy-pack-inputs'),phase=dict(stage=dict(name='service-output-copy-pack-phase')),bodies=[])
+  plans=m.pack_bindings.service_pack_worker_plans(context,record,[])
+  self.assertEqual(plans[0]['stdoutMaximum'],m.pack_bindings.PACK_OBSERVATION_METADATA_BYTES)
+  self.assertNotIn('--copy-byte-bound',plans[0]['command'])
+  # A single metadata member is still bounded by one META.
+  self.assertLessEqual(m.META,plans[0]['stdoutMaximum'])
+
+ def test_oversized_pack_archive_round_trips_where_one_meta_would_truncate(self):
+  # SYNTHETIC payload (not real evidence). Each metadata object stays inside one
+  # META, exactly as the member contract requires; the AGGREGATE exceeds one META
+  # and stays inside the producer's declared observation bound.
+  import json as _json
+  first=b'x'*(2*m.META//3);second=b'w'*(2*m.META//3)
+  entries={hashlib.sha256(payload).hexdigest():payload for payload in (first,second)}
+  collection=self.fixture()
+  collection['originals']=[ref('objects/'+digest+'.original',payload) for digest,payload in entries.items()]
+  metadata=_json.dumps(collection,sort_keys=True).encode()
+  self.assertLessEqual(len(metadata),m.META)
+  members={'materials.json':metadata,**{'objects/'+digest+'.original':payload for digest,payload in entries.items()}}
+  archive=tar('service-pack-originals',members)
+  self.assertGreater(len(archive),m.META)
+  self.assertLessEqual(len(archive),m.pack_bindings.PACK_OBSERVATION_METADATA_BYTES)
+  root=ROOT/'.test-data/service-pack-bound-tests';root.mkdir(parents=True,exist_ok=True)
+  with tempfile.TemporaryDirectory(dir=root) as directory:
+   path=Path(directory)/'pack.tar';path.write_bytes(archive)
+   parsed=m.service_pack_sidecar_tar(path,lambda:None)
+   self.assertEqual(len(parsed['originals']),2)
+   for digest,payload in entries.items():self.assertEqual(parsed['originals']['objects/'+digest+'.original'],payload)
+   self.assertEqual(parsed['collectionOriginal'],metadata)
+   # The historical single-META bound rejects exactly this valid archive.
+   with self.assertRaises(ValueError):m.outer.bounded_original(path,m.META,lambda:None)
+
+ def test_pack_archive_rejects_over_content_and_duplicate_members(self):
+  import json as _json
+  root=ROOT/'.test-data/service-pack-bound-tests';root.mkdir(parents=True,exist_ok=True)
+  # Aggregating valid per-member payloads past the observation bound must fail.
+  payloads=[bytes([index+1])*(3*m.META//4) for index in range(4)]
+  entries={hashlib.sha256(payload).hexdigest():payload for payload in payloads}
+  collection=self.fixture()
+  collection['originals']=[ref('objects/'+digest+'.original',payload) for digest,payload in entries.items()]
+  metadata=_json.dumps(collection,sort_keys=True).encode()
+  over={'materials.json':metadata,**{'objects/'+digest+'.original':payload for digest,payload in entries.items()}}
+  self.assertGreater(len(tar('service-pack-originals',over)),m.pack_bindings.PACK_OBSERVATION_METADATA_BYTES)
+  with tempfile.TemporaryDirectory(dir=root) as directory:
+   path=Path(directory)/'over.tar'
+   path.write_bytes(tar('service-pack-originals',over))
+   with self.assertRaises(ValueError):m.service_pack_sidecar_tar(path,lambda:None)
+   # A single member beyond one META is still refused on its own.
+   big=b'z'*(m.META+1);big_digest=hashlib.sha256(big).hexdigest()
+   single=self.fixture();single['originals']=[ref('objects/'+big_digest+'.original',big)]
+   single_meta=_json.dumps(single,sort_keys=True).encode()
+   path.write_bytes(tar('service-pack-originals',{'materials.json':single_meta,'objects/'+big_digest+'.original':big}))
+   with self.assertRaises(ValueError):m.service_pack_sidecar_tar(path,lambda:None)
+   # Duplicate members remain refused.
+   dup=b'q'*32;dup_digest=hashlib.sha256(dup).hexdigest()
+   dup_collection=self.fixture();dup_collection['originals']=[ref('objects/'+dup_digest+'.original',dup)]
+   dup_meta=_json.dumps(dup_collection,sort_keys=True).encode()
+   raw=io.BytesIO()
+   with tarfile.open(fileobj=raw,mode='w',format=tarfile.USTAR_FORMAT) as stream:
+    for name,body in [('service-pack-originals/materials.json',dup_meta),('service-pack-originals/objects/'+dup_digest+'.original',dup),('service-pack-originals/objects/'+dup_digest+'.original',dup)]:
+     info=tarfile.TarInfo(name);info.size=len(body);stream.addfile(info,io.BytesIO(body))
+   path.write_bytes(raw.getvalue())
+   with self.assertRaises(ValueError):m.service_pack_sidecar_tar(path,lambda:None)
+   # An unregistered/extra object is still refused.
+   extra=b'e'*16;extra_digest=hashlib.sha256(extra).hexdigest()
+   path.write_bytes(tar('service-pack-originals',{'materials.json':dup_meta,'objects/'+dup_digest+'.original':dup,'objects/'+extra_digest+'.original':extra}))
+   with self.assertRaises(ValueError):m.service_pack_sidecar_tar(path,lambda:None)
+
 if __name__=='__main__':unittest.main()

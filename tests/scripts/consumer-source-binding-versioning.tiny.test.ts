@@ -56,11 +56,13 @@ const sdk96=QLEVER_SDK_CONSUMER_GROUPS[95]!;
 const sdk97=QLEVER_SDK_CONSUMER_GROUPS[96]!;
 const sdk98=QLEVER_SDK_CONSUMER_GROUPS[97]!;
 const sdk99=QLEVER_SDK_CONSUMER_GROUPS[98]!;
-const sdk100=QLEVER_SDK_CONSUMER_GROUPS.at(-1)!;
+const sdk100=QLEVER_SDK_CONSUMER_GROUPS[99]!;
+const sdk101=QLEVER_SDK_CONSUMER_GROUPS.at(-1)!;
 const SDK97=publishedSdk94.sdk97;
 const SDK98=publishedSdk94.sdk98;
 const SDK99=publishedSdk94.sdk99;
 const SDK100=publishedSdk94.sdk100;
+const SDK101=publishedSdk94.sdk101;
 const DOCKERIGNORE='.dockerignore';
 const SERVICE_PACK_PARENT='scripts/service-pack-parent.py';
 const SDK95_GROUP_SHA=publishedSdk94.published.sdk95GroupSha256;
@@ -108,7 +110,7 @@ test('SDK95 stays the exact published consumer that produced RC373 native',()=>{
 });
 
 test('SDK96 stays the consumed baseline that RC374 published from',()=>{
-  expect(QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(100);
+  expect(QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(101);
   expect(QLEVER_SDK_CONSUMER_GROUPS[95]).toBe(sdk96);
   expect(whole(sdk96)).toBe(publishedSdk94.published.sdk96GroupSha256);
   expect(whole(sdk96)).toBe(publishedSdk94.sdk96.groupSha256);
@@ -138,7 +140,7 @@ test('SDK97 stays the consumed baseline that RC375 built from',()=>{
     'scripts/lib/independent-admission/qlever-sdk-service-relationship.ts']){
     expect(anyRow(sdk97,path).every(value=>/^[a-f0-9]{64}$/u.test(value.sha256))).toBe(true);
   }
-  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-4)).toBe(sdk97);
+  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-5)).toBe(sdk97);
 });
 
 test('SDK98 stays the consumed baseline that RC375 built from',()=>{
@@ -155,7 +157,7 @@ test('SDK98 stays the consumed baseline that RC375 built from',()=>{
     expect(declared.length).toBeGreaterThan(0);
     expect(declared.every(value=>/^[a-f0-9]{64}$/u.test(value.sha256))).toBe(true);
   }
-  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-3)).toBe(sdk98);
+  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-4)).toBe(sdk98);
 });
 
 test('SDK99 stays the published staging baseline that RC377 consumed',()=>{
@@ -167,42 +169,69 @@ test('SDK99 stays the published staging baseline that RC377 consumed',()=>{
   // SDK99 is frozen history: it keeps the pre-repair collector and TS bytes.
   expect(row(sdk99,'qlever/scripts/sdk-service-image-originals.py').map(value=>value.sha256))
     .not.toEqual([disk('qlever/scripts/sdk-service-image-originals.py')]);
-  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-2)).toBe(sdk99);
+  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-3)).toBe(sdk99);
 });
 
-test('SDK100 is the CURRENT consumer for the single RC377 output-container repair',()=>{
-  expect(QLEVER_SDK_CONSUMER_GROUPS.at(-1)).toBe(sdk100);
+test('SDK100 stays the published staging baseline that RC377 consumed',()=>{
+  expect(QLEVER_SDK_CONSUMER_GROUPS[99]).toBe(sdk100);
   expect(whole(sdk100)).toBe(SDK100.groupSha256);
-  const movedRows=SDK100.movedRows as Readonly<Record<string,string>>;
-  // The collector's EXISTING stage is advanced in place; no stage is appended and
-  // no duplicate/new primary selector is introduced.
+  expect(whole(sdk100)).toBe(publishedSdk94.published.sdk100GroupSha256);
+  expect(sdk100).not.toBe(sdk99);
   expect((sdk100.secondarySelectorStages??[]).length).toBe((sdk99.secondarySelectorStages??[]).length);
-  expect(SDK100.stageCount).toBe(10);
-  for(const path of SDK100.stageAdvanced){
-    expect((sdk100.secondarySelectorStages??[]).flat().filter(value=>value.path===path)
-      .map(value=>value.sha256)).toEqual([movedRows[path]]);
-    expect((sdk100.secondarySelectorStages??[]).flat().filter(value=>value.path===path)).toHaveLength(1);
+  // SDK100 is frozen history: its collector/pack rows are the pre-RC378 bytes.
+  for(const path of ['qlever/scripts/sdk-service-image-originals.py',
+    'qlever/scripts/sdk-service-pack-bindings.py']){
+    expect(row(sdk100,path).map(value=>value.sha256)).not.toEqual([disk(path)]);
   }
-  // Both changed paths are exactly one sourceBindings row each, rebound.
+  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-2)).toBe(sdk100);
+});
+
+test('SDK101 is the CURRENT consumer for the single RC378 pack archive-bound repair',()=>{
+  expect(QLEVER_SDK_CONSUMER_GROUPS.at(-1)).toBe(sdk101);
+  expect(whole(sdk101)).toBe(SDK101.groupSha256);
+  const movedRows=SDK101.movedRows as Readonly<Record<string,string>>;
+  // The collector's EXISTING stage advances in place: same total, no duplicate.
+  expect((sdk101.secondarySelectorStages??[]).length).toBe((sdk100.secondarySelectorStages??[]).length);
+  expect(SDK101.stageCount).toBe(10);
+  for(const path of SDK101.stageAdvanced){
+    const staged=(sdk101.secondarySelectorStages??[]).flat().filter(value=>value.path===path);
+    expect(staged).toHaveLength(1);
+    expect(staged.map(value=>value.sha256)).toEqual([movedRows[path]]);
+  }
+  // Both changed producers are exactly one rebound sourceBindings row each.
   for(const [path,hash] of Object.entries(movedRows)){
-    expect(row(sdk100,path).map(value=>value.sha256)).toEqual([hash]);
-    expect(row(sdk99,path).map(value=>value.sha256)).not.toEqual([hash]);
+    expect(row(sdk101,path).map(value=>value.sha256)).toEqual([hash]);
+    expect(row(sdk100,path).map(value=>value.sha256)).not.toEqual([hash]);
   }
-  expect(sdk100.selectors).toEqual(sdk99.selectors);
-  expect(sdk100.secondarySelectors).toEqual(sdk99.secondarySelectors);
-  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-1)).toBe(sdk100);
-  for(const binding of [...sdk100.selectors,...(sdk100.secondarySelectors??[]),
-    ...(sdk100.secondarySelectorStages??[]).flat(),...sdk100.sourceBindings]){
+  expect(sdk101.selectors).toEqual(sdk100.selectors);
+  expect(sdk101.secondarySelectors).toEqual(sdk100.secondarySelectors);
+  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-1)).toBe(sdk101);
+  for(const binding of [...sdk101.selectors,...(sdk101.secondarySelectors??[]),
+    ...(sdk101.secondarySelectorStages??[]).flat(),...sdk101.sourceBindings]){
     expect({path:binding.path,sha256:disk(binding.path)}).toEqual({path:binding.path,sha256:binding.sha256});
   }
 });
 
-test('SDK96/97/98/99 trees select their own tuple; current tree selects SDK100',()=>{
+test('SDK96/97/98/99/100 trees select their own tuple; current tree selects SDK101',()=>{
   expect(selectGitHubSourceBindingGroup(QLEVER_SDK_CONSUMER_GROUPS,observe(QLEVER_SDK_CONSUMER_GROUPS,sdk96))).toBe(sdk96);
   expect(selectGitHubSourceBindingGroup(QLEVER_SDK_CONSUMER_GROUPS,observe(QLEVER_SDK_CONSUMER_GROUPS,sdk97))).toBe(sdk97);
   expect(selectGitHubSourceBindingGroup(QLEVER_SDK_CONSUMER_GROUPS,observe(QLEVER_SDK_CONSUMER_GROUPS,sdk98))).toBe(sdk98);
   expect(selectGitHubSourceBindingGroup(QLEVER_SDK_CONSUMER_GROUPS,observe(QLEVER_SDK_CONSUMER_GROUPS,sdk99))).toBe(sdk99);
   expect(selectGitHubSourceBindingGroup(QLEVER_SDK_CONSUMER_GROUPS,observe(QLEVER_SDK_CONSUMER_GROUPS,sdk100))).toBe(sdk100);
+  expect(selectGitHubSourceBindingGroup(QLEVER_SDK_CONSUMER_GROUPS,observe(QLEVER_SDK_CONSUMER_GROUPS,sdk101))).toBe(sdk101);
+  // The OLD collector bytes cannot satisfy SDK101's advanced stage, so the engine
+  // legitimately narrows back to SDK100 (whose own rows are then checked against
+  // disk and refused). That is the established 94..100 behaviour, not a leak.
+  const oldCollector=new Map(observe(QLEVER_SDK_CONSUMER_GROUPS,sdk101));
+  oldCollector.set(sourceBindingKey({path:'qlever/scripts/sdk-service-image-originals.py',sha256:''}),
+    row(sdk100,'qlever/scripts/sdk-service-image-originals.py')[0]!.sha256);
+  expect(selectGitHubSourceBindingGroup(QLEVER_SDK_CONSUMER_GROUPS,oldCollector)).toBe(sdk100);
+  // A tree that claims the NEW collector but a stale pack planner is a genuine
+  // mix of the two repaired generations and must be refused outright.
+  const mixedPlanner=new Map(observe(QLEVER_SDK_CONSUMER_GROUPS,sdk101));
+  mixedPlanner.set(sourceBindingKey({path:'qlever/scripts/sdk-service-pack-bindings.py',sha256:''}),
+    row(sdk100,'qlever/scripts/sdk-service-pack-bindings.py')[0]!.sha256);
+  expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_CONSUMER_GROUPS,mixedPlanner)).toThrow();
   // A tree mixing the NEW collector with the OLD TS consumer matches no tuple:
   // SDK99 requires the old collector bytes and SDK100 requires the new TS bytes.
   const mixedRepair=new Map(observe(QLEVER_SDK_CONSUMER_GROUPS,sdk100));

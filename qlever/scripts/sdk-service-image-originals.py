@@ -386,7 +386,10 @@ def image_worker(args):
     maximum=OUTPUT_TAR_LIMIT if args.image_worker=='copy' else META
     if args.image_worker in RUNTIME_ROLES:
         maximum=args.copy_byte_bound;need(type(maximum) is int and 0<maximum<=32*META,'fixed actual runtime cp stream bound')
-    if args.image_worker in [OUTPUT_PACK_BODY_ROLE,OUTPUT_PACK_PHASE_ROLE]:
+    if args.image_worker==OUTPUT_PACK_ROLE:
+        # Role-derived, so the reviewed plan command carries no extra argument.
+        maximum=pack_bindings.PACK_OBSERVATION_METADATA_BYTES
+    elif args.image_worker in [OUTPUT_PACK_BODY_ROLE,OUTPUT_PACK_PHASE_ROLE]:
         maximum=args.copy_byte_bound;need(type(maximum) is int and 0<maximum<=32*META,'fixed actual cp stream bound')
     resource.setrlimit(resource.RLIMIT_FSIZE,(maximum,maximum))
     if args.image_worker in RUNTIME_ROLES:
@@ -439,7 +442,7 @@ def service_pack_sidecar_tar(path,check,*,phase=False):
     may invoke this. Metadata capture is never proof that declared tar archives,
     resolver probes or package sources were actually retained/verified.
     """
-    root_name='service-pack-phase' if phase else 'service-pack-originals';maximum=4*META if phase else META
+    root_name='service-pack-phase' if phase else 'service-pack-originals';maximum=4*META if phase else pack_bindings.PACK_OBSERVATION_METADATA_BYTES
     raw=outer.bounded_original(path,maximum,check)
     class OrdinaryOnly(load('sdk-debian-binary-originals').TarHeaderGuard):
         def read(self,size=-1):
@@ -457,7 +460,7 @@ def service_pack_sidecar_tar(path,check,*,phase=False):
             name=item.name;is_index=name==root_name+'/materials.json'
             need(is_index or (name in [root_name+'/'+name for name in pack_bindings.phase_names(pack_bindings.BUILD_PARENT_MODEL)] if phase else re.fullmatch(r'service-pack-originals/objects/[a-f0-9]{64}\.original',name)),'fixed pack sidecar original namespace')
             need(0<=item.size<=META and (item.size>0 or phase or name==root_name+'/objects/'+hashlib.sha256(b'').hexdigest()+'.original'),'pack sidecar original byte bound')
-            total+=item.size;need(total<=(3*META if phase else META),'shared pack metadata byte bound');pieces=[];count=0
+            total+=item.size;need(total<=(3*META if phase else pack_bindings.PACK_OBSERVATION_METADATA_BYTES),'shared pack metadata byte bound');pieces=[];count=0
             with archive.extractfile(item) as source:
                 while count<item.size:
                     check();block=source.read(min(65536,item.size-count));need(block,'short pack sidecar original');count+=len(block);pieces.append(block)
@@ -486,7 +489,7 @@ def observe_output_image(image,config,retained,source,source_sha,*,capture_pack_
         label='service-output-'+role+('-'+Path(body_ref['path']).name[:4] if body_ref else '')
         if copy_bound is not None:need(type(copy_bound) is int and 0<copy_bound<=32*META,'exact cp stdout bound')
         held=retained.reserve((2*copy_bound+3*META) if copy_bound is not None else 5*META)
-        argv=pack_bindings.service_output_worker_argv(str(source),source_sha,role,image,name,nonce,cid,body_ref['path'] if body_ref else None,copy_bound)
+        argv=pack_bindings.service_output_worker_argv(str(source),source_sha,role,image,name,nonce,cid,body_ref['path'] if body_ref else None,None if role==OUTPUT_PACK_ROLE else copy_bound)
         # Construct the same fixed argv here before any command executes.
         output_image_command(role,image,name,nonce,cid,body_ref['path'] if body_ref else None)
         try:row=outer.commands.capture(label,argv,retained.out,source,timeout=budget.timeout(cap,0 if cleanup else 10),resource_profile='cleanup' if cleanup else 'observation')
@@ -522,7 +525,7 @@ def observe_output_image(image,config,retained,source,source_sha,*,capture_pack_
             runtime_observation=dict(schemaVersion=1,kind='actual-stopped-service-image-runtime-roots',imageReferenceByDigest=image,configDigest=config,containerId=cid,roots=runtime_roots,wholeServiceSourceVerified=False,producerImageAcquisitionVerified=True)
         pack_observation=None
         if capture_pack_inputs:
-            pack_stage,_=stage(OUTPUT_PACK_ROLE,image_stage=False)
+            pack_stage,_=stage(OUTPUT_PACK_ROLE,image_stage=False,copy_bound=pack_bindings.PACK_OBSERVATION_METADATA_BYTES)
             pack=service_pack_sidecar_tar(retained.out/pack_stage['stdout']['path'],lambda:budget.check(10))
             need(pack['collection'].get('sourceSha')==source_sha,'pack sidecar belongs to another source')
             metadata=retained.save('output/service-pack-originals/materials.json',pack['collectionOriginal'])
