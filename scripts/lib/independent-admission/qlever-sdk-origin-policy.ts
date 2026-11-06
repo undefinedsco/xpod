@@ -2706,6 +2706,11 @@ const SDK98_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK97_GROUP,
 const SDK99_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
   'qlever/scripts/sdk-image-originals.py':'c0661c70d8224d741d86e1105a3ab9b4b3ed6d645764d7bcf7ad2e6c67cb1f37',
   'qlever/tests/test_sdk_image_originals.py':'5faf5b67f548f7d696a1e2e6e3e34232269e470b4f5cf1681693cca99b7f9abb',
+  // The readonly-normal live controller now pins the same corrected producer, so
+  // the reviewed workflow bytes moved with it. This row was already carried by
+  // SDK98; only the SDK99 (unpublished) copy advances, as the da3e2b65 precedent
+  // did when a collector source and its live pin changed together.
+  '.github/workflows/qlever-readonly-normal-job.yml':'256ab4ddbdadef555884e4dc1ad93c328b41467f2220a2a13e252639a0fe639f',
 });
 const SDK99_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK98_GROUP,
   selectors:Object.freeze(SDK98_GROUP.selectors.map(row=>Object.freeze({...row,sha256:SDK99_SOURCE_HASHES[row.path]??row.sha256}))),

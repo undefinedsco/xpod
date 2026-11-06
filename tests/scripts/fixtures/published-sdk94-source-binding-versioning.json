@@ -57,11 +57,12 @@
     }
   },
   "sdk99": {
-    "groupSha256": "6518821f3f15c83eed5d5d927fa7d15666e8958f7fd0ce22ebaba816c787c2ca",
+    "groupSha256": "1267dd43d20be00d275a614e024fd72a041ebcb009149e1a7857f7d8c357512c",
     "stageCount": 10,
     "movedRows": {
       "qlever/scripts/sdk-image-originals.py": "c0661c70d8224d741d86e1105a3ab9b4b3ed6d645764d7bcf7ad2e6c67cb1f37",
-      "qlever/tests/test_sdk_image_originals.py": "5faf5b67f548f7d696a1e2e6e3e34232269e470b4f5cf1681693cca99b7f9abb"
+      "qlever/tests/test_sdk_image_originals.py": "5faf5b67f548f7d696a1e2e6e3e34232269e470b4f5cf1681693cca99b7f9abb",
+      ".github/workflows/qlever-readonly-normal-job.yml": "256ab4ddbdadef555884e4dc1ad93c328b41467f2220a2a13e252639a0fe639f"
     },
     "selectorRebinds": [
       "qlever/scripts/sdk-image-originals.py"
