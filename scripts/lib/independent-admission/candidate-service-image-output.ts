@@ -44,7 +44,21 @@ export function inspectCandidateServiceImageOutput(input:{master:any;read:(ref:a
  need(Number.isInteger(collectionStart)&&start<=collectionStart&&collectionStart<=last&&last-collectionStart<=120*1e9,'actual collector shared 120-second interval exceeded');
  need(raws.get('create')!.equals(Buffer.from(record.containerId+'\n')),'create actual stdout CID differs');
  const actual=JSON.parse(raws.get('inspect')!.toString());
- need(actual?.Id===record.containerId&&actual.Image===record.configDigest&&actual.Name==='/'+record.containerName&&actual.Config?.Image===record.imageReferenceByDigest&&actual.Config?.Labels?.['xpod.service-output-owner']===record.ownerNonce,'actual inspected CID/image/config/nonce/name differs');
+ // Docker reports `.Image` in one of two REAL, non-equal ways for the same
+ // immutable reference: the resolved platform CONFIG digest (legacy config-ID
+ // store shape), or the digest of the reference that was actually created
+ // (RC377 root INDEX digest). Both are accepted here, and only these two:
+ //  - record.configDigest is already independently bound by the relationship
+ //    validation, which owns the registry digest chain;
+ //  - the reference digest is parsed from the already strictly validated
+ //    immutable ghcr.io/...@sha256:<64hex> record.imageReferenceByDigest.
+ // A manifest digest is NOT equal to its config digest, so a single-manifest
+ // reference does not make these two values collapse; the config-ID shape stays
+ // a distinct, positive case. Any other image id, an unprefixed digest, or a
+ // tag reference is refused. Config.Image must remain the exact immutable
+ // reference.
+ const referenceDigest='sha256:'+record.imageReferenceByDigest.slice('ghcr.io/undefinedsco/xpod@sha256:'.length);
+ need(actual?.Id===record.containerId&&(actual.Image===record.configDigest||actual.Image===referenceDigest)&&actual.Name==='/'+record.containerName&&actual.Config?.Image===record.imageReferenceByDigest&&actual.Config?.Labels?.['xpod.service-output-owner']===record.ownerNonce,'actual inspected CID/image/config/nonce/name differs');
  need(actual.State?.Running===false&&actual.State.Status==='created'&&actual.State.Pid===0&&actual.State.StartedAt==='0001-01-01T00:00:00Z','actual stopped image output must never have started');
  const tar=raws.get('copy')!;need(tar.length>0&&tar.length<=TAR,'bounded original Docker copy stream');const members=parseTar(tar,{members:1});
  need(members.length===1&&members[0].path==='package.json'&&members[0].type==='file'&&members[0].size>0&&members[0].size<=MANIFEST,'single regular actual package.json tar member');

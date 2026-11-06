@@ -3,6 +3,10 @@ from pathlib import Path
 import tempfile,unittest
 HERE=Path(__file__).resolve().parents[1]/'scripts'
 spec=importlib.util.spec_from_file_location('service_image',HERE/'sdk-service-image-originals.py');service=importlib.util.module_from_spec(spec);spec.loader.exec_module(service)
+CID='c'*64
+NAME='xpod-service-output-'+'d'*32
+NONCE='d'*32
+CONFIG='sha256:'+'b'*64
 class ServiceOriginals(unittest.TestCase):
  def setUp(self):
   # Deterministic source identity for the registry fixtures that do not create a git repo.
@@ -167,7 +171,7 @@ class ServiceOriginals(unittest.TestCase):
   # Opener.open rather than the opener object.
   return Opener().open
 
- def _run_real_capture(self,deadline):
+ def _run_real_capture(self,deadline,image_identity='config'):
   import json,subprocess,types
   from unittest.mock import patch
   harness_spec=importlib.util.spec_from_file_location('collector_harness',HERE.parent/'tests/test_service_pack_collector_full.py')
@@ -194,7 +198,10 @@ class ServiceOriginals(unittest.TestCase):
   metadata.write_text(json.dumps({'containerimage.digest':service_ref.split('@')[1],
    'containerimage.descriptor':{'mediaType':'application/vnd.oci.image.index.v1+json','digest':service_ref.split('@')[1],'size':len(index)}}))
   out=checkpoint/'service-image-originals'
-  case.out=out;case.image=service_ref;case.config=self._service_config_digest
+  # The reviewed harness reports its inspected container `.Image` from
+  # case.config; drive both real identity shapes through the same fixture.
+  case.out=out;case.image=service_ref
+  case.config=self._service_config_digest if image_identity=='config' else service_ref.split('@')[1]
   args=types.SimpleNamespace(source_sha=self._sha,sdk_artifact_id=1,sdk_master_bytes=1,sdk_artifact_digest='a'*64,
    sdk_master_sha256='b'*64,service_image=service_ref,local_runtime_image=local_ref,sdk_image=sdk_ref,
    source=str(source),out=str(out),deadline=deadline,root_manifest_before=str(before),
@@ -212,6 +219,57 @@ class ServiceOriginals(unittest.TestCase):
    return case.capture(label,argv,*a,**kw)
   with patch.dict(service.os.environ,{'GITHUB_SHA':self._sha,'GITHUB_RUN_ID':'1','GITHUB_RUN_ATTEMPT':'1','RUNNER_TEMP':str(checkpoint),'GITHUB_OUTPUT':str(checkpoint/'github-output')}),patch.object(service.secrets,'token_hex',return_value=case.nonce),patch.object(service.outer.commands,'capture',side_effect=capture),patch.object(service.images.urllib.request,'build_opener',side_effect=lambda *a,**k:_OpenerAdapter(self._transport())):
    return service.capture(args)
+
+ def test_inspect_binds_index_digest_identity_without_accepting_arbitrary_image_ids(self):
+  # RC377: the pushed service image is an OCI index, so `docker container
+  # inspect .Image` may report the reference digest rather than the config
+  # digest. Both are real, distinct identities for the same reference.
+  config=CONFIG
+  index_digest='sha256:'+'1'*64
+  image='ghcr.io/undefinedsco/xpod@'+index_digest
+  def payload(**over):
+   row=dict(Id=CID,Name='/'+NAME,Image=index_digest,
+            Config=dict(Image=image,Labels={service.OUTPUT_LABEL:NONCE}),
+            State=dict(Running=False,Status='created',Pid=0,StartedAt='0001-01-01T00:00:00Z'))
+   row.update(over);return json.dumps(row).encode()
+  # Both supported identities for the same immutable reference.
+  service.inspect_output_container(payload(),image,config,CID,NAME,NONCE)
+  service.inspect_output_container(payload(Image=config),image,config,CID,NAME,NONCE)
+  # Never-started enforcement applies to both.
+  running=payload(Image=index_digest,State=dict(Running=True,Status='running',Pid=9,StartedAt='2026-11-07T00:00:00Z'))
+  with self.assertRaises(ValueError):service.inspect_output_container(running,image,config,CID,NAME,NONCE)
+  service.inspect_output_container(running,image,config,CID,NAME,NONCE,require_never_started=False)
+  # Identity is not widened to "any sha": foreign/arbitrary/malformed IDs fail.
+  for bad in ['sha256:'+'3'*64,'sha256:'+'f'*64,index_digest[7:],None,image,'latest']:
+   with self.assertRaises(ValueError):
+    service.inspect_output_container(payload(Image=bad),image,config,CID,NAME,NONCE)
+  # Wrong CID, name, reference and owner nonce all still fail.
+  for field,value in [('Id','e'*64),('Name','/foreign')]:
+   mutated=json.loads(payload());mutated[field]=value
+   with self.assertRaises(ValueError):
+    service.inspect_output_container(json.dumps(mutated).encode(),image,config,CID,NAME,NONCE)
+  with self.assertRaises(ValueError):
+   service.inspect_output_container(payload(),'ghcr.io/undefinedsco/xpod@sha256:'+'4'*64,config,CID,NAME,NONCE)
+  with self.assertRaises(ValueError):
+   service.inspect_output_container(payload(),image,config,CID,NAME,'b'*32)
+  # The config digest argument is shape-checked here; its provenance is bound by
+  # the registry manifest chain and the capture-time metadata cross-seal.
+  for malformed in ['sha256:short','5'*64,'sha256:'+'Z'*64,None]:
+   with self.assertRaises(ValueError):
+    service.inspect_output_container(payload(),image,malformed,CID,NAME,NONCE)
+
+ def test_full_capture_accepts_reference_digest_identity_and_legacy_config_id(self):
+  # End-to-end through the real capture(), real registry helper and shared
+  # 120-second budget, so the container identity check is exercised in context.
+  for identity in ('reference','config'):
+   with self.subTest(imageIdentity=identity):
+    master=self._run_real_capture(deadline=__import__('time').time()+120,image_identity=identity)
+    observed=master['images']
+    self.assertEqual(master['serviceImageReferenceByDigest'],self._service_reference)
+    self.assertEqual(observed['service']['configDigest'],self._service_config_digest)
+    self.assertTrue(master['facts']['serviceRootfsFromLocalRuntimeVerified'])
+    # The config digest and the reference digest are genuinely distinct here.
+    self.assertNotEqual(self._service_config_digest,self._service_reference.split('@')[1])
 
 class _OpenerAdapter:
  '''urllib.callers expect an opener object with .open; registry callers take the
