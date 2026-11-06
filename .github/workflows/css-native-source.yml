@@ -27,6 +27,7 @@ on:
         type: string
 permissions:
   contents: read
+  actions: read
   packages: write
 concurrency:
   group: css-native-source-${{ inputs.target }}-${{ github.sha }}

@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "note": "Frozen aggregates for already-registered consumer versions. These are the EXACT pre-SDK95 objects; they must never be recomputed from live HEAD. Only published/frozen history belongs here. The CURRENT version is asserted live against the working tree in the test.",
+  "published": {
+    "sdk93GroupSha256": "eadffb8dc9b6b4965a2d99bdac22e48f64388150830219c27f65dbaef5e0033f",
+    "sdk94GroupSha256": "e17b91beecbb08d442083e510f5ea04759d692937597f988499bb72824a7f5da",
+    "normalFlatBindingsSha256": "2da25785a276a8e6b37ee85576debe174d1fd66b61b2b0b5a50f0ff91a4880ef",
+    "normalPreviousGroupSha256": "07891e94303e7ea9b16fefe4270f30d22d804d30b91a9f212dc29c8f32e7aa38",
+    "normalCurrentGroupSha256": "98701c7af0c1c8aaa3a66d29d326c742272fc927bf330c48a7334c615ce87eae"
+  },
+  "sdk94": {
+    "localRuntimeSha256": "78e15d1a7606d1f8467858e4958c1f70e52bec8a01d76b797a5ba24cebb21332",
+    "verifierSha256": "8fbf265127bf81d96418950d4b5729064e72d95da03de1986c6a286a2c61e1ab",
+    "cssSourceSha256": "24b994047fac340931a7f43e1e44d7d0d5876a8023acb8e54495f754d0f44b53"
+  },
+  "sdk95": {
+    "localRuntimeSha256": "8aeabaa0feb942f384956779735b4c090f7a2b4a0ec457b8cc94cf48554e0aae",
+    "cssSourceSha256": "02e0cd66d8c964e34db83a39112053ee690f5692c45da6201e08d40e2ed28a29",
+    "checkerSha256": "1b94be53c32dba156c37ffabbe6589eeddd9f0706c52bc7e1978df19215e39c7",
+    "nativeRuntimeOriginalsSha256": "b3ac091a8c34a488967d01bc7d999924cf91679881da15783d3392059bb09bb7",
+    "normalCollectorSha256": "8611b720ee1439d81b8e0a93ee45d039b8b03949f5675f6f040546b2acfe5303",
+    "stageCount": 7,
+    "smokeCasesSha256": "95c86ca051aeceec413d5bd741769f9907adbd847af06c0f3a794380a017a208"
+  }
+}

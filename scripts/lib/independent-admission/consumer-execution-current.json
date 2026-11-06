@@ -689,7 +689,7 @@
   },
   {
     "path": "scripts/check-candidate-service-sdk-source.ts",
-    "sha256": "9a47b7343249ffd8b28b3f047cce63d0c908fe059bf14a65e60b00d369e25e02"
+    "sha256": "1b94be53c32dba156c37ffabbe6589eeddd9f0706c52bc7e1978df19215e39c7"
   },
   {
     "path": "scripts/check-cli-package.cjs",
@@ -941,7 +941,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "e8167bc45f727b6b5c742e2841cce7c39ea2c46d1c93ab3ead24086329bb1c1e"
+    "sha256": "085253ae2b0eea690a0104a978ba756aa3733ee146fd4a7107e858219dfbecb2"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",
@@ -1221,7 +1221,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "6b69e5f06073d6ea4b6cfaa7273a312a70fda8bbae048834a99cdf960c9c9d2e"
+    "sha256": "8fac4469e5f8dc1e178e7df8e63ac88371b357eaed797ca3855b0adc66c0cb80"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -1757,7 +1757,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/candidate-service-native-runtime-originals.ts",
-    "sha256": "ff5be1fb77f5ecf118b479109ea2fc127b3cc3094d92164ab8bf05be84f30576"
+    "sha256": "b3ac091a8c34a488967d01bc7d999924cf91679881da15783d3392059bb09bb7"
   },
   {
     "path": "scripts/lib/independent-admission/candidate-service-native-runtime-related.ts",
@@ -2110,5 +2110,13 @@
   {
     "path": "scripts/select-normal-sdk-proof.ts",
     "sha256": "41d16025765c2859f4ec370661b4bc7ad576f86983af0377f91e54fe17e075cd"
+  },
+  {
+    "path": "scripts/collect-normal-local-runtime-originals.py",
+    "sha256": "8611b720ee1439d81b8e0a93ee45d039b8b03949f5675f6f040546b2acfe5303"
+  },
+  {
+    "path": "scripts/lib/normal-local-runtime-smoke-cases.json",
+    "sha256": "95c86ca051aeceec413d5bd741769f9907adbd847af06c0f3a794380a017a208"
   }
 ]

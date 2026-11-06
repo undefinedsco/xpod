@@ -192,6 +192,7 @@ test('the canonical path/hash closure still holds and the frozen 9d02 snapshot i
   'qlever/tests/test_sdk_pch_generated_private_mmap.py',
   'qlever/tests/test_sdk_ptrace_execution_library.py',
   'qlever/tests/test_sdk_upstream_source_materials.py',
+  'scripts/collect-normal-local-runtime-originals.py',
   'scripts/lib/independent-admission/consumer-execution-0d-snapshot.json',
   'scripts/lib/independent-admission/consumer-execution-19fe-snapshot.json',
   'scripts/lib/independent-admission/consumer-execution-6b-snapshot.json',
@@ -201,6 +202,7 @@ test('the canonical path/hash closure still holds and the frozen 9d02 snapshot i
   'scripts/lib/independent-admission/consumer-execution-f803e9c2-snapshot.json',
   'scripts/lib/independent-admission/normal-sdk-gates.json',
   'scripts/lib/independent-admission/qlever-sdk-normal-build.ts',
+  'scripts/lib/normal-local-runtime-smoke-cases.json',
   'scripts/select-normal-sdk-proof.ts',
   'tests/scripts/sdk70-remap-policy.test.ts']);;
  expect(current.slice(0,483).map(row=>digest(row))).not.toEqual([]);
@@ -265,6 +267,7 @@ test('published consumer binding rows are unchanged and the two new rows are exa
   'qlever/tests/test_sdk_pch_generated_private_mmap.py',
   'qlever/tests/test_sdk_ptrace_execution_library.py',
   'qlever/tests/test_sdk_upstream_source_materials.py',
+  'scripts/collect-normal-local-runtime-originals.py',
   'scripts/lib/independent-admission/consumer-execution-0d-snapshot.json',
   'scripts/lib/independent-admission/consumer-execution-19fe-snapshot.json',
   'scripts/lib/independent-admission/consumer-execution-6b-snapshot.json',
@@ -274,6 +277,7 @@ test('published consumer binding rows are unchanged and the two new rows are exa
   'scripts/lib/independent-admission/consumer-execution-f803e9c2-snapshot.json',
   'scripts/lib/independent-admission/normal-sdk-gates.json',
   'scripts/lib/independent-admission/qlever-sdk-normal-build.ts',
+  'scripts/lib/normal-local-runtime-smoke-cases.json',
   'scripts/select-normal-sdk-proof.ts',
   'tests/scripts/sdk70-remap-policy.test.ts']);;
 });

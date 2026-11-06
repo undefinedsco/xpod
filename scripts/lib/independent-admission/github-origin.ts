@@ -1269,8 +1269,14 @@ const CSS_NATIVE_SOURCE_BINDINGS=[
  {path:'.github/workflows/publish-qlever-runtime-sdk.yml',sha256:'cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8'},
 ] as const;
 
+/** The controlled CSS source workflow gained exactly one line, `actions: read`,
+ * because its nested SDK call requires that permission. It is registered as one
+ * more compatible reviewed version: every prior digest stays admitted and each
+ * run still has to match one exact whole file. The CONTROLLED parent workflow
+ * (601aa8fe) is untouched, and the historical `df05d53b` row stays first. */
+const CSS_SOURCE_ACTIONS_READ_SHA='02e0cd66d8c964e34db83a39112053ee690f5692c45da6201e08d40e2ed28a29';
 const CSS_MAC_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
- ...[CSS_NATIVE_SOURCE_BINDINGS.find(row=>row.path==='.github/workflows/css-native-source.yml')!.sha256,'24b994047fac340931a7f43e1e44d7d0d5876a8023acb8e54495f754d0f44b53'].map(cssSha=>Object.freeze({
+ ...[CSS_NATIVE_SOURCE_BINDINGS.find(row=>row.path==='.github/workflows/css-native-source.yml')!.sha256,'24b994047fac340931a7f43e1e44d7d0d5876a8023acb8e54495f754d0f44b53',CSS_SOURCE_ACTIONS_READ_SHA].map(cssSha=>Object.freeze({
   selectors:Object.freeze([{path:'.github/workflows/css-native-source.yml',sha256:cssSha}]),
   sourceBindings:Object.freeze([...CSS_NATIVE_SOURCE_BINDINGS.filter(row=>!['.github/workflows/css-native-source.yml','.github/workflows/publish-qlever-runtime-sdk.yml'].includes(row.path)),{path:'.github/workflows/css-native-source.yml',sha256:cssSha},{path:QLEVER_OBSERVER_PATH,sha256:QLEVER_OBSERVER_V20,reviewedSha256:[QLEVER_OBSERVER_V22,QLEVER_OBSERVER_V23]}]),
  })),
