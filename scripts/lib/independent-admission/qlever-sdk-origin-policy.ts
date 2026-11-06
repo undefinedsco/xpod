@@ -2663,6 +2663,30 @@ const SDK97_PACK_PRODUCER_STAGE=Object.freeze([
 const SDK97_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK96_GROUP,
   secondarySelectorStages:Object.freeze([...(SDK96_GROUP.secondarySelectorStages??[]),SDK97_PACK_PRODUCER_STAGE]),
   sourceBindings:Object.freeze(SDK96_GROUP.sourceBindings.map(row=>Object.freeze({...row,sha256:SDK97_SOURCE_HASHES[row.path]??row.sha256})))});
+/** SDK98 is the CURRENT consumer for the RC375 service-image metadata fix.
+ * RC375 consumed SDK97 and its retained originals failed on the Buildx metadata
+ * shape, so SDK97 is frozen history. Two production rows moved:
+ *
+ *   - qlever/scripts/sdk-service-image-originals.py (Buildx metadata inspection);
+ *   - scripts/lib/independent-admission/qlever-sdk-service-relationship.ts
+ *     (cross-seal by config-digest OR real OCI index shape).
+ *
+ * Both paths are plain sourceBindings rows, which do NOT participate in group
+ * selection (probed in memory: a sourceBindings-only SDK98 makes BOTH old and
+ * new trees throw 'observed value differs from owned', and adding a new PRIMARY
+ * selector makes the new tree throw instead of selecting). One appended
+ * secondary stage over the moved producer is therefore REQUIRED, exactly as for
+ * SDK97. Old trees still resolve to SDK97 and the mixed tree is refused. */
+const SDK98_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
+  'qlever/scripts/sdk-service-image-originals.py':'62a5ebee696cc85b6c71230a1cc806231daafafc61a6ca90b276527bc932e5a8',
+  'scripts/lib/independent-admission/qlever-sdk-service-relationship.ts':'23c0e1d2fb93d9bbf20857ff7d902c1625482fed4d573d302b9399f5d0d55d26',
+});
+const SDK98_METADATA_PRODUCER_STAGE=Object.freeze([
+  Object.freeze({path:'qlever/scripts/sdk-service-image-originals.py',sha256:SDK98_SOURCE_HASHES['qlever/scripts/sdk-service-image-originals.py']!}),
+]);
+const SDK98_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK97_GROUP,
+  secondarySelectorStages:Object.freeze([...(SDK97_GROUP.secondarySelectorStages??[]),SDK98_METADATA_PRODUCER_STAGE]),
+  sourceBindings:Object.freeze(SDK97_GROUP.sourceBindings.map(row=>Object.freeze({...row,sha256:SDK98_SOURCE_HASHES[row.path]??row.sha256})))});
 export const QLEVER_NORMAL_BUILD_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([SDK93_GROUP]);
 export const QLEVER_SDK_NORMAL_SOURCE_BINDINGS:readonly GitHubSourceBinding[]=Object.freeze([
  Object.freeze({path:'.github/workflows/candidate.yml',sha256:'1446b2ceb6c53b8888e07d0b822854b934c95d508f93dfd901a4687e28d22d9d'}),
@@ -2733,8 +2757,8 @@ export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=O
  ...QLEVER_SDK_EXECUTION_GROUPS,
 ]);
 /** Consumer-only lists derive the published execution groups and append the
- * frozen SDK94/SDK95/SDK96 tuples plus the current SDK97 tuple.
+ * frozen SDK94..SDK97 tuples plus the current SDK98 tuple.
  * QLEVER_SDK_EXECUTION_GROUPS itself stays at exactly SDK1..93 for the published
  * producer contract. */
-export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP]);
-export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP]);
+export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP]);
+export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP]);

@@ -7,7 +7,11 @@ spec=importlib.util.spec_from_file_location('pack_flow_fixture',ROOT/'qlever/tes
 case=f.Tests();case.setUp()
 try:
  case.fixture();root=case.out;source=root/'checkout';source.mkdir();raw=b'{"name":"@undefineds.co/xpod","version":"1.0.0"}';(source/'package.json').write_bytes(raw)
- before=root/'before.json';after=root/'after.json';before.write_bytes(raw);after.write_bytes(raw);metadata=root/'build.json';metadata.write_text(json.dumps({'containerimage.digest':case.image.split('@')[1],'containerimage.config.digest':case.config}));case.out=root/'service-image-originals'
+ before=root/'before.json';after=root/'after.json';before.write_bytes(raw);after.write_bytes(raw);metadata=root/'build.json';# Real Buildx single-manifest metadata also reports the descriptor that the
+ # digest belongs to; the product now requires that exact relation.
+ metadata.write_text(json.dumps({'containerimage.digest':case.image.split('@')[1],
+  'containerimage.descriptor':{'mediaType':'application/vnd.oci.image.manifest.v1+json','digest':case.image.split('@')[1],'size':1615},
+  'containerimage.config.digest':case.config}));case.out=root/'service-image-originals'
  args=types.SimpleNamespace(source_sha=case.sha,sdk_artifact_id=1,sdk_master_bytes=1,sdk_artifact_digest='a'*64,sdk_master_sha256='b'*64,service_image=case.image,local_runtime_image='ghcr.io/undefinedsco/xpod-qlever-local-runtime@sha256:'+'e'*64,sdk_image='ghcr.io/undefinedsco/xpod-qlever-sdk@sha256:'+'f'*64,source=str(source),out=str(case.out),deadline=time.time()+60,root_manifest_before=str(before),root_manifest_after=str(after),build_metadata=str(metadata),capture_service_pack_originals=True)
  def capture(label,argv,*a,**kw):
   if not label.startswith('service-source-'):return case.capture(label,argv,*a,**kw)

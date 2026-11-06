@@ -29,7 +29,11 @@ test('actual closed member budget is checked before reads and byte drift/truncat
 });
 test('actual collector capture master supplies the same top-level pack shape and ordinal member paths',()=>{
  const {spawnSync}=require('node:child_process');const path=require('node:path');
- const run=spawnSync('python3',['-I','-S','-B',path.join(import.meta.dirname,'service-pack-relationship-producer.py')],{encoding:'utf8',timeout:10000,maxBuffer:4*1024**2});expect(run.status).toBe(0);if(run.status!==0)throw Error(run.stderr);
+ const run=spawnSync('python3',['-I','-S','-B',path.join(import.meta.dirname,'service-pack-relationship-producer.py')],{encoding:'utf8',timeout:10000,maxBuffer:4*1024**2});
+ // The child's own traceback is the only useful failure signal; surface it
+ // instead of letting a bare status assertion hide the cause.
+ if(run.status!==0)throw Error('service-pack-relationship-producer failed: status '+run.status+'\n'+(run.stderr||'')+(run.stdout||''));
+ expect(run.status).toBe(0);
  const actual=JSON.parse(run.stdout);expect(actual.master.packInputObservation.kind).toBe('actual-stopped-service-image-pack-inputs');expect(actual.master.outputImageObservation.packInputObservation).toBeUndefined();expect(actual.master.packInputObservation.bodies[0].original.path.startsWith('output/service-pack-bodies/objects/0001-')).toBe(true);
  const data=new Map<string,Buffer>(Object.entries(actual.data).map(([p,b])=>[p,Buffer.from(b as string,'base64')]));inspect({members:actual.members,readOriginalRange(p:string,o:number,n:number){return data.get(p)!.subarray(o,o+n);}}as any,actual.master);
 });

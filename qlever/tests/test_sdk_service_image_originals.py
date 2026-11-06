@@ -37,4 +37,34 @@ class ServiceOriginals(unittest.TestCase):
    with self.assertRaises(ValueError):retained.save('too-large',b'a'*(service.META+1))
    self.assertFalse((out/'too-large').exists());held=retained.reserve(3);(out/'changed').write_bytes(b'xyz')
    with self.assertRaises(ValueError):retained.settle(held,[dict(path='changed',bytes=3,sha256=ref['sha256'])])
+
+ def test_build_metadata_binds_index_result_without_inventing_a_config_digest(self):
+  # Actual RC375 shape: docker/build-push-action with platforms reported an OCI
+  # index and NO containerimage.config.digest. That field must not be required
+  # or synthesized; the index digest still has to match the pushed image.
+  index_digest='sha256:'+'6'*64
+  index={'containerimage.descriptor':{'mediaType':'application/vnd.oci.image.index.v1+json','digest':index_digest,'size':856},
+         'containerimage.digest':index_digest,'image.name':'ghcr.io/undefinedsco/xpod:sha-x'}
+  self.assertIsNone(service.inspect_build_metadata(index,'ghcr.io/undefinedsco/xpod@'+index_digest))
+  # Single-manifest shape keeps the strict config join.
+  manifest_digest='sha256:'+'7'*64;config='sha256:'+'8'*64
+  manifest={'containerimage.descriptor':{'mediaType':'application/vnd.oci.image.manifest.v1+json','digest':manifest_digest,'size':1615},
+            'containerimage.digest':manifest_digest,'containerimage.config.digest':config}
+  self.assertEqual(service.inspect_build_metadata(manifest,'ghcr.io/undefinedsco/xpod@'+manifest_digest),config)
+  # mismatched pushed image digest in both shapes
+  with self.assertRaises(ValueError):service.inspect_build_metadata(index,'ghcr.io/undefinedsco/xpod@sha256:'+'9'*64)
+  with self.assertRaises(ValueError):service.inspect_build_metadata(manifest,'ghcr.io/undefinedsco/xpod@sha256:'+'9'*64)
+  # index mediaType but a descriptor digest that is not the reported image digest
+  bad=dict(index, **{'containerimage.descriptor':{'mediaType':'application/vnd.oci.image.index.v1+json','digest':'sha256:'+'5'*64,'size':856}})
+  with self.assertRaises(ValueError):service.inspect_build_metadata(bad,'ghcr.io/undefinedsco/xpod@'+index_digest)
+  # manifest mediaType with no config digest: must not be silently accepted
+  bad={'containerimage.descriptor':{'mediaType':'application/vnd.oci.image.manifest.v1+json','digest':manifest_digest,'size':1615},'containerimage.digest':manifest_digest}
+  with self.assertRaises(ValueError):service.inspect_build_metadata(bad,'ghcr.io/undefinedsco/xpod@'+manifest_digest)
+  # config digest present but malformed / missing descriptor / wrong mediaType
+  for mutate in [lambda row:row.update({'containerimage.config.digest':'sha256:short'}),
+                 lambda row:row.pop('containerimage.descriptor'),
+                 lambda row:row.update({'containerimage.descriptor':{'mediaType':'application/vnd.oci.image.index.v1+json','digest':manifest_digest,'size':1}})]:
+   bad=copy.deepcopy(manifest);mutate(bad)
+   with self.assertRaises(ValueError):service.inspect_build_metadata(bad,'ghcr.io/undefinedsco/xpod@'+manifest_digest)
+
 if __name__=='__main__':unittest.main()
