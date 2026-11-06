@@ -1,6 +1,6 @@
 import{test,expect}from'bun:test';import fs from'node:fs';import path from'node:path';import{createHash}from'node:crypto';
 import before from'../fixtures/independent-admission/sdk31-before-source-groups.original.json';
-import{QLEVER_SDK_EXECUTION_GROUPS as sdk}from'../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
+import{QLEVER_SDK_EXECUTION_GROUPS as sdk,QLEVER_SDK_CONSUMER_GROUPS as consumerSdk}from'../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import{CONSUMER_SOURCE_GROUPS as consumer,CI_CONSUMER_SOURCE_GROUPS as ci}from'../../scripts/lib/independent-admission/consumer-observer-policy';
 import{API_NOTICE_SOURCE_BINDINGS as api}from'../../scripts/lib/independent-admission/github-origin';import current from'../../scripts/lib/independent-admission/consumer-execution-current.json';
 import{sourceBindingKey as key,secondaryGitHubSourceBindingSelectors as secondary,selectGitHubSourceBindingGroup as select}from'../../scripts/lib/independent-admission/github-source-binding-groups';
@@ -9,7 +9,7 @@ const root=path.resolve(import.meta.dir,'../..'),read=(p:string)=>fs.readFileSyn
 test('SDK31 preserves complete SDK1–30, API17 and both Notice parent histories before appending its exact controller tree',()=>{
  for(const[name,groups]of Object.entries({sdk,consumer,ci})){const prior=before[name as 'sdk'|'consumer'|'ci'];for(let i=0;i<prior.length;i++)expect(hash(groups[i])).toBe(prior[i]);}
  expect(hash(api)).toBe(before.api);expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);expect(new Set(current.map(r=>r.path)).size).toBe(current.length);
- for(const row of [...current,...sdk[sdk.length-1]!.selectors,...sdk[sdk.length-1]!.sourceBindings])expect(createHash('sha256').update(read(row.path)).digest('hex')).toBe(row.sha256);
+ for(const row of [...current,...consumerSdk[consumerSdk.length-1]!.selectors,...consumerSdk[consumerSdk.length-1]!.sourceBindings])expect(createHash('sha256').update(read(row.path)).digest('hex')).toBe(row.sha256);
  for(const name of['sdk-kernel-probe-controller.py','sdk-kernel-policy-probe.py'])expect(current.some(row=>row.path==='qlever/scripts/'+name)).toBe(true);
 });
 test('actual primary and own mandatory-role secondary originals uniquely select every complete old and new group',()=>{

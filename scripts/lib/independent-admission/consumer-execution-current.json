@@ -941,7 +941,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "f68014328be74591d4e7e65e9c0bf321bb3dc7e3f3d78d7e6a39bf4f0bb6c140"
+    "sha256": "e8167bc45f727b6b5c742e2841cce7c39ea2c46d1c93ab3ead24086329bb1c1e"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",
@@ -1221,7 +1221,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "129202100edd0ccd479c0891c065b65ddd2b3a259d62f4421ebde829dd386061"
+    "sha256": "6b69e5f06073d6ea4b6cfaa7273a312a70fda8bbae048834a99cdf960c9c9d2e"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -1889,7 +1889,7 @@
   },
   {
     "path": "tests/scripts/controller-helper-admission.test.ts",
-    "sha256": "38324b2f3d215c722624e32d7b5d5b2a5ad5c4b93d5719ad39a26f5a751d91f1"
+    "sha256": "b11b2861601c850488a7e0629e59c9738f39242f660c387d59637bcd60f6a889"
   },
   {
     "path": "qlever/tests/test_qlever_inner_materials_ninja.py",
@@ -2105,7 +2105,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-normal-build.ts",
-    "sha256": "b2fa80d50edf78347eb83416d93255a43a8c0054e66f2476743f975a07aec69a"
+    "sha256": "8fbf265127bf81d96418950d4b5729064e72d95da03de1986c6a286a2c61e1ab"
   },
   {
     "path": "scripts/select-normal-sdk-proof.ts",

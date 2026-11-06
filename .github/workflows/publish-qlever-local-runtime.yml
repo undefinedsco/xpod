@@ -91,11 +91,35 @@ jobs:
       - name: Resolve the QLever build inputs identity
         id: inputs
         shell: bash
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+          SDK_PROFILE: ${{ needs.resolve_target.outputs.sdk_profile }}
+          SDK_TARGET: ${{ needs.resolve_target.outputs.target }}
+          SDK_PROFILE_IDENTITY: ${{ needs.resolve_target.outputs.sdk_profile_identity }}
+          NORMAL_DOCKERFILE: docker/qlever-runtime-sdk/Dockerfile.normal
         run: |
           set -euo pipefail
-          inputs_hash="$({ printf '%s\n' '${{ needs.resolve_target.outputs.sdk_profile }}:${{ needs.resolve_target.outputs.target }}:${{ needs.resolve_target.outputs.sdk_profile_identity }}'; git rev-parse "${GITHUB_SHA}:qlever"; git rev-parse "${GITHUB_SHA}:docker/qlever-local-runtime"; } | sha256sum | cut -c1-12)"
-          echo "tag=qlever-inputs-${inputs_hash}" >> "${GITHUB_OUTPUT}"
-          echo "QLever local runtime inputs: qlever-inputs-${inputs_hash}" >> "${GITHUB_STEP_SUMMARY}"
+          if [[ "${SDK_PROFILE}" == service-trixie ]]; then
+            # The ordinary SDK is identified by its full canonical 64-hex input
+            # identity. Recompute that same identity here rather than inventing a
+            # short local alias: the shared resolver only accepts the verified
+            # normal-build-v1 identity, and the local runtime Dockerfile is one of
+            # its declared inputs.
+            python3 qlever/scripts/sdk-normal-build-proof.py identity \
+              --source . --source-commit "${SOURCE_COMMIT}" \
+              --profile "${SDK_PROFILE}" --target "${SDK_TARGET}" \
+              --profile-identity "${SDK_PROFILE_IDENTITY}" \
+              --dockerfile "${NORMAL_DOCKERFILE}" \
+              --out "${RUNNER_TEMP}/qlever-normal-input.json"
+            tag="qlever-inputs-$(python3 -c 'import json,os;print(json.load(open(os.environ["RUNNER_TEMP"]+"/qlever-normal-input.json"))["inputHash"])')"
+          else
+            # module-bookworm-gcc12 keeps its original 12-hex local alias and its
+            # separate module recipe; that profile never opts into normal reuse.
+            inputs_hash="$({ printf '%s\n' "${SDK_PROFILE}:${SDK_TARGET}:${SDK_PROFILE_IDENTITY}"; git rev-parse "${SOURCE_COMMIT}:qlever"; git rev-parse "${SOURCE_COMMIT}:docker/qlever-local-runtime"; } | sha256sum | cut -c1-12)"
+            tag="qlever-inputs-${inputs_hash}"
+            echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          fi
+          echo "QLever local runtime inputs: ${tag}" >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -136,6 +160,7 @@ jobs:
           RUNTIME_DOCKERFILE: ${{ needs.resolve_target.outputs.runtime_dockerfile }}
           QELEVER_INPUTS_TAG: ${{ steps.inputs.outputs.tag }}
           REUSE_IDENTICAL_INPUTS: ${{ needs.resolve_target.outputs.sdk_profile == 'service-trixie' && 'true' || 'false' }}
+          SDK_PROFILE: ${{ needs.resolve_target.outputs.sdk_profile }}
         run: bash qlever/scripts/resolve-runtime-sdk-build.sh
 
       - name: Build the exact local runtime image

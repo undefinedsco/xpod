@@ -22,7 +22,7 @@ import {
 } from '../../scripts/lib/independent-admission/sdk-controller-helper-groups';
 import {CURRENT_HELPER_GROUP_COUNTS, CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
 import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as api} from '../../scripts/lib/independent-admission/github-origin';
-import {QLEVER_SDK_EXECUTION_GROUPS as sdk, QLEVER_LINUX_EXECUTION_GROUPS as linux} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
+import {QLEVER_SDK_EXECUTION_GROUPS as sdk, QLEVER_LINUX_EXECUTION_GROUPS as linux, QLEVER_SDK_CONSUMER_GROUPS as consumerSdk, QLEVER_LINUX_CONSUMER_GROUPS as consumerLinux} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import {CONSUMER_SOURCE_GROUPS as consumer, CI_CONSUMER_SOURCE_GROUPS as ci} from '../../scripts/lib/independent-admission/consumer-observer-policy';
 import {CLI_SOURCE_VERSION_GROUPS as cli} from '../../scripts/lib/independent-admission/source-rules';
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
@@ -269,7 +269,7 @@ test('CURRENT source catalogue counts and actual declared bindings close indepen
     CURRENT_SOURCE_GROUP_COUNTS.current,
   ]);
   const digest = (name: string) => createHash('sha256').update(readFileSync(path.join(ROOT, name))).digest('hex');
-  for (const rows of Object.values(groups)) {
+  for (const rows of Object.values({api, sdk: consumerSdk, consumer, ci, linux: consumerLinux, cli})) {
     const group = rows[rows.length - 1]!;
     const g = group as any;
     for (const row of [...(g.selectors ?? []), ...(g.secondarySelectors ?? []),

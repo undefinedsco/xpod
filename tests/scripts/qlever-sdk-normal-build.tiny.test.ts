@@ -4,7 +4,7 @@ import {readFileSync} from 'node:fs';
 import {inspectNormalBuildSdkMasterBinding,inspectNormalBuildIndexSelection,NORMAL_BUILD_MODEL,normalProofArtifactName,normalMainArtifactName} from '../../scripts/lib/independent-admission/qlever-sdk-normal-build';
 import {inspectQleverSdkMasterBinding,inspectQleverSdkArtifactReference} from '../../scripts/lib/independent-admission/qlever-sdk-originals';
 import {inspectCandidateServiceJobChain} from '../../scripts/lib/independent-admission/qlever-sdk-service-relationship';
-import {QLEVER_NORMAL_BUILD_GROUPS,QLEVER_SDK_EXECUTION_GROUPS,QLEVER_SDK_NORMAL_SOURCE_BINDINGS} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
+import {QLEVER_NORMAL_BUILD_GROUPS,QLEVER_NORMAL_SOURCE_GROUPS,QLEVER_SDK_EXECUTION_GROUPS,QLEVER_SDK_NORMAL_SOURCE_BINDINGS} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import {CURRENT_CANONICAL_SOURCE_ROWS,completeObserved} from './source-binding-group.fixture';
 import {selectGitHubSourceBindingGroup,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import gates from '../../scripts/lib/independent-admission/normal-sdk-gates.json';
@@ -108,15 +108,24 @@ test('artifact names stringify validated integer run coordinates',()=>{
  expect(normalProofArtifactName('service-trixie','linux-x64','a'.repeat(64))).toBe('qlever-sdk-normal-proof-service-trixie-linux-x64-'+'a'.repeat(64));
  expect(normalMainArtifactName('linux-x64',{sourceSha:'b'.repeat(40),runId:1,runAttempt:2})).toBe('qlever-sdk-originals-service-trixie-linux-x64-'+'b'.repeat(40)+'-1-2');
 });
-test('normal verifier and selector are byte-bound by canonical and producer source policies',()=>{
+test('normal verifier and selector are byte-bound by canonical and versioned producer source policies',()=>{
  const current=JSON.parse(readFileSync(new URL('../../scripts/lib/independent-admission/consumer-execution-current.json',import.meta.url),'utf8')) as {path:string;sha256:string}[];
- for(const path of ['scripts/lib/independent-admission/qlever-sdk-normal-build.ts','scripts/select-normal-sdk-proof.ts','qlever/scripts/validate-prior-sdk.py']){
+ const verifier='scripts/lib/independent-admission/qlever-sdk-normal-build.ts';
+ for(const path of [verifier,'scripts/select-normal-sdk-proof.ts','qlever/scripts/validate-prior-sdk.py']){
   expect(current.filter(row=>row.path===path)).toHaveLength(1);
   expect(current.find(row=>row.path===path)!.sha256).toBe(sha(readFileSync(path)));
   expect(QLEVER_SDK_NORMAL_SOURCE_BINDINGS.filter(row=>row.path===path)).toHaveLength(1);
-  expect(QLEVER_SDK_NORMAL_SOURCE_BINDINGS.find(row=>row.path===path)!.sha256).toBe(sha(readFileSync(path)));
-  expect(QLEVER_NORMAL_BUILD_GROUPS[0]!.sourceBindings.filter(row=>row.path===path)).toHaveLength(1);
  }
+ // The published flat list keeps the old 8659 verifier; only the appended
+ // current group binds the changed verifier bytes. Old flat is never rewritten.
+ expect(QLEVER_SDK_NORMAL_SOURCE_BINDINGS.find(row=>row.path===verifier)!.sha256).toBe('b2fa80d50edf78347eb83416d93255a43a8c0054e66f2476743f975a07aec69a');
+ expect(QLEVER_NORMAL_SOURCE_GROUPS[0]!.sourceBindings).toBe(QLEVER_SDK_NORMAL_SOURCE_BINDINGS);
+ expect(QLEVER_NORMAL_SOURCE_GROUPS[1]!.sourceBindings.find(row=>row.path===verifier)!.sha256).toBe(sha(readFileSync(verifier)));
+ for(const path of ['scripts/select-normal-sdk-proof.ts','qlever/scripts/validate-prior-sdk.py']){
+  expect(QLEVER_SDK_NORMAL_SOURCE_BINDINGS.find(row=>row.path===path)!.sha256).toBe(sha(readFileSync(path)));
+  expect(QLEVER_NORMAL_SOURCE_GROUPS[1]!.sourceBindings.find(row=>row.path===path)!.sha256).toBe(sha(readFileSync(path)));
+ }
+ expect(QLEVER_NORMAL_BUILD_GROUPS[0]!.sourceBindings.filter(row=>row.path===verifier)).toHaveLength(1);
 });
 test('flat normal producer list binds the shared collector once without duplicating SDK93 rows',()=>{
  const collector='qlever/scripts/sdk-image-originals.py';

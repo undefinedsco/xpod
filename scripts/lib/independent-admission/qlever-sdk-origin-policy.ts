@@ -2500,11 +2500,11 @@ const SDK92_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK91_GROUP,
  secondarySelectors:rebindSdk92Rows(SDK91_GROUP.secondarySelectors),
  secondarySelectorStages:Object.freeze((SDK91_GROUP.secondarySelectorStages??[]).map(stage=>rebindSdk92Rows(stage))),
  sourceBindings:Object.freeze([...rebindSdk92Rows(SDK91_GROUP.sourceBindings),...SDK92_NEW_ROWS])});
-/** Normal-build-v1 current candidate route (APPEND-ONLY, UNPUBLISHED).
+/** Published normal-build-v1 SDK93 producer (run 42133351932, source 8659).
  *
- * The ordinary candidate SDK build has no ptrace/lease observer. This group is
- * kept OUT of QLEVER_SDK_EXECUTION_GROUPS so every SDK1..92 historical tuple and
- * its exact group count stay frozen. It registers the current candidate workflow
+ * The ordinary candidate SDK build has no ptrace/lease observer. SDK93 is the
+ * final published entry in QLEVER_SDK_EXECUTION_GROUPS; SDK1..92 retain their
+ * historical tuples and order. It registers the candidate workflow
  * bytes for the app-service/local-runtime origin observers and declares the
  * explicit normal-build-v1 SDK job contract. The SDK's own artifact origin is
  * observed by observeQleverSdkNormalBuildGitHubOrigin from the same exact
@@ -2549,6 +2549,23 @@ const SDK93_GROUP:GitHubSourceBindingGroup=Object.freeze({
   sdkRequiredStep:'Upload the exact normal SDK build proof',
   sdkRequiredSteps:Object.freeze(['Resolve the QLever build inputs identity','Capture normal SDK build proof and originals','Upload the exact normal SDK build proof'])})
 });
+/** SDK94 is the CURRENT consumer of the published SDK93 producer. It is NOT
+ * appended to QLEVER_SDK_EXECUTION_GROUPS: SDK1..93 remain the exact published
+ * producer history and keep their array order/count. SDK94 derives SDK93 and
+ * rebinds only the two files that actually moved for the local-runtime consumer
+ * route: the local-runtime workflow and the normal proof verifier. The appended
+ * stage selects the new local-runtime workflow, so the old SDK93 source still
+ * resolves to SDK93 and a mixed old/new tree matches neither. */
+const SDK94_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
+  '.github/workflows/publish-qlever-local-runtime.yml':'78e15d1a7606d1f8467858e4958c1f70e52bec8a01d76b797a5ba24cebb21332',
+  'scripts/lib/independent-admission/qlever-sdk-normal-build.ts':'8fbf265127bf81d96418950d4b5729064e72d95da03de1986c6a286a2c61e1ab',
+});
+const SDK94_LOCAL_RUNTIME_STAGE=Object.freeze([
+  Object.freeze({path:'.github/workflows/publish-qlever-local-runtime.yml',sha256:SDK94_SOURCE_HASHES['.github/workflows/publish-qlever-local-runtime.yml']!}),
+]);
+const SDK94_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK93_GROUP,
+  secondarySelectorStages:Object.freeze([...(SDK93_GROUP.secondarySelectorStages??[]),SDK94_LOCAL_RUNTIME_STAGE]),
+  sourceBindings:Object.freeze(SDK93_GROUP.sourceBindings.map(row=>Object.freeze({...row,sha256:SDK94_SOURCE_HASHES[row.path]??row.sha256})))});
 export const QLEVER_NORMAL_BUILD_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([SDK93_GROUP]);
 export const QLEVER_SDK_NORMAL_SOURCE_BINDINGS:readonly GitHubSourceBinding[]=Object.freeze([
  Object.freeze({path:'.github/workflows/candidate.yml',sha256:'1446b2ceb6c53b8888e07d0b822854b934c95d508f93dfd901a4687e28d22d9d'}),
@@ -2575,9 +2592,36 @@ export const QLEVER_SDK_NORMAL_SOURCE_BINDINGS:readonly GitHubSourceBinding[]=Ob
  Object.freeze({path:'qlever/scripts/check-qlever-real-runtime.cjs',sha256:'52c7552df7efb3658b3f9470746ce9dc3100b2475c770a53f381d9df82a0ab0c'}),
  Object.freeze({path:'qlever/scripts/check-qlever-upstream-patches.cjs',sha256:'026169e059c0e3ca57c456c09ae1a17ab985a463c38496ac675fa47e794b338b'}),
 ]);
+/** Versioned normal producer ABI for the flat 23-file observer. The OLD group
+ * binds the published 8659 flat list exactly; the CURRENT group rebinds only the
+ * normal verifier that actually moved. That hash is the primary version selector,
+ * so old and current sources each resolve to exactly one group and a mixed tree
+ * matches neither. */
+const QLEVER_NORMAL_VERSION_SELECTOR='scripts/lib/independent-admission/qlever-sdk-normal-build.ts';
+const QLEVER_NORMAL_PREVIOUS_VERSION='b2fa80d50edf78347eb83416d93255a43a8c0054e66f2476743f975a07aec69a';
+const QLEVER_NORMAL_CURRENT_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
+  [QLEVER_NORMAL_VERSION_SELECTOR]:SDK94_SOURCE_HASHES[QLEVER_NORMAL_VERSION_SELECTOR]!,
+});
+const QLEVER_NORMAL_CANDIDATE_WORKFLOW=Object.freeze({path:'.github/workflows/candidate.yml',sha256:QLEVER_SDK_NORMAL_CANDIDATE_WORKFLOW_SHA});
+const QLEVER_NORMAL_PREVIOUS_GROUP:GitHubSourceBindingGroup=Object.freeze({
+  selectors:Object.freeze([Object.freeze({path:QLEVER_NORMAL_VERSION_SELECTOR,sha256:QLEVER_NORMAL_PREVIOUS_VERSION})]),
+  secondarySelectors:Object.freeze([QLEVER_NORMAL_CANDIDATE_WORKFLOW]),
+  sourceBindings:QLEVER_SDK_NORMAL_SOURCE_BINDINGS,
+});
+const QLEVER_NORMAL_CURRENT_GROUP:GitHubSourceBindingGroup=Object.freeze({
+  selectors:Object.freeze([Object.freeze({path:QLEVER_NORMAL_VERSION_SELECTOR,sha256:QLEVER_NORMAL_CURRENT_SOURCE_HASHES[QLEVER_NORMAL_VERSION_SELECTOR]!})]),
+  secondarySelectors:Object.freeze([QLEVER_NORMAL_CANDIDATE_WORKFLOW]),
+  sourceBindings:Object.freeze(QLEVER_SDK_NORMAL_SOURCE_BINDINGS.map(row=>Object.freeze({...row,sha256:QLEVER_NORMAL_CURRENT_SOURCE_HASHES[row.path]??row.sha256}))),
+});
+export const QLEVER_NORMAL_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([QLEVER_NORMAL_PREVIOUS_GROUP,QLEVER_NORMAL_CURRENT_GROUP]);
 
 export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP,SDK78_GROUP,SDK79_GROUP,SDK80_GROUP,SDK81_GROUP,SDK82_GROUP,SDK83_GROUP,SDK84_GROUP,SDK85_GROUP,SDK86_GROUP,SDK87_GROUP,SDK88_GROUP,SDK89_GROUP,SDK90_GROUP,SDK91_GROUP,SDK92_GROUP,SDK93_GROUP]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  {selectors:sdkSelectors('cbedd3e2478de5e22108b6689c595a658ca891c9bd47552caec830e86f47fea8','a75c7be34b5c5fafff85c0d67d814ba1aaf14bcf5db5404a860fe3b9a11009bd'),sourceBindings:QLEVER_LINUX_SOURCE_BINDINGS.filter(row=>!['.github/workflows/publish-qlever-runtime-sdk.yml','.github/workflows/build-qlever-linux-runtime.yml'].includes(row.path))},
  ...QLEVER_SDK_EXECUTION_GROUPS,
 ]);
+/** Consumer-only lists derive the published execution groups and append the
+ * reviewed current SDK94 consumer tuple. QLEVER_SDK_EXECUTION_GROUPS itself
+ * stays at exactly SDK1..93 for the published producer contract. */
+export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP]);
+export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP]);
