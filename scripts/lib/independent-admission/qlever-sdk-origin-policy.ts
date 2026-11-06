@@ -2608,6 +2608,29 @@ const SDK95_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK94_GROUP,
   sourceBindings:Object.freeze([
     ...SDK94_GROUP.sourceBindings.map(row=>Object.freeze({...row,sha256:SDK95_SOURCE_HASHES[row.path]??row.sha256})),
     ...SDK95_NEW_ROWS])});
+/** SDK96 is the CURRENT consumer for the SERVICE Docker context. RC373
+ * (staging e19a8fbc) already published its native artifact from SDK95, so SDK95
+ * is frozen history now: this slice must not rewrite it. The only product move
+ * is one exact allow line in `.dockerignore`, which is a PRIMARY selector of the
+ * inherited recipe (it is also a canonical normal-SDK input file). Rebinding
+ * that selector is therefore enough to make an SDK95 tree resolve to SDK95 and
+ * the current tree resolve to SDK96.
+ *
+ * A `.dockerignore` selector stage is APPENDED as well, for the same reason the
+ * css stage exists: the strict selector already discriminates, but the stage
+ * proves the exact new declaration was observed rather than inferred, and a
+ * tree mixing the new ignore with old implementation bytes matches neither.
+ * No new implementation file was registered by this change. */
+const SDK96_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
+  '.dockerignore':'7b9bba0e013af36ce19b34756920b0ccbfbba7617be1b0fe4dfc7c4856daf6df',
+});
+const SDK96_DOCKERIGNORE_STAGE=Object.freeze([
+  Object.freeze({path:'.dockerignore',sha256:SDK96_SOURCE_HASHES['.dockerignore']!}),
+]);
+const SDK96_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK95_GROUP,
+  selectors:Object.freeze(SDK95_GROUP.selectors.map(row=>Object.freeze({...row,sha256:SDK96_SOURCE_HASHES[row.path]??row.sha256}))),
+  secondarySelectorStages:Object.freeze([...(SDK95_GROUP.secondarySelectorStages??[]),SDK96_DOCKERIGNORE_STAGE]),
+  sourceBindings:Object.freeze(SDK95_GROUP.sourceBindings.map(row=>Object.freeze({...row,sha256:SDK96_SOURCE_HASHES[row.path]??row.sha256})))});
 export const QLEVER_NORMAL_BUILD_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([SDK93_GROUP]);
 export const QLEVER_SDK_NORMAL_SOURCE_BINDINGS:readonly GitHubSourceBinding[]=Object.freeze([
  Object.freeze({path:'.github/workflows/candidate.yml',sha256:'1446b2ceb6c53b8888e07d0b822854b934c95d508f93dfd901a4687e28d22d9d'}),
@@ -2655,7 +2678,22 @@ const QLEVER_NORMAL_CURRENT_GROUP:GitHubSourceBindingGroup=Object.freeze({
   secondarySelectors:Object.freeze([QLEVER_NORMAL_CANDIDATE_WORKFLOW]),
   sourceBindings:Object.freeze(QLEVER_SDK_NORMAL_SOURCE_BINDINGS.map(row=>Object.freeze({...row,sha256:QLEVER_NORMAL_CURRENT_SOURCE_HASHES[row.path]??row.sha256}))),
 });
-export const QLEVER_NORMAL_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([QLEVER_NORMAL_PREVIOUS_GROUP,QLEVER_NORMAL_CURRENT_GROUP]);
+/** The normal SDK canonical identity explicitly lists `.dockerignore` as a
+ * recipe input, so the service-scope allow line legally moves the input hash H
+ * and the resulting OCI proof. The published flat 23 rows and both earlier
+ * groups stay frozen; this third group is a genuine new normal-producer
+ * version, selected by the SAME verifier bytes plus the exact new ignore line.
+ * It rebinds only `.dockerignore`; every other row is the current group's. */
+const QLEVER_NORMAL_DOCKERIGNORE_HASH='7b9bba0e013af36ce19b34756920b0ccbfbba7617be1b0fe4dfc7c4856daf6df';
+const QLEVER_NORMAL_DOCKERIGNORE_GROUP:GitHubSourceBindingGroup=Object.freeze({
+  ...QLEVER_NORMAL_CURRENT_GROUP,
+  secondarySelectorStages:Object.freeze([Object.freeze([
+    Object.freeze({path:'.dockerignore',sha256:QLEVER_NORMAL_DOCKERIGNORE_HASH}),
+  ])]),
+  sourceBindings:Object.freeze(QLEVER_NORMAL_CURRENT_GROUP.sourceBindings.map(row=>
+    Object.freeze({...row,sha256:row.path==='.dockerignore'?QLEVER_NORMAL_DOCKERIGNORE_HASH:row.sha256}))),
+});
+export const QLEVER_NORMAL_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([QLEVER_NORMAL_PREVIOUS_GROUP,QLEVER_NORMAL_CURRENT_GROUP,QLEVER_NORMAL_DOCKERIGNORE_GROUP]);
 
 export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP,SDK78_GROUP,SDK79_GROUP,SDK80_GROUP,SDK81_GROUP,SDK82_GROUP,SDK83_GROUP,SDK84_GROUP,SDK85_GROUP,SDK86_GROUP,SDK87_GROUP,SDK88_GROUP,SDK89_GROUP,SDK90_GROUP,SDK91_GROUP,SDK92_GROUP,SDK93_GROUP]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
@@ -2663,7 +2701,7 @@ export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=O
  ...QLEVER_SDK_EXECUTION_GROUPS,
 ]);
 /** Consumer-only lists derive the published execution groups and append the
- * reviewed SDK94 and current SDK95 consumer tuples. QLEVER_SDK_EXECUTION_GROUPS
+ * frozen SDK94/SDK95 tuples plus the current SDK96 tuple. QLEVER_SDK_EXECUTION_GROUPS
  * itself stays at exactly SDK1..93 for the published producer contract. */
-export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP]);
-export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP]);
+export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP]);
+export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP]);

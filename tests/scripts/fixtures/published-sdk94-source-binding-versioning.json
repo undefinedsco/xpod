@@ -6,7 +6,9 @@
     "sdk94GroupSha256": "e17b91beecbb08d442083e510f5ea04759d692937597f988499bb72824a7f5da",
     "normalFlatBindingsSha256": "2da25785a276a8e6b37ee85576debe174d1fd66b61b2b0b5a50f0ff91a4880ef",
     "normalPreviousGroupSha256": "07891e94303e7ea9b16fefe4270f30d22d804d30b91a9f212dc29c8f32e7aa38",
-    "normalCurrentGroupSha256": "98701c7af0c1c8aaa3a66d29d326c742272fc927bf330c48a7334c615ce87eae"
+    "normalCurrentGroupSha256": "98701c7af0c1c8aaa3a66d29d326c742272fc927bf330c48a7334c615ce87eae",
+    "sdk95GroupSha256": "8cb73cb7654da9303ec345bf324fa0dbead0ec897a61e4729211675fe64a5608",
+    "normalDockerignoreGroupSha256": "5b7a321e4bd135cbb94763f0843b914c3bb56fcb6263ac763bdfc45fcee5c220"
   },
   "sdk94": {
     "localRuntimeSha256": "78e15d1a7606d1f8467858e4958c1f70e52bec8a01d76b797a5ba24cebb21332",
@@ -21,5 +23,12 @@
     "normalCollectorSha256": "8611b720ee1439d81b8e0a93ee45d039b8b03949f5675f6f040546b2acfe5303",
     "stageCount": 7,
     "smokeCasesSha256": "95c86ca051aeceec413d5bd741769f9907adbd847af06c0f3a794380a017a208"
+  },
+  "sdk96": {
+    "dockerignoreSha256": "7b9bba0e013af36ce19b34756920b0ccbfbba7617be1b0fe4dfc7c4856daf6df",
+    "serviceScopeSha256": "1cb9228c17d0e7433faa7bdf4e4cb674b0c364972c0f1f992255c0064ab62301",
+    "groupSha256": "66314ba8123badec5986a3f4e6491e82b974751de71783eea765dc6f8394440c",
+    "stageCount": 8,
+    "activeSelectorRebinds": 1
   }
 }

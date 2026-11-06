@@ -37,6 +37,7 @@
 !scripts/agentfs-native-ci/supervise.py
 !scripts/lib/module-artifact-limits.json
 !scripts/lib/independent-admission/normal-sdk-gates.json
+!scripts/lib/service-workspace-build-scope.json
 !src/
 !ui/
 !desktop/

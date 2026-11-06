@@ -1,7 +1,7 @@
 [
   {
     "path": ".dockerignore",
-    "sha256": "e2cf7881f77766082998d206a6c853a474fa906d9feba3e16dc9467b797fb836"
+    "sha256": "7b9bba0e013af36ce19b34756920b0ccbfbba7617be1b0fe4dfc7c4856daf6df"
   },
   {
     "path": ".github/tooling/legacy-root-verifier/.npmrc",
@@ -1221,7 +1221,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "8fac4469e5f8dc1e178e7df8e63ac88371b357eaed797ca3855b0adc66c0cb80"
+    "sha256": "7b5bd3b717ccd360347498da7e81d795fd396a4a025df0cead66b927fbabe35b"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
