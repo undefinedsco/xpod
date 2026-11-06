@@ -111,7 +111,21 @@ export function inspectCandidateServiceRelationship(view:CollectedNativeOriginal
  const service=image('service','xpod',master.serviceImageReferenceByDigest),local=image('localRuntime','xpod-qlever-local-runtime',master.localRuntimeImageReferenceByDigest);image('sdk','xpod-qlever-sdk',master.sdkArtifact?.sdkImageReferenceByDigest);
  const roots=local.rootfs?.diff_ids;need(Array.isArray(roots)&&roots.length>0&&Array.isArray(service.rootfs?.diff_ids)&&isDeepStrictEqual(service.rootfs.diff_ids.slice(0,roots.length),roots)&&service.rootfs.diff_ids.every((value:any)=>/^sha256:[a-f0-9]{64}$/u.test(value)),'actual service/local runtime rootfs ancestry');
  need(service.config?.Labels?.['org.opencontainers.image.revision']===origin.sourceSha&&service.config?.Labels?.['org.opencontainers.image.source']==='https://github.com/undefinedsco/xpod','actual service revision labels');
- const metadata=JSON.parse(bytes(master.sourceOriginals?.buildMetadata).toString());need(metadata['containerimage.digest']===master.serviceImageReferenceByDigest.split('@')[1]&&metadata['containerimage.config.digest']===master.images.service.configDigest,'actual build action/registry config cross-seal');
+ // Buildx only reports containerimage.config.digest for a single-image result.
+ // A multi-platform push reports an index descriptor and omits it; the producer
+ // then relies on the platform manifest -> config chain that `image()` above
+ // already re-derives from bytes. Both OCI and Docker media types are legal
+ // buildx output (Docker types appear when OCI output is disabled), so this
+ // consumer must accept exactly the pairs the producer declares. These four
+ // literals mirror qlever/scripts/sdk-service-image-originals.py
+ // IMAGE_MANIFEST_MEDIA_TYPES / IMAGE_INDEX_MEDIA_TYPES, which is a .py file and
+ // therefore not importable here.
+ const BUILD_MANIFEST_MEDIA_TYPES=['application/vnd.oci.image.manifest.v1+json','application/vnd.docker.distribution.manifest.v2+json'];
+ const BUILD_INDEX_MEDIA_TYPES=['application/vnd.oci.image.index.v1+json','application/vnd.docker.distribution.manifest.list.v2+json'];
+ const metadata=JSON.parse(bytes(master.sourceOriginals?.buildMetadata).toString());need(metadata['containerimage.digest']===master.serviceImageReferenceByDigest.split('@')[1],'actual build action metadata/image digest');
+ const buildDescriptor=metadata['containerimage.descriptor'];
+ if(metadata['containerimage.config.digest']!==undefined)need(metadata['containerimage.config.digest']===master.images.service.configDigest&&BUILD_MANIFEST_MEDIA_TYPES.includes(buildDescriptor?.mediaType)&&buildDescriptor?.digest===metadata['containerimage.digest'],'actual build action/registry config cross-seal');
+ else need(BUILD_INDEX_MEDIA_TYPES.includes(buildDescriptor?.mediaType)&&buildDescriptor?.digest===metadata['containerimage.digest']&&master.images.service.platformManifestOriginal!==undefined,'actual build action index/platform cross-seal');
  const before=bytes(master.sourceOriginals?.rootManifestBefore),after=bytes(master.sourceOriginals?.rootManifestAfter);
  const expectedStages=candidateServiceCheckoutStageNames(master);need(Array.isArray(master.stages)&&isDeepStrictEqual(master.stages.map((row:any)=>row.name),expectedStages),'complete ordered checkout command universe');
  need(typeof master.sourcePath==='string'&&master.sourcePath.startsWith('/')&&!master.sourcePath.split('/').some((part:string)=>part==='.'||part==='..')&&master.controllerPath===master.sourcePath+'/qlever/scripts/sdk-service-image-originals.py','actual fixed checkout/controller command path');

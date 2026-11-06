@@ -9,7 +9,8 @@
     "normalCurrentGroupSha256": "98701c7af0c1c8aaa3a66d29d326c742272fc927bf330c48a7334c615ce87eae",
     "sdk95GroupSha256": "8cb73cb7654da9303ec345bf324fa0dbead0ec897a61e4729211675fe64a5608",
     "normalDockerignoreGroupSha256": "5b7a321e4bd135cbb94763f0843b914c3bb56fcb6263ac763bdfc45fcee5c220",
-    "sdk96GroupSha256": "66314ba8123badec5986a3f4e6491e82b974751de71783eea765dc6f8394440c"
+    "sdk96GroupSha256": "66314ba8123badec5986a3f4e6491e82b974751de71783eea765dc6f8394440c",
+    "sdk97GroupSha256": "28ba6d852a7e0a15e01ceac4a3ac954d8d6361e61e7daf9df48f7a88c0914da3"
   },
   "sdk94": {
     "localRuntimeSha256": "78e15d1a7606d1f8467858e4958c1f70e52bec8a01d76b797a5ba24cebb21332",
@@ -43,6 +44,14 @@
       "scripts/lib/independent-admission/service-pack-input-custody.ts": "0b87e7558b395d51f0b7f1131b6d39e94574350d4b6869205ec37744d669105d",
       "scripts/lib/independent-admission/service-pack-manifest-replay.ts": "e58a33c2a590a6dc6905a52c2f08f75ee9913f5e5ed2a14cdc8c42ac072ec12a",
       "scripts/lib/independent-admission/service-pack-public-selected-payload.ts": "0755e818763cc246fd4be33fdcdee7c663764240bdbc826ab9f89d9f8ef57716"
+    }
+  },
+  "sdk98": {
+    "groupSha256": "3ef2090137c10858a4365d22759a73c0b596afd4564e7813013361cbe90d8ce0",
+    "stageCount": 10,
+    "movedRows": {
+      "qlever/scripts/sdk-service-image-originals.py": "62a5ebee696cc85b6c71230a1cc806231daafafc61a6ca90b276527bc932e5a8",
+      "scripts/lib/independent-admission/qlever-sdk-service-relationship.ts": "23c0e1d2fb93d9bbf20857ff7d902c1625482fed4d573d302b9399f5d0d55d26"
     }
   }
 }

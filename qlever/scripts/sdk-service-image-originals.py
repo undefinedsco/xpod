@@ -26,6 +26,9 @@ def load(name):
 images=load('sdk-image-originals');outer=load('sdk-readonly-executor');collection=load('sdk-readonly-collection');META=outer.binding.META;need=outer.binding.need
 pack_bindings=load('sdk-service-pack-bindings');need(pack_bindings.META==META,'same canonical service pack metadata bound');pack_body_references=pack_bindings.pack_body_references;verify_pack_parent=pack_bindings.verify_pack_parent
 
+IMAGE_INDEX_MEDIA_TYPES=('application/vnd.oci.image.index.v1+json','application/vnd.docker.distribution.manifest.list.v2+json')
+IMAGE_MANIFEST_MEDIA_TYPES=('application/vnd.oci.image.manifest.v1+json','application/vnd.docker.distribution.manifest.v2+json')
+
 def exact_image(value,repository):
     need(isinstance(value,str) and re.fullmatch(re.escape('ghcr.io/undefinedsco/'+repository)+r'@sha256:[a-f0-9]{64}',value),'fixed actual service image repository/digest');return value
 
@@ -592,6 +595,28 @@ def native_runtime_locator(args,run,attempt,sdk,local):
     need(isinstance(args.source_sha,str) and re.fullmatch('[a-f0-9]{40}',args.source_sha) and all(type(value) is int and 0<value<=9007199254740991 for value in (run,attempt)),'same native runtime source/run tuple')
     return dict(artifactId=artifact,artifactSha256=digest,sourceSha=args.source_sha,runId=run,runAttempt=attempt,target='linux-x64',sdkProfile='service-trixie',sdkImageReferenceByDigest=exact_image(sdk,'xpod-qlever-sdk'),localRuntimeImageReferenceByDigest=exact_image(local,'xpod-qlever-local-runtime'),master=dict(path='materials.json',bytes=byte_count,sha256=master_sha))
 
+def inspect_build_metadata(metadata,service):
+    """Bind the actual Buildx metadata to the pushed service image digest.
+
+    `containerimage.config.digest` only exists when the build result is a single
+    image manifest. A multi-platform push (or any index result) reports
+    `containerimage.descriptor.mediaType == application/vnd.oci.image.index.v1+json`
+    and omits the config digest entirely; the field is NOT synthesized. In that
+    shape the metadata is bound to the index digest and the platform manifest and
+    config are joined from the registry originals that are fetched regardless.
+    """
+    need(isinstance(metadata,dict),'actual build action metadata object')
+    need(metadata.get('containerimage.digest')==service.split('@')[1],'actual build action metadata/image digest')
+    descriptor=metadata.get('containerimage.descriptor')
+    if metadata.get('containerimage.config.digest') is not None:
+        need(outer.binding.digest(metadata.get('containerimage.config.digest')),'actual build action metadata/config digest')
+        need(isinstance(descriptor,dict) and descriptor.get('mediaType') in IMAGE_MANIFEST_MEDIA_TYPES
+             and descriptor.get('digest')==metadata['containerimage.digest'],'actual build action single-manifest descriptor')
+        return metadata['containerimage.config.digest']
+    need(isinstance(descriptor,dict) and descriptor.get('mediaType') in IMAGE_INDEX_MEDIA_TYPES
+         and descriptor.get('digest')==metadata['containerimage.digest'],'actual build action index descriptor')
+    return None
+
 def sdk_build_locator(args,run,attempt,sdk):
     """SDK build origin coordinates, separate from this app consumer run."""
     model=getattr(args,'sdk_build_model',None) or 'controller-readonly-v1'
@@ -652,11 +677,12 @@ def capture(args):
             for phase,path in [('before',args.root_manifest_before),('after',args.root_manifest_after)]:
                 desktop=Path(path).parent/'desktop/package.json'
                 if desktop.exists():references['desktopManifest'+phase.title()]=retained.save('desktop-'+phase+'.original.json',outer.bounded_original(desktop,128*1024,lambda:budget.check(0)))
-            metadata=json.loads(outer.bounded_original(out/references['buildMetadata']['path'],META,lambda:budget.check(0)));need(metadata.get('containerimage.digest')==service.split('@')[1] and outer.binding.digest(metadata.get('containerimage.config.digest')),'actual build action metadata/image digest')
+            metadata=json.loads(outer.bounded_original(out/references['buildMetadata']['path'],META,lambda:budget.check(0)));metadata_config=inspect_build_metadata(metadata,service)
             observed={}
             for role,image in [('service',service),('localRuntime',local),('sdk',sdk)]:
                 held=retained.reserve(3*META);value=images.registry_originals(image,'linux-x64',out/role,budget=budget,reserve_seconds=0);refs=[value['manifestOriginal'],value['configOriginal'],*([value['platformManifestOriginal']] if 'platformManifestOriginal' in value else [])];retained.settle(held,refs);observed[role]=value
-            need(observed['service']['configDigest']==metadata['containerimage.config.digest'],'actual build action and independently fetched registry config differ')
+            if metadata_config is not None:need(observed['service']['configDigest']==metadata_config,'actual build action and independently fetched registry config differ')
+            else:need(observed['service'].get('platformManifestOriginal') is not None,'index build metadata requires the platform manifest original')
             service_config=json.loads(outer.bounded_original(out/observed['service']['configOriginal']['path'],META,lambda:budget.check(0)));local_config=json.loads(outer.bounded_original(out/observed['localRuntime']['configOriginal']['path'],META,lambda:budget.check(0)));facts=inspect_relationship(service_config,local_config,args.source_sha)
             references['serviceRootManifest'],output_observation=observe_output_image(service,observed['service']['configDigest'],retained,source,args.source_sha,capture_pack_inputs=getattr(args,'capture_service_pack_originals',False),capture_runtime_members=getattr(args,'capture_service_runtime_members',False))
             abi_runtime_observation=None
