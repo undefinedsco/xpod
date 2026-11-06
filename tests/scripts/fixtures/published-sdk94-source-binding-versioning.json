@@ -8,7 +8,8 @@
     "normalPreviousGroupSha256": "07891e94303e7ea9b16fefe4270f30d22d804d30b91a9f212dc29c8f32e7aa38",
     "normalCurrentGroupSha256": "98701c7af0c1c8aaa3a66d29d326c742272fc927bf330c48a7334c615ce87eae",
     "sdk95GroupSha256": "8cb73cb7654da9303ec345bf324fa0dbead0ec897a61e4729211675fe64a5608",
-    "normalDockerignoreGroupSha256": "5b7a321e4bd135cbb94763f0843b914c3bb56fcb6263ac763bdfc45fcee5c220"
+    "normalDockerignoreGroupSha256": "5b7a321e4bd135cbb94763f0843b914c3bb56fcb6263ac763bdfc45fcee5c220",
+    "sdk96GroupSha256": "66314ba8123badec5986a3f4e6491e82b974751de71783eea765dc6f8394440c"
   },
   "sdk94": {
     "localRuntimeSha256": "78e15d1a7606d1f8467858e4958c1f70e52bec8a01d76b797a5ba24cebb21332",
@@ -30,5 +31,18 @@
     "groupSha256": "66314ba8123badec5986a3f4e6491e82b974751de71783eea765dc6f8394440c",
     "stageCount": 8,
     "activeSelectorRebinds": 1
+  },
+  "sdk97": {
+    "groupSha256": "28ba6d852a7e0a15e01ceac4a3ac954d8d6361e61e7daf9df48f7a88c0914da3",
+    "stageCount": 9,
+    "movedRows": {
+      "scripts/service-pack-originals.cjs": "776fe801679a30da5e928a6fae791a93dddb8b3be302b79e51e390c768652414",
+      "scripts/service-pack-parent.py": "bbd1a5cc172cad0cb2f434fdc6187339b39a1ccf67ba1068adbf108bc2aaccd3",
+      "scripts/lib/independent-admission/candidate-service-pack-output.ts": "5d98d0916f3781f181f58460732ef9e79ece12ad430218f969f7e220d87c2ee4",
+      "scripts/lib/independent-admission/service-pack-copied-payload.ts": "13944a4d18a5fb97a7287e9c93d950eaf147a3972b82e6d86aae68ebe9ee64b4",
+      "scripts/lib/independent-admission/service-pack-input-custody.ts": "0b87e7558b395d51f0b7f1131b6d39e94574350d4b6869205ec37744d669105d",
+      "scripts/lib/independent-admission/service-pack-manifest-replay.ts": "e58a33c2a590a6dc6905a52c2f08f75ee9913f5e5ed2a14cdc8c42ac072ec12a",
+      "scripts/lib/independent-admission/service-pack-public-selected-payload.ts": "0755e818763cc246fd4be33fdcdee7c663764240bdbc826ab9f89d9f8ef57716"
+    }
   }
 }

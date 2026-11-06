@@ -52,8 +52,11 @@ const observe=(groups:readonly GitHubSourceBindingGroup[],group:GitHubSourceBind
 const sdk93=QLEVER_SDK_CONSUMER_GROUPS[92]!;
 const sdk94=QLEVER_SDK_CONSUMER_GROUPS[93]!;
 const sdk95=QLEVER_SDK_CONSUMER_GROUPS[94]!;
-const sdk96=QLEVER_SDK_CONSUMER_GROUPS.at(-1)!;
+const sdk96=QLEVER_SDK_CONSUMER_GROUPS[95]!;
+const sdk97=QLEVER_SDK_CONSUMER_GROUPS.at(-1)!;
+const SDK97=publishedSdk94.sdk97;
 const DOCKERIGNORE='.dockerignore';
+const SERVICE_PACK_PARENT='scripts/service-pack-parent.py';
 const SDK95_GROUP_SHA=publishedSdk94.published.sdk95GroupSha256;
 const SDK96_DOCKERIGNORE=publishedSdk94.sdk96.dockerignoreSha256;
 const SERVICE_SCOPE='scripts/lib/service-workspace-build-scope.json';
@@ -98,46 +101,68 @@ test('SDK95 stays the exact published consumer that produced RC373 native',()=>{
   expect(anyRow(sdk95,DOCKERIGNORE).map(value=>value.sha256)).toEqual([SDK95_DOCKERIGNORE]);
 });
 
-test('SDK96 is the CURRENT consumer and matches the working tree',()=>{
-  expect(QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(96);
+test('SDK96 stays the consumed baseline that RC374 published from',()=>{
+  expect(QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(97);
+  expect(QLEVER_SDK_CONSUMER_GROUPS[95]).toBe(sdk96);
+  expect(whole(sdk96)).toBe(publishedSdk94.published.sdk96GroupSha256);
+  expect(whole(sdk96)).toBe(publishedSdk94.sdk96.groupSha256);
   expect(QLEVER_SDK_CONSUMER_GROUPS.slice(0,95))
     .toEqual([...QLEVER_SDK_EXECUTION_GROUPS,sdk94,sdk95]);
   expect(sdk96).not.toBe(sdk95);
-  expect(whole(sdk96)).toBe(publishedSdk94.sdk96.groupSha256);
-  // Only the primary .dockerignore selector moves; every other selector and
-  // every inherited implementation row keeps SDK95's bytes.
   expect(sdk96.selectors.filter(value=>value.path!==DOCKERIGNORE)).toEqual(
     sdk95.selectors.filter(value=>value.path!==DOCKERIGNORE));
-  // It appears exactly twice: the primary selector and the appended stage.
   expect(anyRow(sdk96,DOCKERIGNORE).map(value=>value.sha256)).toEqual([SDK96_DOCKERIGNORE,SDK96_DOCKERIGNORE]);
   expect((sdk96.secondarySelectorStages??[]).length).toBe((sdk95.secondarySelectorStages??[]).length+1);
-  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-1)).toBe(sdk96);
-  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-2)).toBe(sdk95);
-  // The service-scope allow file exists on disk; it is reachable through the
-  // Docker build context and is not itself a new binding row of this group.
   expect(disk(SERVICE_SCOPE)).toBe(publishedSdk94.sdk96.serviceScopeSha256);
-  for(const binding of [...sdk96.selectors,...(sdk96.secondarySelectors??[]),
-    ...(sdk96.secondarySelectorStages??[]).flat(),...sdk96.sourceBindings]){
+  // SDK96 is history: its pack rows are the pre-fix bytes, so it must NOT be
+  // asserted against the current tree any more.
+  expect(disk(SERVICE_PACK_PARENT)).not.toBe(
+    row(sdk96,SERVICE_PACK_PARENT)[0]!.sha256);
+});
+
+test('SDK97 is the CURRENT consumer over the frozen SDK96 baseline',()=>{
+  expect(QLEVER_SDK_CONSUMER_GROUPS.at(-1)).toBe(sdk97);
+  expect(whole(sdk97)).toBe(SDK97.groupSha256);
+  expect(sdk97).not.toBe(sdk96);
+  // Selectors and secondary selectors are inherited unchanged; one appended
+  // pack-producer stage makes the version selectable at all.
+  expect(sdk97.selectors).toEqual(sdk96.selectors);
+  expect(sdk97.secondarySelectors).toEqual(sdk96.secondarySelectors);
+  expect((sdk97.secondarySelectorStages??[]).length).toBe((sdk96.secondarySelectorStages??[]).length+1);
+  expect(sdk97.secondarySelectorStages!.at(-1)).toEqual([
+    {path:'scripts/service-pack-originals.cjs',sha256:SDK97.movedRows['scripts/service-pack-originals.cjs']}]);
+  // Exactly the seven frozen product rows moved; every other row is SDK96's.
+  for(const [path,hash] of Object.entries(SDK97.movedRows)){
+    expect({path,hashes:row(sdk97,path).map(value=>value.sha256)}).toEqual({path,hashes:[hash]});
+    expect({path,hashes:row(sdk96,path).map(value=>value.sha256)}).not.toEqual({path,hashes:[hash]});
+  }
+  const moved=new Set(Object.keys(SDK97.movedRows));
+  for(const binding of sdk97.sourceBindings){
+    if(moved.has(binding.path))continue;
+    expect({path:binding.path,sha256:binding.sha256})
+      .toEqual({path:binding.path,sha256:row(sdk96,binding.path)[0]!.sha256});
+  }
+  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-1)).toBe(sdk97);
+  // The current tree is admitted by SDK97 alone.
+  for(const binding of [...sdk97.selectors,...(sdk97.secondarySelectors??[]),
+    ...(sdk97.secondarySelectorStages??[]).flat(),...sdk97.sourceBindings]){
     expect({path:binding.path,sha256:disk(binding.path)}).toEqual({path:binding.path,sha256:binding.sha256});
   }
 });
 
-test('old SDK93/94/95 trees select their own frozen group; current selects SDK96',()=>{
-  expect(selectGitHubSourceBindingGroup(QLEVER_SDK_CONSUMER_GROUPS,observe(QLEVER_SDK_CONSUMER_GROUPS,sdk93))).toBe(sdk93);
-  expect(selectGitHubSourceBindingGroup(QLEVER_SDK_CONSUMER_GROUPS,observe(QLEVER_SDK_CONSUMER_GROUPS,sdk94))).toBe(sdk94);
-  expect(selectGitHubSourceBindingGroup(QLEVER_SDK_CONSUMER_GROUPS,observe(QLEVER_SDK_CONSUMER_GROUPS,sdk95))).toBe(sdk95);
+test('SDK96 tree selects SDK96; current tree selects SDK97 and excludes the old pack bytes',()=>{
   expect(selectGitHubSourceBindingGroup(QLEVER_SDK_CONSUMER_GROUPS,observe(QLEVER_SDK_CONSUMER_GROUPS,sdk96))).toBe(sdk96);
-  // A tree carrying the NEW ignore with a STALE css source matches neither:
-  // SDK96 requires the css stage's current bytes too. (The local-runtime value
-  // is identical in SDK95 and SDK96, so it is not a discriminator.)
-  const mixed=new Map(observe(QLEVER_SDK_CONSUMER_GROUPS,sdk96));
-  mixed.set(sourceBindingKey({path:CSS_SOURCE,sha256:''}),SDK94_CSS_SOURCE);
-  expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_CONSUMER_GROUPS,mixed)).toThrow();
-  for(const [file,value] of [[DOCKERIGNORE,'3'.repeat(64)],[LOCAL_RUNTIME,'4'.repeat(64)],[CSS_SOURCE,'5'.repeat(64)]] as const){
-    const changed=new Map(observe(QLEVER_SDK_CONSUMER_GROUPS,sdk96));
-    changed.set(sourceBindingKey({path:file,sha256:''}),value);
-    expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_CONSUMER_GROUPS,changed)).toThrow();
-  }
+  expect(selectGitHubSourceBindingGroup(QLEVER_SDK_CONSUMER_GROUPS,observe(QLEVER_SDK_CONSUMER_GROUPS,sdk97))).toBe(sdk97);
+  // An SDK96-shaped pack producer cannot satisfy SDK97's appended stage, so the
+  // engine falls back to SDK96; SDK96's own pack row is the stale byte, which the
+  // downstream row-level original check refuses because it differs from disk.
+  const stale=new Map(observe(QLEVER_SDK_CONSUMER_GROUPS,sdk97));
+  stale.set(sourceBindingKey({path:'scripts/service-pack-originals.cjs',sha256:''}),
+    row(sdk96,'scripts/service-pack-originals.cjs')[0]!.sha256);
+  const selected=selectGitHubSourceBindingGroup(QLEVER_SDK_CONSUMER_GROUPS,stale);
+  expect(selected).toBe(sdk96);
+  expect(row(selected,'scripts/service-pack-originals.cjs')[0]!.sha256)
+    .not.toBe(disk('scripts/service-pack-originals.cjs'));
 });
 
 test('normal producer keeps the frozen 23-row flat list and all earlier groups',()=>{

@@ -1,5 +1,6 @@
 import {createHash} from 'node:crypto';
 import {createRequire} from 'node:module';
+const PACK_OBSERVATION_BOUNDS:{records:number;metadataBytes:number}=createRequire(import.meta.url)('../../service-pack-originals.cjs').OBSERVATION_BOUNDS;
 import path from 'node:path';
 import {isDeepStrictEqual} from 'node:util';
 const require=createRequire(import.meta.url);
@@ -10,7 +11,7 @@ function need(value:unknown,why:string):asserts value{if(!value)throw Error('Ser
 /** Byte/decision replay only. The private caller supplies actual retained bodies
  * and source reads; ordinary JSON invoking this function never issues a cap. */
 export function replayServicePackManifest(input:{collection:any;repoRoot:string;temporaryRoot:string;afterRoot:Buffer;seedManifest:Buffer;finalManifest:Buffer;publicManifests:ReadonlyMap<string,Buffer>;readObject:(reference:any)=>Buffer;assertWorkspaceSource?:(relative:string,raw:Buffer)=>void}){
- const {collection}=input;if(collection?.details?.nodeRuntimeModel==='actual-linux-node-worker-executable-v1')createRequire(import.meta.url)('../../service-pack-node-runtime.cjs').inspectNodeWorkerRuntime(collection,input.repoRoot);need(collection?.schemaVersion===1&&collection.kind==='actual-service-pack-manifest-inputs'&&collection.authorityVerified===false&&Array.isArray(collection.records)&&collection.records.length<=512,'bounded same-call collection');
+ const {collection}=input;if(collection?.details?.nodeRuntimeModel==='actual-linux-node-worker-executable-v1')createRequire(import.meta.url)('../../service-pack-node-runtime.cjs').inspectNodeWorkerRuntime(collection,input.repoRoot);need(collection?.schemaVersion===1&&collection.kind==='actual-service-pack-manifest-inputs'&&collection.authorityVerified===false&&Array.isArray(collection.records)&&collection.records.length<=PACK_OBSERVATION_BOUNDS.records,'bounded same-call collection');
  const plain=(value:any)=>value&&typeof value==='object'&&!Array.isArray(value)&&Object.getPrototypeOf(value)===Object.prototype;
  const absolute=(value:any)=>typeof value==='string'&&value.startsWith('/')&&path.posix.normalize(value)===value&&!/[\u0000-\u001f\u007f]/u.test(value);
  need(absolute(input.repoRoot)&&absolute(input.temporaryRoot),'canonical producer roots');

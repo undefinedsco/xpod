@@ -1,5 +1,6 @@
 import path from 'node:path';
 import {createRequire} from 'node:module';
+const PACK_OBSERVATION_BOUNDS:{records:number;metadataBytes:number}=createRequire(import.meta.url)('../../service-pack-originals.cjs').OBSERVATION_BOUNDS;
 import {Readable} from 'node:stream';
 import {createHash} from 'node:crypto';
 const {readCopyLedger}=createRequire(import.meta.url)('../../service-pack-copy-ledger.cjs') as {readCopyLedger(raw:Buffer,check:()=>void):any[]};
@@ -8,7 +9,7 @@ function need(value:unknown,why:string):asserts value{if(!value)throw Error('Ser
 /** The single parser checks actual source tar payloads against same-call copied
  * bytes. This proves the selected snapshot, not official registry/Git origin. */
 export async function inspectServicePackCopiedPayloads(input:{collection:any;readBody(reference:any):Promise<Buffer>;remaining:{expandedBytes:number;members:number};readObject?(reference:any):Buffer;check():void;signal?:AbortSignal}){
- const {collection}=input;need(['actual-service-pack-input-custody-v1','actual-service-pack-input-custody-v2'].includes(collection?.details?.inputCustodyModel)&&Array.isArray(collection.records)&&collection.records.length<=512,'bounded same-call copy model');
+ const {collection}=input;need(['actual-service-pack-input-custody-v1','actual-service-pack-input-custody-v2'].includes(collection?.details?.inputCustodyModel)&&Array.isArray(collection.records)&&collection.records.length<=PACK_OBSERVATION_BOUNDS.records,'bounded same-call copy model');
  let verified=0;const used=new Set<number>();
  for(const body of collection.records){
   if(body.kind!=='actual-pack-body'||body.role!=='selected-input-source-tar')continue;
@@ -20,7 +21,7 @@ export async function inspectServicePackCopiedPayloads(input:{collection:any;rea
 }
 
 export function verifyServicePackCopiedMembers(input:{collection:any;body:any;members:any[];used:Set<number>;readObject?(reference:any):Buffer;check():void}){
- const {collection,body,used}=input;need(['actual-service-pack-input-custody-v1','actual-service-pack-input-custody-v2'].includes(collection?.details?.inputCustodyModel)&&Array.isArray(collection.records)&&collection.records.length<=512,'bounded same-call copy model');
+ const {collection,body,used}=input;need(['actual-service-pack-input-custody-v1','actual-service-pack-input-custody-v2'].includes(collection?.details?.inputCustodyModel)&&Array.isArray(collection.records)&&collection.records.length<=PACK_OBSERVATION_BOUNDS.records,'bounded same-call copy model');
   input.check();need(typeof body.destinationRoot==='string'&&path.posix.isAbsolute(body.destinationRoot)&&body.copiedRecords&&Number.isSafeInteger(body.copiedRecords.first)&&Number.isSafeInteger(body.copiedRecords.last)&&body.copiedRecords.first>=0&&body.copiedRecords.last>=body.copiedRecords.first&&body.copiedRecords.last<collection.records.length,'exact selected copy record interval');
   const expected=new Map<string,any>();
   const add=(row:any)=>{

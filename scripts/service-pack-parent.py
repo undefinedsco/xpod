@@ -24,6 +24,38 @@ snapshots=importlib.util.module_from_spec(snapshot_spec);snapshot_spec.loader.ex
 def closed_receipt(receipt):
     return (type(receipt.get('exit')) is int and receipt['exit']==0 and receipt.get('actualWait') is True and receipt.get('ownedGroupAbsentAfterWait') is True and receipt.get('rawClosedBeforeHash') is True and all(key in receipt and receipt[key] is None for key in ('signal','resourceStop','supervisorError')) and isinstance(receipt.get('cleanupErrors'),list) and not receipt['cleanupErrors'])
 
+def pack_failure(receipt, raw, evidence):
+    """Concrete failure text for the parent wrapper.
+
+    The child raw stream is retained inside the failed build layer, so the CI
+    log only ever showed the generic wrapper line and the real cause had to be
+    reproduced by hand. The raw bytes are already closed and bounded by the
+    supervisor; this surfaces a short, control-character-free tail of the
+    child's own diagnostics. It never turns a failure into a success, never
+    invents a stage result, and never prints environment or credentials.
+    """
+    status = 'exit=' + str(receipt.get('exit'))
+    if receipt.get('signal') is not None:
+        status += ' signal=' + str(receipt.get('signal'))
+    if receipt.get('resourceStop'):
+        status += ' resourceStop=' + str(receipt['resourceStop'])[:120]
+    if receipt.get('supervisorError'):
+        status += ' supervisor=' + str(receipt['supervisorError'])[:160]
+    detail = ''
+    if isinstance(raw, str) and raw:
+        text = raw.replace('\x00', '')
+        lines = [line.rstrip() for line in text.splitlines() if line.strip()]
+        # Prefer the child's own exception lines; fall back to the tail.
+        interesting = [line for line in lines if line.startswith(('Error', 'TypeError', 'ValueError', 'RangeError'))]
+        chosen = interesting[:3] if interesting else lines[-3:]
+        joined = ' | '.join(chosen)
+        detail = '; child: ' + joined[:1024]
+    elif (evidence / 'pack.raw.log').is_file():
+        detail = '; child raw retained at ' + str(evidence / 'pack.raw.log')
+    return ('actual service pack did not close successfully (' + status + ')' + detail
+            + '; retained original pack receipt required')
+
+
 def _run(source_sha,include_build=False,root_check=lambda:None,root_observation=None):
     if not re.fullmatch('[0-9a-f]{40}',source_sha):
         raise ValueError('exact candidate source SHA required')
@@ -74,9 +106,9 @@ def _run(source_sha,include_build=False,root_check=lambda:None,root_observation=
     root_check()
     if time.monotonic()>=monotonic_end:raise TimeoutError('same parent end exhausted before pack')
     command=['node',str(HERE/'run-npm-pack.cjs'),'.test-data/service-pack','.test-data/service-pack-cache','service','--retain-service-originals',source_sha,str(unix_end),str(worker_ceiling)]
-    receipt,_=supervisor.run_stage('pack',command,evidence,root,timeout=duration,absolute_deadline=monotonic_end,raw_limit_bytes=META,receipt_limit_bytes=META,stop_bytes=LIMITS['freeFloorBytes'])
+    receipt,raw=supervisor.run_stage('pack',command,evidence,root,timeout=duration,absolute_deadline=monotonic_end,raw_limit_bytes=META,receipt_limit_bytes=META,stop_bytes=LIMITS['freeFloorBytes'])
     if receipt['exit']!=0 or receipt['signal'] is not None or receipt['resourceStop'] or not receipt['actualWait'] or not receipt['ownedGroupAbsentAfterWait'] or not receipt['rawClosedBeforeHash']:
-        raise RuntimeError('actual service pack did not close successfully; retained original pack receipt required')
+        raise RuntimeError(pack_failure(receipt,raw,evidence))
     rows=[];charged=0
     for directory in [root/'.test-data/service-pack-originals',root/'.test-data/service-pack-bodies',evidence]:
         for current,dirs,names in os.walk(directory,followlinks=False):
