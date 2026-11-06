@@ -2741,6 +2741,35 @@ const SDK100_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK99_GROUP,
   secondarySelectorStages:Object.freeze((SDK99_GROUP.secondarySelectorStages??[]).map(stage=>Object.freeze(
     stage.map(row=>Object.freeze({...row,sha256:SDK100_SOURCE_HASHES[row.path]??row.sha256}))))),
   sourceBindings:Object.freeze(SDK99_GROUP.sourceBindings.map(row=>Object.freeze({...row,sha256:SDK100_SOURCE_HASHES[row.path]??row.sha256})))});
+/** SDK101 is the CURRENT consumer for the RC378 service-pack archive-bound repair.
+ * This ONE generation covers both changed core producers: the service collector
+ * and its pack bindings planner. The repair aligns the Docker cp stdout archive
+ * limit for the pack role with the pack's OWN 8MiB observation bound, which the
+ * producer (`scripts/service-pack-originals.cjs`) already enforces and the TS
+ * readers already use. The globally-configured 4MiB `metadataBytes` stays the
+ * upstream supervised build/pack RAW LOG cap and is deliberately untouched, so
+ * `verify_stage_receipt`'s `rawByteLimit==META` assertion must NOT change: it is
+ * a different quantity from the cp archive bound. This is NOT a new wider global
+ * limit.
+ *
+ * SDK100 and normal groups 1..4 remain published staging history and stay byte
+ * identical. Neither changed producer is a normal-source input (neither is a
+ * RECIPE_FILE and no normal group owns either path), and
+ * `scripts/lib/module-artifact-limits.json` is untouched, so NO normal group 5 is
+ * appended and no workflow pin moves. H still shifts through `qleverTree`, which
+ * root commits and hashes later.
+ *
+ * The collector keeps its EXISTING secondary stage, so that stage hash is
+ * advanced IN PLACE (never duplicated) and no new primary selector is added; the
+ * pack-bindings planner is a plain sourceBindings row and is simply rebound. */
+const SDK101_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
+  'qlever/scripts/sdk-service-image-originals.py':'4a1cab2d35865d75bf45f718be1c63f6840ccb6b9114dba383eac879b9116413',
+  'qlever/scripts/sdk-service-pack-bindings.py':'25065fa1b7c6eab5cb1006294550b356078aaeff9d08c1245a5b6e5c07e84954',
+});
+const SDK101_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK100_GROUP,
+  secondarySelectorStages:Object.freeze((SDK100_GROUP.secondarySelectorStages??[]).map(stage=>Object.freeze(
+    stage.map(row=>Object.freeze({...row,sha256:SDK101_SOURCE_HASHES[row.path]??row.sha256}))))),
+  sourceBindings:Object.freeze(SDK100_GROUP.sourceBindings.map(row=>Object.freeze({...row,sha256:SDK101_SOURCE_HASHES[row.path]??row.sha256})))});
 export const QLEVER_NORMAL_BUILD_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([SDK93_GROUP]);
 export const QLEVER_SDK_NORMAL_SOURCE_BINDINGS:readonly GitHubSourceBinding[]=Object.freeze([
  Object.freeze({path:'.github/workflows/candidate.yml',sha256:'1446b2ceb6c53b8888e07d0b822854b934c95d508f93dfd901a4687e28d22d9d'}),
@@ -2832,8 +2861,8 @@ export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=O
  ...QLEVER_SDK_EXECUTION_GROUPS,
 ]);
 /** Consumer-only lists derive the published execution groups and append the
- * frozen SDK94..SDK99 tuples plus the current SDK100 tuple.
+ * frozen SDK94..SDK100 tuples plus the current SDK101 tuple.
  * QLEVER_SDK_EXECUTION_GROUPS itself stays at exactly SDK1..93 for the published
  * producer contract. */
-export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP]);
-export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP]);
+export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP]);
+export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP]);

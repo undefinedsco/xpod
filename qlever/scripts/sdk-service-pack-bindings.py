@@ -7,6 +7,14 @@ from pathlib import Path
 META=json.loads((Path(__file__).resolve().parents[2]/'scripts/lib/module-artifact-limits.json').read_bytes())['metadataBytes']
 def need(value,reason):
     if not value:raise ValueError('Service pack bindings: '+reason)
+# The pack observation set is NOT one metadata original: it carries a probe row
+# per resolution candidate, a custody row per probe, an exposure row per manifest
+# edge and one row per selected file, plus the retained metadata objects. The
+# producer (scripts/service-pack-originals.cjs) owns these two closed bounds and
+# exports them as OBSERVATION_BOUNDS; the readers must use the SAME numbers.
+# `metadataBytes` bounds ONE original, so it cannot bound this archive.
+PACK_OBSERVATION_RECORDS=2048
+PACK_OBSERVATION_METADATA_BYTES=8*1024**2
 OUTPUT_PACK_ROLE='copy-pack-inputs'
 OUTPUT_PACK_PHASE_ROLE='copy-pack-phase'
 OUTPUT_PACK_BODY_ROLE='copy-pack-body'
@@ -41,7 +49,7 @@ def body_copy_bound(reference):
 def service_pack_worker_plans(context,record,references):
     need(record.get('schemaVersion')==1 and record.get('kind')=='actual-stopped-service-image-pack-inputs' and record.get('imageReferenceByDigest')==context['image'] and record.get('containerId')==context['cid'],'same stopped image pack observation')
     bodies=record.get('bodies');need(isinstance(bodies,list) and len(bodies)==len(references) and [row.get('reference') for row in bodies]==references,'exact ordered actual body captures')
-    phases=[(OUTPUT_PACK_ROLE,record.get('stage'),META,None),(OUTPUT_PACK_PHASE_ROLE,record.get('phase',{}).get('stage'),4*META,None)]+[(OUTPUT_PACK_BODY_ROLE,row.get('stage'),body_copy_bound(ref),ref) for row,ref in zip(bodies,references)]
+    phases=[(OUTPUT_PACK_ROLE,record.get('stage'),PACK_OBSERVATION_METADATA_BYTES,None),(OUTPUT_PACK_PHASE_ROLE,record.get('phase',{}).get('stage'),4*META,None)]+[(OUTPUT_PACK_BODY_ROLE,row.get('stage'),body_copy_bound(ref),ref) for row,ref in zip(bodies,references)]
     result=[]
     for role,stage,maximum,ref in phases:
         need(isinstance(stage,dict),'complete actual pack capture stage')
