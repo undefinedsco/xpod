@@ -12,7 +12,8 @@
     "sdk96GroupSha256": "66314ba8123badec5986a3f4e6491e82b974751de71783eea765dc6f8394440c",
     "sdk97GroupSha256": "28ba6d852a7e0a15e01ceac4a3ac954d8d6361e61e7daf9df48f7a88c0914da3",
     "sdk98GroupSha256": "3ef2090137c10858a4365d22759a73c0b596afd4564e7813013361cbe90d8ce0",
-    "normalRegistryGroupSha256": "fed1203d4755f8e5dbd6c941abd4ecdff414b2780d972664b4b6419cead8f432"
+    "normalRegistryGroupSha256": "fed1203d4755f8e5dbd6c941abd4ecdff414b2780d972664b4b6419cead8f432",
+    "sdk99GroupSha256": "1267dd43d20be00d275a614e024fd72a041ebcb009149e1a7857f7d8c357512c"
   },
   "sdk94": {
     "localRuntimeSha256": "78e15d1a7606d1f8467858e4958c1f70e52bec8a01d76b797a5ba24cebb21332",
@@ -67,5 +68,16 @@
     "selectorRebinds": [
       "qlever/scripts/sdk-image-originals.py"
     ]
+  },
+  "sdk100": {
+    "groupSha256": "fe1e8da7a0c7d144c6e79114c676019b37e3b6fba205c7887f2ab22e022812b8",
+    "stageCount": 10,
+    "stageAdvanced": [
+      "qlever/scripts/sdk-service-image-originals.py"
+    ],
+    "movedRows": {
+      "qlever/scripts/sdk-service-image-originals.py": "fd8509c65eca6337b1dc923e5aec696da5e295eb0e6abe04bcf74fbd808c1292",
+      "scripts/lib/independent-admission/candidate-service-image-output.ts": "13a7e1a37bcd0883a6f98a1573d61f9ede1191722625004ca872f66128de6e8d"
+    }
   }
 }

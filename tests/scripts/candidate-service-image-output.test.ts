@@ -18,6 +18,80 @@ describe('actual candidate service image output byte mechanics',()=>{
   for(const index of roles.keys())for(const kind of ['argv','wait','window','supervision','raw']){const input=fixture();if(kind==='argv')input.stageJSON(index,'receipt',v=>v.command.push('--privileged'));if(kind==='wait')input.stageJSON(index,'receipt',v=>v.actualWait=false);if(kind==='window')input.stageJSON(index,'receipt',v=>v.completedUnixNs=2e9);if(kind==='supervision')input.stageJSON(index,'supervisionReceipt',v=>v.ownedGroupAbsentAfterWait=false);if(kind==='raw')input.values.set(input.master.outputImageObservation.stages[index]!.stdout.path,Buffer.from('changed'));expect(()=>inspectCandidateServiceImageOutput(input)).toThrow();}
   const missing=fixture();missing.master.outputImageObservation.stages.pop();expect(()=>inspectCandidateServiceImageOutput(missing)).toThrow();
  });
+ it('accepts BOTH real Docker .Image shapes against the same DISTINCT reference/config pair',()=>{
+  // The immutable reference digest and the platform config digest are distinct
+  // values in every real image; a manifest digest is never equal to its config
+  // digest. Both store shapes below therefore share ONE reference/config pair.
+  const reference='a'.repeat(64),configDigest='b'.repeat(64);
+  // Legacy config-ID store shape: .Image is the resolved config digest.
+  const configShape=fixture();
+  const configValue=inspectCandidateServiceImageOutput(configShape);
+  expect(configValue.imageReferenceByDigest).toBe('ghcr.io/undefinedsco/xpod@sha256:'+reference);
+  expect(configValue.configDigest).toBe('sha256:'+configDigest);
+  const configInspect=JSON.parse(configShape.values.get(configShape.master.outputImageObservation.stages[2]!.stdout.path)!.toString());
+  expect(configInspect.Image).toBe('sha256:'+configDigest);
+  expect(configInspect.Config.Image).toBe('ghcr.io/undefinedsco/xpod@sha256:'+reference);
+  // Reference/index store shape: .Image is the digest of the created reference.
+  const referenceShape=fixture({imageId:'reference'});
+  const referenceValue=inspectCandidateServiceImageOutput(referenceShape);
+  expect(referenceValue.imageReferenceByDigest).toBe(configValue.imageReferenceByDigest);
+  expect(referenceValue.configDigest).toBe(configValue.configDigest);
+  const referenceInspect=JSON.parse(referenceShape.values.get(referenceShape.master.outputImageObservation.stages[2]!.stdout.path)!.toString());
+  expect(referenceInspect.Image).toBe('sha256:'+reference);
+  expect(referenceInspect.Config.Image).toBe('ghcr.io/undefinedsco/xpod@sha256:'+reference);
+  // The two reported ids really differ, and neither equals a collapsed value.
+  expect(referenceInspect.Image).not.toBe(configInspect.Image);
+  expect(referenceInspect.Image).not.toBe(configInspect.Config.Image);
+ });
+ it('accepts the actual RC377 retained index identity alongside the legacy config id',()=>{
+  // Nonsecret constants from the real RC377 artifact.
+  const index='01fc2f1ac6d93280d236007f4169fa7f0261131e33c67d10cfbe63583e534ab6';
+  const config='18e32901bf9bbf9062b2160687d1933144072082f0512eb40e7aface75687386';
+  // Retained RC377 pair: index 01fc… and config 18e… are genuinely different, so
+  // neither shape may be collapsed into the other.
+  expect('sha256:'+index).not.toBe('sha256:'+config);
+  const indexShape=fixture({referenceDigest:index,imageId:'reference'});
+  // The reference is the index digest while the config digest stays distinct, so
+  // the reported reference id is NOT a config digest in this shape.
+  const indexValue=inspectCandidateServiceImageOutput(indexShape);
+  expect(indexValue.imageReferenceByDigest).toBe('ghcr.io/undefinedsco/xpod@sha256:'+index);
+  expect(indexValue.configDigest).not.toBe('sha256:'+index);
+  const indexInspect=JSON.parse(indexShape.values.get(indexShape.master.outputImageObservation.stages[2]!.stdout.path)!.toString());
+  expect(indexInspect.Image).toBe('sha256:'+index);
+  expect(indexShape.master.outputImageObservation.imageReferenceByDigest).toBe('ghcr.io/undefinedsco/xpod@sha256:'+index);
+  // A config-ID store shape pointed at the same index reference still passes,
+  // and its reported id is a config digest distinct from the index digest.
+  const configShape=fixture({referenceDigest:index});
+  const configInspect=JSON.parse(configShape.values.get(configShape.master.outputImageObservation.stages[2]!.stdout.path)!.toString());
+  expect(configInspect.Image).toBe('sha256:'+'b'.repeat(64));
+  expect(configInspect.Image).not.toBe('sha256:'+index);
+  expect(inspectCandidateServiceImageOutput(configShape).imageReferenceByDigest)
+    .toBe('ghcr.io/undefinedsco/xpod@sha256:'+index);
+ });
+ it('rejects unrelated, unprefixed, or extra image ids and tag references',()=>{
+  const reference='a'.repeat(64);
+  const cases:string[]=[
+   'sha256:'+'f'.repeat(64),                       // unrelated digest
+   'f'.repeat(64),                                 // unprefixed digest
+   reference,                                      // digest without sha256: prefix
+   'sha256:'+'b'.repeat(64)+' ','sha256:'+'b'.repeat(63), // malformed config id
+  ];
+  for(const bad of cases){
+   const input=fixture({referenceDigest:reference});
+   input.stageJSON(2,'stdout',(v:any)=>{v.Image=bad;});
+   expect(()=>inspectCandidateServiceImageOutput(input)).toThrow();
+  }
+  // The reference itself must stay an exact immutable digest reference.
+  const badReferences:(string|undefined)[]=['ghcr.io/undefinedsco/xpod:latest','ghcr.io/undefinedsco/xpod@sha256:abc',undefined];
+  for(const badReference of badReferences){
+   const input=fixture();
+   input.master.serviceImageReferenceByDigest=badReference as any;
+   expect(()=>inspectCandidateServiceImageOutput(input)).toThrow();
+  }
+  // Config.Image must remain exactly the immutable reference, never a tag.
+  const configImage=fixture();configImage.stageJSON(2,'stdout',(v:any)=>{v.Config.Image='ghcr.io/undefinedsco/xpod:latest';});
+  expect(()=>inspectCandidateServiceImageOutput(configImage)).toThrow();
+ });
  it('rejects wrong image/config/CID/nonce or any started container',()=>{
   for(const mutate of [(v:any)=>v.Image='sha256:'+'f'.repeat(64),(v:any)=>v.Id='f'.repeat(64),(v:any)=>v.Name='/foreign',(v:any)=>v.Config.Image='foreign',(v:any)=>v.Config.Labels['xpod.service-output-owner']='bad',(v:any)=>v.State.Running=true,(v:any)=>v.State.StartedAt='2026-01-01T00:00:00Z']){const input=fixture();input.stageJSON(2,'stdout',mutate);expect(()=>inspectCandidateServiceImageOutput(input)).toThrow();}
  });

@@ -2715,6 +2715,32 @@ const SDK99_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
 const SDK99_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK98_GROUP,
   selectors:Object.freeze(SDK98_GROUP.selectors.map(row=>Object.freeze({...row,sha256:SDK99_SOURCE_HASHES[row.path]??row.sha256}))),
   sourceBindings:Object.freeze(SDK98_GROUP.sourceBindings.map(row=>Object.freeze({...row,sha256:SDK99_SOURCE_HASHES[row.path]??row.sha256})))});
+/** SDK100 is the CURRENT consumer for the RC377 stopped-output-container repair.
+ * This ONE generation covers the whole repair: the service collector now reads the
+ * real stopped container identity, and its matching TS consumer accepts both real
+ * Docker `.Image` store shapes (config-ID and created-reference/index-ID) while
+ * still requiring the exact immutable reference, CID, name, nonce and the
+ * never-started conditions.
+ *
+ * SDK99 and normal groups 1..4 are published staging history and stay byte
+ * identical. Neither changed product is a normal-source input (the collector is
+ * not a RECIPE_FILE and no normal group owns either path), so NO normal group 5
+ * is appended; H still moves through `qleverTree` and root computes the committed
+ * identity later. QLEVER_NORMAL_BUILD_GROUPS stays [SDK93_GROUP].
+ *
+ * The collector already owns an EXISTING secondary stage, so that stage hash is
+ * advanced IN PLACE (never duplicated) and no new primary selector is added; the
+ * TS consumer is a plain sourceBindings row and is simply rebound. Both paths are
+ * selector-free, so one advanced stage plus the two rebound rows discriminates the
+ * new tree, and a mixed tree is refused. */
+const SDK100_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
+  'qlever/scripts/sdk-service-image-originals.py':'fd8509c65eca6337b1dc923e5aec696da5e295eb0e6abe04bcf74fbd808c1292',
+  'scripts/lib/independent-admission/candidate-service-image-output.ts':'13a7e1a37bcd0883a6f98a1573d61f9ede1191722625004ca872f66128de6e8d',
+});
+const SDK100_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK99_GROUP,
+  secondarySelectorStages:Object.freeze((SDK99_GROUP.secondarySelectorStages??[]).map(stage=>Object.freeze(
+    stage.map(row=>Object.freeze({...row,sha256:SDK100_SOURCE_HASHES[row.path]??row.sha256}))))),
+  sourceBindings:Object.freeze(SDK99_GROUP.sourceBindings.map(row=>Object.freeze({...row,sha256:SDK100_SOURCE_HASHES[row.path]??row.sha256})))});
 export const QLEVER_NORMAL_BUILD_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([SDK93_GROUP]);
 export const QLEVER_SDK_NORMAL_SOURCE_BINDINGS:readonly GitHubSourceBinding[]=Object.freeze([
  Object.freeze({path:'.github/workflows/candidate.yml',sha256:'1446b2ceb6c53b8888e07d0b822854b934c95d508f93dfd901a4687e28d22d9d'}),
@@ -2806,8 +2832,8 @@ export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=O
  ...QLEVER_SDK_EXECUTION_GROUPS,
 ]);
 /** Consumer-only lists derive the published execution groups and append the
- * frozen SDK94..SDK98 tuples plus the current SDK99 tuple.
+ * frozen SDK94..SDK99 tuples plus the current SDK100 tuple.
  * QLEVER_SDK_EXECUTION_GROUPS itself stays at exactly SDK1..93 for the published
  * producer contract. */
-export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP]);
-export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP]);
+export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP]);
+export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP]);

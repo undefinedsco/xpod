@@ -398,10 +398,18 @@ def image_worker(args):
     os.execvp(command[0],command)
 
 def inspect_output_container(raw,image,config,cid,name,nonce,*,require_never_started=True):
+    """Bind one stopped output container to the exact created reference.
+
+    Docker's image store may report `.Image` as the already bound config ID or
+    as the exact immutable reference digest; neither permits unrelated
+    identities.
+    """
     value=json.loads(raw)
-    need(isinstance(value,dict) and value.get('Id')==cid and value.get('Image')==config and value.get('Name')=='/'+name,'actual stopped output CID/config/name')
+    need(isinstance(value,dict) and value.get('Id')==cid and value.get('Name')=='/'+name,'actual stopped output CID/name')
+    need(isinstance(config,str) and re.fullmatch(r'sha256:[a-f0-9]{64}',config),'actual output config digest')
     configuration=value.get('Config',{});state=value.get('State',{})
     need(configuration.get('Image')==image and configuration.get('Labels',{}).get(OUTPUT_LABEL)==nonce,'actual output image digest/owner nonce')
+    need(value.get('Image') in (image.split('@',1)[1],config),'actual stopped output image identity differs from the created reference')
     if require_never_started:need(state.get('Running') is False and state.get('Status')=='created' and state.get('Pid')==0 and state.get('StartedAt')=='0001-01-01T00:00:00Z','output container must never have started')
     return value
 

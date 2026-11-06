@@ -6,13 +6,25 @@ export function tar(name:string,body:Buffer,type='0',mode=0o644){
  const header=Buffer.alloc(512);if(Buffer.byteLength(name)>100){const at=name.lastIndexOf('/');if(at<0||Buffer.byteLength(name.slice(0,at))>155||Buffer.byteLength(name.slice(at+1))>100)throw Error('fixture ustar path too long');header.write(name.slice(at+1),0,100);header.write(name.slice(0,at),345,155);}else header.write(name,0,100);header.write(mode.toString(8).padStart(7,'0')+'\0',100);header.write('0000000\0',108);header.write('0000000\0',116);header.write(body.length.toString(8).padStart(11,'0')+'\0',124);header.fill(32,148,156);header.write(type,156);header.write('ustar\0',257);let checksum=0;for(const b of header)checksum+=b;header.write(checksum.toString(8).padStart(6,'0')+'\0 ',148);return Buffer.concat([header,body,Buffer.alloc((512-body.length%512)%512),Buffer.alloc(1024)]);
 }
 /** Generate simulated worker and job receipts from one optional fixture clock. */
-export function fixture(options:{sourceSha?:string;version?:string;descriptionBytes?:number;clock?:{startedMs:number;closedMs:number}}={}){
+export function fixture(options:{sourceSha?:string;version?:string;descriptionBytes?:number;clock?:{startedMs:number;closedMs:number};referenceDigest?:string;imageId?:'config'|'reference'}={}){
  const {clock}=options;
  const values=new Map<string,Buffer>();const ref=(path:string,body:Buffer)=>{values.set(path,body);return {path,bytes:body.length,sha256:sha(body)};};
- const image='ghcr.io/undefinedsco/xpod@sha256:'+'a'.repeat(64),config='sha256:'+'b'.repeat(64),cid='c'.repeat(64),nonce='d'.repeat(32),name='xpod-service-output-'+nonce,source='/checkout',controller=source+'/qlever/scripts/sdk-service-image-originals.py',sourceSha=options.sourceSha??'e'.repeat(40),version=options.version??'1.2.3-rc.8.1';
+ // ORIGINAL baselines are preserved exactly: the immutable reference digest is
+ // `a*` and the platform config digest is `b*` — two DISTINCT values — and
+ // Docker reports `.Image` as the config digest (the legacy config-ID shape).
+ // `imageId` explicitly selects which REAL shape the fake Docker store reports:
+ //   'config'  -> .Image is the config digest (default, unchanged baseline)
+ //   'reference' -> .Image is the digest of the immutable reference (RC377 index
+ //                  shape); the reference and config digests stay distinct.
+ // A manifest digest is never equal to its config digest, so these two values
+ // never collapse into one.
+ const referenceDigest=options.referenceDigest??'a'.repeat(64),configDigest='b'.repeat(64),
+  image='ghcr.io/undefinedsco/xpod@sha256:'+referenceDigest,config='sha256:'+configDigest,
+  reportedId=options.imageId==='reference'?'sha256:'+referenceDigest:'sha256:'+configDigest,
+  cid='c'.repeat(64),nonce='d'.repeat(32),name='xpod-service-output-'+nonce,source='/checkout',controller=source+'/qlever/scripts/sdk-service-image-originals.py',sourceSha=options.sourceSha??'e'.repeat(40),version=options.version??'1.2.3-rc.8.1';
  // Sanitized image manifest deliberately differs from afterRoot; this leaf
  // proves only actual namespace/version plus same image/config and raw bytes.
- const body=raw({name:'@undefineds.co/xpod',version,...(options.descriptionBytes?{description:'X'.repeat(options.descriptionBytes)}:{})}),inspection={Id:cid,Image:config,Name:'/'+name,Config:{Image:image,Labels:{'xpod.service-output-owner':nonce}},State:{Running:false,Status:'created',Pid:0,StartedAt:'0001-01-01T00:00:00Z'}};
+ const body=raw({name:'@undefineds.co/xpod',version,...(options.descriptionBytes?{description:'X'.repeat(options.descriptionBytes)}:{})}),inspection={Id:cid,Image:reportedId,Name:'/'+name,Config:{Image:image,Labels:{'xpod.service-output-owner':nonce}},State:{Running:false,Status:'created',Pid:0,StartedAt:'0001-01-01T00:00:00Z'}};
  const output={pull:Buffer.from('pulled'),create:Buffer.from(cid+'\n'),inspect:raw(inspection),copy:tar('package.json',body),remove:Buffer.from(cid+'\n'),'confirm-absent':Buffer.alloc(0)} as Record<string,Buffer>;
  const stages=roles.map((role,index)=>{
   const label='service-output-'+role,parent='stages/'+label+'/',stdout=ref(parent+'stdout.raw',output[role]!),stderr=ref(parent+'stderr.raw',Buffer.alloc(0)),supervisionRaw=ref('stages/'+label+'.raw.log',Buffer.alloc(0));
