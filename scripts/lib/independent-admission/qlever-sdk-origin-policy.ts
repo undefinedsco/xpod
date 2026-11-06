@@ -2770,6 +2770,32 @@ const SDK101_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK100_GROUP,
   secondarySelectorStages:Object.freeze((SDK100_GROUP.secondarySelectorStages??[]).map(stage=>Object.freeze(
     stage.map(row=>Object.freeze({...row,sha256:SDK101_SOURCE_HASHES[row.path]??row.sha256}))))),
   sourceBindings:Object.freeze(SDK100_GROUP.sourceBindings.map(row=>Object.freeze({...row,sha256:SDK101_SOURCE_HASHES[row.path]??row.sha256})))});
+/** SDK102 is the CURRENT consumer for the RC379 typed pack-stream custody fix.
+ * The service relationship reader now accepts the pack metadata archive as ONE
+ * exact typed TAR stream bounded by the producer's own exported 8MiB observation
+ * bound, while the general 4MiB metadata ceiling still rejects anything not
+ * explicitly registered. Only `qlever-sdk-service-relationship.ts` changed.
+ *
+ * That path had NO selector and NO stage in every earlier generation (it was a
+ * plain sourceBindings row), so it cannot be discriminated by rebinding alone:
+ * probed in memory, a sourceBindings-only SDK102 makes BOTH the SDK101 and the
+ * current tree throw 'observed value differs from owned'. One APPENDED secondary
+ * stage over that exact path is therefore required; SDK101's own ten stages stay
+ * untouched. Mixed trees are refused.
+ *
+ * SDK1..101, normal groups 1..4 and flat23 stay byte identical. The changed path
+ * lives under scripts/, is not a RECIPE_FILE and is not referenced by the normal
+ * proof, and `qleverTree` does not include it, so the normal SDK input identity H
+ * does NOT move: no normal group 5, no workflow pin, no global bound change. */
+const SDK102_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
+  'scripts/lib/independent-admission/qlever-sdk-service-relationship.ts':'f30f78f1b7e26d973f019bc2ee8ff90a9c47da11d7d865e3181de772bd744bf2',
+});
+const SDK102_TYPED_STREAM_STAGE=Object.freeze([
+  Object.freeze({path:'scripts/lib/independent-admission/qlever-sdk-service-relationship.ts',sha256:SDK102_SOURCE_HASHES['scripts/lib/independent-admission/qlever-sdk-service-relationship.ts']!}),
+]);
+const SDK102_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK101_GROUP,
+  secondarySelectorStages:Object.freeze([...(SDK101_GROUP.secondarySelectorStages??[]),SDK102_TYPED_STREAM_STAGE]),
+  sourceBindings:Object.freeze(SDK101_GROUP.sourceBindings.map(row=>Object.freeze({...row,sha256:SDK102_SOURCE_HASHES[row.path]??row.sha256})))});
 export const QLEVER_NORMAL_BUILD_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([SDK93_GROUP]);
 export const QLEVER_SDK_NORMAL_SOURCE_BINDINGS:readonly GitHubSourceBinding[]=Object.freeze([
  Object.freeze({path:'.github/workflows/candidate.yml',sha256:'1446b2ceb6c53b8888e07d0b822854b934c95d508f93dfd901a4687e28d22d9d'}),
@@ -2861,8 +2887,8 @@ export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=O
  ...QLEVER_SDK_EXECUTION_GROUPS,
 ]);
 /** Consumer-only lists derive the published execution groups and append the
- * frozen SDK94..SDK100 tuples plus the current SDK101 tuple.
+ * frozen SDK94..SDK101 tuples plus the current SDK102 tuple.
  * QLEVER_SDK_EXECUTION_GROUPS itself stays at exactly SDK1..93 for the published
  * producer contract. */
-export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP]);
-export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP]);
+export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP]);
+export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP]);

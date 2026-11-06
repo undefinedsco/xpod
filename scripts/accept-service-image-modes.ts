@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readFile, writeFile, lstat, statfs, rm } from 'node:fs/
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { setTimeout as delay } from 'node:timers/promises';
 import YAML from 'yaml';
 import { setupAccount } from '../tests/integration/helpers/solidAccount';
 import { createCloudAccountPassword, prepareManagedLocalAcceptancePod, parseKeyFile } from './accept-live-gateway-login-chat';
@@ -32,6 +33,126 @@ export function ownedModeSecretCellEnvironment(mode: string, environment: Record
     return { ...environment, XPOD_SECRET_CELL_KEY_ID: 'matrix-owned-v1', XPOD_SECRET_CELL_KEY: key.toString('base64') };
   } finally { key.fill(0); }
 }
+/** Postcondition of the ordered bootstrap: the local runtime finished its own
+ * first-run POST /provision/nodes against the already-ready same-run Cloud and
+ * persisted the Cloud-issued state. This checks presence and shape only; it is
+ * not the authority, and it never substitutes for the live guards. */
+export function assertManagedLocalRegistration(status: any): void {
+  need(status?.registered === true, 'Managed local node is not registered with the same-run Cloud');
+  need(typeof status.publicUrl === 'string' && status.publicUrl.trim(), 'Managed local node has no Cloud-issued canonical URL');
+  const canonical = new URL(status.publicUrl);
+  need(canonical.protocol === 'https:', 'Managed local canonical route must be HTTPS');
+  need(!['localhost', '127.0.0.1', '::1'].includes(canonical.hostname), 'Managed local canonical route must be a Cloud-assigned address');
+  need(typeof status.provisionCode === 'string' && status.provisionCode.trim(), 'Managed local node has no usable provision code');
+}
+
+/** Ordered managed-local initialization, as one responsibility.
+ *
+ * Cloud (and its infrastructure) must be started and its real API must answer
+ * before Local starts, because Local's own first-run POST /provision/nodes is
+ * what produces the Cloud-issued registration. Any failure or cancellation
+ * before Local starts must leave Local unstarted. Both the initial topology and
+ * every derived-policy recreation go through this function.
+ *
+ * The operations are injected so the ordering contract is directly testable
+ * without a container runtime.
+ */
+export async function runOrderedManagedLocalBootstrap(operations: {
+  readonly startInfrastructureAndCloud: () => Promise<unknown>;
+  readonly awaitCloudApiReady: () => Promise<void>;
+  readonly startLocal: () => Promise<unknown>;
+  readonly awaitLocalRegistration: () => Promise<void>;
+}): Promise<void> {
+  await operations.startInfrastructureAndCloud();
+  await operations.awaitCloudApiReady();
+  await operations.startLocal();
+  await operations.awaitLocalRegistration();
+}
+
+/** Bounded bootstrap failure carrying only boolean facts and a fixed
+ * phase/reason/status. Never URLs, codes, tokens, bodies or raw text. */
+export class ManagedLocalBootstrapError extends Error {
+  constructor(readonly facts: ManagedLocalBootstrapFailure) {
+    super(`Managed local bootstrap failed at ${facts.phase}: ${facts.reason}`);
+    this.name = 'ManagedLocalBootstrapError';
+  }
+}
+
+type ReadinessPhase = ManagedLocalBootstrapFailure['phase'];
+
+/** One cohesive fixture-readiness helper for both startup phases.
+ *
+ * `observe` performs exactly one bounded observation and either returns a value
+ * (ready) or throws a `RetryableReadinessError`. A malformed but successful
+ * response is NOT retryable: once the endpoint answers 200 with the wrong
+ * contract, no later poll can change it, so it fails immediately. Genuine
+ * transport/startup failures (unreachable, timeouts, 502/503) retry until the
+ * bound, bounded by the existing command budget and the global deadline.
+ *
+ * The budget is injected so the logic is directly testable with a controlled
+ * clock and fetch, without a container runtime or a test-only backdoor.
+ */
+export async function awaitReadiness<T>(input: {
+  readonly phase: ReadinessPhase;
+  readonly observe: (signal: AbortSignal) => Promise<T>;
+  readonly isCancelled: () => boolean;
+  readonly signal?: AbortSignal;
+  readonly now: () => number;
+  readonly deadline: number;
+  readonly budgetMs: number;
+  readonly isRetryable: (error: unknown) => boolean;
+  readonly emptyFacts: ManagedLocalBootstrapFailure['required'];
+}): Promise<T> {
+  const limit = Math.min(input.deadline, input.now() + input.budgetMs);
+  const cancelled = () => input.isCancelled() || input.signal?.aborted === true;
+  let facts: ManagedLocalBootstrapFailure = {phase: input.phase, reason: 'unreachable', required: input.emptyFacts};
+  for (;;) {
+    if (cancelled()) throw new ManagedLocalBootstrapError({...facts, phase: input.phase, reason: 'cancelled'});
+    const remaining = limit - input.now();
+    if (remaining <= 0) throw new ManagedLocalBootstrapError({...facts, phase: input.phase, reason: 'deadline'});
+    try {
+      const timeout = AbortSignal.timeout(Math.max(1, remaining));
+      return await input.observe(input.signal ? AbortSignal.any([input.signal, timeout]) : timeout);
+    } catch (error) {
+      const observed = (error as {readinessFacts?: ManagedLocalBootstrapFailure}).readinessFacts;
+      if (observed) facts = observed;
+      if (cancelled()) throw new ManagedLocalBootstrapError({...facts, phase: input.phase, reason: 'cancelled'});
+      if (error instanceof ManagedLocalBootstrapError) throw error;
+      if (!input.isRetryable(error)) throw new ManagedLocalBootstrapError(observed ?? {...facts, phase: input.phase});
+      const pause = Math.min(1000, limit - input.now());
+      if (pause <= 0) throw new ManagedLocalBootstrapError({...facts, phase: input.phase, reason: 'deadline'});
+      try { await delay(pause, undefined, {signal: input.signal}); }
+      catch (error) {
+        if (cancelled()) throw new ManagedLocalBootstrapError({...facts, phase: input.phase, reason: 'cancelled'});
+        throw error;
+      }
+    }
+  }
+}
+
+/** Fixed-phase failure for a successful response with the wrong contract. */
+function contractFailure(facts: ManagedLocalBootstrapFailure): ManagedLocalBootstrapError {
+  const error = new ManagedLocalBootstrapError(facts);
+  (error as {readinessFacts?: ManagedLocalBootstrapFailure}).readinessFacts = facts;
+  return error;
+}
+
+/** Only genuine transport/startup conditions are retryable. */
+export function isRetryableReadinessError(error: unknown): boolean {
+  const status = (error as {readinessStatus?: number}).readinessStatus;
+  if (status !== undefined) return status === 502 || status === 503;
+  return error instanceof Error && !(error instanceof ManagedLocalBootstrapError);
+}
+
+/** Minimal bounded bootstrap facts for the already-private safe report. Booleans
+ * and a fixed phase/reason/status only: never URLs, codes, tokens or bodies. */
+export interface ManagedLocalBootstrapFailure {
+  readonly phase: 'cloud-api-readiness' | 'local-registration';
+  readonly reason: 'cancelled' | 'deadline' | 'unreachable' | 'http' | 'incomplete-state';
+  readonly httpStatus?: number;
+  readonly required: Readonly<{registered: boolean; publicUrl: boolean; provisionCode: boolean}>;
+}
+
 export async function runMatrix(options: { image: string; platform: string; sourceSha: string; runId: string; runAttempt: string; output: string; providerFile: string }): Promise<void> {
   need(process.platform === 'linux', 'Owned host-network matrix requires Linux CI');
   need(/^.+@sha256:[a-f0-9]{64}$/.test(options.image) && /^[a-f0-9]{40}$/.test(options.sourceSha), 'Immutable inputs required');
@@ -117,7 +238,84 @@ export async function runMatrix(options: { image: string; platform: string; sour
     configuration = canonical;
     const saveConfig = async () => writeFile(composeFile, JSON.stringify(configuration), { mode: 0o600 });
     await saveConfig(); composeCreated = true;
-    await compose('start-base-topology', ['up', '-d', '--wait', '--wait-timeout', '180', 'postgres', 'redis', 'minio', 'cloud', 'local']);
+
+    /** Cloud API readiness through the real public API surface, not CSS OIDC
+     * discovery and not the gateway process status. A 200 with the wrong edition
+     * or a malformed contract is a hard, classified failure. */
+    async function waitCloudApiReady(): Promise<void> {
+      const phase = 'cloud-api-readiness' as const;
+      const empty = {registered: false, publicUrl: false, provisionCode: false};
+      await awaitReadiness({
+        phase, emptyFacts: empty, deadline,
+        budgetMs: LIMITS.commandMs,
+        isCancelled: () => cancellation.signal.aborted,
+        signal: cancellation.signal,
+        now: () => Date.now(),
+        isRetryable: isRetryableReadinessError,
+        observe: async (signal) => {
+          const response = await fetch(new URL('api/service-info', urls.cloud), { signal });
+          if (!response.ok) {
+            const error = new Error('Cloud API not ready');
+            (error as {readinessStatus?: number}).readinessStatus = response.status;
+            (error as {readinessFacts?: ManagedLocalBootstrapFailure}).readinessFacts = {phase, reason: 'http', httpStatus: response.status, required: empty};
+            throw error;
+          }
+          const info = await response.json().catch(() => undefined) as {edition?: unknown} | undefined;
+          if (info?.edition !== 'cloud') throw contractFailure({phase, reason: 'incomplete-state', httpStatus: 200, required: empty});
+        },
+      });
+    }
+
+    /** Local postcondition. Once the Local API answers 200, its awaited first-run
+     * registration already ran, so a non-registered or malformed state can never
+     * change by polling: it hard-fails on the first observation. */
+    async function waitManagedLocalRegistration(): Promise<void> {
+      const phase = 'local-registration' as const;
+      const empty = {registered: false, publicUrl: false, provisionCode: false};
+      await awaitReadiness({
+        phase, emptyFacts: empty, deadline,
+        budgetMs: LIMITS.commandMs,
+        isCancelled: () => cancellation.signal.aborted,
+        signal: cancellation.signal,
+        now: () => Date.now(),
+        isRetryable: isRetryableReadinessError,
+        observe: async (signal) => {
+          const response = await fetch(new URL('provision/status', urls.local), { signal });
+          if (!response.ok) {
+            const error = new Error('Local provision status not ready');
+            (error as {readinessStatus?: number}).readinessStatus = response.status;
+            (error as {readinessFacts?: ManagedLocalBootstrapFailure}).readinessFacts = {phase, reason: 'http', httpStatus: response.status, required: empty};
+            throw error;
+          }
+          const status = await response.json().catch(() => undefined);
+          const required = {
+            registered: status?.registered === true,
+            publicUrl: typeof status?.publicUrl === 'string' && status.publicUrl.trim() !== '',
+            provisionCode: typeof status?.provisionCode === 'string' && status.provisionCode.trim() !== '',
+          };
+          if (!required.registered || !required.publicUrl || !required.provisionCode) {
+            throw contractFailure({phase, reason: 'incomplete-state', httpStatus: 200, required});
+          }
+          try { assertManagedLocalRegistration(status); }
+          catch { throw contractFailure({phase, reason: 'incomplete-state', httpStatus: 200, required}); }
+        },
+      });
+    }
+
+    async function startOrderedTopology(label: string, forceRecreate: boolean): Promise<void> {
+      await runOrderedManagedLocalBootstrap({
+        // Infrastructure is only ensured; the derived-policy Cloud must actually
+        // be recreated so it reads the new config mount, while PG/Redis/MinIO are
+        // not needlessly recreated.
+        startInfrastructureAndCloud: () => forceRecreate
+          ? compose(`${label}-infra-cloud`, ['up', '-d', '--force-recreate', '--no-deps', '--wait', '--wait-timeout', '180', 'cloud'])
+          : compose(`${label}-infra-cloud`, ['up', '-d', '--wait', '--wait-timeout', '180', 'postgres', 'redis', 'minio', 'cloud']),
+        awaitCloudApiReady: () => waitCloudApiReady(),
+        startLocal: () => compose(`${label}-local`, ['up', '-d', ...(forceRecreate ? ['--force-recreate', '--no-deps'] : []), '--wait', '--wait-timeout', '180', 'local']),
+        awaitLocalRegistration: () => waitManagedLocalRegistration(),
+      });
+    }
+    await startOrderedTopology('start-base-topology', false);
     const modeReports: Record<string, any> = {};
     async function waitRuntime(mode: string): Promise<any[]> {
       for (let n = 0; n < 90; n++) {
@@ -159,7 +357,7 @@ export async function runMatrix(options: { image: string; platform: string; sour
       need(policy.originalConfigSHA256 === report.baseConfigSHA256 && policy.derivedConfigSHA256 === await digest(policyPath) && policy.accessTokenTtl === PROFILES[kind].accessTokenTtl && policy.refreshTokenTtl === PROFILES[kind].refreshTokenTtl, 'Derived policy binding mismatch');
       report.policyConfigs ??= {}; report.policyConfigs[kind] = policy;
       for (const mode of MODES) configuration.services[mode].volumes = [`${mode}:/app/data`, `${policyPath}:/app/config/main.json:ro`];
-      await saveConfig(); await compose(`start-${kind}`, ['up', '-d', '--force-recreate', '--no-deps', '--wait', '--wait-timeout', '180', 'cloud', 'local']);
+      await saveConfig(); await startOrderedTopology(`start-${kind}`, true);
       for (const mode of MODES) {
         if (mode === 'standalone') {
           await compose(`stop-managed-${kind}`, ['stop', '--timeout', '20', 'local', 'cloud']);
@@ -194,7 +392,7 @@ export async function runMatrix(options: { image: string; platform: string; sour
     }
     need(!cancellation.signal.aborted, 'Matrix cancelled');
     report.modes = MODES.map((mode: string) => modeReports[mode]); report.status = 'passed';
-  } catch { report.status = 'failed'; report.failure = 'owned-matrix-stage-failed'; }
+  } catch (error) { report.status = 'failed'; report.failure = 'owned-matrix-stage-failed'; const facts = error instanceof ManagedLocalBootstrapError ? error.facts : undefined; if (facts) report.bootstrap = facts; }
   finally {
     try {
       if (copiedContainer) await docker('cleanup-config-reader', ['rm', '-f', '--volumes', copyName], true);
