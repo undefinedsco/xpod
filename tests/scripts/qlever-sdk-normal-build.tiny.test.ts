@@ -129,7 +129,21 @@ test('normal verifier and selector are byte-bound by canonical and versioned pro
 });
 test('flat normal producer list binds the shared collector once without duplicating SDK93 rows',()=>{
  const collector='qlever/scripts/sdk-image-originals.py';
- const sourceSha='83f8cd466345939457b9caad7047bd1966ffe1817f3399fa21b6a0ed6f7d7fba';
+ // The flat 23 rows are FROZEN published history and keep the originally
+ // registered collector bytes. RC376 moved the collector in the working tree, so
+ // the live row is expressed by the CURRENT normal group, never by rewriting the
+ // historical flat list or this constant.
+ const historicalSha='83f8cd466345939457b9caad7047bd1966ffe1817f3399fa21b6a0ed6f7d7fba';
+ const sourceSha=sha(readFileSync(collector));
+ expect(sourceSha).not.toBe(historicalSha);
+ const currentNormal=QLEVER_NORMAL_SOURCE_GROUPS.at(-1)!;
+ // The current group declares the collector twice BY DESIGN: its appended
+ // selection stage and its mandatory sourceBinding both carry the same original.
+ const currentRows=[...currentNormal.selectors,...(currentNormal.secondarySelectors??[]),
+   ...(currentNormal.secondarySelectorStages??[]).flat(),...currentNormal.sourceBindings]
+   .filter(row=>row.path===collector);
+ expect(currentRows).toHaveLength(2);
+ expect(new Set(currentRows.map(row=>row.sha256))).toEqual(new Set([sourceSha]));
  // The normal origin observer fetches the flat list directly; the collector is
  // already an SDK93 selector, so membership must be added once without a new
  // duplicate row or a new canonical path.
@@ -138,12 +152,11 @@ test('flat normal producer list binds the shared collector once without duplicat
  expect(new Set(paths).size).toBe(paths.length);
  const flat=QLEVER_SDK_NORMAL_SOURCE_BINDINGS.filter(row=>row.path===collector);
  expect(flat).toHaveLength(1);
- expect(flat[0]!.sha256).toBe(sourceSha);
- expect(flat[0]!.sha256).toBe(sha(readFileSync(collector)));
+ expect(flat[0]!.sha256).toBe(historicalSha);
  const normal=QLEVER_NORMAL_BUILD_GROUPS[0]!;
  const groupRows=[...normal.selectors,...(normal.secondarySelectors??[]),...(normal.secondarySelectorStages??[]).flat(),...normal.sourceBindings].filter(row=>row.path===collector);
  expect(groupRows).toHaveLength(1);
- expect(groupRows[0]!.sha256).toBe(sourceSha);
+ expect(groupRows[0]!.sha256).toBe(historicalSha);
  const canonical=JSON.parse(readFileSync(new URL('../../scripts/lib/independent-admission/consumer-execution-current.json',import.meta.url),'utf8')) as {path:string;sha256:string}[];
  expect(canonical).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
  const canonicalRows=canonical.filter(row=>row.path===collector);

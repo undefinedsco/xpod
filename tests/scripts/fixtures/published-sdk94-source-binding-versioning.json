@@ -10,7 +10,9 @@
     "sdk95GroupSha256": "8cb73cb7654da9303ec345bf324fa0dbead0ec897a61e4729211675fe64a5608",
     "normalDockerignoreGroupSha256": "5b7a321e4bd135cbb94763f0843b914c3bb56fcb6263ac763bdfc45fcee5c220",
     "sdk96GroupSha256": "66314ba8123badec5986a3f4e6491e82b974751de71783eea765dc6f8394440c",
-    "sdk97GroupSha256": "28ba6d852a7e0a15e01ceac4a3ac954d8d6361e61e7daf9df48f7a88c0914da3"
+    "sdk97GroupSha256": "28ba6d852a7e0a15e01ceac4a3ac954d8d6361e61e7daf9df48f7a88c0914da3",
+    "sdk98GroupSha256": "3ef2090137c10858a4365d22759a73c0b596afd4564e7813013361cbe90d8ce0",
+    "normalRegistryGroupSha256": "fed1203d4755f8e5dbd6c941abd4ecdff414b2780d972664b4b6419cead8f432"
   },
   "sdk94": {
     "localRuntimeSha256": "78e15d1a7606d1f8467858e4958c1f70e52bec8a01d76b797a5ba24cebb21332",
@@ -53,5 +55,16 @@
       "qlever/scripts/sdk-service-image-originals.py": "62a5ebee696cc85b6c71230a1cc806231daafafc61a6ca90b276527bc932e5a8",
       "scripts/lib/independent-admission/qlever-sdk-service-relationship.ts": "23c0e1d2fb93d9bbf20857ff7d902c1625482fed4d573d302b9399f5d0d55d26"
     }
+  },
+  "sdk99": {
+    "groupSha256": "6518821f3f15c83eed5d5d927fa7d15666e8958f7fd0ce22ebaba816c787c2ca",
+    "stageCount": 10,
+    "movedRows": {
+      "qlever/scripts/sdk-image-originals.py": "c0661c70d8224d741d86e1105a3ab9b4b3ed6d645764d7bcf7ad2e6c67cb1f37",
+      "qlever/tests/test_sdk_image_originals.py": "5faf5b67f548f7d696a1e2e6e3e34232269e470b4f5cf1681693cca99b7f9abb"
+    },
+    "selectorRebinds": [
+      "qlever/scripts/sdk-image-originals.py"
+    ]
   }
 }

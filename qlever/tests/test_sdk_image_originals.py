@@ -101,4 +101,45 @@ class ImageOriginalsTest(unittest.TestCase):
                     self.assertNotIn('scripts/unrelated-secret.txt',bundle.getnames())
                 self.assertTrue((root/'originals/context.original.tar').is_file())
             finally:os.chdir(old)
+
+    def test_registry_reserve_seconds_defaults_to_600_and_is_really_used(self):
+        """The service collector asks for reserve_seconds=0 under a 120s deadline;
+        older callers pass nothing and must keep the historical 600s reserve."""
+        import inspect as inspect_module
+        parameters=inspect_module.signature(module.registry_originals).parameters
+        self.assertEqual(parameters['reserve_seconds'].default,600)
+        config=encoded(dict(os='linux',architecture='amd64',config={}))
+        manifest=encoded(dict(schemaVersion=2,config=dict(digest='sha256:'+hashlib.sha256(config).hexdigest()),layers=[]))
+        reference='ghcr.io/example/sdk@sha256:'+hashlib.sha256(manifest).hexdigest()
+        def transport(request,**_):
+            if '/token?' in request.full_url:return Response(b'{"token":"scope-limited-test-token"}')
+            return Response(manifest if '/manifests/' in request.full_url else config)
+        class Budget:
+            def __init__(self,seconds):self.seconds=seconds;self.reserves=[]
+            def check(self,reserve=0):
+                self.reserves.append(reserve)
+                if self.seconds<=reserve:raise TimeoutError('SDK producer deadline reserve exhausted')
+        with tempfile.TemporaryDirectory() as directory:
+            legacy=Budget(120)
+            # 120s is below the legacy 600s default, so this must refuse.
+            with self.assertRaises(TimeoutError):
+                module.registry_originals(reference,'linux-x64',Path(directory)/'legacy',transport,budget=legacy)
+            self.assertEqual(legacy.reserves,[600])
+            # Old callers with a normal budget keep the 600 reserve too.
+            normal=Budget(3600)
+            module.registry_originals(reference,'linux-x64',Path(directory)/'normal',transport,budget=normal)
+            self.assertTrue(normal.reserves and all(value==600 for value in normal.reserves))
+            # The explicit zero reserve is what makes the 120s caller work.
+            zero=Budget(120)
+            module.registry_originals(reference,'linux-x64',Path(directory)/'zero',transport,budget=zero,reserve_seconds=0)
+            self.assertTrue(zero.reserves and all(value==0 for value in zero.reserves))
+            # Genuinely exhausted budget still refuses even with zero reserve.
+            with self.assertRaises(TimeoutError):
+                module.registry_originals(reference,'linux-x64',Path(directory)/'spent',transport,budget=Budget(0),reserve_seconds=0)
+            # Malformed reserves are rejected rather than ignored.
+            for bad in (-1,'0',None,0.0,True):
+                with self.assertRaises(ValueError):
+                    module.registry_originals(reference,'linux-x64',Path(directory)/('bad'+str(bad)),transport,budget=Budget(3600),reserve_seconds=bad)
+
+
 if __name__=='__main__':unittest.main()

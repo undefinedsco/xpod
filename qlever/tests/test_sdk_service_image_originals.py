@@ -1,9 +1,12 @@
-import copy,hashlib,importlib.util,types
+import copy,hashlib,importlib.util,json,types
 from pathlib import Path
 import tempfile,unittest
 HERE=Path(__file__).resolve().parents[1]/'scripts'
 spec=importlib.util.spec_from_file_location('service_image',HERE/'sdk-service-image-originals.py');service=importlib.util.module_from_spec(spec);spec.loader.exec_module(service)
 class ServiceOriginals(unittest.TestCase):
+ def setUp(self):
+  # Deterministic source identity for the registry fixtures that do not create a git repo.
+  self._sha='f'*40
  def test_actual_rootfs_relationship_is_narrow_and_exact(self):
   local=dict(os='linux',architecture='amd64',rootfs={'diff_ids':['sha256:'+'a'*64]})
   image=dict(os='linux',architecture='amd64',rootfs={'diff_ids':['sha256:'+'a'*64,'sha256:'+'b'*64]},config={'Labels':{'org.opencontainers.image.source':'https://github.com/undefinedsco/xpod','org.opencontainers.image.revision':'c'*40}})
@@ -66,5 +69,163 @@ class ServiceOriginals(unittest.TestCase):
                  lambda row:row.update({'containerimage.descriptor':{'mediaType':'application/vnd.oci.image.index.v1+json','digest':manifest_digest,'size':1}})]:
    bad=copy.deepcopy(manifest);mutate(bad)
    with self.assertRaises(ValueError):service.inspect_build_metadata(bad,'ghcr.io/undefinedsco/xpod@'+manifest_digest)
+
+ def test_collector_full_capture_succeeds_on_the_real_120_second_caller_budget(self):
+  # RC376: candidate.yml passes `--deadline now+120`, and the collector asks the
+  # registry helper for reserve_seconds=0. Earlier the helper hard-coded a
+  # 600-second reserve, so a 120-second caller always died. This drives the REAL
+  # capture() with the REAL 120-second budget: only transport and Docker outputs
+  # are faked.
+  master=self._run_real_capture(deadline=__import__('time').time()+120)
+  observed=master['images']
+  self.assertEqual(master['serviceImageReferenceByDigest'],self._service_reference)
+  self.assertEqual(observed['service']['configDigest'],self._service_config_digest)
+  self.assertTrue(master['facts']['serviceRootfsFromLocalRuntimeVerified'])
+
+ def test_registry_helper_keeps_the_legacy_600_second_default_reserve(self):
+  # Old callers (readonly collection, normal build proof) never passed a
+  # reserve and must keep the historical 600-second requirement.
+  import inspect as inspect_module
+  parameters=inspect_module.signature(service.images.registry_originals).parameters
+  self.assertEqual(parameters['reserve_seconds'].default,600)
+  for bad in (-1,'600',None,600.0,True):
+   with self.assertRaises(ValueError):
+    service.images.registry_originals('ghcr.io/undefinedsco/xpod@sha256:'+'a'*64,'linux-x64',
+                                      Path(tempfile.mkdtemp(dir=self._root()))/'x',
+                                      transport=_NeverCalled(),budget=_RecordingBudget(),reserve_seconds=bad)
+  # A 120-second budget is refused under the default (legacy) reserve...
+  with self.assertRaises(TimeoutError):
+   service.images.registry_originals('ghcr.io/undefinedsco/xpod@sha256:'+'a'*64,'linux-x64',
+                                     Path(tempfile.mkdtemp(dir=self._root()))/'legacy',
+                                     transport=_NeverCalled(),budget=_RecordingBudget(seconds=120))
+  # ...and accepted with the explicit zero reserve the collector asks for.
+  observed=service.images.registry_originals(self._service_chain_reference(),'linux-x64',
+                                             Path(tempfile.mkdtemp(dir=self._root()))/'zero',
+                                             transport=self._transport(),budget=_RecordingBudget(seconds=120),reserve_seconds=0)
+  self.assertEqual(observed['configDigest'],'sha256:'+hashlib.sha256(self._chain()[2]).hexdigest())
+
+ def test_genuinely_exhausted_shared_budget_still_refuses(self):
+  # reserve_seconds=0 must not disable the deadline: an already-expired budget
+  # has to refuse the very first registry read.
+  with self.assertRaises(TimeoutError):
+   service.images.registry_originals(self._service_chain_reference(),'linux-x64',
+                                     Path(tempfile.mkdtemp(dir=self._root()))/'spent',
+                                     transport=_NeverCalled(),budget=_RecordingBudget(seconds=0),reserve_seconds=0)
+
+ def _root(self):
+  if not hasattr(self,'_registry_root'):
+   parent=HERE.parents[1]/'.test-data/service-image-registry-budget'
+   parent.mkdir(parents=True,exist_ok=True)
+   temporary=tempfile.TemporaryDirectory(dir=parent)
+   self.addCleanup(temporary.cleanup)
+   self._registry_root=Path(temporary.name)
+  return self._registry_root
+
+ def _service_chain_reference(self):
+  return 'ghcr.io/undefinedsco/xpod@sha256:'+hashlib.sha256(self._index()).hexdigest()
+
+ def _index(self):
+  return self._chain()[0]
+
+ def _chain(self):
+  rootfs=['sha256:'+'1'*64]
+  local=json.dumps(dict(os='linux',architecture='amd64',rootfs=dict(diff_ids=rootfs),config=dict(Labels={})),sort_keys=True).encode()
+  service=json.dumps(dict(os='linux',architecture='amd64',rootfs=dict(diff_ids=[*rootfs,'sha256:'+'2'*64]),
+   config=dict(Labels={'org.opencontainers.image.revision':self._sha,'org.opencontainers.image.source':'https://github.com/undefinedsco/xpod'})),sort_keys=True).encode()
+  child=json.dumps(dict(schemaVersion=2,mediaType='application/vnd.oci.image.manifest.v1+json',
+   config=dict(mediaType='application/vnd.oci.image.config.v1+json',digest='sha256:'+hashlib.sha256(service).hexdigest(),size=len(service)),layers=[]),sort_keys=True).encode()
+  index=json.dumps(dict(schemaVersion=2,mediaType='application/vnd.oci.image.index.v1+json',manifests=[
+   dict(mediaType='application/vnd.oci.image.manifest.v1+json',digest='sha256:'+hashlib.sha256(child).hexdigest(),size=len(child),platform=dict(os='linux',architecture='amd64')),
+   dict(mediaType='application/vnd.oci.image.manifest.v1+json',digest='sha256:'+'9'*64,size=1,platform=dict(os='unknown',architecture='unknown'))]),sort_keys=True).encode()
+  return index,child,service,local
+
+ def _transport(self):
+  import io
+  class Response(io.BytesIO):
+   def __enter__(self):return self
+   def __exit__(self,*_):self.close()
+  index,child,config,local=self._chain()
+  local_manifest=json.dumps(dict(schemaVersion=2,mediaType='application/vnd.oci.image.manifest.v1+json',
+   config=dict(mediaType='application/vnd.oci.image.config.v1+json',digest='sha256:'+hashlib.sha256(local).hexdigest(),size=len(local)),layers=[]),sort_keys=True).encode()
+  sdk_config=json.dumps(dict(os='linux',architecture='amd64',rootfs=dict(diff_ids=['sha256:'+'3'*64]),config=dict(Labels={})),sort_keys=True).encode()
+  sdk_manifest=json.dumps(dict(schemaVersion=2,mediaType='application/vnd.oci.image.manifest.v1+json',
+   config=dict(mediaType='application/vnd.oci.image.config.v1+json',digest='sha256:'+hashlib.sha256(sdk_config).hexdigest(),size=len(sdk_config)),layers=[]),sort_keys=True).encode()
+  blobs={'undefinedsco/xpod':(index,child,config),
+         'undefinedsco/xpod-qlever-local-runtime':(local_manifest,None,local),
+         'undefinedsco/xpod-qlever-sdk':(sdk_manifest,None,sdk_config)}
+  class Opener:
+   def open(self,request,**_):
+    url=request.full_url
+    if '/token?' in url:return Response(b'{"token":"scope-limited-test-token"}')
+    repository=url.split('/v2/',1)[1].split('/manifests/',1)[0].split('/blobs/',1)[0]
+    manifest,platform,config=blobs[repository]
+    if '/manifests/' in url:
+     digest=url.rsplit('/',1)[-1]
+     return Response(manifest if digest=='sha256:'+hashlib.sha256(manifest).hexdigest() else platform)
+    return Response(config)
+  # registry_originals accepts the transport callable directly, so hand it
+  # Opener.open rather than the opener object.
+  return Opener().open
+
+ def _run_real_capture(self,deadline):
+  import json,subprocess,types
+  from unittest.mock import patch
+  harness_spec=importlib.util.spec_from_file_location('collector_harness',HERE.parent/'tests/test_service_pack_collector_full.py')
+  harness=importlib.util.module_from_spec(harness_spec);harness_spec.loader.exec_module(harness)
+  case=harness.Tests();case.setUp();self.addCleanup(case.doCleanups)
+  checkpoint=case.out
+  source=checkpoint/'checkout';source.mkdir();raw=b'{"name":"@undefineds.co/xpod","version":"1.0.0"}'
+  (source/'package.json').write_bytes(raw)
+  for git_args in (['init','-q'],['add','package.json'],['-c','user.name=fixture','-c','user.email=fixture@example.invalid','commit','-qm','fixture']):
+   subprocess.run(['git',*git_args],cwd=source,check=True,capture_output=True)
+  self._sha=subprocess.check_output(['git','rev-parse','HEAD'],cwd=source,text=True).strip()
+  index,child,config,local=self._chain()
+  service_ref='ghcr.io/undefinedsco/xpod@sha256:'+hashlib.sha256(index).hexdigest()
+  self._service_reference=service_ref;self._service_config_digest='sha256:'+hashlib.sha256(config).hexdigest()
+  local_manifest=json.dumps(dict(schemaVersion=2,mediaType='application/vnd.oci.image.manifest.v1+json',
+   config=dict(mediaType='application/vnd.oci.image.config.v1+json',digest='sha256:'+hashlib.sha256(local).hexdigest(),size=len(local)),layers=[]),sort_keys=True).encode()
+  sdk_config=json.dumps(dict(os='linux',architecture='amd64',rootfs=dict(diff_ids=['sha256:'+'3'*64]),config=dict(Labels={})),sort_keys=True).encode()
+  sdk_manifest=json.dumps(dict(schemaVersion=2,mediaType='application/vnd.oci.image.manifest.v1+json',
+   config=dict(mediaType='application/vnd.oci.image.config.v1+json',digest='sha256:'+hashlib.sha256(sdk_config).hexdigest(),size=len(sdk_config)),layers=[]),sort_keys=True).encode()
+  local_ref='ghcr.io/undefinedsco/xpod-qlever-local-runtime@sha256:'+hashlib.sha256(local_manifest).hexdigest()
+  sdk_ref='ghcr.io/undefinedsco/xpod-qlever-sdk@sha256:'+hashlib.sha256(sdk_manifest).hexdigest()
+  before=checkpoint/'before.json';after=checkpoint/'after.json';before.write_bytes(raw);after.write_bytes(raw)
+  metadata=checkpoint/'build.json'
+  metadata.write_text(json.dumps({'containerimage.digest':service_ref.split('@')[1],
+   'containerimage.descriptor':{'mediaType':'application/vnd.oci.image.index.v1+json','digest':service_ref.split('@')[1],'size':len(index)}}))
+  out=checkpoint/'service-image-originals'
+  case.out=out;case.image=service_ref;case.config=self._service_config_digest
+  args=types.SimpleNamespace(source_sha=self._sha,sdk_artifact_id=1,sdk_master_bytes=1,sdk_artifact_digest='a'*64,
+   sdk_master_sha256='b'*64,service_image=service_ref,local_runtime_image=local_ref,sdk_image=sdk_ref,
+   source=str(source),out=str(out),deadline=deadline,root_manifest_before=str(before),
+   root_manifest_after=str(after),build_metadata=str(metadata),capture_service_pack_originals=False,
+   capture_service_runtime_members=False,capture_service_abi_originals=False)
+  def capture(label,argv,*a,**kw):
+   if label.startswith('service-source-'):
+    mode=label.rsplit('-',1)[-1];directory=out/'stages'/label;directory.mkdir(parents=True)
+    body=subprocess.check_output(['git','rev-parse','HEAD'],cwd=source) if mode=='head' else (raw if mode=='manifest' else b'')
+    row=dict(name=label,inputs=[],outputs=[])
+    for role in ['receipt','stdout','stderr','supervisionReceipt','supervisionRaw']:
+     path=directory/(role+'.raw');data=body if role=='stdout' else b'{}';path.write_bytes(data)
+     row[role]=service.outer.commands.ref(str(path),str(out))
+    return row
+   return case.capture(label,argv,*a,**kw)
+  with patch.dict(service.os.environ,{'GITHUB_SHA':self._sha,'GITHUB_RUN_ID':'1','GITHUB_RUN_ATTEMPT':'1','RUNNER_TEMP':str(checkpoint),'GITHUB_OUTPUT':str(checkpoint/'github-output')}),patch.object(service.secrets,'token_hex',return_value=case.nonce),patch.object(service.outer.commands,'capture',side_effect=capture),patch.object(service.images.urllib.request,'build_opener',side_effect=lambda *a,**k:_OpenerAdapter(self._transport())):
+   return service.capture(args)
+
+class _OpenerAdapter:
+ '''urllib.callers expect an opener object with .open; registry callers take the
+ transport callable directly. This adapter serves both shapes.'''
+ def __init__(self,transport):self.open=transport
+
+class _RecordingBudget:
+ '''Minimal stand-in that enforces the seconds-reserve contract the real
+ ExecutionBudget enforces, so the helper's reserve usage is observable.'''
+ def __init__(self,seconds=120):self.remaining_seconds=seconds
+ def check(self,reserve=0):
+  if self.remaining_seconds<=reserve:raise TimeoutError('SDK producer deadline reserve exhausted')
+
+class _NeverCalled:
+ def __call__(self,*_a,**_k):raise AssertionError('transport must not be reached')
 
 if __name__=='__main__':unittest.main()
