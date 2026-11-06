@@ -41,3 +41,66 @@ test('body path replacement cannot register a completed original',()=>fixture(ro
 test('failed diagnostic output preserves the original body-budget refusal',()=>fixture(root=>{
  const file=path.join(root,'pack.tgz');fs.writeFileSync(file,'body');const writer=createServicePackOriginals({directory:path.join(root,'metadata'),bodyDirectory:path.join(root,'bodies'),sourceSha:'a'.repeat(40),check(){},remainingBytes(){return 0;},reserveBytes(){}});const write=process.stderr.write;process.stderr.write=function(){throw Error('broken diagnostic stream');};try{assert.throws(()=>writer.retainBody(file,'seed-npm-pack'),/pack-body-retention-budget-exhausted/);}finally{process.stderr.write=write;}
 }));
+
+test('a real dependency-closure record set is accepted, and the new bound still fails closed',()=>fixture(root=>{
+ const {OBSERVATION_BOUNDS}=require('../../scripts/service-pack-originals.cjs');
+ const limits=require('../../scripts/lib/module-artifact-limits.json');
+ // The observed legitimate pack needed 912 records / 6,268,688 transport bytes.
+ // The shared module-source bound (512/4MiB) describes single module inputs, so
+ // it rejected a real workspace pack. These numbers come from an actual pack on
+ // source a7c5a2b3 with the service profile, and each must stay inside the new
+ // bound while still exceeding the old one - otherwise the two are one number.
+ assert.ok(912<OBSERVATION_BOUNDS.records);
+ assert.ok(6268688<=OBSERVATION_BOUNDS.metadataBytes);
+ assert.ok(912>limits.sourceMaterialFiles);
+ assert.ok(6268688>limits.metadataBytes);
+
+ const out=path.join(root,'originals');
+ const writer=createServicePackOriginals({directory:out,sourceSha:'a'.repeat(40),check(){},reserveBytes(){}});
+ // 912 real-shaped resolution rows are accepted (old 512 bound would reject).
+ for(let i=0;i<912;i++)writer.event({role:'actual-node-resolution',name:'dep-'+i,source:root,searchRoots:[root],globalPaths:[],workerPid:1,probes:[{path:root+'/x',exists:i===0}],resolvedRoot:null});
+ const sealed=writer.seal();
+ const meta=JSON.parse(fs.readFileSync(path.join(out,sealed.path)));
+ assert.equal(meta.records.length,912);
+ // The bound is still a bound: record number 2048 cannot be added.
+ const capped=createServicePackOriginals({directory:path.join(root,'capped'),sourceSha:'a'.repeat(40),check(){},reserveBytes(){}});
+ for(let i=0;i<OBSERVATION_BOUNDS.records;i++)capped.event({role:'actual-node-resolution',name:'d'+i,source:root,searchRoots:[root],globalPaths:[],workerPid:1,probes:[{path:root,exists:true}],resolvedRoot:null});
+ assert.throws(()=>capped.event({role:'actual-node-resolution',name:'overflow',source:root,searchRoots:[root],globalPaths:[],workerPid:1,probes:[],resolvedRoot:null}),/bounded original record count/);
+}));
+
+test('aggregate transport bound is behaviourally live: >old 4MiB seals, >new 8MiB rejects',()=>fixture(root=>{
+ // The record-wall fixture above stays far under BOTH aggregate transport
+ // bounds, so on its own it cannot catch a partial revert that puts only the
+ // transport comparison back to limits.metadataBytes (4MiB) while the exported
+ // OBSERVATION_BOUNDS object still advertises 8MiB. Drive the transport wall
+ // with a small number of large DISTINCT originals.
+ const {OBSERVATION_BOUNDS}=require('../../scripts/service-pack-originals.cjs');
+ const limits=require('../../scripts/lib/module-artifact-limits.json');
+ const SIZE=256*1024;                       // well under the 4MiB per-original cap
+ const ACROSS=SIZE*25;                      // 6.4MiB: > old 4MiB, < new 8MiB
+ assert.ok(ACROSS>limits.metadataBytes);
+ assert.ok(ACROSS<OBSERVATION_BOUNDS.metadataBytes);
+ assert.ok(SIZE<=limits.metadataBytes);     // per-original bound unchanged
+
+ // Positive: 25 distinct 256KiB originals really append AND seal.
+ const out=path.join(root,'across');
+ const across=createServicePackOriginals({directory:out,sourceSha:'a'.repeat(40),check(){},reserveBytes(){}});
+ for(let i=0;i<25;i++)across.retainBuffer(Buffer.alloc(SIZE,i+1),'distinct-'+i);
+ const sealed=across.seal();
+ const meta=JSON.parse(fs.readFileSync(path.join(out,sealed.path)));
+ assert.equal(meta.records.length,25);
+ assert.equal(meta.originals.length,25);
+ assert.ok(meta.originals.every(row=>row.bytes===SIZE));
+ // 25 distinct contents => 25 distinct retained objects, so the transport
+ // projection really tops the old bound instead of deduplicating to one object.
+ assert.equal(new Set(meta.originals.map(row=>row.sha256)).size,25);
+ const sealedBytes=meta.originals.reduce((sum,row)=>sum+row.bytes,0);
+ assert.ok(sealedBytes>limits.metadataBytes&&sealedBytes<OBSERVATION_BOUNDS.metadataBytes);
+
+ // Negative: crossing the NEW bound still fails closed with the exact reason.
+ const over=createServicePackOriginals({directory:path.join(root,'over'),sourceSha:'a'.repeat(40),check(){},reserveBytes(){}});
+ assert.throws(()=>{
+  for(let i=0;i<34;i++)over.retainBuffer(Buffer.alloc(SIZE,i+1),'over-'+i);
+  over.seal();
+ },/metadata transport aggregate bound/);
+}));

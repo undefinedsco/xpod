@@ -2631,6 +2631,38 @@ const SDK96_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK95_GROUP,
   selectors:Object.freeze(SDK95_GROUP.selectors.map(row=>Object.freeze({...row,sha256:SDK96_SOURCE_HASHES[row.path]??row.sha256}))),
   secondarySelectorStages:Object.freeze([...(SDK95_GROUP.secondarySelectorStages??[]),SDK96_DOCKERIGNORE_STAGE]),
   sourceBindings:Object.freeze(SDK95_GROUP.sourceBindings.map(row=>Object.freeze({...row,sha256:SDK96_SOURCE_HASHES[row.path]??row.sha256})))});
+/** SDK97 is the CURRENT consumer for the RC374 service-pack receipt fix.
+ * RC374 already consumed SDK96 (source a7c5a2b3, run 42196926952) and published
+ * its normal-build-v1 image/proof, so SDK96 is a consumed baseline and stays
+ * byte-identical. The pack fix rebinds exactly the seven rows that moved:
+ * one producer (`service-pack-originals.cjs`), the parent wrapper, and the five
+ * admission readers that now share the producer-exported observation bound.
+ *
+ * None of these paths is a normal SDK recipe input, so H and the published SDK
+ * image are NOT moved by this version and no normal producer group is appended.
+ * All seven moved rows are plain sourceBindings rows, which do not participate
+ * in group selection, so one appended stage over the pack producer is required
+ * for SDK97 to be selectable at all. */
+const SDK97_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
+  'scripts/service-pack-originals.cjs':'776fe801679a30da5e928a6fae791a93dddb8b3be302b79e51e390c768652414',
+  'scripts/service-pack-parent.py':'bbd1a5cc172cad0cb2f434fdc6187339b39a1ccf67ba1068adbf108bc2aaccd3',
+  'scripts/lib/independent-admission/candidate-service-pack-output.ts':'5d98d0916f3781f181f58460732ef9e79ece12ad430218f969f7e220d87c2ee4',
+  'scripts/lib/independent-admission/service-pack-copied-payload.ts':'13944a4d18a5fb97a7287e9c93d950eaf147a3972b82e6d86aae68ebe9ee64b4',
+  'scripts/lib/independent-admission/service-pack-input-custody.ts':'0b87e7558b395d51f0b7f1131b6d39e94574350d4b6869205ec37744d669105d',
+  'scripts/lib/independent-admission/service-pack-manifest-replay.ts':'e58a33c2a590a6dc6905a52c2f08f75ee9913f5e5ed2a14cdc8c42ac072ec12a',
+  'scripts/lib/independent-admission/service-pack-public-selected-payload.ts':'0755e818763cc246fd4be33fdcdee7c663764240bdbc826ab9f89d9f8ef57716',
+});
+/** One appended stage makes the version selectable. Without it SDK96 and SDK97
+ * would declare identical selectors, secondary selectors and stages and the
+ * engine would refuse both as ambiguous. The stage pins the pack PRODUCER, which
+ * every earlier group already owns as a mandatory sourceBinding row, so the
+ * older recipes still resolve to themselves. */
+const SDK97_PACK_PRODUCER_STAGE=Object.freeze([
+  Object.freeze({path:'scripts/service-pack-originals.cjs',sha256:SDK97_SOURCE_HASHES['scripts/service-pack-originals.cjs']!}),
+]);
+const SDK97_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK96_GROUP,
+  secondarySelectorStages:Object.freeze([...(SDK96_GROUP.secondarySelectorStages??[]),SDK97_PACK_PRODUCER_STAGE]),
+  sourceBindings:Object.freeze(SDK96_GROUP.sourceBindings.map(row=>Object.freeze({...row,sha256:SDK97_SOURCE_HASHES[row.path]??row.sha256})))});
 export const QLEVER_NORMAL_BUILD_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([SDK93_GROUP]);
 export const QLEVER_SDK_NORMAL_SOURCE_BINDINGS:readonly GitHubSourceBinding[]=Object.freeze([
  Object.freeze({path:'.github/workflows/candidate.yml',sha256:'1446b2ceb6c53b8888e07d0b822854b934c95d508f93dfd901a4687e28d22d9d'}),
@@ -2701,7 +2733,8 @@ export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=O
  ...QLEVER_SDK_EXECUTION_GROUPS,
 ]);
 /** Consumer-only lists derive the published execution groups and append the
- * frozen SDK94/SDK95 tuples plus the current SDK96 tuple. QLEVER_SDK_EXECUTION_GROUPS
- * itself stays at exactly SDK1..93 for the published producer contract. */
-export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP]);
-export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP]);
+ * frozen SDK94/SDK95/SDK96 tuples plus the current SDK97 tuple.
+ * QLEVER_SDK_EXECUTION_GROUPS itself stays at exactly SDK1..93 for the published
+ * producer contract. */
+export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP]);
+export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP]);

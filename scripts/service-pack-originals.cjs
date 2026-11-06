@@ -4,6 +4,18 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const limits = require('./lib/module-artifact-limits.json');
 const sha = value => crypto.createHash('sha256').update(value).digest('hex');
+/** One workspace pack observes the whole installed dependency closure: a probe
+ * row per resolution candidate, a custody row per probe, an exposure row per
+ * manifest edge and one row per selected file. The shared `sourceMaterialFiles`
+ * bound counts physical module source members and `metadataBytes` bounds ONE
+ * metadata original; neither describes a pack observation set. These are the
+ * pack's own closed bounds, and the readers import the SAME numbers so producer
+ * and consumer can never drift. Evidence: an actual service pack
+ * (source a7c5a2b3, service profile) produced 912 records / 6,268,688 transport
+ * bytes, so 512 / 4MiB rejected a legitimate pack. */
+const OBSERVATION_RECORDS = 2048;
+const OBSERVATION_METADATA_BYTES = 8 * 1024 * 1024;
+const OBSERVATION_BOUNDS = Object.freeze({ records: OBSERVATION_RECORDS, metadataBytes: OBSERVATION_METADATA_BYTES });
 function need(value, reason) { if (!value) throw new Error('Service pack originals: ' + reason); }
 function identity(value) { return [value.dev, value.ino, value.mode, value.size, value.mtimeNs, value.ctimeNs].map(String); }
 function same(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
@@ -29,10 +41,10 @@ function createServicePackOriginals({ directory, bodyDirectory, sourceSha, check
   }
   function active() { check(); need(!finished, 'recording already sealed'); }
   function append(row) {
-    active(); need(records.length < limits.sourceMaterialFiles, 'bounded original record count');
+    active(); need(records.length < OBSERVATION_RECORDS, 'bounded original record count');
     const encoded = JSON.stringify(row);
-    need(Buffer.byteLength(encoded) <= 16384 && metadataBytes + Buffer.byteLength(encoded) + 1 <= limits.metadataBytes - 1024, 'bounded original metadata');
-    need(metadataTransportBytes([...objects.values()], [...records, row]) <= limits.metadataBytes, 'metadata transport aggregate bound');
+    need(Buffer.byteLength(encoded) <= 16384 && metadataBytes + Buffer.byteLength(encoded) + 1 <= OBSERVATION_METADATA_BYTES - 1024, 'bounded original metadata');
+    need(metadataTransportBytes([...objects.values()], [...records, row]) <= OBSERVATION_METADATA_BYTES, 'metadata transport aggregate bound');
     metadataBytes += Buffer.byteLength(encoded) + 1; records.push(JSON.parse(encoded));
   }
   function role(value) { need(typeof value === 'string' && /^[a-zA-Z0-9/:._-]{1,128}$/u.test(value), 'fixed bounded original role'); return value; }
@@ -41,7 +53,7 @@ function createServicePackOriginals({ directory, bodyDirectory, sourceSha, check
     active(); const digest = sha(data), reference = { path: 'objects/' + digest + '.original', bytes: data.length, sha256: digest };
     if (objects.has(digest)) { need(objects.get(digest).bytes === data.length, 'object identity collision'); return reference; }
     need(objects.size < limits.sourceMaterialFiles, 'bounded retained object count');
-    need(metadataTransportBytes([...objects.values(), reference], records) <= limits.metadataBytes, 'metadata transport aggregate bound');
+    need(metadataTransportBytes([...objects.values(), reference], records) <= OBSERVATION_METADATA_BYTES, 'metadata transport aggregate bound');
     const fd = fs.openSync(path.join(directory, reference.path), fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
     try {
       for (let offset = 0; offset < data.length; offset += limits.rangeBytes) {
@@ -183,7 +195,7 @@ function createServicePackOriginals({ directory, bodyDirectory, sourceSha, check
     const data = Buffer.from(JSON.stringify(collection, null, 2) + '\n'); need(data.length <= limits.metadataBytes, 'bounded final original collection');
     const padded = size => Math.ceil(size / 512) * 512;
     const metadataTarBound = 2048 + 512 + padded(data.length) + [...objects.values()].reduce((sum, row) => sum + 512 + padded(row.bytes), 0);
-    need(metadataTarBound <= limits.metadataBytes, 'metadata transport aggregate bound');
+    need(metadataTarBound <= OBSERVATION_METADATA_BYTES, 'metadata transport aggregate bound');
     metadataStart();
     const fd = fs.openSync(path.join(directory, 'materials.json'), fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
     try { for (let at = 0; at < data.length; at += limits.rangeBytes) { active(); const block = data.subarray(at, at + limits.rangeBytes); reserveBytes(block.length); let written = 0; while (written < block.length) { active(); const count = fs.writeSync(fd, block, written, block.length - written); need(count > 0, 'collection write made no progress'); written += count; } } fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
@@ -191,4 +203,4 @@ function createServicePackOriginals({ directory, bodyDirectory, sourceSha, check
   }
   return Object.freeze({ readOriginal, readManifest, probePath, copyTree, capturePublicPack, retainBuffer, retainBody, event, seal, close: closeInputs, execFileSync });
 }
-module.exports = { createServicePackOriginals };
+module.exports = { createServicePackOriginals, OBSERVATION_BOUNDS };

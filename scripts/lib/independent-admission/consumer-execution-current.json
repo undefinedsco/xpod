@@ -909,7 +909,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/candidate-service-pack-output.ts",
-    "sha256": "07243f34a1dd41a9996c1af294bd547518e2762b969ee7e89d3b9015d44046ac"
+    "sha256": "5d98d0916f3781f181f58460732ef9e79ece12ad430218f969f7e220d87c2ee4"
   },
   {
     "path": "scripts/lib/independent-admission/candidate-service-root-mutation.ts",
@@ -1221,7 +1221,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "7b5bd3b717ccd360347498da7e81d795fd396a4a025df0cead66b927fbabe35b"
+    "sha256": "abd6114eddd4310ae2f0f9b8981d603f10535181413bf26cf9afb308da79e177"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -1297,15 +1297,15 @@
   },
   {
     "path": "scripts/lib/independent-admission/service-pack-copied-payload.ts",
-    "sha256": "8b6917911953f8aeaad3da6e244f3181e5e67320697df4e99d31d0f6427f142b"
+    "sha256": "13944a4d18a5fb97a7287e9c93d950eaf147a3972b82e6d86aae68ebe9ee64b4"
   },
   {
     "path": "scripts/lib/independent-admission/service-pack-input-custody.ts",
-    "sha256": "898f28c290a8d1bb37b9a69a5b702c4f0ba938f95743fc409b2cb294b3bc2a67"
+    "sha256": "0b87e7558b395d51f0b7f1131b6d39e94574350d4b6869205ec37744d669105d"
   },
   {
     "path": "scripts/lib/independent-admission/service-pack-manifest-replay.ts",
-    "sha256": "ed5764f9cc7f7f2eba95d927d8415952b02ffef4d320ed7ba64fd6cb11efbe0b"
+    "sha256": "e58a33c2a590a6dc6905a52c2f08f75ee9913f5e5ed2a14cdc8c42ac072ec12a"
   },
   {
     "path": "scripts/lib/independent-admission/service-pack-parent-window.ts",
@@ -1313,7 +1313,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/service-pack-public-selected-payload.ts",
-    "sha256": "c89f41f8cbf3ff881642432eeff1d5e571eac1c7c55b9dc2a3251c047ffed5ea"
+    "sha256": "0755e818763cc246fd4be33fdcdee7c663764240bdbc826ab9f89d9f8ef57716"
   },
   {
     "path": "scripts/lib/independent-admission/service-workspace-build-replay.ts",
@@ -1541,11 +1541,11 @@
   },
   {
     "path": "scripts/service-pack-originals.cjs",
-    "sha256": "c5fd7390709e5edaf672aeff3fb9039ea54693eeb8b3018eeec6b9ce16538938"
+    "sha256": "776fe801679a30da5e928a6fae791a93dddb8b3be302b79e51e390c768652414"
   },
   {
     "path": "scripts/service-pack-parent.py",
-    "sha256": "39663e0ace2e14b44e1c4081190d1c2a96d0dd50b35aa3b3239219d037e40dd1"
+    "sha256": "bbd1a5cc172cad0cb2f434fdc6187339b39a1ccf67ba1068adbf108bc2aaccd3"
   },
   {
     "path": "scripts/service-pack-phase.cjs",
