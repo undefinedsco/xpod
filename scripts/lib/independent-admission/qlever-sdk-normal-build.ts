@@ -1,8 +1,10 @@
 import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
+import {posix} from 'node:path';
 import {derivedSourceView,assertDerivedSourceCurrent} from './source-context';
 import limits from '../module-artifact-limits.json';
 import gates from './normal-sdk-gates.json';
+const SMALL_MEMBER_BYTES=8*1024**2;
 
 export const NORMAL_BUILD_MODEL='normal-build-v1' as const;
 export const NORMAL_BUILD_PENDING='qlever-sdk-normal-build-syscall-source-causality-not-proven' as const;
@@ -11,6 +13,14 @@ export const normalMainArtifactName=(target:string,sdk:{sourceSha:string;runId:n
 const GUARANTEES=Object.freeze({syscallSourceReadInventory:false,generatedInputCausality:false,toolchainExecutionLifetime:false,kernelReadOnlyEnforcement:false});
 const sha=(body:Buffer)=>createHash('sha256').update(body).digest('hex');
 function need(value:unknown,why:string):asserts value{if(!value)throw Error('SDK normal-build-v1: '+why);}
+const SAFE_MEMBER_PATH=/^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/u;
+function memberPath(value:unknown,why:string):string{
+ need(typeof value==='string'&&SAFE_MEMBER_PATH.test(value)&&!value.split('/').some(part=>part==='.'||part==='..'),why);
+ return value;
+}
+function receiptMember(receiptPath:string,value:unknown,why:string):string{
+ return posix.join(posix.dirname(receiptPath),memberPath(value,why));
+}
 type Ref=Readonly<{path:string;bytes:number;sha256:string}>;
 type Member=Readonly<{path:string;bytes:number;sha256:string}>;
 interface NormalReference {
@@ -63,6 +73,7 @@ export function inspectNormalBuildSdkMasterBinding(input:{master:any;reference:N
  need(Array.isArray(normal.gates)&&normal.gates.map((row:any)=>row?.name).join(',')==='linked-adapter-runtime,image-smoke','exact normal functional gate set required');
  for(const gate of normal.gates){
   need(gate.receipt&&typeof gate.receipt.path==='string','normal gate receipt reference required: '+String(gate.name));
+  const receiptPath=memberPath(gate.receipt.path,'normal gate receipt path must be artifact-relative');
   read(gate.receipt,8*1024**2);
   if(gate.name==='linked-adapter-runtime'){
    const receipt=JSON.parse(read(gate.receipt,1024**2).toString());
@@ -80,16 +91,22 @@ export function inspectNormalBuildSdkMasterBinding(input:{master:any;reference:N
     need(typeof row.sha256==='string'&&row.sha256===identityFiles[expected.path],'linked verification script hash differs from canonical input identity: '+expected.path);
    }
   }else{
+   need(gate.stdout&&gate.stderr,'smoke master raw member references required');
+   const stdoutPath=memberPath(gate.stdout.path,'smoke master stdout path must be artifact-relative');
+   const stderrPath=memberPath(gate.stderr.path,'smoke master stderr path must be artifact-relative');
    const receipt=JSON.parse(read(gate.receipt,1024**2).toString());
    const expectedCommand=[...gates.smoke.commandPrefixBeforeImage,reference.sdkImageReferenceByDigest,...gates.smoke.commandSuffixAfterImage];
    need(receipt.schemaVersion===1&&isDeepStrictEqual(receipt.command,expectedCommand)
     &&receipt.exit===0&&receipt.signal===null&&receipt.actualWait===true&&receipt.rawClosedBeforeHash===true,
     'smoke receipt is not the exact expected docker run of the selected immutable image');
-   need(receipt.stdout&&gate.stdout&&receipt.stdout.path===gate.stdout.path&&receipt.stdout.bytes===gate.stdout.bytes
-    &&receipt.stdout.sha256===gate.stdout.sha256&&receipt.stderr&&gate.stderr&&receipt.stderr.path===gate.stderr.path
+   need(receipt.stdout&&receipt.stderr,'smoke receipt raw member references required');
+   const receiptStdout=receiptMember(receiptPath,receipt.stdout.path,'smoke receipt stdout path must be relative to the receipt directory');
+   const receiptStderr=receiptMember(receiptPath,receipt.stderr.path,'smoke receipt stderr path must be relative to the receipt directory');
+   need(receiptStdout===stdoutPath&&receipt.stdout.bytes===gate.stdout.bytes
+    &&receipt.stdout.sha256===gate.stdout.sha256&&receiptStderr===stderrPath
     &&receipt.stderr.bytes===gate.stderr.bytes&&receipt.stderr.sha256===gate.stderr.sha256,
     'smoke receipt closed raw member references differ');
-   read(gate.stdout,limits.shardBytes);read(gate.stderr,limits.shardBytes);
+   read(gate.stdout,SMALL_MEMBER_BYTES);read(gate.stderr,SMALL_MEMBER_BYTES);
   }
  }
  return Object.freeze({proof:Object.freeze(proof),normal:Object.freeze(normal)});

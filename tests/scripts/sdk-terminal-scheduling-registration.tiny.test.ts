@@ -1,6 +1,6 @@
 import {test,expect}from'bun:test';import fs from'node:fs';import{createHash}from'node:crypto';
 import before from'../fixtures/sdk35-history.json';
-import{QLEVER_SDK_EXECUTION_GROUPS as sdk}from'../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
+import{QLEVER_SDK_EXECUTION_GROUPS as sdk,QLEVER_SDK_CONSUMER_GROUPS as currentSdkConsumer}from'../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import{CONSUMER_SOURCE_GROUPS as consumer,CI_CONSUMER_SOURCE_GROUPS as ci}from'../../scripts/lib/independent-admission/consumer-observer-policy';
 import current from'../../scripts/lib/independent-admission/consumer-execution-current.json';
 import{CURRENT_CANONICAL_SOURCE_ROWS, completeObserved,observedSecondaryBindings}from'./source-binding-group.fixture';
@@ -8,7 +8,7 @@ import{sourceBindingKey as key,secondaryGitHubSourceBindingSelectors as secondar
 const hash=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 test('SDK35 scheduling preserves all complete historical recipes and binds only the actual reviewed identity/terminal tree',()=>{
  for(const[name,groups]of Object.entries({sdk,consumer,ci})){const prior=before[name as keyof typeof before];for(let i=0;i<prior.length;i++)expect(hash(groups[i])).toBe(prior[i]!);}
- expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);for(const row of [...current,...sdk.at(-1)!.selectors,...sdk.at(-1)!.sourceBindings])expect(createHash('sha256').update(fs.readFileSync(row.path)).digest('hex')).toBe(row.sha256);
+ expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);for(const row of [...current,...currentSdkConsumer.at(-1)!.selectors,...currentSdkConsumer.at(-1)!.sourceBindings])expect(createHash('sha256').update(fs.readFileSync(row.path)).digest('hex')).toBe(row.sha256);
  expect(fs.statSync('scripts/lib/independent-admission/consumer-observer-policy.ts').size<1024*1024).toBe(true);
 });
 // Keep the complete historical matrix; each recipe has its own bounded test.

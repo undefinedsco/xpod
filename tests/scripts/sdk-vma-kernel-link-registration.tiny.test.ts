@@ -1,15 +1,15 @@
 import fs from 'node:fs';import{createHash}from'node:crypto';import{test,expect}from'bun:test';
 import before from'../fixtures/independent-admission/pre-vma-kernel-link-whole-groups.original.json';
-import{API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as api}from'../../scripts/lib/independent-admission/github-origin';import{QLEVER_SDK_EXECUTION_GROUPS as sdk}from'../../scripts/lib/independent-admission/qlever-sdk-origin-policy';import{CONSUMER_SOURCE_GROUPS as consumer,CI_CONSUMER_SOURCE_GROUPS as ci}from'../../scripts/lib/independent-admission/consumer-observer-policy';import current from'../../scripts/lib/independent-admission/consumer-execution-current.json';
+import{API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as api}from'../../scripts/lib/independent-admission/github-origin';import{QLEVER_SDK_EXECUTION_GROUPS as sdk,QLEVER_SDK_CONSUMER_GROUPS as currentSdkConsumer}from'../../scripts/lib/independent-admission/qlever-sdk-origin-policy';import{CONSUMER_SOURCE_GROUPS as consumer,CI_CONSUMER_SOURCE_GROUPS as ci}from'../../scripts/lib/independent-admission/consumer-observer-policy';import current from'../../scripts/lib/independent-admission/consumer-execution-current.json';
 import{sourceBindingKey as key,selectGitHubSourceBindingGroup as select}from'../../scripts/lib/independent-admission/github-source-binding-groups';
 import{CURRENT_CANONICAL_SOURCE_ROWS, completeObserved,observedSecondaryBindings}from'./source-binding-group.fixture';
 const sha=(value:Buffer|string)=>createHash('sha256').update(value).digest('hex'),groups={api,sdk,consumer,ci};
 test('SDK39 preserves all 206 actual prior whole recipes and binds exact kernel-link plus failure-only CMake helper bytes',()=>{
  for(const[name,values]of Object.entries(groups)){const old=before.hashes[name as keyof typeof before.hashes];for(let i=0;i<old.length;i++)expect(sha(JSON.stringify(values[i]))).toBe(old[i]!);}
 
- for(const row of [...current,...sdk.at(-1)!.selectors,...sdk.at(-1)!.sourceBindings])expect(sha(fs.readFileSync(row.path))).toBe(row.sha256);
+ for(const row of [...current,...currentSdkConsumer.at(-1)!.selectors,...currentSdkConsumer.at(-1)!.sourceBindings])expect(sha(fs.readFileSync(row.path))).toBe(row.sha256);
  expect(sdk[before.hashes.sdk.length]!.sourceBindings.find(row=>row.path==='qlever/scripts/sdk-toolchain-materials.py')!.sha256).toBe('0cc20e6c0c589f6b3af8420a6aa230e65a39ca12f429bcba88e0578aeb02dee1');
- expect(sdk.at(-1)!.sourceBindings.find(row=>row.path==='qlever/scripts/sdk-toolchain-materials.py')!.sha256).toBe(sha(fs.readFileSync('qlever/scripts/sdk-toolchain-materials.py')));
+ expect(currentSdkConsumer.at(-1)!.sourceBindings.find(row=>row.path==='qlever/scripts/sdk-toolchain-materials.py')!.sha256).toBe(sha(fs.readFileSync('qlever/scripts/sdk-toolchain-materials.py')));
 });
 for(const[name,values]of Object.entries({sdk,consumer,ci}))for(const group of values.slice(name==='ci'?-2:-1))test('SDK39 new whole tuple uses only its own immutable secondary originals '+name+' '+group.sourceBindings[0]!.sha256,()=>{
  const tuple=completeObserved(values as any,group as any);
