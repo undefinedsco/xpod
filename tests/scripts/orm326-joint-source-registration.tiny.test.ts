@@ -96,9 +96,10 @@ test('the frozen f803 snapshot is the published canonical bytes and the moving c
     // smoke-case declaration at the canonical tail; earlier rows keep position.
     'scripts/collect-normal-local-runtime-originals.py',
     'scripts/lib/normal-local-runtime-smoke-cases.json',
-    // The candidate run-state helper is the ONE new canonical row for this fix;
-    // every earlier row keeps its published position (531 unique rows).
-    'scripts/lib/independent-admission/candidate-run-state.ts']);
+    // RC383 appended the candidate run-state helper; RC384 appends the declared
+    // test-scratch declaration. Every earlier row keeps its published position.
+    'scripts/lib/independent-admission/candidate-run-state.ts',
+    'packages/xpod-afs/.npmignore']);
   expect(new Set(current.map(row => row.path)).size).toBe(current.length);
 });
 

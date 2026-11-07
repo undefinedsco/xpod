@@ -8,7 +8,7 @@ const hash=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('h
 test('SDK30 and Notice fork whole originals both survive before the single actual joint current',()=>{
  // SDK80 append: one new whole group per consumer family; tcb current canonical unchanged.
  // RC383 appends consumer100 for the queued-run state fix.
- expect(c).toHaveLength(100);expect(ci).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.ci);expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
+ expect(c).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.consumer);expect(ci).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.ci);expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
  for(const [groups,prior]of [[c,parents.sdk30Consumer],[ci,parents.sdk30CI],[c,parents.noticeConsumer],[ci,parents.noticeCI]]as const){const all=new Set(groups.map(hash));for(const sha of prior)expect(all.has(sha)).toBe(true);}
  for(const row of current)expect(createHash('sha256').update(fs.readFileSync(path.resolve(import.meta.dir,'../..',row.path))).digest('hex')).toBe(row.sha256);
  // The Notice joint recipe, the subsequent SDK31 recipe AND the ORM 0.3.26 joint
@@ -17,10 +17,11 @@ test('SDK30 and Notice fork whole originals both survive before the single actua
  // consumer 91 -> 92 (+1) and CI 180 -> 182 (+2). The additive constants below
  // therefore track the real current tail delta, never a historical index.
  // Genuine post-baseline appends: the published tail is retained, CI197/198 are
- // the FROZEN 1a01 variants, CI199/200 the 3fb origin-fix appends, and CI201/202
- // the RC382 workspace-build appends, and CI203/204 the RC383 candidate queued-run
- // appends. The captured parent union therefore grows by 124, never a historical
- // index. Consumer grows by 59 for the appended consumer100.
- expect(new Set([...parents.sdk30Consumer,...parents.noticeConsumer ]).size+59).toBe(c.length);
- expect(new Set([...parents.sdk30CI,...parents.noticeCI]).size+124).toBe(ci.length);
+ // the FROZEN 1a01 variants, CI199/200 the 3fb origin-fix appends, CI201/202
+ // the RC382 workspace-build appends, CI203/204 the RC383 candidate queued-run
+ // appends and CI205/206 the RC384 producer-scratch appends. The captured parent
+ // union therefore grows by 126, never a historical index. Consumer grows by 60
+ // for the appended consumer100 and consumer101.
+ expect(new Set([...parents.sdk30Consumer,...parents.noticeConsumer ]).size+60).toBe(c.length);
+ expect(new Set([...parents.sdk30CI,...parents.noticeCI]).size+126).toBe(ci.length);
 });

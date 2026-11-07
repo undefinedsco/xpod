@@ -17,6 +17,10 @@ const CANONICAL_SELF_DECLARED='5c6b5cec930b2eb19a42a09dc338d5b46b9bd326684cf0069
 const POLICY_SELF='scripts/lib/independent-admission/consumer-observer-policy.ts';
 const POLICY_SELF_DECLARED='22c9639ea85964e97f30e223aa336792aa1e707989ec7ca089be6e1e143beb32';
 const FIXED_ORIGIN='759eefd48a0bbac724546cc12dda18f377a34b0e4ad6cf0c004df6cea54e7f12';
+// CI203/CI204 whole-group aggregates captured from the real 9bd2706 snapshot
+// (rc384-bindings-baseline-private BASELINE.json families.ci.aggregates[202]/[203]).
+const FROZEN_CI203='c047ca85c9f763db546e4b9220e83d05af0ef0fc3f990cee1c231a34a64373a3';
+const FROZEN_CI204='800f39a26c83e6cdd81fc1a9ce85069a7d8dbe7c4f6ee9ff5dc26ff06d255765';
 const rowsOf=(g:any)=>{const o:any[]=[];for(const k of ['selectors','secondarySelectors','secondarySelectorStages','sourceBindings']){
   const v=g[k]??[];o.push(...(k==='secondarySelectorStages'?v.flat():v));}return o;};
 const pairOf=(g:any)=>new Map(rowsOf(g).map((r:any)=>[r.path+'|'+(r.ref??''),r.sha256]));
@@ -39,12 +43,18 @@ test('CI197/CI198 are FROZEN to their exact 1a01 values, not rebuilt live',()=>{
   expect(current1a01.ci198).toBe('2d7a4f3001bfe2869401748166444d6be149b398617a7a6a20855786206b7dcc');
 });
 
-test('exactly six NEW variants are appended, and the shared count reflects 204',()=>{
+test('exactly eight NEW variants are appended, and the shared count reflects 206',()=>{
   // RC381 added CI199/200 (origin fix); RC382 appended CI201/202 (workspace-build
-  // replay identity repair); RC383 appended CI203/204 (candidate queued-run state).
-  // CI195..CI202 are all frozen published history.
-  expect(CI_CONSUMER_SOURCE_GROUPS.length).toBe(204);
-  expect(CURRENT_SOURCE_GROUP_COUNTS.ci).toBe(204);
+  // replay identity repair); RC383 appended CI203/204 (candidate queued-run state);
+  // RC384 appended CI205/206 (producer test-scratch boundary). CI195..CI204 are all
+  // frozen published history.
+  expect(CI_CONSUMER_SOURCE_GROUPS.length).toBe(206);
+  expect(CURRENT_SOURCE_GROUP_COUNTS.ci).toBe(206);
+  // CI203/CI204 are frozen at the exact whole-group aggregates captured from the
+  // real 9bd snapshot. The RC384 append must never move them, exactly like
+  // CI195/CI196 above.
+  expect(sha(CI_CONSUMER_SOURCE_GROUPS[202]!)).toBe(FROZEN_CI203);
+  expect(sha(CI_CONSUMER_SOURCE_GROUPS[203]!)).toBe(FROZEN_CI204);
   // Appends, never rewrites of 195/196 or 197/198.
   expect(sha(CI_CONSUMER_SOURCE_GROUPS[194]!)).toBe(PUBLISHED_CI[194]!);
   expect(sha(CI_CONSUMER_SOURCE_GROUPS[195]!)).toBe(PUBLISHED_CI[195]!);
@@ -68,13 +78,13 @@ test('CI199/CI200 are FROZEN to the true-928 anchors and are no longer live',()=
   }
 });
 
-test('every non-run-head row of the CURRENT pair CI203/CI204 equals real source bytes',()=>{
+test('every non-run-head row of the CURRENT pair CI205/CI206 equals real source bytes',()=>{
   // Only explicitly run-head rows are runtime-owned; everything else must match disk.
-  for(const index of [202,203]){
+  for(const index of [204,205]){
     for(const row of rowsOf(CI_CONSUMER_SOURCE_GROUPS[index]!)){
       if(row.ref==='run-head') continue;            // runtime-owned namespace
-      // CI203/CI204 are CURRENT groups built from live anchors: unlike the frozen
-      // CI195..CI202 pairs, EVERY row - including github-origin.ts, the policy
+      // CI205/CI206 are CURRENT groups built from live anchors: unlike the frozen
+      // CI195..CI204 pairs, EVERY row - including github-origin.ts, the policy
       // self-row and the canonical row - must equal today's disk. There is no
       // fixed product-origin pin left in the current pair.
       expect(row.sha256).toBe(disk(row.path));
@@ -91,8 +101,8 @@ test('published CI197/CI198 keep their historical (non-disk) origin row',()=>{
   }
 });
 
-test('real resolver picks CI204 for current bytes and refuses an old-origin mix',()=>{
-  const last=CI_CONSUMER_SOURCE_GROUPS[203]!;
+test('real resolver picks CI206 for current bytes and refuses an old-origin mix',()=>{
+  const last=CI_CONSUMER_SOURCE_GROUPS[205]!;
   const current=new Map(completeObserved(CI_CONSUMER_SOURCE_GROUPS,last) as Map<string,string>);
   for(const key of [...current.keys()]) current.set(key,disk(key.split(':').slice(1).join(':')));
   expect(selectGitHubSourceBindingGroup(CI_CONSUMER_SOURCE_GROUPS,current)).toBe(last);

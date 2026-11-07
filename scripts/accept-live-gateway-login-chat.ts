@@ -934,11 +934,20 @@ async function main(): Promise<void> {
       return await localSolidTransport(input, init);
     }
   };
+  // Gateway API calls keep the session transport: a 403 `service_access_missing` is
+  // retried once with the session credential, which is what that wrapper is for.
   const authenticatedFetch = withRequestPodAuthorization(
     session.fetch,
     async () => `Bearer ${sessionCredential}`,
     credentialTransport,
   );
+  // The Pod probe carries the account credential on the ROUTE-AWARE PLAIN transport, never
+  // through `session.fetch`: a DPoP session transport unconditionally overwrites any
+  // pre-existing Authorization header with its own token (solid-client-authn
+  // fetchFactory: "Any pre-existing Authorization header should be overriden"), so a
+  // credential set in `init` would never reach the Pod. This is the SAME factory that
+  // already does owner-scoped Pod work below, so there is only one credential transport.
+  const podCredentialFetch = createOwnerCredentialFetch(account, credentialTransport);
 
   const probePath = `acceptance/${ACCEPT_ID}.ttl`;
   const probeUrl = new URL(probePath, account.podUrl).toString();
@@ -949,7 +958,7 @@ async function main(): Promise<void> {
     '',
   ].join('\n');
   log('podReadWrite', { phase: 'put-probe', canonical: probeUrl });
-  const put = await authenticatedFetch(probeUrl, {
+  const put = await podCredentialFetch(probeUrl, {
     method: 'PUT',
     headers: { 'content-type': 'text/turtle' },
     body: probeBody,
@@ -960,7 +969,7 @@ async function main(): Promise<void> {
     fail('podReadWrite', `PUT ${probePath} HTTP ${put.status}${challenge ? ` challenge=${redact(challenge)}` : ''}${body ? ` body=${redact(body)}` : ''}`);
   }
   log('podReadWrite', { phase: 'get-probe', canonical: probeUrl });
-  const got = await authenticatedFetch(probeUrl, { headers: { accept: 'text/turtle' } });
+  const got = await podCredentialFetch(probeUrl, { headers: { accept: 'text/turtle' } });
   const gotBody = await got.text();
   if (!got.ok || !gotBody.includes(ACCEPT_ID)) {
     fail('podReadWrite', `GET ${probePath} HTTP ${got.status} mismatch`);
@@ -1168,6 +1177,9 @@ export function createOwnerCredentialFetch(
     headers.set('authorization', `Bearer ${wrapper}`);
     // A Request body's encoded length can change when it is replayed with a new init object.
     headers.delete('content-length');
+    // A stale DPoP proof/header belongs to the session token being replaced here; sending it
+    // alongside the `sk-` wrapper would make the Pod evaluate a proof for a different token.
+    headers.delete('dpop');
     // The transport keeps canonical Pod/API URLs routed to this runtime; a bare `fetch` would
     // send them to the node's public entry, which a managed local node need not serve.
     return transport(input, { ...init, headers });
