@@ -27,7 +27,6 @@ import { createSolidLocalRouteFetch, discoverSolidLocalRoute } from '../packages
 import { createXpodAiConnectionsClient } from '../ui/src/api/ai-connections';
 import { createXpodAiConnectionsPodStore } from '../ui/src/extensions/XpodAiConnectionsPodStore';
 import { withRequestPodAuthorization } from '../ui/src/auth/session-request-credential';
-import { checkServer } from '../src/cli/lib/css-account';
 import { ProvisionCodeCodec } from '../src/provision/ProvisionCodeCodec';
 import {
   discoverOidcIssuerFromWebId,
@@ -63,6 +62,10 @@ type LiveStage = 'preflight' | 'runtime' | 'identity' | 'podReadWrite' | 'gatewa
  * so a throw names the operation that was actually running. */
 type IdentitySubstage = 'route-discovery' | 'managed-pod-claim' | 'account-create' | 'client-credential' | 'session-login';
 
+/** Fixed reason codes for the runtime phase only. They name WHICH check failed so
+ * the next run needs no guesswork, and carry no URL/message/body. */
+type RuntimeFailureReason = 'discovery-unreachable' | 'discovery-http' | 'service-status-http' | 'service-status-invalid' | 'css-api-not-running';
+
 const report: {
   mode: string;
   startedAt: string;
@@ -72,6 +75,9 @@ const report: {
   stage: LiveStage;
   /** The fixed phase in which the run actually failed, set only on a real throw. */
   failedStage?: LiveStage;
+  /** Which fixed runtime check failed, and the numeric HTTP status if one was observed. */
+  runtimeReason?: RuntimeFailureReason;
+  runtimeHttpStatus?: number;
   /** Fixed Local-identity substep actually entered, or the failing one. */
   substage?: IdentitySubstage;
   webId?: string;
@@ -731,17 +737,55 @@ export async function createCloudClientCredentials(options: {
   return { id: body.id, secret: body.secret, resource: resource.href };
 }
 
+/** Record a fixed runtime reason (and an observed numeric status) then fail. */
+function failRuntime(reason: RuntimeFailureReason, httpStatus: number | undefined, detail: string): never {
+  report.runtimeReason = reason;
+  if (Number.isInteger(httpStatus)) report.runtimeHttpStatus = httpStatus;
+  return fail('runtime', detail);
+}
+
 async function main(): Promise<void> {
   report.stage = 'runtime';
-  if (!(await checkServer(BASE_URL))) {
-    fail('runtime', `Gateway unreachable at ${BASE_URL}`);
+  // checkServer() probes this origin's discovery endpoint and swallows transport
+  // errors, returning false. A false here means either transport failure or a
+  // non-2xx discovery response; record the observable status separately.
+  // One probe supplies BOTH the boolean checkServer would compute and the status
+  // we want to report, so the success path makes no extra request.
+  let discoveryStatus: number | undefined;
+  let discoveryOk = false;
+  try {
+    // EXACT parity with the previous checkServer(): same Accept header and the
+    // same 5s AbortSignal.timeout bound. Without the bound a stalled origin would
+    // hold the canary for the whole job instead of failing fast.
+    const probe = await fetch(new URL('.well-known/openid-configuration', BASE_URL), {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(5_000),
+    });
+    discoveryStatus = probe.status;
+    discoveryOk = probe.ok;
+  } catch { discoveryOk = false; }
+  if (!discoveryOk) {
+    failRuntime(discoveryStatus === undefined ? 'discovery-unreachable' : 'discovery-http', discoveryStatus,
+      `Gateway unreachable at ${BASE_URL}`);
   }
   const statusResponse = await fetch(new URL('service/status', BASE_URL));
-  const statusPayload = await readJson(statusResponse, 'GET /service/status') as Array<{ name?: string; status?: string; pid?: number }>;
+  if (!statusResponse.ok) {
+    failRuntime('service-status-http', statusResponse.status, `service/status HTTP ${statusResponse.status}`);
+  }
+  // An OK-but-malformed payload is its own honest reason, distinct from transport
+  // failure and from CSS/API reporting a non-running status.
+  let statusPayload: Array<{ name?: string; status?: string; pid?: number }>;
+  try {
+    const parsed = JSON.parse(await statusResponse.text()) as unknown;
+    if (!Array.isArray(parsed)) throw new Error('not an array');
+    statusPayload = parsed as Array<{ name?: string; status?: string; pid?: number }>;
+  } catch {
+    failRuntime('service-status-invalid', statusResponse.status, 'service/status returned malformed JSON');
+  }
   const css = statusPayload.find((item) => item.name === 'css');
   const api = statusPayload.find((item) => item.name === 'api');
   if (css?.status !== 'running' || api?.status !== 'running') {
-    fail('runtime', `CSS/API not running: css=${css?.status ?? 'missing'} api=${api?.status ?? 'missing'}`);
+    failRuntime('css-api-not-running', statusResponse.status, `CSS/API not running: css=${css?.status ?? 'missing'} api=${api?.status ?? 'missing'}`);
   }
   layer('runtime', true, `css pid ${css.pid} api pid ${api.pid}`);
   report.stage = 'identity';
