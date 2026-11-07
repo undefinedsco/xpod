@@ -8,16 +8,16 @@ import current from '../../scripts/lib/independent-admission/consumer-execution-
 import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as API,API_WORKSPACE_SOURCE_GROUPS,API_WEBSITE_STAGE_SOURCE_BINDINGS} from '../../scripts/lib/independent-admission/github-origin';
 import {CONSUMER_SOURCE_GROUPS as CONSUMER,CI_CONSUMER_SOURCE_GROUPS as CI} from '../../scripts/lib/independent-admission/consumer-observer-policy';
 import {secondaryGitHubSourceBindingSelectors,selectGitHubSourceBindingGroup,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
-import {CURRENT_CANONICAL_SOURCE_ROWS} from './source-binding-group.fixture';
+import {CURRENT_CANONICAL_SOURCE_ROWS,CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
 const role='scripts/lib/api-scoped-dependency-state.ts';
 const hash=(bytes:string|Buffer)=>createHash('sha256').update(bytes).digest('hex');
 const historicalKey=(row:{path:string;sha256:string;ref?:string})=>{if(row.ref!==undefined&&row.ref!=='run-head')throw Error('Unknown historical original role');return sourceBindingKey({path:row.path,sha256:row.sha256,...(row.ref===undefined?{}:{ref:row.ref})});};
 const observed=(g:any)=>new Map([...g.selectors,...g.secondarySelectors??[]].map((row:any)=>[sourceBindingKey(row),row.sha256]));
 test('all complete SDK20 controller/API source sets survive with only their own already-required discriminator',()=>{
  for(const[groups,old]of[[CONSUMER,historical.consumer],[CI,historical.ci],[API,historical.api]]as const){
-  // API delta 24 unchanged; the SDK80 append adds one whole group to each
-  // consumer family tail (83 -> 84, 166 -> 168).
-  expect(groups.length).toBe(old.length+(groups===CI?174:groups===CONSUMER?87:25));
+  // Current lengths come from the ONE shared expectation object; the historical
+  // deltas are derived from it, never hardcoded here.
+  expect(groups.length).toBe(groups===CI?CURRENT_SOURCE_GROUP_COUNTS.ci:groups===CONSUMER?CURRENT_SOURCE_GROUP_COUNTS.consumer:CURRENT_SOURCE_GROUP_COUNTS.api);
   for(const previous of old){
    const before=new Map(previous.selectors.map(row=>[historicalKey(row),row.sha256]));
    const matches=groups.filter(group=>JSON.stringify(group.selectors)===JSON.stringify(previous.selectors)&&hash(JSON.stringify(group.sourceBindings))===previous.sourceBindingsSha256);expect(matches).toHaveLength(1);const group=matches[0]!;
@@ -28,7 +28,9 @@ test('all complete SDK20 controller/API source sets survive with only their own 
  }
 });
 test('only minimal same-primary candidates fetch physical helper; all old global roles remain unchanged',()=>{
- expect(API_WORKSPACE_SOURCE_GROUPS).toHaveLength(26);
+ // Four frozen legacy API groups predate workspace lookup. Assert the expected
+ // frontier independently of the production filter that builds this registry.
+ expect(API_WORKSPACE_SOURCE_GROUPS).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.api-4);
  for(const group of API){const primary=new Map(group.selectors.map(row=>[sourceBindingKey(row),row.sha256]));const roles=secondaryGitHubSourceBindingSelectors(API,primary);expect(roles.some(row=>row.path===role)).toBe(API_WORKSPACE_SOURCE_GROUPS.includes(group as any));}
  const [old,next]=API_WORKSPACE_SOURCE_GROUPS;expect(old!.sourceBindings.find(row=>row.path===role)?.sha256).not.toBe(next!.sourceBindings.find(row=>row.path===role)?.sha256);
  for(const group of API_WORKSPACE_SOURCE_GROUPS){const facts=observed(group);for(const role of secondaryGitHubSourceBindingSelectors(API,new Map(group.selectors.map(row=>[sourceBindingKey(row),row.sha256])))){const row=group.sourceBindings.find(row=>sourceBindingKey(row)===sourceBindingKey(role))!;facts.set(sourceBindingKey(role),row.sha256);}expect(selectGitHubSourceBindingGroup(API,facts)).toBe(group);facts.delete('source:'+role);expect(()=>selectGitHubSourceBindingGroup(API,facts)).toThrow();facts.set('source:'+role,'0'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(API,facts)).toThrow();}

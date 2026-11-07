@@ -142,7 +142,7 @@ test('the appended consumer/CI tails bind every ORM 0.3.26 fact and keep the 0.3
   const f803Api = (f803.groupHashes as Record<string, string[]>).api!;
   // Index 27 is the PUBLISHED f803 tuple; index 28 is the new ORM 0.3.26 tail.
   const published = api[27]!;
-  expect(api.length).toBe(30);
+  expect(api.length).toBe(CURRENT_SOURCE_GROUP_COUNTS.api);
   expect(digest(published)).toBe(f803Api[f803Api.length - 1]!);
   expect(api[28]!.selectors.some(row => row.path === PATCH_26)).toBe(true);
   expect(published.selectors.some(row => row.path === PATCH_26)).toBe(false);

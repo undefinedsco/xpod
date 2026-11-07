@@ -28,8 +28,14 @@ test('refuses the unreviewed historical-supervisor plus current-payload mixture'
 
 test('append-only 8GiB CLI tuple keeps the ORM tuple exact and separates only sourceLimits',()=>{
  const oldOrm=CLI_SOURCE_VERSION_GROUPS[11]!, current=CLI_SOURCE_VERSION_GROUPS[12]!;
- // The published ORM tuple remains selectable with its exact historical limit.
- expect(reviewedCliSourceVersion({...actual,sourceLimits:historical.sourceLimits},name=>readFileSync(name))).toBe(true);
+ // The published ORM tuple remains selectable with its exact historical limit
+ // AND the historical parser bytes it was published against.
+ expect(historicParserRaw.length).toBe(historicParser.files[0]!.bytes);
+ expect(createHash('sha256').update(historicParserRaw).digest('hex')).toBe(historicParser.files[0]!.sha256);
+ expect(reviewedCliSourceVersion({...actual,sourceLimits:historical.sourceLimits},historicalRead)).toBe(true);
+ // Using TODAY's parser with the historical limit is a genuine mixed tuple: it
+ // must not silently select the published tuple.
+ expect(()=>reviewedCliSourceVersion({...actual,sourceLimits:historical.sourceLimits},name=>readFileSync(name))).toThrow(/catalog CLI complete source binding mismatch/u);
  // The appended current tuple is selected only by the canonical 8GiB limit.
  expect(reviewedCliSourceVersion(actual,name=>readFileSync(name))).toBe(true);
  expect(current.sourceLimits).toBe('5eb76b0cfcefc0b0352342fe0bf2d46dab2cbfa4a6f549af17c819e8cf90494c');
@@ -55,7 +61,7 @@ test('new same-primary CLI source tuple observes its own manifest bytes and pres
  // Every historically published tuple stays byte-identical at its own index; the
  // ORM 0.3.26 joint tuple is a genuine append bound to the ACTUAL manifest bytes.
  const publishedCount=history.hashes.length;
- expect(CLI_SOURCE_VERSION_GROUPS.length).toBe(publishedCount+6);
+ expect(CLI_SOURCE_VERSION_GROUPS.length).toBe(publishedCount+7);
  for(let i=0;i<history.hashes.length;i++)expect(createHash('sha256').update(JSON.stringify(CLI_SOURCE_VERSION_GROUPS[i])).digest('hex')).toBe(history.hashes[i]!);
  const orm326=(CLI_SOURCE_VERSION_GROUPS as any[]).at(-1)!;
  for(const binding of orm326.sourceBindings??[])expect(createHash('sha256').update(readFileSync(binding.path)).digest('hex')).toBe(binding.sha256);
@@ -73,7 +79,13 @@ test('new same-primary CLI source tuple observes its own manifest bytes and pres
 });
 
 import entityHistory from '../fixtures/independent-admission/pre-sdk46-cli-whole-hashes.original.json';
+import historicParser from '../fixtures/independent-admission/pre-shared-parser-f881.original.json';
 import priorShared from '../fixtures/independent-admission/pre-sdk46-shared-api-originals.original.json';
+/** Historical READ of the shared parser at its pre-append bytes. The working tree
+ * now carries the new parser, so a historical tuple must be exercised against the
+ * exact captured original instead of today's file. Verified byte-for-byte below. */
+const historicParserRaw=Buffer.from(historicParser.files[0]!.rawBase64,'base64');
+const historicalRead=(name:string)=>name==='scripts/workspace-package-payload.cjs'?historicParserRaw:readFileSync(name);
 test('shared payload CLI version preserves all eight actual f72 recipes and stages only already-owned discriminators',()=>{
  expect(entityHistory.base).toBe('f72f8a8ab3f304631e7d4357be552dd441ea9a0d');expect(entityHistory.hashes.length).toBe(8);
  for(let i=0;i<entityHistory.hashes.length;i++)expect(createHash('sha256').update(JSON.stringify(CLI_SOURCE_VERSION_GROUPS[i])).digest('hex')).toBe(entityHistory.hashes[i]!);

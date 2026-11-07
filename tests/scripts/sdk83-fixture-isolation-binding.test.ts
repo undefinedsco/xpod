@@ -63,12 +63,12 @@ it('every published 3739 whole prefix is byte-identical',()=>{
   // frozen prefix below, not by current lengths.
   expect(SDK).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.sdk);expect(LINUX).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.linux);
   expect(CONSUMER).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.consumer);expect(CI).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.ci);
-  expect(API).toHaveLength(30);expect(CLI).toHaveLength(13);
+  expect(API).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.api);expect(CLI).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.cli);
   prefix(SDK.slice(0,82),OLD_SDK,'sdk');
   prefix(LINUX.slice(0,83),OLD_LINUX,'linux');
   prefix(CONSUMER.slice(0,98),OLD_CONSUMER,'consumer');
   prefix(CI.slice(0,194),OLD_CI,'ci');
-  prefix(API,OLD_API,'api');prefix(CLI,OLD_CLI,'cli');
+  prefix(API.slice(0,OLD_API.length),OLD_API,'api');prefix(CLI.slice(0,OLD_CLI.length),OLD_CLI,'cli');
 });
 
 it('helper and readonly registries keep every captured whole vector',()=>{
@@ -180,8 +180,10 @@ it('the live canonical binds the current canonical physical originals with no se
   for(const anchor of CONTROLLER_POLICY_BINDINGS) expect(sha(anchor.path)).toBe(anchor.sha256);
 });
 
-it('the SDK83 consumer/CI tails bind the final policy and canonical bytes',()=>{
-  const tails:any[]=[CONSUMER[98]!,CI[194]!,CI[195]!];
+it('the current consumer/CI tails bind the final policy and canonical bytes',()=>{
+  // Published CI195/196 are checked against their exact baseline by the history
+  // regression; only the appended current variants bind today's source bytes.
+  const tails:any[]=[CONSUMER.at(-1)!,...CI.slice(-2)];
   const role=(g:any,p:string)=>[...g.sourceBindings,...(g.secondarySelectors??[])].filter((r:any)=>r.path===p).map((r:any)=>r.sha256);
   for(const group of tails){
     expect(group.sourceBindings).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS+2);

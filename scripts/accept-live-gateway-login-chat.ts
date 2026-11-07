@@ -53,11 +53,27 @@ const SECRET_PATTERN = /(sk-[A-Za-z0-9+/=_-]{8,}|Bearer\s+\S+|apiKey|client_secr
 
 type Layer = 'runtime' | 'identity' | 'podReadWrite' | 'gatewayAuth' | 'aiConnections' | 'models' | 'chat' | 'taskApproval';
 
+/** Fixed enumeration of the phases the canary actually enters. Recorded BEFORE
+ * the work happens so a throw anywhere inside a phase still names that phase.
+ * `preflight` covers work done before the first layer, `after-layers` covers
+ * cleanup/session steps after every layer already passed. */
+type LiveStage = 'preflight' | 'runtime' | 'identity' | 'podReadWrite' | 'gatewayAuth' | 'aiConnections' | 'models' | 'chat' | 'after-layers';
+
+/** Local identity substeps, set immediately before the real operation is entered
+ * so a throw names the operation that was actually running. */
+type IdentitySubstage = 'route-discovery' | 'managed-pod-claim' | 'account-create' | 'client-credential' | 'session-login';
+
 const report: {
   mode: string;
   startedAt: string;
   baseUrl: string;
   layers: Record<Layer, { ok: boolean; detail: string }>;
+  /** Explicitly the phase that was entered last; never inferred from layers. */
+  stage: LiveStage;
+  /** The fixed phase in which the run actually failed, set only on a real throw. */
+  failedStage?: LiveStage;
+  /** Fixed Local-identity substep actually entered, or the failing one. */
+  substage?: IdentitySubstage;
   webId?: string;
   podUrl?: string;
   probeUrl?: string;
@@ -73,6 +89,7 @@ const report: {
   mode: MODE,
   startedAt: new Date().toISOString(),
   baseUrl: BASE_URL,
+  stage: 'preflight',
   layers: {
     runtime: { ok: false, detail: 'not run' },
     identity: { ok: false, detail: 'not run' },
@@ -100,6 +117,8 @@ function layer(name: Layer, ok: boolean, detail: string): void {
 
 function fail(name: Layer, detail: string): never {
   layer(name, false, detail);
+  // The failing phase is exactly the one the caller reported, not a positional guess.
+  if (name !== 'taskApproval') report.failedStage = name;
   writeEvidence();
   throw new Error(detail);
 }
@@ -713,6 +732,7 @@ export async function createCloudClientCredentials(options: {
 }
 
 async function main(): Promise<void> {
+  report.stage = 'runtime';
   if (!(await checkServer(BASE_URL))) {
     fail('runtime', `Gateway unreachable at ${BASE_URL}`);
   }
@@ -724,6 +744,7 @@ async function main(): Promise<void> {
     fail('runtime', `CSS/API not running: css=${css?.status ?? 'missing'} api=${api?.status ?? 'missing'}`);
   }
   layer('runtime', true, `css pid ${css.pid} api pid ${api.pid}`);
+  report.stage = 'identity';
   const localSolidTargets: Array<{ url: string; method: string }> = [];
   const observedTransportFetch: typeof fetch = async(input, init) => {
     localSolidTargets.push({ url: inputUrl(input), method: init?.method ?? (input instanceof Request ? input.method : 'GET') });
@@ -737,6 +758,7 @@ async function main(): Promise<void> {
   try {
     let localRoute: Awaited<ReturnType<typeof discoverSolidLocalRoute>>;
     if (MODE === 'local') {
+      report.substage = 'route-discovery';
       localRoute = await discoverSolidLocalRoute({
         fetch,
         localBaseUrl: BASE_URL,
@@ -776,6 +798,7 @@ async function main(): Promise<void> {
       }
       identityBaseUrl = discovery.issuer;
     }
+    report.substage = 'account-create';
     cloudAccount = await createCloudAccountPassword(identityBaseUrl, `accept-${MODE}`);
     const username = normalizeAcceptanceName(`a-${MODE}-${randomUUID().slice(0, 8)}`);
     const podOptions = {
@@ -784,6 +807,7 @@ async function main(): Promise<void> {
       controls: cloudAccount.controls,
       username,
     };
+    if (MODE === 'local' && localRoute) report.substage = 'managed-pod-claim';
     const binding = MODE === 'local' && localRoute
       ? await prepareManagedLocalAcceptancePod({
         ...podOptions,
@@ -792,6 +816,7 @@ async function main(): Promise<void> {
         provisionCode: await readLocalProvisionCode(),
       })
       : await createHostedPod(podOptions);
+    report.substage = 'client-credential';
     const credentials = await createCloudClientCredentials({
       baseUrl: identityBaseUrl,
       authorization: cloudAccount.authorization,
@@ -814,6 +839,7 @@ async function main(): Promise<void> {
     report.webId = account.webId;
     report.podUrl = account.podUrl;
     log('auth', { phase: 'client-credentials-login', issuer: account.issuer, webId: account.webId });
+    report.substage = 'session-login';
     session = await loginWithClientCredentials(account, localSolidTransport);
     log('auth', { phase: 'client-credentials-login-complete', isLoggedIn: session.info.isLoggedIn });
   } catch (error) {
@@ -821,6 +847,8 @@ async function main(): Promise<void> {
     fail('identity', redact(message));
   }
   layer('identity', true, `mode=${MODE} issuer=${account.issuer} webId=${account.webId} pod=${account.podUrl}`);
+  delete report.substage;
+  report.stage = 'podReadWrite';
   // The Gateway refuses a DPoP-bound session for Pod-backed work
   // (`caller_dpop_replay_unsupported`): the proof belongs to the caller and cannot be replayed.
   // The applet answers that refusal with the caller's own Pod credential and retries once; the
@@ -885,6 +913,7 @@ async function main(): Promise<void> {
   report.probeUrl = probeUrl;
   if (report.localRoute) report.localRoute.verifiedTarget = expectedProbeTarget;
   layer('podReadWrite', true, `canonical=${probeUrl} networkTarget=${expectedProbeTarget}`);
+  report.stage = 'aiConnections';
 
   const authSession: SolidAuthSession = {
     info: session.info,
@@ -943,6 +972,7 @@ async function main(): Promise<void> {
     controls: cloudAccount.controls,
     webId: account.webId,
   });
+  report.stage = 'aiConnections';
 
   const fileState = providerFromFile();
   if (fileState.present && !fileState.spec) {
@@ -987,6 +1017,7 @@ async function main(): Promise<void> {
         ? 'data: [] — auth/route only, Chat not proven'
         : `${initialModelIds.length} existing model(s) — Provider persistence not verified`);
       layer('chat', false, 'Skipped: no verified provider credential');
+      report.failedStage ??= report.stage;
       writeEvidence();
       process.exitCode = 2;
       return;
@@ -1122,6 +1153,7 @@ async function verifyGatewayKeyLifecycle(
   gatewayKey: string;
   initialModelIds: string[];
 }> {
+  report.stage = 'gatewayAuth';
   let phase = 'unauthenticated rejection';
   try {
     const unauthenticated = await fetch(new URL('v1/models', BASE_URL));
@@ -1197,6 +1229,7 @@ async function verifyGatewayKeyLifecycle(
 }
 
 async function projectModelsAndChat(gatewayKey: string, selectedIds: string[]): Promise<void> {
+  report.stage = 'models';
   const modelsAfter = await fetch(new URL('v1/models', BASE_URL), {
     headers: { Authorization: `Bearer ${gatewayKey}`, Accept: 'application/json' },
   });
@@ -1208,6 +1241,7 @@ async function projectModelsAndChat(gatewayKey: string, selectedIds: string[]): 
   layer('models', true, `HTTP ${modelsAfter.status}; ${projected.length} model(s): ${projected.join(', ')}`);
 
   const chatModel = selectedIds.find((id) => projected.includes(id)) ?? projected[0];
+  report.stage = 'chat';
   await chatOnce(gatewayKey, chatModel);
 }
 
@@ -1251,6 +1285,7 @@ async function chatOnce(gatewayKey: string, chatModel: string): Promise<void> {
     fail('chat', `Chat HTTP ${chatResponse.status} did not return the exact acceptance marker${observed ? `; observed=${redact(observed)}` : '; observed=<empty>'}; payload=${payloadShape}`);
   }
   layer('chat', true, `HTTP ${chatResponse.status} model=${chatModel} contentChars=${text.trim().length}`);
+  report.stage = 'after-layers';
 }
 
 // Imports expose protocol probes without executing the live canary.
@@ -1259,6 +1294,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
     .catch((error) => {
       const message = error instanceof Error ? redact(error.message) : 'unknown error';
       log('fatal', { message });
+      // A throw that bypassed `fail()` still happened inside the phase recorded
+      // in `report.stage`; serialize that explicit phase. Successful layers keep
+      // their own ok:true and are never rewritten, and no completion is invented.
+      report.failedStage ??= report.stage;
       writeEvidence();
       process.exitCode = 1;
     })
