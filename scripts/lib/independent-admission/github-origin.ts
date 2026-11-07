@@ -1236,14 +1236,32 @@ const apiOrm326JointGroup=Object.freeze({...apiFinalJointGroup,name:'api-orm-0.3
  * and every earlier API tuple keep their exact historical bytes. */
 const CURRENT_API_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
  'scripts/lib/module-artifact-limits.json':'5eb76b0cfcefc0b0352342fe0bf2d46dab2cbfa4a6f549af17c819e8cf90494c'});
+
 const rebindCurrentApiRows=(rows:readonly {readonly path:string;readonly sha256:string}[]|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:CURRENT_API_SOURCE_HASHES[row.path]??row.sha256})));
 const apiCurrentCombinedGroup=Object.freeze({...apiOrm326JointGroup,name:'api-current-combined-capacity',
  selectors:rebindCurrentApiRows(apiOrm326JointGroup.selectors),
  secondarySelectors:Object.freeze([...rebindCurrentApiRows(apiOrm326JointGroup.secondarySelectors),Object.freeze({path:'scripts/lib/module-artifact-limits.json',sha256:CURRENT_API_SOURCE_HASHES['scripts/lib/module-artifact-limits.json']!})]),
  sourceBindings:rebindCurrentApiRows(apiOrm326JointGroup.sourceBindings)});
 /** CURRENT API tuple. The published f803/ORM groups above remain selectable and unchanged. */
-export const API_SERVICE_BUILD_SOURCE_BINDINGS=apiCurrentCombinedGroup.sourceBindings;
-export const API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS:readonly (GitHubSourceBindingGroup&{readonly name?:string})[]=Object.freeze([...PRE_BUILD_API_GROUPS,apiControlledDescriptorSourceGroup25,apiCaptureInputsTimingGroup,apiCapturePerformanceGroup,apiFinalJointGroup,apiOrm326JointGroup,apiCurrentCombinedGroup]);
+
+/** The shared tar/payload parser is BOTH a primary selector and a sourceBinding
+ * of the API tuple, so its final bytes must move as one reviewed generation.
+ * Every API1..API30 tuple keeps its exact published bytes. */
+const CURRENT_API_SHARED_PARSER_HASHES:Readonly<Record<string,string>>=Object.freeze({
+ 'scripts/workspace-package-payload.cjs':'058c6f633ed805cf0af2f5f3ebac1cfd1706c8ed106da2f16766dde4a20c145a'});
+const rebindSharedParserApiRows=(rows:readonly {readonly path:string;readonly sha256:string}[]|undefined)=>Object.freeze((rows??[]).map(row=>Object.freeze({...row,sha256:CURRENT_API_SHARED_PARSER_HASHES[row.path]??row.sha256})));
+/** CURRENT shared-parser tuple (APPEND-ONLY): only the parser bytes move, in
+ * every role it holds, so old and new tails separate by actual bytes. */
+const apiCurrentSharedParserGroup=Object.freeze({...apiCurrentCombinedGroup,name:'api-current-shared-parser',
+ selectors:rebindSharedParserApiRows(apiCurrentCombinedGroup.selectors),
+ secondarySelectors:rebindSharedParserApiRows(apiCurrentCombinedGroup.secondarySelectors),
+ secondarySelectorStages:Object.freeze((apiCurrentCombinedGroup.secondarySelectorStages??[]).map(stage=>rebindSharedParserApiRows(stage))),
+ sourceBindings:rebindSharedParserApiRows(apiCurrentCombinedGroup.sourceBindings)});
+/** The CURRENT API build-source bindings. It tracks the newest appended tuple so
+ * consumers always see today's bytes; every API1..API30 group itself stays
+ * byte-identical. */
+export const API_SERVICE_BUILD_SOURCE_BINDINGS=apiCurrentSharedParserGroup.sourceBindings;
+export const API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS:readonly (GitHubSourceBindingGroup&{readonly name?:string})[]=Object.freeze([...PRE_BUILD_API_GROUPS,apiControlledDescriptorSourceGroup25,apiCaptureInputsTimingGroup,apiCapturePerformanceGroup,apiFinalJointGroup,apiOrm326JointGroup,apiCurrentCombinedGroup,apiCurrentSharedParserGroup]);
 
 export const API_WORKSPACE_SOURCE_GROUPS=Object.freeze(API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS.filter(group=>group.sourceBindings.some(row=>row.path==='scripts/lib/api-scoped-dependency-state.ts')));
 

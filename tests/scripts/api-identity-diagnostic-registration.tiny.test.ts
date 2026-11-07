@@ -8,11 +8,14 @@ import current from '../../scripts/lib/independent-admission/consumer-execution-
 import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as API,API_WORKSPACE_SOURCE_GROUPS,API_PHYSICAL_LOOKUP_SOURCE_BINDINGS,API_IDENTITY_DIAGNOSTIC_SOURCE_BINDINGS,API_WEBSITE_STAGE_SOURCE_BINDINGS} from '../../scripts/lib/independent-admission/github-origin';
 import {CONSUMER_SOURCE_GROUPS as CONSUMER,CI_CONSUMER_SOURCE_GROUPS as CI} from '../../scripts/lib/independent-admission/consumer-observer-policy';
 import {secondaryGitHubSourceBindingSelectors,selectGitHubSourceBindingGroup,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
-import {CURRENT_CANONICAL_SOURCE_ROWS} from './source-binding-group.fixture';
+import {CURRENT_CANONICAL_SOURCE_ROWS,CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
 const hash=(value:string|Buffer)=>createHash('sha256').update(value).digest('hex');
 const originalKey=(row:{path:string;sha256:string;ref?:string})=>{if(row.ref!==undefined&&row.ref!=='run-head')throw Error('Unknown original role');return sourceBindingKey({path:row.path,sha256:row.sha256,...(row.ref===undefined?{}:{ref:row.ref})});};
 test('diagnostic registration preserves every complete e8 API/controller group without future global GETs',()=>{
- for(const[groups,old]of[[CONSUMER,historical.consumer],[CI,historical.ci],[API,historical.api]]as const){expect(groups.length).toBe(old.length+(groups===CI?172:groups===CONSUMER?86:24));
+ // Current lengths come from the ONE shared expectation object; the historical
+ // deltas are derived from it, never hardcoded here.
+ const expected=(groups:any)=>groups===CI?CURRENT_SOURCE_GROUP_COUNTS.ci:groups===CONSUMER?CURRENT_SOURCE_GROUP_COUNTS.consumer:CURRENT_SOURCE_GROUP_COUNTS.api;
+ for(const[groups,old]of[[CONSUMER,historical.consumer],[CI,historical.ci],[API,historical.api]]as const){expect(groups.length).toBe(expected(groups as any));
   for(const before of old){const candidates=groups.filter(group=>JSON.stringify(group.selectors)===JSON.stringify(before.selectors)&&hash(JSON.stringify(group.sourceBindings))===before.sourceBindingsSha256);expect(candidates).toHaveLength(1);const group=candidates[0]!;for(const role of before.secondarySelectors)expect(group.secondarySelectors?.find(row=>originalKey(row)===originalKey(role))).toEqual(role);for(const role of group.secondarySelectors??[])if(!before.secondarySelectors.some(row=>originalKey(row)===originalKey(role)))expect(group.sourceBindings.find(row=>originalKey(row)===originalKey(role))).toEqual(role);
    const tuple=new Map(group.selectors.map(row=>[sourceBindingKey(row),row.sha256]));for(const role of secondaryGitHubSourceBindingSelectors(groups,tuple)){const original=[...group.selectors,...group.secondarySelectors??[],...group.sourceBindings].find(row=>originalKey(row)===originalKey(role));expect(original).toBeDefined();tuple.set(originalKey(role),original!.sha256);}expect(selectGitHubSourceBindingGroup(groups,tuple)).toBe(group);
   }

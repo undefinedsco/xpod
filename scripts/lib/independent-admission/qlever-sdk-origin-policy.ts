@@ -2796,6 +2796,30 @@ const SDK102_TYPED_STREAM_STAGE=Object.freeze([
 const SDK102_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK101_GROUP,
   secondarySelectorStages:Object.freeze([...(SDK101_GROUP.secondarySelectorStages??[]),SDK102_TYPED_STREAM_STAGE]),
   sourceBindings:Object.freeze(SDK101_GROUP.sourceBindings.map(row=>Object.freeze({...row,sha256:SDK102_SOURCE_HASHES[row.path]??row.sha256})))});
+/** SDK103 is the CURRENT consumer for the RC380 GNU long-name pack repair.
+ *
+ * The pack payload parser gained the same strict, explicitly-opted-in GNU
+ * long-name channel the buffer path already had, and the typed pack consumer now
+ * enables it for real `npm pack` bodies. Neither path was ever a selector or a
+ * stage in any earlier generation, so rebinding alone cannot discriminate them:
+ * one APPENDED secondary stage over `workspace-package-payload.cjs` is required.
+ * SDK102's own eleven stages stay byte identical; `candidate-service-pack-output.ts`
+ * is rebound in sourceBindings only.
+ *
+ * SDK1..102, normal groups 1..4 and flat23 stay byte identical. Neither path is a
+ * RECIPE_FILE, neither is under `qlever/`, and the normal proof does not reference
+ * them, so the normal SDK input identity H does not move: no normal group 5 and no
+ * workflow pin. */
+const SDK103_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
+  'scripts/workspace-package-payload.cjs':'058c6f633ed805cf0af2f5f3ebac1cfd1706c8ed106da2f16766dde4a20c145a',
+  'scripts/lib/independent-admission/candidate-service-pack-output.ts':'3c57db1747f87e8bec6c9cb842e7ef50ebc089b4070c57852baf9b0d5e85301e',
+});
+const SDK103_GNU_LONGNAME_STAGE=Object.freeze([
+  Object.freeze({path:'scripts/workspace-package-payload.cjs',sha256:SDK103_SOURCE_HASHES['scripts/workspace-package-payload.cjs']!}),
+]);
+const SDK103_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK102_GROUP,
+  secondarySelectorStages:Object.freeze([...(SDK102_GROUP.secondarySelectorStages??[]),SDK103_GNU_LONGNAME_STAGE]),
+  sourceBindings:Object.freeze(SDK102_GROUP.sourceBindings.map(row=>Object.freeze({...row,sha256:SDK103_SOURCE_HASHES[row.path]??row.sha256})))});
 export const QLEVER_NORMAL_BUILD_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([SDK93_GROUP]);
 export const QLEVER_SDK_NORMAL_SOURCE_BINDINGS:readonly GitHubSourceBinding[]=Object.freeze([
  Object.freeze({path:'.github/workflows/candidate.yml',sha256:'1446b2ceb6c53b8888e07d0b822854b934c95d508f93dfd901a4687e28d22d9d'}),
@@ -2890,5 +2914,5 @@ export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=O
  * frozen SDK94..SDK101 tuples plus the current SDK102 tuple.
  * QLEVER_SDK_EXECUTION_GROUPS itself stays at exactly SDK1..93 for the published
  * producer contract. */
-export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP]);
-export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP]);
+export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP]);
+export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP]);

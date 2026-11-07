@@ -75,7 +75,7 @@ import {
   CONSUMER_SOURCE_GROUPS as consumer,
   CI_CONSUMER_SOURCE_GROUPS as ci,
 } from '../../scripts/lib/independent-admission/consumer-observer-policy';
-import {QLEVER_SDK_EXECUTION_GROUPS as sdk, QLEVER_SDK_CONSUMER_GROUPS as consumerSdk, QLEVER_LINUX_EXECUTION_GROUPS as linuxGroups} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
+import {QLEVER_SDK_EXECUTION_GROUPS as sdk, QLEVER_SDK_CONSUMER_GROUPS as consumerSdk, QLEVER_LINUX_EXECUTION_GROUPS as linuxGroups, QLEVER_LINUX_CONSUMER_GROUPS as consumerLinux} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as api} from '../../scripts/lib/independent-admission/github-origin';
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
 import {
@@ -205,9 +205,12 @@ test('only the genuinely new immutable-input-plan slice follows published2406', 
     .toEqual([CURRENT_SOURCE_GROUP_COUNTS.sdk, CURRENT_SOURCE_GROUP_COUNTS.consumer, CURRENT_SOURCE_GROUP_COUNTS.ci, CURRENT_SOURCE_GROUP_COUNTS.api, CURRENT_SOURCE_GROUP_COUNTS.linux, CURRENT_SOURCE_GROUP_COUNTS.cli]);
   expect([(n2406Groups as any).published.sdk, (n2406Groups as any).published.consumer,
     (n2406Groups as any).published.ci, (n2406Groups as any).published.linux]).toEqual([73, 88, 174, 74]);
+  // CI gained two APPENDED current variants (195/196 stay published), so the
+  // delta over published2406 grows from 22 to 24 while every published group
+  // keeps its own exact bytes.
   expect([sdk.length - n2406Groups.published.sdk, consumer.length - n2406Groups.published.consumer,
     ci.length - n2406Groups.published.ci, linuxGroups.length - n2406Groups.published.linux])
-    .toEqual([20, 11, 22, 20]);
+    .toEqual([20, 11, 24, 20]);
   // Every published2406 group keeps its own exact bytes, including its last.
   for (const [name, groups] of Object.entries({sdk, consumer, ci, api, linux: linuxGroups})) {
     const published = (n2406Groups as any).groupHashes[name] as unknown[];
@@ -282,7 +285,7 @@ test('the appended groups bind the actual frozen body and real module bytes', ()
     // family bind today's disk bytes. CI has TWO existing current variants that
     // differ only in the run-head workflow selector, so both current SOURCE
     // closures are tested; the run-head rows themselves stay skipped.
-    const currentFamily = name === 'sdk' ? consumerSdk : groups;
+    const currentFamily = name === 'sdk' ? consumerSdk : name === 'linux' ? consumerLinux : groups;
     const current = name === 'ci' ? currentFamily.slice(-2) : currentFamily.slice(-1);
     for (const group of current) {
       for (const row of rows(group)) {

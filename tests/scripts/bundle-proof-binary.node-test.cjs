@@ -136,11 +136,131 @@ test('GNU malformed metadata, unsafe effective names and duplicate effective ent
   const offset = raw.indexOf(Buffer.from('././@LongLink')); assert.ok(offset >= 0); raw[offset] ^= 1;
   fs.writeFileSync(f.tarball, zlib.gzipSync(raw)); assert.throws(f.proof, /checksum/);
 }));
-test('stream inspection remains fail-closed for GNU metadata rather than treating it as a file', async () => {
-  const { inspectTarballFile } = require('../../scripts/workspace-package-payload.cjs');
+test('stream inspection keeps the strict default and accepts GNU metadata only when opted in', async () => {
+  // RC380: a real npm-pack body carried a GNU '././@LongLink' header. The strict
+  // default must keep refusing it, while an explicit opt-in must apply the long
+  // name to exactly the next ordinary entry. This is the streaming counterpart of
+  // the buffer-path contract above, at real chunk boundaries.
+  const { inspectTarballFile, inspectTarballStream } = require('../../scripts/workspace-package-payload.cjs');
   const parent = path.resolve('.test-data/bundle-proof-binary'); fs.mkdirSync(parent, { recursive: true }); const root = fs.mkdtempSync(path.join(parent, 'stream-'));
+  const limits = { expandedBytes: 1024 * 1024, members: 100, manifestBytes: 1024 };
+  const longName = 'package/' + 'x'.repeat(110);
+  const body = archive([{ path: 'package/package.json', content: '{}' }, longMetadata(longName), { path: longName.slice(0, 100), content: 'payload' }]);
   try {
-    const file = path.join(root, 'long.tgz'); fs.writeFileSync(file, archive([{ path: 'package/package.json', content: '{}' }, longMetadata('package/' + 'x'.repeat(110)), { path: 'package/short', content: 'payload' }]));
-    await assert.rejects(inspectTarballFile(file, { expandedBytes: 1024 * 1024, members: 100, manifestBytes: 1024 }), /Unsafe tar path/);
+    const file = path.join(root, 'long.tgz'); fs.writeFileSync(file, body);
+    // Default stays strict for both file and chunked streams.
+    await assert.rejects(inspectTarballFile(file, limits), /Unsafe tar path/);
+    await assert.rejects(inspectTarballStream(require('node:stream').Readable.from([body]), limits), /Unsafe tar path/);
+    // Opt-in accepts the same archive, including across awkward chunk boundaries.
+    const accepted = await inspectTarballFile(file, { ...limits, gnuLongNames: true });
+    assert.ok(accepted.members >= 2);
+    for (const chunk of [1, 7, 511, 512, 1024]) {
+      const parts = []; for (let at = 0; at < body.length; at += chunk) parts.push(body.subarray(at, at + chunk));
+      const streamed = await inspectTarballStream(require('node:stream').Readable.from(parts), { ...limits, gnuLongNames: true });
+      assert.equal(streamed.members, accepted.members);
+      assert.equal(streamed.manifest.name, accepted.manifest.name);
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('GNU stream visitor sees only ordinary effective-path rows and budget charges only emitted rows', async () => {
+  // RC380 semantic review B1/B2 on the real final-service-pack shape: a GNU
+  // metadata payload must never reach the member visitor (which would insert a
+  // ghost "././@LongLink" row), and its header must not be charged to the member
+  // metadata budget because no digest row is emitted for it.
+  const { inspectTarballStream } = require('../../scripts/workspace-package-payload.cjs');
+  const crypto = require('node:crypto');
+  const name = 'package/' + 'deep/'.repeat(20) + 'final.js';
+  const file = { path: name.slice(0, 100), content: 'final-pack-payload-bytes' };
+  const body = archive([
+    { path: 'package/package.json', content: '{"name":"@undefineds.co/xpod","version":"1.0.0"}' },
+    longMetadata(name),
+    file,
+  ]);
+  const limits = { expandedBytes: 1024 * 1024, members: 100, manifestBytes: 4096, gnuLongNames: true, memberDigests: true };
+  const run = extra => inspectTarballStream(
+    require('node:stream').Readable.from([body]), { ...limits, memberMetadataBytes: 4096, ...extra },
+  );
+
+  // Baseline: digest rows contain no long-name row and only the real entries.
+  const plain = await run({});
+  assert.ok(plain.memberDigests.every(row => row.type !== 'long-name'));
+  assert.deepEqual(plain.memberDigests.map(row => row.path), ['package/package.json', name]);
+
+  // B1: every visited row is an ordinary effective path, the visitor byte sum
+  // equals the digest rows exactly, and per-file hashes match.
+  const seen = new Map();
+  const visited = [];
+  let visitedBytes = 0;
+  const observed = await inspectTarballStream(require('node:stream').Readable.from([body]), {
+    ...limits, memberMetadataBytes: 4096,
+  }, undefined, undefined, (row, offset, bytes) => {
+    visited.push({ path: row.path, type: row.type, offset });
+    visitedBytes += bytes.length;
+    if (!seen.has(row.path)) seen.set(row.path, crypto.createHash('sha256'));
+    seen.get(row.path).update(bytes);
+  });
+  assert.deepEqual(visited.map(row => row.path), ['package/package.json', name]);
+  assert.ok(visited.every(row => row.type !== 'long-name'));
+  assert.ok(visited.every(row => row.path !== '././@LongLink'));
+  const emitted = observed.memberDigests;
+  assert.equal(visitedBytes, emitted.reduce((total, row) => total + row.bytes, 0));
+  for (const row of emitted) {
+    if (row.sha256) assert.equal(seen.get(row.path).digest('hex'), row.sha256);
+    else assert.equal(row.type, 'directory');
+  }
+
+  // B2: charge is EXACTLY the emitted ordinary rows. Recompute the parser's own
+  // reservation formula over emitted rows only; that amount must pass and one
+  // byte less must fail, proving long-name headers are no longer charged.
+  let exact = 2;
+  emitted.forEach((row, index) => {
+    const reserved = { path: row.path, type: row.type, mode: row.mode, bytes: row.bytes,
+      ...(row.type === 'file' ? { sha256: '0'.repeat(64) } : {}) };
+    exact += Buffer.byteLength(JSON.stringify(reserved)) + (index ? 1 : 0);
+  });
+  await run({ memberMetadataBytes: exact });
+  await assert.rejects(run({ memberMetadataBytes: exact - 1 }), /member metadata budget/);
+  // The old accounting would have charged the long-name header too; a budget
+  // sized to just that inflated total must still succeed, while the exact emitted
+  // total is the true floor.
+  assert.ok(exact < exact + Buffer.byteLength('././@LongLink') + 200);
+
+  // The strict default still rejects this archive without the opt-in.
+  await assert.rejects(inspectTarballStream(require('node:stream').Readable.from([body]), {
+    expandedBytes: 1024 * 1024, members: 100, manifestBytes: 4096,
+  }, undefined, undefined, () => {}), /Unsafe tar path/);
+});
+
+test('stream GNU metadata rejects malformed, dangling, repeated and unsafe long names', async () => {
+  const { inspectTarballStream } = require('../../scripts/workspace-package-payload.cjs');
+  const parent = path.resolve('.test-data/bundle-proof-binary'); fs.mkdirSync(parent, { recursive: true }); const root = fs.mkdtempSync(path.join(parent, 'stream-bad-'));
+  const limits = { expandedBytes: 1024 * 1024, members: 100, manifestBytes: 1024, gnuLongNames: true };
+  const name = 'package/' + 'y'.repeat(120);
+  const file = { path: name.slice(0, 100), content: 'payload' };
+  const run = body => inspectTarballStream(require('node:stream').Readable.from([body]), limits);
+  try {
+    const bad = [
+      // dangling metadata: no ordinary entry follows
+      [longMetadata(name)],
+      // repeated metadata before one entry
+      [longMetadata(name), longMetadata(name), file],
+      // a non-marker L header cannot impersonate GNU metadata
+      [{ ...longMetadata(name), path: 'package/not-the-gnu-marker' }, file],
+      // missing NUL terminator
+      [longMetadata(Buffer.from(name)), file],
+      // embedded NUL / invalid UTF-8 / oversize
+      [longMetadata(Buffer.from(name + '\0hidden\0')), file],
+      [longMetadata(Buffer.from([0xff, 0])), file],
+      [longMetadata(Buffer.alloc(4097, 0x61)), file],
+      // unsafe effective names
+      ...['/escape', 'package/../escape', 'package/a\\b', 'package/./file', 'package/evil\r', 'package/evil\n', 'package/evil\t'].map(path => [longMetadata(path), file]),
+      // duplicate effective entry via the long name
+      [longMetadata(name), file, longMetadata(name), file],
+    ];
+    for (const rows of bad) {
+      const body = archive([{ path: 'package/package.json', content: '{}' }, ...rows]);
+      await assert.rejects(run(body));
+    }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

@@ -1,3 +1,4 @@
+import {CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
 import {test,expect} from 'bun:test';import fs from 'node:fs';import path from 'node:path';import {createHash} from 'node:crypto';
 import parents from '../fixtures/independent-admission/notice-sdk30-parent-whole.original.json';
 import {CONSUMER_SOURCE_GROUPS as c,CI_CONSUMER_SOURCE_GROUPS as ci} from '../../scripts/lib/independent-admission/consumer-observer-policy';
@@ -6,7 +7,7 @@ import {CURRENT_CANONICAL_SOURCE_ROWS} from './source-binding-group.fixture';
 const hash=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 test('SDK30 and Notice fork whole originals both survive before the single actual joint current',()=>{
  // SDK80 append: one new whole group per consumer family; tcb current canonical unchanged.
- expect(c).toHaveLength(99);expect(ci).toHaveLength(196);expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
+ expect(c).toHaveLength(99);expect(ci).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.ci);expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
  for(const [groups,prior]of [[c,parents.sdk30Consumer],[ci,parents.sdk30CI],[c,parents.noticeConsumer],[ci,parents.noticeCI]]as const){const all=new Set(groups.map(hash));for(const sha of prior)expect(all.has(sha)).toBe(true);}
  for(const row of current)expect(createHash('sha256').update(fs.readFileSync(path.resolve(import.meta.dir,'../..',row.path))).digest('hex')).toBe(row.sha256);
  // The Notice joint recipe, the subsequent SDK31 recipe AND the ORM 0.3.26 joint
@@ -14,8 +15,8 @@ test('SDK30 and Notice fork whole originals both survive before the single actua
  // Frozen 0d parents stay unchanged; only the genuine post-0d tails are appended:
  // consumer 91 -> 92 (+1) and CI 180 -> 182 (+2). The additive constants below
  // therefore track the real current tail delta, never a historical index.
- // Real post-baseline tails: consumer +56 and CI +112, each increased by exactly
- // the SDK80 and candidate-producer-attempt appends (+1/+1 and +2/+2 groups).
+ // Genuine post-baseline appends: CI197/198 retain the published tail and add
+ // the two current source variants; the captured parent union stays frozen.
  expect(new Set([...parents.sdk30Consumer,...parents.noticeConsumer ]).size+58).toBe(c.length);
- expect(new Set([...parents.sdk30CI,...parents.noticeCI]).size+116).toBe(ci.length);
+ expect(new Set([...parents.sdk30CI,...parents.noticeCI]).size+118).toBe(ci.length);
 });

@@ -153,6 +153,83 @@ export interface ManagedLocalBootstrapFailure {
   readonly required: Readonly<{registered: boolean; publicUrl: boolean; provisionCode: boolean}>;
 }
 
+/** Fixed live-canary phases. Declaration order is the child's phase order, but
+ * a reported failure stage is NEVER derived from position: the child states the
+ * phase it actually failed in, and `preflight`/`after-layers` are honest
+ * sentinels for work outside every layer. */
+export const MANAGED_LOCAL_LIVE_STAGES = ['runtime', 'identity', 'podReadWrite', 'gatewayAuth', 'aiConnections', 'models', 'chat'] as const;
+export type ManagedLocalLiveStage = typeof MANAGED_LOCAL_LIVE_STAGES[number];
+/** Failure stage may additionally be one of the two non-layer sentinels. */
+export type ManagedLocalLiveFailureStage = ManagedLocalLiveStage | 'preflight' | 'after-layers' | 'unknown';
+
+/** Fixed Local-identity substeps the child may have entered. */
+export const MANAGED_LOCAL_IDENTITY_SUBSTAGES = ['route-discovery', 'managed-pod-claim', 'account-create', 'client-credential', 'session-login'] as const;
+export type ManagedLocalIdentitySubstage = typeof MANAGED_LOCAL_IDENTITY_SUBSTAGES[number];
+
+/** What the child explicitly reported, reduced to fixed enums and counts.
+ * `stage` is the child's own failed phase (or `unknown` when it named none);
+ * `completedLayers` counts the layers the child actually recorded ok:true.
+ * No detail text, URL, token, body or message is ever carried here. */
+export interface ManagedLocalLiveFailure {
+  readonly mode: 'cloud' | 'local' | 'standalone';
+  readonly stage: ManagedLocalLiveFailureStage;
+  readonly status: 'failed';
+  readonly completedLayers: number;
+  readonly substage?: ManagedLocalIdentitySubstage;
+}
+
+const LIVE_STAGE_SET = new Set<string>([...MANAGED_LOCAL_LIVE_STAGES, 'preflight', 'after-layers']);
+const IDENTITY_SUBSTAGE_SET = new Set<string>(MANAGED_LOCAL_IDENTITY_SUBSTAGES);
+const LIVE_MODES = new Set<string>(['cloud', 'local', 'standalone']);
+
+/** Project the child's own report onto fixed enums only.
+ *
+ * Truth rules: `stage` comes ONLY from the explicit `failedStage` the child
+ * writes when it actually threw; a missing/unmalformed report or an absent/
+ * non-enum phase yields `undefined` rather than a position guess. An all-ok
+ * report with no failedStage is also `undefined` (nothing failed). */
+export function projectManagedLocalLiveFailure(report: any): ManagedLocalLiveFailure | undefined {
+  const layers = report?.layers;
+  if (!layers || typeof layers !== 'object' || Array.isArray(layers)) return undefined;
+  if (!LIVE_MODES.has(report?.mode)) return undefined;
+  const declared = report?.failedStage;
+  if (declared !== undefined && (typeof declared !== 'string' || !LIVE_STAGE_SET.has(declared))) return undefined;
+  let completedLayers = 0;
+  for (const stage of MANAGED_LOCAL_LIVE_STAGES) if (layers[stage]?.ok === true) completedLayers += 1;
+  if (declared === undefined) return undefined;
+  const substage = report?.substage;
+  const projected: ManagedLocalLiveFailure = Object.freeze({
+    mode: report.mode,
+    stage: declared as ManagedLocalLiveFailureStage,
+    status: 'failed' as const,
+    completedLayers,
+    ...(typeof substage === 'string' && IDENTITY_SUBSTAGE_SET.has(substage)
+      ? { substage: substage as ManagedLocalIdentitySubstage } : {}),
+  });
+  return projected;
+}
+
+/** Carries only the bounded projection; the original error is kept as `cause`
+ * for the private log and is never serialized into the safe report. */
+export class ManagedLocalLiveError extends Error {
+  constructor(readonly live: ManagedLocalLiveFailure | undefined, cause: unknown) {
+    super(`Managed local live canary failed at ${live?.stage ?? 'unknown-stage'}`);
+    this.name = 'ManagedLocalLiveError';
+    this.cause = cause;
+  }
+}
+
+/** Read the child's own report through the existing symlink-rejecting evidence
+ * reader and project it to fixed enums. Any failure to read yields undefined:
+ * an absent projection is honest, a guessed one is not. */
+export async function readManagedLocalLiveFailure(directory: string, mode: string): Promise<ManagedLocalLiveFailure | undefined> {
+  try {
+    const reader = await createModeEvidenceReader(path.join(directory, '.test-data/acceptance'));
+    const bytes = await reader.read(`live-gateway-login-chat-${mode}.json`);
+    return projectManagedLocalLiveFailure(JSON.parse(bytes.toString()));
+  } catch { return undefined; }
+}
+
 export async function runMatrix(options: { image: string; platform: string; sourceSha: string; runId: string; runAttempt: string; output: string; providerFile: string }): Promise<void> {
   need(process.platform === 'linux', 'Owned host-network matrix requires Linux CI');
   need(/^.+@sha256:[a-f0-9]{64}$/.test(options.image) && /^[a-f0-9]{40}$/.test(options.sourceSha), 'Immutable inputs required');
@@ -342,7 +419,15 @@ export async function runMatrix(options: { image: string; platform: string; sour
         await compose('start-standalone-base', ['up', '-d', '--no-deps', '--wait', '--wait-timeout', '180', 'standalone']);
       }
       const facts = await inspectMode(mode); const directory = path.join(root, `live-${mode}`); await mkdir(directory);
-      await command(`live-${mode}`, process.execPath, [path.join(repo, 'scripts/accept-live-gateway-login-chat.ts')], directory, { ...process.env, XPOD_LIVE_MODE: mode, XPOD_BASE_URL: urls[mode as keyof typeof urls], XPOD_LIVE_CLOUD_IDP: urls.cloud, XPOD_LIVE_PROVIDER_KEY_FILE: options.providerFile, XPOD_LIVE_TASK_APPROVAL: '0' }, LIMITS.liveMs);
+      try {
+        await command(`live-${mode}`, process.execPath, [path.join(repo, 'scripts/accept-live-gateway-login-chat.ts')], directory, { ...process.env, XPOD_LIVE_MODE: mode, XPOD_BASE_URL: urls[mode as keyof typeof urls], XPOD_LIVE_CLOUD_IDP: urls.cloud, XPOD_LIVE_PROVIDER_KEY_FILE: options.providerFile, XPOD_LIVE_TASK_APPROVAL: '0' }, LIMITS.liveMs);
+      } catch (error) {
+        // The child already wrote its structured report on failure and the raw
+        // stdout/stderr are retained privately by `command`. Recover ONLY the
+        // fixed stage projection so the next run can name the reached stage
+        // instead of losing all evidence; never re-throw anything new.
+        throw new ManagedLocalLiveError(await readManagedLocalLiveFailure(directory, mode), error);
+      }
       const liveReader = await createModeEvidenceReader(path.join(directory, '.test-data/acceptance'));
       const liveBytes = await liveReader.read(`live-gateway-login-chat-${mode}.json`);
       const live = JSON.parse(liveBytes.toString()); assertSafeJson(live);
@@ -392,7 +477,7 @@ export async function runMatrix(options: { image: string; platform: string; sour
     }
     need(!cancellation.signal.aborted, 'Matrix cancelled');
     report.modes = MODES.map((mode: string) => modeReports[mode]); report.status = 'passed';
-  } catch (error) { report.status = 'failed'; report.failure = 'owned-matrix-stage-failed'; const facts = error instanceof ManagedLocalBootstrapError ? error.facts : undefined; if (facts) report.bootstrap = facts; }
+  } catch (error) { report.status = 'failed'; report.failure = 'owned-matrix-stage-failed'; const facts = error instanceof ManagedLocalBootstrapError ? error.facts : undefined; if (facts) report.bootstrap = facts; const live = error instanceof ManagedLocalLiveError ? error.live : undefined; if (live) report.liveFailure = live; }
   finally {
     try {
       if (copiedContainer) await docker('cleanup-config-reader', ['rm', '-f', '--volumes', copyName], true);
