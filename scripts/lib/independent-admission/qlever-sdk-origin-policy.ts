@@ -2836,7 +2836,34 @@ const SDK93_RC382_BUILD_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK93_G
     sha256:SDK104_SOURCE_HASHES[row.path]??row.sha256}))))),
   sourceBindings:Object.freeze(SDK93_GROUP.sourceBindings.map(row=>Object.freeze({...row,
     sha256:SDK104_SOURCE_HASHES[row.path]??row.sha256})))});
-export const QLEVER_NORMAL_BUILD_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([SDK93_GROUP,SDK93_RC382_BUILD_GROUP]);
+/** The two producer inputs this generation actually changed. Declared once and
+ * shared by the SDK and normalBuild appends so neither axis can drift. */
+const SDK105_PACK_HASH = '3418533d24db014977489f46ca51a7fb514c099cc8fb4e02c3c9e6dfe68a5f59';
+const SDK105_IGNORE_HASH = '1a8715f4960331a5d8674ef73929b13572a8dab7b7fe279ec8fef50ce102a3d7';
+
+/** normalBuild3: the same pack-scratch generation on the normal BUILD axis.
+ *
+ * The stage carries TWO roles, and both are required:
+ *  - `scripts/run-npm-pack.cjs` (new sha) is the pack-scratch discriminator;
+ *  - `scripts/lib/independent-admission/service-workspace-build-replay.ts` is the
+ *    EXISTING RC382 discriminator. normalBuild1 owns `6cd08e46…` and normalBuild2
+ *    owns `72fc0344…`, so a pack-only stage would leave 1 and 2 both alive and the
+ *    strict selector refuses the ambiguity. Adding this already-owned role
+ *    distinguishes old1 / old2 / new3 without modifying either historical group.
+ *
+ * `.npmignore` is new, so like the SDK axis it is NOT requested in the stage; it is
+ * only appended to sourceBindings. No historical group is edited. */
+const SDK105_NORMAL_BUILD_STAGE=Object.freeze([
+  Object.freeze({path:'scripts/run-npm-pack.cjs',sha256:SDK105_PACK_HASH}),
+  SDK93_RC382_BUILD_GROUP.sourceBindings.find(row=>row.path==='scripts/lib/independent-admission/service-workspace-build-replay.ts')!,
+]);
+const SDK105_NORMAL_BUILD_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK93_RC382_BUILD_GROUP,
+  secondarySelectorStages:Object.freeze([...(SDK93_RC382_BUILD_GROUP.secondarySelectorStages??[]),SDK105_NORMAL_BUILD_STAGE]),
+  sourceBindings:Object.freeze([
+    ...SDK93_RC382_BUILD_GROUP.sourceBindings.map(row=>Object.freeze({...row,sha256:row.path==='scripts/run-npm-pack.cjs'?SDK105_PACK_HASH:row.sha256})),
+    Object.freeze({path:'packages/xpod-afs/.npmignore',sha256:SDK105_IGNORE_HASH}),
+  ])});
+export const QLEVER_NORMAL_BUILD_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([SDK93_GROUP,SDK93_RC382_BUILD_GROUP,SDK105_NORMAL_BUILD_GROUP]);
 export const QLEVER_SDK_NORMAL_SOURCE_BINDINGS:readonly GitHubSourceBinding[]=Object.freeze([
  Object.freeze({path:'.github/workflows/candidate.yml',sha256:'1446b2ceb6c53b8888e07d0b822854b934c95d508f93dfd901a4687e28d22d9d'}),
  Object.freeze({path:'.github/workflows/publish-qlever-runtime-sdk.yml',sha256:'db1b81d967936dfeaaa8da875ab3be4106ebc8328cf344d444a585139fd6b0b2'}),
@@ -2956,5 +2983,30 @@ const SDK104_REPLAY_STAGE=Object.freeze(SDK104_MOVED_STAGE_PATHS.map(path=>Objec
 const SDK104_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK103_GROUP,
   secondarySelectorStages:Object.freeze([...(SDK103_GROUP.secondarySelectorStages??[]),SDK104_REPLAY_STAGE]),
   sourceBindings:Object.freeze(SDK103_GROUP.sourceBindings.map(row=>Object.freeze({...row,sha256:SDK104_SOURCE_HASHES[row.path]??row.sha256})))});
-export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP]);
-export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP]);
+/** SDK105: the RC384 pack-scratch generation.
+ *
+ * Exactly two producer inputs changed on disk: `scripts/run-npm-pack.cjs` now drops
+ * `.test-data` on both the plain copy path and the nested-conflict path, and
+ * `packages/xpod-afs/.npmignore` is new so a raw `bun pm pack` selection carries no
+ * build diagnostics.
+ *
+ * Construction (verified with the real `selectGitHubSourceBindingGroup`):
+ *  - ONE appended stage requests `scripts/run-npm-pack.cjs`. SDK104 and SDK105 both
+ *    own that path, so the shared request is legal; the DIFFERENT sha is the normal
+ *    discriminator, not a conflict.
+ *  - `packages/xpod-afs/.npmignore` is a NEW file. No older recipe ever owned it, so
+ *    it must NOT appear in selectors, secondarySelectors or any stage (that would
+ *    request a role before ownership and violate the never-future-GET contract). It
+ *    is only a new `sourceBindings` row, which the selected group verifies against
+ *    the real file.
+ *  - `scripts/run-npm-pack.cjs` is rebound in sourceBindings to the same new sha.
+ *  - SDK104 itself is untouched. */
+const SDK105_PACK_STAGE=Object.freeze([Object.freeze({path:'scripts/run-npm-pack.cjs',sha256:SDK105_PACK_HASH})]);
+const SDK105_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK104_GROUP,
+  secondarySelectorStages:Object.freeze([...(SDK104_GROUP.secondarySelectorStages??[]),SDK105_PACK_STAGE]),
+  sourceBindings:Object.freeze([
+    ...SDK104_GROUP.sourceBindings.map(row=>Object.freeze({...row,sha256:row.path==='scripts/run-npm-pack.cjs'?SDK105_PACK_HASH:row.sha256})),
+    Object.freeze({path:'packages/xpod-afs/.npmignore',sha256:SDK105_IGNORE_HASH}),
+  ])});
+export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP]);
+export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP]);

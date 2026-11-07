@@ -148,6 +148,36 @@ const PROTECTED_ENTRY_CONDITIONS = new Set([
   'node', 'node-addons', 'bun', 'import', 'require', 'default', 'types', 'typings', 'module-sync',
 ]);
 const NON_RUNTIME_FILE = /(?:^|[\\/])[^\\/]+\.(?:test|spec)\.[cm]?[jt]sx?$/;
+// Declared test-scratch trees. `.test-data` is this repository's mandated home
+// for test/tooling scratch (see AGENTS.md). A workspace package can accumulate a
+// `.test-data` subtree through a build/probe that writes relative to its own
+// directory; those files are diagnostics, never tracked Git and never a declared
+// build output, so they must not reach the runtime payload nor a selected-input
+// capture. The rule is generic (name-based) rather than per-package.
+const DECLARED_TEST_SCRATCH_NAMES = new Set(['.test-data']);
+function isDeclaredTestScratch(relativePath) {
+  return String(relativePath).split(/[\\/]/u).some((segment) => DECLARED_TEST_SCRATCH_NAMES.has(segment));
+}
+/** A runtime entry or assets that only exist inside declared test scratch mean
+ * the package contract itself is broken: dropping the tree would ship a package
+ * whose declared entry is missing. Fail closed instead of silently producing a
+ * broken pack. */
+function assertNoDeclaredRuntimeInsideTestScratch(sourceRoot, manifest) {
+  if (!manifest) {
+    return;
+  }
+  const declared = [];
+  const visit = (value) => {
+    if (typeof value === 'string') declared.push(value);
+    else if (Array.isArray(value)) value.forEach(visit);
+    else if (value && typeof value === 'object') Object.values(value).forEach(visit);
+  };
+  visit(manifest.main); visit(manifest.bin); visit(manifest.exports);
+  if (!declared.some((entry) => isDeclaredTestScratch(toPackageRelativePath(entry)))) {
+    return;
+  }
+  throw new Error('Declared runtime entry lives inside declared test scratch: ' + sourceRoot);
+}
 
 function toPackageRelativePath(value) {
   return String(value)
@@ -254,8 +284,14 @@ function shouldCopyBundledDependency(sourceRoot, sourcePath, patchedRuntime = fa
   if (topLevelEntry === 'node_modules' || topLevelEntry === '.git' || topLevelEntry === 'tsconfig.json') {
     return false;
   }
+  // Declared test scratch is never runtime payload, at the package root or in
+  // any nested directory, and regardless of whether a manifest declares it.
+  if (isDeclaredTestScratch(relativePath)) {
+    return false;
+  }
 
   const manifest = readManifest(sourceRoot);
+  assertNoDeclaredRuntimeInsideTestScratch(sourceRoot, manifest);
   const protectedPaths = manifest ? collectProtectedDirectoryPaths(sourceRoot, manifest) : undefined;
   if (protectedPaths && isNonRuntimeBundledPath(relativePath, protectedPaths)) {
     return false;
@@ -488,12 +524,18 @@ function exposeBundledRuntimeDependencies(packageDir, dependencies, originals) {
     readManifest: (file, role) => readPackManifest(file, role, originals), resolveInstalled,
     onExposure: row => { if (originals) originals.event(row); },
     onNestedConflict: (childSource, childDestination, nestedManifest) => {
+      // Same guard as the normal copy path: excluding declared scratch must never
+      // silently produce a nested package whose declared runtime entry is gone.
+      assertNoDeclaredRuntimeInsideTestScratch(childSource, nestedManifest);
       const childProtectedPaths = collectProtectedDirectoryPaths(childSource, nestedManifest);
       fs.mkdirSync(path.dirname(childDestination), { recursive: true });
       const filter = (file) => {
         const childRelativePath = path.relative(childSource, file);
         if (['node_modules', '.git'].includes(childRelativePath.split(path.sep)[0])) return false;
         if (isCompilerDiagnostic(childRelativePath)) return false;
+        // Same declared test-scratch rule as the normal copy path: a nested
+        // exposed dependency must not publish its own diagnostics either.
+        if (isDeclaredTestScratch(childRelativePath)) return false;
         if (isNonRuntimeBundledPath(childRelativePath, childProtectedPaths)) return false;
         if (/\.(node|dylib|so|dll|exe)$/.test(file)) throw new Error(`Cannot bundle native dependency file: ${file}`);
         return true;

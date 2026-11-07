@@ -1221,7 +1221,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "e54fe59d65e4d4f6042a35e2ac74e0cd514d364cb9cf5088423ac56a155c02d3"
+    "sha256": "d6f29181857ef31d38702e60abac5d1565009f8d826bd10854bc089de1517510"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -1517,7 +1517,7 @@
   },
   {
     "path": "scripts/run-npm-pack.cjs",
-    "sha256": "1b8f42cb3fb544082efb1a4d78926f9571e1f00c8e539d252cde0e34f15f1cb1"
+    "sha256": "3418533d24db014977489f46ca51a7fb514c099cc8fb4e02c3c9e6dfe68a5f59"
   },
   {
     "path": "scripts/service-build-observations.py",
@@ -2122,5 +2122,9 @@
   {
     "path": "scripts/lib/independent-admission/candidate-run-state.ts",
     "sha256": "0db0e58e7e73bc149f955612379a0d058d3b7e611d67a77880f0f50c2c694176"
+  },
+  {
+    "path": "packages/xpod-afs/.npmignore",
+    "sha256": "1a8715f4960331a5d8674ef73929b13572a8dab7b7fe279ec8fef50ce102a3d7"
   }
 ]

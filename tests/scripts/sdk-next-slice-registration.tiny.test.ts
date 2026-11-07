@@ -207,13 +207,11 @@ test('only the genuinely new immutable-input-plan slice follows published2406', 
     .toEqual([CURRENT_SOURCE_GROUP_COUNTS.sdk, CURRENT_SOURCE_GROUP_COUNTS.consumer, CURRENT_SOURCE_GROUP_COUNTS.ci, CURRENT_SOURCE_GROUP_COUNTS.api, CURRENT_SOURCE_GROUP_COUNTS.linux, CURRENT_SOURCE_GROUP_COUNTS.cli]);
   expect([(n2406Groups as any).published.sdk, (n2406Groups as any).published.consumer,
     (n2406Groups as any).published.ci, (n2406Groups as any).published.linux]).toEqual([73, 88, 174, 74]);
-  // CI now has SIX appended current variants beyond published2406: the frozen 1a01
-  // pair (CI197/198), the 3fb origin-fix pair (CI199/200), and the RC382
-  // workspace-build pair (CI201/202), so the delta over published2406 is 28. Every
-  // published group keeps its exact bytes.
+  // RC384 appends one consumer group and two CI groups. The SDK/Linux execution
+  // deltas stay unchanged, and every published group keeps its exact bytes.
   expect([sdk.length - n2406Groups.published.sdk, consumer.length - n2406Groups.published.consumer,
     ci.length - n2406Groups.published.ci, linuxGroups.length - n2406Groups.published.linux])
-    .toEqual([20, 12, 30, 20]);
+    .toEqual([20, 13, 32, 20]);
   // Every published2406 group keeps its own exact bytes, including its last.
   for (const [name, groups] of Object.entries({sdk, consumer, ci, api, linux: linuxGroups})) {
     const published = (n2406Groups as any).groupHashes[name] as unknown[];
