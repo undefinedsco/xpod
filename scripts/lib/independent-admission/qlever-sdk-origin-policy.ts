@@ -2946,7 +2946,25 @@ const QLEVER_NORMAL_REGISTRY_PRODUCER_GROUP:GitHubSourceBindingGroup=Object.free
   sourceBindings:Object.freeze(QLEVER_NORMAL_DOCKERIGNORE_GROUP.sourceBindings.map(row=>
     Object.freeze({...row,sha256:row.path==='qlever/scripts/sdk-image-originals.py'?QLEVER_NORMAL_REGISTRY_PRODUCER_HASH:row.sha256}))),
 });
-export const QLEVER_NORMAL_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([QLEVER_NORMAL_PREVIOUS_GROUP,QLEVER_NORMAL_CURRENT_GROUP,QLEVER_NORMAL_DOCKERIGNORE_GROUP,QLEVER_NORMAL_REGISTRY_PRODUCER_GROUP]);
+const QLEVER_NORMAL_VERIFIER_HASH_RC385='fac551c4de0e383ada71397990e9851c7469d27888a02a83318596399dc1ff84';
+const QLEVER_NORMAL_CANDIDATE_WORKFLOW_HASH_RC385='796467e7e8701b2a56e676b61683e9ecb09270b0056fc4c32e31bd2f0c9e0b6c';
+/** RC385 (APPEND-ONLY, normal group 5). The normal verifier is a PRIMARY selector of
+ * group 4, so its byte change cannot be expressed by refreshing a sourceBinding row -
+ * it needs a new group. Clone group 4 and replace ONLY the verifier (primary selector
+ * + sourceBinding) and the candidate workflow (secondary selector + sourceBinding);
+ * the two existing stages (.dockerignore, sdk-image-originals.py) are preserved
+ * exactly, with no redundant verifier stage. Groups 1..4 stay byte-identical. */
+const QLEVER_NORMAL_RC385_VERIFIER_GROUP:GitHubSourceBindingGroup=Object.freeze({
+  ...QLEVER_NORMAL_REGISTRY_PRODUCER_GROUP,
+  selectors:Object.freeze(QLEVER_NORMAL_REGISTRY_PRODUCER_GROUP.selectors.map(row=>
+    Object.freeze({...row,sha256:row.path==='scripts/lib/independent-admission/qlever-sdk-normal-build.ts'?QLEVER_NORMAL_VERIFIER_HASH_RC385:row.sha256}))),
+  secondarySelectors:Object.freeze((QLEVER_NORMAL_REGISTRY_PRODUCER_GROUP.secondarySelectors??[]).map(row=>
+    Object.freeze({...row,sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_NORMAL_CANDIDATE_WORKFLOW_HASH_RC385:row.sha256}))),
+  sourceBindings:Object.freeze(QLEVER_NORMAL_REGISTRY_PRODUCER_GROUP.sourceBindings.map(row=>
+    Object.freeze({...row,sha256:row.path==='scripts/lib/independent-admission/qlever-sdk-normal-build.ts'?QLEVER_NORMAL_VERIFIER_HASH_RC385
+      :row.path==='.github/workflows/candidate.yml'?QLEVER_NORMAL_CANDIDATE_WORKFLOW_HASH_RC385:row.sha256}))),
+});
+export const QLEVER_NORMAL_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([QLEVER_NORMAL_PREVIOUS_GROUP,QLEVER_NORMAL_CURRENT_GROUP,QLEVER_NORMAL_DOCKERIGNORE_GROUP,QLEVER_NORMAL_REGISTRY_PRODUCER_GROUP,QLEVER_NORMAL_RC385_VERIFIER_GROUP]);
 
 export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP,SDK78_GROUP,SDK79_GROUP,SDK80_GROUP,SDK81_GROUP,SDK82_GROUP,SDK83_GROUP,SDK84_GROUP,SDK85_GROUP,SDK86_GROUP,SDK87_GROUP,SDK88_GROUP,SDK89_GROUP,SDK90_GROUP,SDK91_GROUP,SDK92_GROUP,SDK93_GROUP]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
@@ -3008,5 +3026,30 @@ const SDK105_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK104_GROUP,
     ...SDK104_GROUP.sourceBindings.map(row=>Object.freeze({...row,sha256:row.path==='scripts/run-npm-pack.cjs'?SDK105_PACK_HASH:row.sha256})),
     Object.freeze({path:'packages/xpod-afs/.npmignore',sha256:SDK105_IGNORE_HASH}),
   ])});
-export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP]);
-export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP]);
+const QLEVER_SDK_NORMAL_VERIFIER_HASH_RC385='fac551c4de0e383ada71397990e9851c7469d27888a02a83318596399dc1ff84';
+const QLEVER_SDK_NORMAL_CANDIDATE_WORKFLOW_HASH_RC385='796467e7e8701b2a56e676b61683e9ecb09270b0056fc4c32e31bd2f0c9e0b6c';
+/** RC385 (APPEND-ONLY, SDK106 / Linux107). In SDK105 the normal verifier is a
+ * sourceBinding ONLY - it holds no primary/secondary/stage role - so the correct
+ * discriminator is ONE appended size-1 secondarySelectorStage carrying the new hash,
+ * plus the refreshed sourceBinding row. The candidate workflow, in contrast, already
+ * holds a real stage and sourceBinding role in SDK105, so its rows take the new bytes
+ * in place and the group's candidateServiceRelationship follows. The bound producer
+ * regression fixture also advances to use the consumer axis. All unrelated rows and
+ * inherited stage entries stay unchanged; SDK105's whole prefix is frozen. */
+const SDK106_FIXTURE_HASH='e68b1c080b7cc5c8ce209eed3067898960f145708693efd0b18e80271d08d662';
+const SDK106_NORMAL_VERIFIER_STAGE=Object.freeze([Object.freeze({path:'scripts/lib/independent-admission/qlever-sdk-normal-build.ts',sha256:QLEVER_SDK_NORMAL_VERIFIER_HASH_RC385})]);
+const SDK106_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK105_GROUP,
+  secondarySelectorStages:Object.freeze([...(SDK105_GROUP.secondarySelectorStages??[]).map(stage=>
+    Object.freeze(stage.map(row=>Object.freeze({...row,
+      sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_SDK_NORMAL_CANDIDATE_WORKFLOW_HASH_RC385:row.sha256})))),SDK106_NORMAL_VERIFIER_STAGE]),
+  sourceBindings:Object.freeze(SDK105_GROUP.sourceBindings.map(row=>Object.freeze({...row,
+    sha256:row.path==='scripts/lib/independent-admission/qlever-sdk-normal-build.ts'?QLEVER_SDK_NORMAL_VERIFIER_HASH_RC385
+      :row.path==='.github/workflows/candidate.yml'?QLEVER_SDK_NORMAL_CANDIDATE_WORKFLOW_HASH_RC385
+      :row.path==='tests/scripts/candidate-producer-attempt.tiny.test.ts'?SDK106_FIXTURE_HASH:row.sha256}))),
+  ...(SDK105_GROUP.candidateServiceRelationship?{candidateServiceRelationship:Object.freeze({
+    ...SDK105_GROUP.candidateServiceRelationship,
+    workflowSha256:QLEVER_SDK_NORMAL_CANDIDATE_WORKFLOW_HASH_RC385,
+  })}:{}),
+});
+export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP]);
+export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP]);

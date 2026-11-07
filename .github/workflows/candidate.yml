@@ -310,6 +310,8 @@ jobs:
             --root-manifest-before "$RUNNER_TEMP/service-source-manifests/before/package.json" \
             --root-manifest-after "$RUNNER_TEMP/service-source-manifests/after/package.json" \
             --capture-service-pack-originals \
+            --capture-service-runtime-members \
+            --capture-service-abi-originals \
             --build-metadata "$metadata" --deadline "$(( $(date +%s) + 120 ))"
 
       - name: Upload candidate service image originals

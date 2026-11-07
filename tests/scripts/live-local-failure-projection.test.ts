@@ -90,6 +90,51 @@ test('runtime diagnostics are emitted ONLY when the failed stage is runtime',()=
   expect(Object.keys(id).sort()).toEqual(['completedLayers','mode','stage','status']);
 });
 
+test('Pod diagnostics project only for a podReadWrite failure, as fixed enums and integer status',()=>{
+  const pod={podReason:'put-http',podPhase:'put-probe',podHttpStatus:403};
+  const podStage=projectManagedLocalLiveFailure({mode:'local',layers:layers({runtime:true,identity:true,podReadWrite:false}),failedStage:'podReadWrite',...pod})!;
+  expect(podStage.podReason).toBe('put-http');
+  expect(podStage.podPhase).toBe('put-probe');
+  expect(podStage.podHttpStatus).toBe(403);
+  // another stage must not inherit stale Pod facts
+  const other=projectManagedLocalLiveFailure({mode:'cloud',layers:layers({runtime:false}),failedStage:'runtime',...pod})!;
+  expect(other.podReason).toBeUndefined();
+  expect(other.podPhase).toBeUndefined();
+  expect(other.podHttpStatus).toBeUndefined();
+  expect(Object.keys(other).sort()).toEqual(['completedLayers','mode','stage','status']);
+});
+
+test('Pod diagnostics reject unknown enums and out-of-range or non-integer statuses',()=>{
+  const base={mode:'local',layers:layers({runtime:true,identity:true,podReadWrite:false}),failedStage:'podReadWrite'};
+  const bad=projectManagedLocalLiveFailure({...base,podReason:'totally-secret-host',podPhase:'raw-body',podHttpStatus:9999})!;
+  expect(bad.podReason).toBeUndefined();
+  expect(bad.podPhase).toBeUndefined();
+  expect(bad.podHttpStatus).toBeUndefined();
+  for(const badStatus of [5.5,-1,0,600,'403']){
+    expect(projectManagedLocalLiveFailure({...base,podHttpStatus:badStatus})!.podHttpStatus).toBeUndefined();
+  }
+  // valid values survive
+  for(const reason of ['put-http','get-http','content-mismatch','route-target-mismatch'] as const){
+    expect(projectManagedLocalLiveFailure({...base,podReason:reason})!.podReason).toBe(reason);
+  }
+  for(const phase of ['put-probe','get-probe','route-observation'] as const){
+    expect(projectManagedLocalLiveFailure({...base,podPhase:phase})!.podPhase).toBe(phase);
+  }
+});
+
+test('Pod diagnostics never carry a URL, body, credential or header text',()=>{
+  const hostile={mode:'local',layers:layers({runtime:true,identity:true,podReadWrite:false}),failedStage:'podReadWrite',
+    podReason:'put-http',podPhase:'put-probe',podHttpStatus:403,
+    podDetail:'PUT https://secret.example/pod/x.ttl HTTP 403 body=Bearer sk-live-abcdef token=abc',
+    baseUrl:'https://secret.example/',webId:'https://secret.example/#me',probeUrl:'https://secret.example/pod/x.ttl'};
+  const got=projectManagedLocalLiveFailure(hostile)!;
+  const wire=JSON.stringify(got);
+  for(const leak of ['secret.example','sk-live','Bearer','token=abc','body=','https://']){
+    expect(wire).not.toContain(leak);
+  }
+  expect(Object.keys(got).sort()).toEqual(['completedLayers','mode','podHttpStatus','podPhase','podReason','stage','status']);
+});
+
 test('service-status-invalid is a distinct emitted reason',()=>{
   const got=projectManagedLocalLiveFailure({mode:'local',layers:layers({runtime:false}),failedStage:'runtime',runtimeReason:'service-status-invalid',runtimeHttpStatus:200})!;
   expect(got.runtimeReason).toBe('service-status-invalid');

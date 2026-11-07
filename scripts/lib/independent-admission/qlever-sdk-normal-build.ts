@@ -2,6 +2,7 @@ import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import {posix} from 'node:path';
 import {derivedSourceView,assertDerivedSourceCurrent} from './source-context';
+import {assertCollectedNativeOriginalMembersCurrent} from './native-original-collector';
 import limits from '../module-artifact-limits.json';
 import gates from './normal-sdk-gates.json';
 const SMALL_MEMBER_BYTES=8*1024**2;
@@ -159,6 +160,43 @@ export function inspectNormalBuildIndexSelection(input:{index:any;masterBytes:Bu
  return Object.freeze({inputHash:index.inputHash,image:Object.freeze({...image}),sdk:Object.freeze({...sdk}),artifact:Object.freeze({id:artifact.id,digest:artifact.digest,master:Object.freeze({...artifact.master})})});
 }
 
+/** Data-only recording reader used by the ONCE full binding so the admission can
+ * later re-assert exactly the members that binding consumed. It issues nothing: it
+ * only forwards to the caller's reader and records the artifact-relative path. */
+function recordingNormalBuildReader(readOriginal:(path:string,maximum:number)=>Buffer){
+ const consumed=new Set<string>();
+ return Object.freeze({
+  consumed:()=>Object.freeze([...consumed]),
+  readOriginal:(path:string,maximum:number)=>{
+   const bytes=readOriginal(path,maximum);consumed.add(path);return bytes;
+  },
+ });
+}
+
+/** One immutable normal-build snapshot plus a no-read current check.
+ *
+ * The full inspector runs ONCE here. `assertCurrent` re-runs only the caller's
+ * supplied custody/source/member checks, so repeated admission checks cannot spend
+ * original range budget. It issues no capability and admits no caller object: the
+ * operational admission binds the callbacks to its own issued handles. */
+export function createNormalBuildCurrentCheck(input:{
+ master:any; reference:NormalReference; runHeadSha:string; members:readonly Member[];
+ readOriginal:(path:string,maximum:number)=>Buffer;
+ assertOriginalsHandle:()=>void; assertSourceCurrent:()=>void; assertMembersCurrent:(names:readonly string[])=>void;
+}){
+ const recorder=recordingNormalBuildReader(input.readOriginal);
+ const checked=inspectNormalBuildSdkMasterBinding({master:input.master,reference:input.reference,
+  runHeadSha:input.runHeadSha,members:input.members,readOriginal:recorder.readOriginal});
+ // The master is read by the caller, so it belongs to the consumed set too.
+ const consumedMembers=Object.freeze([...new Set<string>([input.reference.master.path,...recorder.consumed()])]);
+ const assertCurrent=()=>{
+  input.assertOriginalsHandle();
+  input.assertSourceCurrent();
+  input.assertMembersCurrent(consumedMembers);
+ };
+ return Object.freeze({checked,consumedMembers,assertCurrent});
+}
+
 /** Operational admission for one issued normal-build-v1 SDK capability. */
 export async function observeQleverSdkNormalBuildAdmission(input:{sdkOriginals:unknown;source:unknown}){
  const {qleverSdkOriginalsView}=await import('./qlever-sdk-originals');
@@ -173,18 +211,18 @@ export async function observeQleverSdkNormalBuildAdmission(input:{sdkOriginals:u
   &&master.identity?.runHeadSha===sdk.originFacts.runHeadSha,'SDK master/origin build tuple differs');
  need(sdk.originFacts.workflowPath==='.github/workflows/candidate.yml','normal SDK origin must come from the candidate workflow');
  const reference:NormalReference={sdkBuildExecutionModel:NORMAL_BUILD_MODEL,sdkImageReferenceByDigest:master.image.referenceByDigest,master:sdk.masterReference};
- const checked=inspectNormalBuildSdkMasterBinding({master,reference,runHeadSha:sdk.originFacts.runHeadSha,members:sdk.members,
-  readOriginal:(name,maximum)=>sdk.readOriginal(name,maximum)});
- const assertCurrent=()=>{
-  if(qleverSdkOriginalsView(input.sdkOriginals)!==sdk)throw Error('SDK normal-build-v1: SDK normal-build originals custody changed');
-  assertDerivedSourceCurrent(input.source);
-  const raw=sdk.readOriginal(sdk.masterReference.path,8*1024**2);
-  if(raw.length!==sdk.masterReference.bytes||sha(raw)!==sdk.masterReference.sha256)throw Error('SDK normal-build-v1: SDK normal-build master changed');
-  const now=JSON.parse(raw.toString());
-  const again=inspectNormalBuildSdkMasterBinding({master:now,reference,runHeadSha:sdk.originFacts.runHeadSha,members:sdk.members,
-   readOriginal:(name,maximum)=>sdk.readOriginal(name,maximum)});
-  if(again.proof.inputHash!==checked.proof.inputHash||again.proof.image.referenceByDigest!==checked.proof.image.referenceByDigest)throw Error('SDK normal-build-v1: SDK normal-build proof changed');
- };
+ // ONE full binding over the verified immutable bytes; later checks read nothing.
+ const snapshot=createNormalBuildCurrentCheck({
+  master,reference,runHeadSha:sdk.originFacts.runHeadSha,members:sdk.members,
+  readOriginal:(name,maximum)=>sdk.readOriginal(name,maximum),
+  assertOriginalsHandle:()=>{
+   if(qleverSdkOriginalsView(input.sdkOriginals)!==sdk)throw Error('SDK normal-build-v1: SDK normal-build originals custody changed');
+  },
+  assertSourceCurrent:()=>assertDerivedSourceCurrent(input.source),
+  assertMembersCurrent:(names)=>assertCollectedNativeOriginalMembersCurrent(input.sdkOriginals,names),
+ });
+ const checked=snapshot.checked;
+ const assertCurrent=snapshot.assertCurrent;
  assertCurrent();
  const facts:Readonly<Record<string,unknown>>=Object.freeze({
   sdkBuildExecutionModel:NORMAL_BUILD_MODEL,

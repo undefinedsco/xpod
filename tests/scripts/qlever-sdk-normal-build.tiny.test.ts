@@ -120,7 +120,8 @@ test('normal verifier and selector are byte-bound by canonical and versioned pro
  // current group binds the changed verifier bytes. Old flat is never rewritten.
  expect(QLEVER_SDK_NORMAL_SOURCE_BINDINGS.find(row=>row.path===verifier)!.sha256).toBe('b2fa80d50edf78347eb83416d93255a43a8c0054e66f2476743f975a07aec69a');
  expect(QLEVER_NORMAL_SOURCE_GROUPS[0]!.sourceBindings).toBe(QLEVER_SDK_NORMAL_SOURCE_BINDINGS);
- expect(QLEVER_NORMAL_SOURCE_GROUPS[1]!.sourceBindings.find(row=>row.path===verifier)!.sha256).toBe(sha(readFileSync(verifier)));
+ expect(QLEVER_NORMAL_SOURCE_GROUPS[1]!.sourceBindings.find(row=>row.path===verifier)!.sha256).toBe('8fbf265127bf81d96418950d4b5729064e72d95da03de1986c6a286a2c61e1ab');
+ expect(QLEVER_NORMAL_SOURCE_GROUPS.at(-1)!.sourceBindings.find(row=>row.path===verifier)!.sha256).toBe(sha(readFileSync(verifier)));
  for(const path of ['scripts/select-normal-sdk-proof.ts','qlever/scripts/validate-prior-sdk.py']){
   expect(QLEVER_SDK_NORMAL_SOURCE_BINDINGS.find(row=>row.path===path)!.sha256).toBe(sha(readFileSync(path)));
   expect(QLEVER_NORMAL_SOURCE_GROUPS[1]!.sourceBindings.find(row=>row.path===path)!.sha256).toBe(sha(readFileSync(path)));
@@ -207,4 +208,185 @@ test('normal candidate policy group is additive and selects the current normal r
  const mixed=new Map(observed);const current=normal.sourceBindings.find(row=>row.path==='.github/workflows/candidate.yml')!;
  mixed.set(sourceBindingKey(current),'0'.repeat(64));
  expect(()=>selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,mixed)).toThrow();
+});
+
+/** RC385 budget diagnosis: repeated `assertCurrent` re-ran the full binding and
+ * re-read the same immutable originals, so a caller-amplified path exceeded the
+ * cumulative range budget without any changed file. These tests prove the custody
+ * re-assertion is no-read and still fails closed on every real change.
+ *
+ * Scope: real temp files plus the real helpers. This is NOT an issued-GitHub or RC
+ * acceptance, and not the full original-checker repro. */
+
+import {writeFileSync,mkdtempSync,rmSync,unlinkSync,utimesSync,statSync} from 'node:fs';
+import {openBoundOriginalFile} from '../../scripts/lib/independent-admission/bound-original-file';
+
+const tmpRoot=()=>mkdtempSync(new URL('../../.test-data/bo-',import.meta.url).pathname);
+
+test('lazyZipOriginals.assertMemberCurrent is no-read and rejects an unregistered name',async()=>{
+ const {lazyZipOriginals}=await import('../../scripts/lib/independent-admission/lazy-zip-originals');
+ const root=tmpRoot();
+ try{
+  // Build a real single-member archive with python's zipfile, then register it.
+  const archive=`${root}/a.zip`, member='m.bin', body=Buffer.alloc(4096,9);
+  const {spawnSync}=await import('node:child_process');
+  const made=spawnSync('python3',['-c',
+   'import sys,zipfile\nwith zipfile.ZipFile(sys.argv[1],"w") as z: z.writestr(sys.argv[2], bytes([9])*4096)',
+   archive,member],{encoding:'utf8'});
+  expect(made.status).toBe(0);
+  const zip=lazyZipOriginals({archivePath:archive,archiveSha256:sha(readFileSync(archive)),root,
+   members:[{path:member,bytes:body.length,sha256:sha(body)}]});
+  try{
+   // Registered member: repeated no-read checks succeed and do not spend budget.
+   for(let index=0;index<50;index+=1)zip.assertMemberCurrent(member);
+   // Unregistered name is refused rather than silently accepted.
+   expect(()=>zip.assertMemberCurrent('other.bin')).toThrow(/registered original required/);
+  }finally{zip.close();}
+ }finally{rmSync(root,{recursive:true,force:true});}
+},30_000);
+
+/** RC385 original-read budget: the REAL production current-check path.
+ *
+ * `createNormalBuildCurrentCheck` performs the full inspector ONCE, then its
+ * `assertCurrent` only re-runs the supplied custody/source/member callbacks. Because
+ * `observeQleverSdkNormalBuildAdmission` now calls this factory, restoring a full
+ * re-inspect inside the current check makes these assertions fail. */
+
+import {createNormalBuildCurrentCheck} from '../../scripts/lib/independent-admission/qlever-sdk-normal-build';
+
+const workRoot=()=>mkdtempSync(new URL('../../.test-data/nbc-',import.meta.url).pathname);
+
+/** Materialise the valid normal fixture as REAL files and open bound readers with a
+ * counting wrapper, so byte accounting is measured rather than assumed. */
+function realFixture(){
+ const root=workRoot();
+ const value=fixture();
+ const files=new Map<string,string>();
+ for(const member of value.members){
+  const file=`${root}/${member.path.replace(/[^a-z0-9.]/giu,'_')}`;
+  writeFileSync(file,Buffer.from(value.read(member.path,8*1024**2)));
+  utimesSync(file,1_700_000_000,1_700_000_000);
+  files.set(member.path,file);
+ }
+ // The master is consumed by the caller, so materialise it as a real file too.
+ const masterFile=`${root}/materials.json`;
+ writeFileSync(masterFile,Buffer.from(JSON.stringify(value.master)));
+ utimesSync(masterFile,1_700_000_000,1_700_000_000);
+ files.set('materials.json',masterFile);
+ const counters={calls:0,bytes:0};
+ const readers=new Map<string,ReturnType<typeof openBoundOriginalFile>>();
+ const readerFor=(name:string)=>{
+  const found=readers.get(name);
+  if(found)return found;
+  const file=files.get(name);
+  if(!file)throw Error('missing '+name);
+  const member=value.members.find(row=>row.path===name)
+   ?? {path:name,bytes:readFileSync(file).length,sha256:sha(readFileSync(file))};
+  const opened=openBoundOriginalFile(file,member);
+  readers.set(name,opened);
+  return opened;
+ };
+ const readOriginal=(name:string,maximum:number)=>{
+  const reader=readerFor(name);
+  // Count through the real readRange surface.
+  const size=(value.members.find(row=>row.path===name)??{bytes:readFileSync(files.get(name)!).length}).bytes;
+  const out=Buffer.alloc(size);
+  for(let offset=0;offset<size;offset+=65536){
+   const chunk=reader.readRange(offset,Math.min(65536,size-offset));
+   counters.calls+=1;counters.bytes+=chunk.length;
+   chunk.copy(out,offset);
+  }
+  if(out.length>maximum)throw Error('too large');
+  return out;
+ };
+ const closeAll=()=>{for(const reader of readers.values())reader.close();rmSync(root,{recursive:true,force:true});};
+ const masterRef={path:'materials.json',bytes:readFileSync(masterFile).length,sha256:sha(readFileSync(masterFile))};
+ return {value,root,files,counters,readerFor,readOriginal,closeAll,masterRef};
+}
+
+test('the production current check performs the full inspector once and never re-reads',()=>{
+ const real=realFixture();
+ try{
+  const {value,counters,readerFor}=real;
+  let handleChecks=0,sourceChecks=0,memberChecks=0;
+  const snapshot=createNormalBuildCurrentCheck({
+   master:value.master,
+   reference:{sdkBuildExecutionModel:NORMAL_BUILD_MODEL,sdkImageReferenceByDigest:image,
+    master:real.masterRef},
+   runHeadSha,members:value.members,
+   readOriginal:real.readOriginal,
+   assertOriginalsHandle:()=>{handleChecks+=1;},
+   assertSourceCurrent:()=>{sourceChecks+=1;},
+   assertMembersCurrent:(names)=>{memberChecks+=1;for(const name of names)readerFor(name).assertCurrent();},
+  });
+  // Initial full validation did read the originals.
+  const callsAfterBind=counters.calls, bytesAfterBind=counters.bytes;
+  expect(callsAfterBind).toBeGreaterThan(0);
+  expect(bytesAfterBind).toBeGreaterThan(0);
+  expect(snapshot.consumedMembers).toContain('materials.json');
+  expect(snapshot.consumedMembers).toContain('normal-build-proof.json');
+
+  // Many current checks: byte counters MUST be identical, callbacks MUST run each time.
+  for(let index=0;index<25;index+=1)snapshot.assertCurrent();
+  expect(counters.calls).toBe(callsAfterBind);
+  expect(counters.bytes).toBe(bytesAfterBind);
+  expect(handleChecks).toBe(25);
+  expect(sourceChecks).toBe(25);
+  expect(memberChecks).toBe(25);
+ }finally{real.closeAll();}
+});
+
+for(const mutation of ['master-rewrite','proof-rewrite','context-rewrite','removal','replacement','closed'] as const){
+ test(`the production current check rejects ${mutation} independently`,()=>{
+  const real=realFixture();
+  try{
+   const {value,files}=real;
+   const snapshot=createNormalBuildCurrentCheck({
+    master:value.master,
+    reference:{sdkBuildExecutionModel:NORMAL_BUILD_MODEL,sdkImageReferenceByDigest:image,master:real.masterRef},
+    runHeadSha,members:value.members,readOriginal:real.readOriginal,
+    assertOriginalsHandle:()=>{},assertSourceCurrent:()=>{},
+    assertMembersCurrent:(names)=>{for(const name of names)real.readerFor(name).assertCurrent();},
+   });
+   snapshot.assertCurrent();
+   const member=mutation==='master-rewrite'?'materials.json'
+    :mutation==='proof-rewrite'?'normal-build-proof.json'
+    :mutation==='context-rewrite'?'context-originals.json':'smoke.stdout';
+   const file=files.get(member)!;
+   const original=readFileSync(file);
+   const before=statSync(file);
+   if(mutation.endsWith('-rewrite')){
+    const changed=Buffer.from(original);changed[0]^=1;
+    writeFileSync(file,changed);
+    utimesSync(file,before.atime,before.mtime);
+    expect(statSync(file).mtimeMs).toBe(before.mtimeMs);
+   }else if(mutation==='removal'){
+    unlinkSync(file);
+   }else if(mutation==='replacement'){
+    unlinkSync(file);writeFileSync(file,original);
+   }else{
+    real.readerFor(member).close();
+   }
+   expect(()=>snapshot.assertCurrent()).toThrow(/revoked or changed|ENOENT/);
+  }finally{real.closeAll();}
+ });
+}
+
+test('the production current check surfaces source and custody callback rejection',()=>{
+ const real=realFixture();
+ try{
+  const {value}=real;
+  const base={
+   master:value.master,
+   reference:{sdkBuildExecutionModel:NORMAL_BUILD_MODEL,sdkImageReferenceByDigest:image,
+    master:real.masterRef},
+   runHeadSha,members:value.members,readOriginal:real.readOriginal,
+  } as const;
+  const custodyFails=createNormalBuildCurrentCheck({...base,assertOriginalsHandle:()=>{throw Error('custody changed');},
+   assertSourceCurrent:()=>{},assertMembersCurrent:()=>{}});
+  expect(()=>custodyFails.assertCurrent()).toThrow('custody changed');
+  const sourceFails=createNormalBuildCurrentCheck({...base,assertOriginalsHandle:()=>{},
+   assertSourceCurrent:()=>{throw Error('source changed');},assertMembersCurrent:()=>{}});
+  expect(()=>sourceFails.assertCurrent()).toThrow('source changed');
+ }finally{real.closeAll();}
 });

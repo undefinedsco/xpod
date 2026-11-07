@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { decodeCatalog } from './sdk-helper-catalog.fixture';
-import { QLEVER_SDK_EXECUTION_GROUPS as SDK, QLEVER_LINUX_EXECUTION_GROUPS as LINUX } from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
+import { QLEVER_SDK_EXECUTION_GROUPS as SDK, QLEVER_LINUX_EXECUTION_GROUPS as LINUX, QLEVER_SDK_CONSUMER_GROUPS as CURRENT_SDK } from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import { CURRENT_SOURCE_GROUP_COUNTS } from './source-binding-group.fixture';
 
 const ROOT = path.resolve(import.meta.dirname, '../..');
@@ -66,7 +66,7 @@ describe('SDK88 phase-derived budget binding', () => {
     expect(frozen.candidateServiceRelationship!.workflowSha256).toBe(expected);
     expect(frozen.outerExecutor!.additionalWorkflows!.find((row: any) => row.path === candidate)!.sha256).toBe(expected);
     expect(frozen.secondarySelectorStages![1]![0]).toEqual({path: candidate, sha256: expected});
-    const current = SDK.at(-1)!;
+    const current = CURRENT_SDK.at(-1)!;
     expect(current.candidateServiceRelationship!.sdkBuildExecutionModel).toBe('normal-build-v1');
     expect(current.candidateServiceRelationship!.workflowSha256).toBe(sha(candidate));
     expect(current.sourceBindings.find((row: any) => row.path === candidate)!.sha256).toBe(sha(candidate));
