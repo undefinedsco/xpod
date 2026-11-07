@@ -1671,6 +1671,17 @@ export function observedGitHubAncestorJobAccepted(ancestor:any,producer:any,inpu
   &&ancestor.status==='completed'&&ancestor.conclusion==='success'&&[start,end,producerStart].every(Number.isFinite)&&start<=end&&end<=producerStart;
 }
 
+/** RC381: GitHub's global run status can lag the actual producer job (it
+ * reported `queued` while `build_image` had already completed successfully), so
+ * for the candidate producer scope a non-terminal status with NO conclusion is
+ * deferred to the mandatory same-attempt job/artifact/step/ancestor closure
+ * below instead of being refused here. Every other state keeps the exact
+ * predicate semantics, and the predicate itself is unchanged. */
+function observedRunStateAcceptedAtOrigin(status:unknown,conclusion:unknown,scope:unknown):boolean {
+  if(observedGitHubRunStateAccepted(status,conclusion,scope))return true;
+  return scope==='candidate-producer'&&conclusion===null
+    &&['queued','requested','waiting','pending','in_progress'].includes(status as string);
+}
 async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { token?: string }, policies: OriginPolicy|readonly OriginPolicy[]): Promise<GitHubOriginObservation> {
   if (!input || input.schemaVersion !== 1 || !/^[a-f0-9]{40}$/u.test(input.sourceSha)
     || !/^[a-f0-9]{40}$/u.test(input.runHeadSha) || !/^[a-f0-9]{64}$/u.test(input.artifactSha256)
@@ -1714,7 +1725,7 @@ async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { t
   if(runScope==='candidate-producer'&&(policy.workflowPath!=='.github/workflows/candidate.yml'||policy.allowRunningRun!==true))return fail('candidate producer scope requires the exact live-observable candidate workflow');
   if (run.id !== input.runId || run.run_attempt !== input.runAttempt || run.head_sha !== input.runHeadSha
     || run.repository?.full_name !== repository || run.head_repository?.full_name !== repository
-    || !observedGitHubRunStateAccepted(run.status,run.conclusion,runScope) || !positive(run.workflow_id)
+    || !observedRunStateAcceptedAtOrigin(run.status,run.conclusion,runScope) || !positive(run.workflow_id)
     || !policy.events.includes(run.event)
     || (policy.requiredBranch!==undefined && run.head_branch!==policy.requiredBranch)
     || (run.event !== 'pull_request' && input.sourceSha !== input.runHeadSha && policy.sourceMayDiffer!==true)

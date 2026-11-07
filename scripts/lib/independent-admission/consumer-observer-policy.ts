@@ -1210,11 +1210,53 @@ const freezePublishedCiGroup=(group:GitHubSourceBindingGroup)=>Object.freeze({..
  * variants are appended after them, so published aggregates never move. */
 const PUBLISHED_CI_TAIL_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze(
  PUBLISHED_CI_CONSUMER_SOURCE_GROUPS.slice(-2).map(group=>freezePublishedCiGroup(group)));
+/** Immutable EXACT 1a01 row values for the two CURRENT-1a01 variants (CI197/198).
+ *
+ * Captured from the true git 1a01 blob with only the materialized-copy self hash
+ * normalized back to the live 1a01 policy bytes (`22c9639e...`), which real 1a01
+ * groups genuinely carry. Provenance: `git show 1a01a187:<path> | sha256`.
+ * CI197/CI198 must NEVER be rebuilt from live source again. */
+const CURRENT_1A01_CI_FROZEN_HASHES:Readonly<Record<string,string>>=Object.freeze({
+ ...PUBLISHED_CI_TAIL_FROZEN_HASHES,
+ 'scripts/lib/independent-admission/qlever-sdk-origin-policy.ts':'7ee640bafe896e2b951959e6d1c9314983073fe8bd2720fd2c07ca604d602c8a',
+ 'scripts/lib/independent-admission/candidate-service-pack-output.ts':'3c57db1747f87e8bec6c9cb842e7ef50ebc089b4070c57852baf9b0d5e85301e',
+ 'scripts/lib/independent-admission/source-rules.ts':'1575ced889fd9b7660be95356213d2a2b1706915bda6aca7c382344e23e26a16',
+ 'scripts/workspace-package-payload.cjs':'058c6f633ed805cf0af2f5f3ebac1cfd1706c8ed106da2f16766dde4a20c145a',
+ 'scripts/lib/independent-admission/consumer-observer-policy.ts':'22c9639ea85964e97f30e223aa336792aa1e707989ec7ca089be6e1e143beb32',
+ 'scripts/lib/independent-admission/consumer-execution-current.json':'5c6b5cec930b2eb19a42a09dc338d5b46b9bd326684cf0069046f743e0b388c3',
+ 'scripts/lib/independent-admission/github-origin.ts':'0b51a7ea65872293d0d7d2fd2839c3f8af7c69e60c6b544e5a474dbf741d048e'
+});
+const freezeCurrent1a01CiRow=(row:{path:string;sha256:string;ref?:'run-head'})=>{
+ const frozen=CURRENT_1A01_CI_FROZEN_HASHES[row.path];
+ return frozen===undefined?row:Object.freeze({...row,sha256:frozen});};
+const freezeCurrent1a01CiGroup=(group:GitHubSourceBindingGroup)=>Object.freeze({...group,
+ secondarySelectors:Object.freeze((group.secondarySelectors??[]).map(freezeCurrent1a01CiRow)),
+ secondarySelectorStages:Object.freeze((group.secondarySelectorStages??[]).map(stage=>Object.freeze(stage.map(freezeCurrent1a01CiRow)))),
+ sourceBindings:Object.freeze(group.sourceBindings.map(freezeCurrent1a01CiRow))});
+/** The two CURRENT-1a01 variants, frozen as literals (never rebuilt live). */
+const CURRENT_1A01_CI_TAIL_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze(
+ PUBLISHED_CI_CONSUMER_SOURCE_GROUPS.slice(-2).map(group=>freezeCurrent1a01CiGroup(group)));
+/** The two NEW current variants for the 3fb origin fix, appended after CI197/198.
+ *
+ * These are genuinely CURRENT (unpublished) groups, so like CONSUMER99 and the
+ * existing currentCiRecipe tail they bind the LIVE controller anchors
+ * (`canonicalCurrent` + `CONTROLLER_POLICY_BINDINGS`) plus the frozen 3fb product
+ * origin hash. They are NOT rebuilt from the frozen 1a01 rows, which would leave
+ * stale policy/canonical anchors behind. */
+const CURRENT_CI_GITHUB_ORIGIN_FIXED='759eefd48a0bbac724546cc12dda18f377a34b0e4ad6cf0c004df6cea54e7f12';
+const currentCiFixedRecipe=(g:GitHubSourceBindingGroup)=>indexedControllerRecipe(Object.freeze({
+  ...rebindNoticeCurrent(g,canonicalCurrent,CONTROLLER_POLICY_BINDINGS),
+  secondarySelectors:Object.freeze((g.secondarySelectors??[]).map(row=>Object.freeze({...row,
+    sha256:(canonicalCurrent as readonly {path:string;sha256:string}[]).find(r=>r.path===row.path)?.sha256??row.sha256}))),
+  sourceBindings:Object.freeze([...(canonicalCurrent as readonly {path:string;sha256:string}[]),...CONTROLLER_POLICY_BINDINGS])
+    .map(row=>Object.freeze({...row,sha256:row.path===ORIGIN_POLICY_PATH?CURRENT_CI_GITHUB_ORIGIN_FIXED:row.sha256}))}),
+  'source:scripts/lib/independent-admission/qlever-sdk-generation.ts');
 const CURRENT_CI_TAIL_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze(
- PUBLISHED_CI_CONSUMER_SOURCE_GROUPS.slice(-2).map(group=>rebindCiOrigin(group,CURRENT_CI_GITHUB_ORIGIN)));
+ PUBLISHED_CI_CONSUMER_SOURCE_GROUPS.slice(-2).map(group=>currentCiFixedRecipe(group)));
 export const CI_CONSUMER_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  ...PUBLISHED_CI_CONSUMER_SOURCE_GROUPS.slice(0,-2),
  ...PUBLISHED_CI_TAIL_GROUPS,
+ ...CURRENT_1A01_CI_TAIL_GROUPS,
  ...CURRENT_CI_TAIL_GROUPS]);
 freezeGitHubSourceBindingGroups(CONSUMER_SOURCE_GROUPS);
 freezeGitHubSourceBindingGroups(CI_CONSUMER_SOURCE_GROUPS);

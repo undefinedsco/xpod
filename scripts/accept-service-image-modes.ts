@@ -162,6 +162,10 @@ export type ManagedLocalLiveStage = typeof MANAGED_LOCAL_LIVE_STAGES[number];
 /** Failure stage may additionally be one of the two non-layer sentinels. */
 export type ManagedLocalLiveFailureStage = ManagedLocalLiveStage | 'preflight' | 'after-layers' | 'unknown';
 
+/** Fixed runtime-phase failure reasons the child may report. */
+export const MANAGED_LOCAL_RUNTIME_REASONS = ['discovery-unreachable','discovery-http','service-status-http','service-status-invalid','css-api-not-running'] as const;
+export type ManagedLocalRuntimeReason = typeof MANAGED_LOCAL_RUNTIME_REASONS[number];
+
 /** Fixed Local-identity substeps the child may have entered. */
 export const MANAGED_LOCAL_IDENTITY_SUBSTAGES = ['route-discovery', 'managed-pod-claim', 'account-create', 'client-credential', 'session-login'] as const;
 export type ManagedLocalIdentitySubstage = typeof MANAGED_LOCAL_IDENTITY_SUBSTAGES[number];
@@ -176,10 +180,14 @@ export interface ManagedLocalLiveFailure {
   readonly status: 'failed';
   readonly completedLayers: number;
   readonly substage?: ManagedLocalIdentitySubstage;
+  /** Fixed reason code for a runtime-phase failure, plus the observed HTTP status. */
+  readonly runtimeReason?: ManagedLocalRuntimeReason;
+  readonly runtimeHttpStatus?: number;
 }
 
 const LIVE_STAGE_SET = new Set<string>([...MANAGED_LOCAL_LIVE_STAGES, 'preflight', 'after-layers']);
 const IDENTITY_SUBSTAGE_SET = new Set<string>(MANAGED_LOCAL_IDENTITY_SUBSTAGES);
+const RUNTIME_REASON_SET = new Set<string>(MANAGED_LOCAL_RUNTIME_REASONS);
 const LIVE_MODES = new Set<string>(['cloud', 'local', 'standalone']);
 
 /** Project the child's own report onto fixed enums only.
@@ -198,6 +206,10 @@ export function projectManagedLocalLiveFailure(report: any): ManagedLocalLiveFai
   for (const stage of MANAGED_LOCAL_LIVE_STAGES) if (layers[stage]?.ok === true) completedLayers += 1;
   if (declared === undefined) return undefined;
   const substage = report?.substage;
+  // Runtime diagnostics are meaningful ONLY when the failure actually happened in
+  // the runtime phase. Emitting them for any other stage would be a stale field.
+  const runtimeReason = declared === 'runtime' ? report?.runtimeReason : undefined;
+  const runtimeHttpStatus = declared === 'runtime' ? report?.runtimeHttpStatus : undefined;
   const projected: ManagedLocalLiveFailure = Object.freeze({
     mode: report.mode,
     stage: declared as ManagedLocalLiveFailureStage,
@@ -205,6 +217,10 @@ export function projectManagedLocalLiveFailure(report: any): ManagedLocalLiveFai
     completedLayers,
     ...(typeof substage === 'string' && IDENTITY_SUBSTAGE_SET.has(substage)
       ? { substage: substage as ManagedLocalIdentitySubstage } : {}),
+    ...(typeof runtimeReason === 'string' && RUNTIME_REASON_SET.has(runtimeReason)
+      ? { runtimeReason: runtimeReason as ManagedLocalRuntimeReason } : {}),
+    ...(Number.isSafeInteger(runtimeHttpStatus) && runtimeHttpStatus >= 100 && runtimeHttpStatus <= 599
+      ? { runtimeHttpStatus } : {}),
   });
   return projected;
 }

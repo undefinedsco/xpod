@@ -1,6 +1,7 @@
 import {test,expect} from 'bun:test';
 import {mkdtempSync,mkdirSync,symlinkSync,writeFileSync,readFileSync,rmSync} from 'node:fs';
 import {join} from 'node:path';
+import {tmpdir} from 'node:os';
 import {spawn} from 'node:child_process';
 import {
   MANAGED_LOCAL_LIVE_STAGES,MANAGED_LOCAL_IDENTITY_SUBSTAGES,
@@ -56,6 +57,43 @@ test('a Local identity substage is projected only when it is a known fixed value
   const bogus={mode:'local',layers:layers({identity:false}),failedStage:'identity',substage:'secret detail here'};
   expect(projectManagedLocalLiveFailure(bogus)!.substage).toBeUndefined();
   expect(MANAGED_LOCAL_IDENTITY_SUBSTAGES).toContain('route-discovery');
+});
+
+test('runtime diagnostics pass through only as fixed reason plus numeric status',()=>{
+  const base={mode:'local',layers:layers({runtime:false}),failedStage:'runtime'};
+  const ok=projectManagedLocalLiveFailure({...base,runtimeReason:'discovery-http',runtimeHttpStatus:503})!;
+  expect(ok.runtimeReason).toBe('discovery-http');
+  expect(ok.runtimeHttpStatus).toBe(503);
+  // unknown reason and out-of-range status are dropped, not guessed
+  const bad=projectManagedLocalLiveFailure({...base,runtimeReason:'totally-secret-host',runtimeHttpStatus:9999})!;
+  expect(bad.runtimeReason).toBeUndefined();
+  expect(bad.runtimeHttpStatus).toBeUndefined();
+  // a non-integer status is dropped too
+  expect(projectManagedLocalLiveFailure({...base,runtimeHttpStatus:5.5})!.runtimeHttpStatus).toBeUndefined();
+  // diagnostics carry no URL/host/body — only the fixed code and the number
+  const wire=JSON.stringify(ok);
+  expect(wire).not.toContain('://');
+  expect(wire).not.toContain('localhost');
+  expect(Object.keys(ok).sort()).toEqual(['completedLayers','mode','runtimeHttpStatus','runtimeReason','stage','status']);
+});
+
+test('runtime diagnostics are emitted ONLY when the failed stage is runtime',()=>{
+  const withReason={runtimeReason:'discovery-http',runtimeHttpStatus:503};
+  // runtime: passes through
+  const rt=projectManagedLocalLiveFailure({mode:'local',layers:layers({runtime:false}),failedStage:'runtime',...withReason})!;
+  expect(rt.runtimeReason).toBe('discovery-http');
+  expect(rt.runtimeHttpStatus).toBe(503);
+  // a non-runtime stage must not carry stale runtime fields, even if present
+  const id=projectManagedLocalLiveFailure({mode:'local',layers:layers({identity:false}),failedStage:'identity',...withReason})!;
+  expect(id.runtimeReason).toBeUndefined();
+  expect(id.runtimeHttpStatus).toBeUndefined();
+  expect(Object.keys(id).sort()).toEqual(['completedLayers','mode','stage','status']);
+});
+
+test('service-status-invalid is a distinct emitted reason',()=>{
+  const got=projectManagedLocalLiveFailure({mode:'local',layers:layers({runtime:false}),failedStage:'runtime',runtimeReason:'service-status-invalid',runtimeHttpStatus:200})!;
+  expect(got.runtimeReason).toBe('service-status-invalid');
+  expect(got.runtimeHttpStatus).toBe(200);
 });
 
 test('private payload carried by a report is never exported',()=>{
@@ -117,8 +155,11 @@ test('a failing real canary child preserves its explicit stage through the reade
     const report=JSON.parse(readFileSync(join(root,'.test-data','acceptance','live-gateway-login-chat-local.json'),'utf8'));
     expect(report.failedStage).toBe('runtime');
     expect(report.layers.identity.detail).toBe('not run');
+    // The real child now also names WHICH runtime check failed, so a future run
+    // never needs to guess between discovery and service/status.
     expect(await readManagedLocalLiveFailure(root,'local')).toEqual({
       mode:'local',stage:'runtime',status:'failed',completedLayers:0,
+      runtimeReason:'discovery-unreachable',
     });
   }finally{
     clearTimeout(timeout);
@@ -127,3 +168,53 @@ test('a failing real canary child preserves its explicit stage through the reade
     rmSync(root,{recursive:true,force:true});
   }
 },15_000);
+
+test('real child: restored 5s bound abandons a stalled discovery and says unreachable',async()=>{
+  const {createServer}=await import('node:http');
+  const {spawn}=await import('node:child_process');
+  const srv=createServer(()=>{/* never answer */});
+  await new Promise<void>(r=>srv.listen(0,'127.0.0.1',()=>r()));
+  const port=(srv.address() as any).port;
+  const parent=join(process.cwd(),'.test-data','live-local-failure-projection');
+  mkdirSync(parent,{recursive:true});
+  const root=mkdtempSync(join(parent,'bound-'));
+  const t0=Date.now();
+  try{
+    const child=spawn(process.execPath,['--no-env-file',join(process.cwd(),'scripts','accept-live-gateway-login-chat.ts')],{
+      cwd:root,env:{PATH:process.env.PATH,XPOD_LIVE_MODE:'local',XPOD_BASE_URL:`http://127.0.0.1:${port}/`},stdio:'ignore'});
+    const code=await new Promise<number|null>(r=>child.once('exit',r));
+    const elapsed=Date.now()-t0;
+    expect(code).toBe(1);
+    // The bound must hold: fail fast instead of holding the job open.
+    expect(elapsed < 15_000).toBe(true);
+    const rep=JSON.parse(readFileSync(join(root,'.test-data','acceptance','live-gateway-login-chat-local.json'),'utf8'));
+    expect(rep.failedStage).toBe('runtime');
+    expect(rep.runtimeReason).toBe('discovery-unreachable');
+    expect(rep.runtimeHttpStatus).toBeUndefined();
+  }finally{srv.close();rmSync(root,{recursive:true,force:true});}
+},30_000);
+
+test('real child: an OK but non-array service/status is service-status-invalid',async()=>{
+  const {createServer}=await import('node:http');
+  const {spawn}=await import('node:child_process');
+  const srv=createServer((req,res)=>{
+    if(req.url==='/.well-known/openid-configuration'){res.writeHead(200,{'content-type':'application/json'});res.end('{"issuer":"http://127.0.0.1/"}');return;}
+    if(req.url==='/service/status'){res.writeHead(200,{'content-type':'application/json'});res.end('{"not":"an array"}');return;}
+    res.writeHead(404);res.end();
+  });
+  await new Promise<void>(r=>srv.listen(0,'127.0.0.1',()=>r()));
+  const port=(srv.address() as any).port;
+  const parent=join(process.cwd(),'.test-data','live-local-failure-projection');
+  mkdirSync(parent,{recursive:true});
+  const root=mkdtempSync(join(parent,'invalid-'));
+  try{
+    const child=spawn(process.execPath,['--no-env-file',join(process.cwd(),'scripts','accept-live-gateway-login-chat.ts')],{
+      cwd:root,env:{PATH:process.env.PATH,XPOD_LIVE_MODE:'local',XPOD_BASE_URL:`http://127.0.0.1:${port}/`},stdio:'ignore'});
+    const code=await new Promise<number|null>(r=>child.once('exit',r));
+    expect(code).toBe(1);
+    const rep=JSON.parse(readFileSync(join(root,'.test-data','acceptance','live-gateway-login-chat-local.json'),'utf8'));
+    expect(rep.failedStage).toBe('runtime');
+    expect(rep.runtimeReason).toBe('service-status-invalid');
+    expect(rep.runtimeHttpStatus).toBe(200);
+  }finally{srv.close();rmSync(root,{recursive:true,force:true});}
+},30_000);
