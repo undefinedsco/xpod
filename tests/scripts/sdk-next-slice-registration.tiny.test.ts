@@ -213,7 +213,7 @@ test('only the genuinely new immutable-input-plan slice follows published2406', 
   // published group keeps its exact bytes.
   expect([sdk.length - n2406Groups.published.sdk, consumer.length - n2406Groups.published.consumer,
     ci.length - n2406Groups.published.ci, linuxGroups.length - n2406Groups.published.linux])
-    .toEqual([20, 11, 28, 20]);
+    .toEqual([20, 12, 30, 20]);
   // Every published2406 group keeps its own exact bytes, including its last.
   for (const [name, groups] of Object.entries({sdk, consumer, ci, api, linux: linuxGroups})) {
     const published = (n2406Groups as any).groupHashes[name] as unknown[];

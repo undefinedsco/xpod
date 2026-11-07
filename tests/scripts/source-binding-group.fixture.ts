@@ -1,12 +1,13 @@
 import {secondaryGitHubSourceBindingSelectors,sourceBindingKey,type GitHubSourceBinding,type GitHubSourceBindingGroup} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 /** Expected LIVE canonical source inventory. Kept independent of the JSON under test.
  * Published/frozen snapshots retain their own historical counts. */
-export const CURRENT_CANONICAL_SOURCE_ROWS = 530;
+// RC383 adds candidate-run-state.ts as one new canonical row.
+export const CURRENT_CANONICAL_SOURCE_ROWS = 531;
 /** The single explicit CURRENT registration expectation. Historical suites keep
  * their own frozen prefix/hash fixtures; only genuine current-source checks use
  * these values. A future append updates this ONE object, never 41 scattered
  * literals. */
-export const CURRENT_SOURCE_GROUP_COUNTS = Object.freeze({api:31,sdk:93,consumer:99,ci:202,linux:94,cli:14,current:530});
+export const CURRENT_SOURCE_GROUP_COUNTS = Object.freeze({api:31,sdk:93,consumer:100,ci:204,linux:94,cli:14,current:531});
 export const CURRENT_OBSERVER_GROUPS = 64;
 export const CURRENT_HELPER_GROUP_COUNTS = Object.freeze({controller:43,fetch:46,maximum:46});
 

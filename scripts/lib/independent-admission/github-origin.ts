@@ -10,6 +10,7 @@ import { archiveConsumerArtifactName } from './archive-consumer-originals';
 import { CONSUMER_SOURCE_GROUPS, CI_CONSUMER_SOURCE_GROUPS, CI_PUBLICATION_WORKFLOW_SHA, CALLABLE_PUBLICATION_WORKFLOW_SHA, STAGING_CHECKED_PUBLICATION_WORKFLOW_SHA } from './consumer-observer-policy';
 import { createHash } from 'node:crypto';
 import { CLI_PRODUCT_WORKFLOW, cliPublicationArtifactNames, type ArtifactAcquisitionInput } from '../../acquire-independent-product-input';
+import { candidateNonterminalRunState } from './candidate-run-state';
 import { productTarget } from '../../module-product-targets';
 import { MODULE_TARGETS } from '../../../packages/xpod-cli/src/module-catalog';
 import {candidateServiceNativeRuntimeArtifactName} from './candidate-service-native-runtime-contract';
@@ -1679,8 +1680,7 @@ export function observedGitHubAncestorJobAccepted(ancestor:any,producer:any,inpu
  * predicate semantics, and the predicate itself is unchanged. */
 function observedRunStateAcceptedAtOrigin(status:unknown,conclusion:unknown,scope:unknown):boolean {
   if(observedGitHubRunStateAccepted(status,conclusion,scope))return true;
-  return scope==='candidate-producer'&&conclusion===null
-    &&['queued','requested','waiting','pending','in_progress'].includes(status as string);
+  return scope==='candidate-producer'&&candidateNonterminalRunState(status,conclusion);
 }
 async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { token?: string }, policies: OriginPolicy|readonly OriginPolicy[]): Promise<GitHubOriginObservation> {
   if (!input || input.schemaVersion !== 1 || !/^[a-f0-9]{40}$/u.test(input.sourceSha)

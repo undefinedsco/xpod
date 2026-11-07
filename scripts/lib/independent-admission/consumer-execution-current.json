@@ -613,7 +613,7 @@
   },
   {
     "path": "scripts/acquire-independent-product-input.ts",
-    "sha256": "8782b62b963612f7829c55e556bb6afcc695024b1bcd5078f4ef6bc47d97acef"
+    "sha256": "f64f46e85a4fe7bfb8d2404fd4e5b7047be7a7be6af21294e1d661d5be29a921"
   },
   {
     "path": "scripts/agentfs-native-ci/accept.py",
@@ -941,7 +941,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "759eefd48a0bbac724546cc12dda18f377a34b0e4ad6cf0c004df6cea54e7f12"
+    "sha256": "d053fe0d947d3c584e5be4491872fab7f6631e7594937748afff55f255e577e5"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",
@@ -2118,5 +2118,9 @@
   {
     "path": "scripts/lib/normal-local-runtime-smoke-cases.json",
     "sha256": "95c86ca051aeceec413d5bd741769f9907adbd847af06c0f3a794380a017a208"
+  },
+  {
+    "path": "scripts/lib/independent-admission/candidate-run-state.ts",
+    "sha256": "0db0e58e7e73bc149f955612379a0d058d3b7e611d67a77880f0f50c2c694176"
   }
 ]

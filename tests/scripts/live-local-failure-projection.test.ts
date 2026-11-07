@@ -145,7 +145,9 @@ test('a failing real canary child preserves its explicit stage through the reade
   // while running the real child script under Bun, exactly as the matrix does.
   const child=spawn(process.execPath,['--no-env-file',join(process.cwd(),'scripts','accept-live-gateway-login-chat.ts')],{
     cwd:root,
-    env:{PATH:process.env.PATH,XPOD_LIVE_MODE:'local',XPOD_BASE_URL:'http://127.0.0.1:0/'},
+    // Managed Local verifies the CLOUD issuer (existing XPOD_LIVE_CLOUD_IDP input),
+    // so a genuine IdP transport failure must still be reported honestly.
+    env:{PATH:process.env.PATH,XPOD_LIVE_MODE:'local',XPOD_BASE_URL:'http://127.0.0.1:0/',XPOD_LIVE_CLOUD_IDP:'http://127.0.0.1:1/'},
     stdio:'ignore',
   });
   const exited=new Promise<number|null>(resolve=>child.once('exit',(code:number|null)=>resolve(code)));
@@ -181,7 +183,8 @@ test('real child: restored 5s bound abandons a stalled discovery and says unreac
   const t0=Date.now();
   try{
     const child=spawn(process.execPath,['--no-env-file',join(process.cwd(),'scripts','accept-live-gateway-login-chat.ts')],{
-      cwd:root,env:{PATH:process.env.PATH,XPOD_LIVE_MODE:'local',XPOD_BASE_URL:`http://127.0.0.1:${port}/`},stdio:'ignore'});
+      // The stalled origin is the authoritative Cloud issuer for managed Local.
+      cwd:root,env:{PATH:process.env.PATH,XPOD_LIVE_MODE:'local',XPOD_BASE_URL:`http://127.0.0.1:${port}/`,XPOD_LIVE_CLOUD_IDP:`http://127.0.0.1:${port}/`},stdio:'ignore'});
     const code=await new Promise<number|null>(r=>child.once('exit',r));
     const elapsed=Date.now()-t0;
     expect(code).toBe(1);

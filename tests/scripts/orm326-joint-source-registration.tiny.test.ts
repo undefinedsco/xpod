@@ -95,7 +95,10 @@ test('the frozen f803 snapshot is the published canonical bytes and the moving c
     // The ordinary local-runtime route appends its new collector and the shared
     // smoke-case declaration at the canonical tail; earlier rows keep position.
     'scripts/collect-normal-local-runtime-originals.py',
-    'scripts/lib/normal-local-runtime-smoke-cases.json']);
+    'scripts/lib/normal-local-runtime-smoke-cases.json',
+    // The candidate run-state helper is the ONE new canonical row for this fix;
+    // every earlier row keeps its published position (531 unique rows).
+    'scripts/lib/independent-admission/candidate-run-state.ts']);
   expect(new Set(current.map(row => row.path)).size).toBe(current.length);
 });
 
@@ -198,7 +201,10 @@ test('old and new tails are strictly disambiguated by actual bytes, never loosen
   // slice) still selects itself, untouched. f803 is only the consumer-89 prefix
   // proved above, so it is not claimed as this previous tail. Index 98 is the
   // separately registered SDK83 fixture-isolation tail.
-  const publishedTail = consumer[consumer.length - 2]!;
+  // Pinned to the explicit index: with a new canonical row appended, length-2
+  // would silently point at a DIFFERENT (98) historical slice and check the
+  // wrong history. Index 97 is the SDK82 failed-transport tail being verified.
+  const publishedTail = consumer[97]!;
   expect(consumer.indexOf(publishedTail)).toBe(97);
   expect(select(consumer, new Map([...publishedTail.selectors, ...(publishedTail.secondarySelectors ?? []), ...publishedTail.sourceBindings].map(row => [key(row), row.sha256] as const)))).toBe(publishedTail);
 });
