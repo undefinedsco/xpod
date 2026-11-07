@@ -1,6 +1,7 @@
 import {test,expect} from 'bun:test';
 import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
+import {gunzipSync} from 'node:zlib';
 import fixture from './fixtures/rc382-workspace-build-ctime-snapshots.json';
 import desktop from './fixtures/rc382-desktop-manifest-transition.json';
 import {inspectServiceWorkspaceBuild} from '../../scripts/lib/independent-admission/service-workspace-build-replay';
@@ -12,6 +13,23 @@ import {inspectServiceWorkspaceBuild} from '../../scripts/lib/independent-admiss
  * intervening writes. The fixture retains those rows plus an unchanged control. */
 const sha=(raw:Buffer)=>createHash('sha256').update(raw).digest('hex');
 const rows=(snapshot:any)=>snapshot.rows as any[];
+/** The RC382 build input is the IMMUTABLE historical `bun.lock`, not today's file.
+ *
+ * Captured with `git show 1cc4ffaec12e33c6ffc34891ebc364f8543750d0:bun.lock`
+ * (sha256 ff70b48d929511d94b9350abbb91ee4980aa9e86532190574fe2f3e42b221042,
+ * 790732 bytes) and stored gzip-compressed (deterministic, mtime=0) so the
+ * repository does not carry a second full copy of an already-public lockfile.
+ *
+ * The RC382 snapshot pins that exact hash and size. Reading the live repository
+ * lock instead made this fixture depend on unrelated later dependency edits.
+ */
+const historicalLock=():Buffer=>{
+  const raw=gunzipSync(readFileSync(new URL('./fixtures/rc382-workspace-build-bun.lock.gz',import.meta.url)));
+  const expected=beforeRows.find((r:any)=>r[0]==='bun.lock');
+  expect(sha(raw)).toBe(expected[2]);
+  expect(raw.length).toBe(Number(expected[1][3]));
+  return raw;
+};
 /** The fixture keeps the real identity tuples and the verbatim build-input bytes. */
 const embedded=(fixture as any).bytes as Record<string,string>;
 const beforeRows=rows(fixture.before),afterRows=rows(fixture.after);
@@ -21,12 +39,7 @@ const options=(over:any={})=>({before:Buffer.from(JSON.stringify(fixture.before)
   // package.json is bound to afterRoot by the parser, not to readGit.
   afterRoot:Buffer.from(embedded['package.json'],'base64'),
   readGit:(name:string)=>{
-    if(name==='bun.lock'){
-      // Read the repository lock and assert it is the recorded build input.
-      const lock=readFileSync(new URL('../../bun.lock',import.meta.url));
-      expect(sha(lock)).toBe(beforeRows.find(r=>r[0]==='bun.lock')[2]);
-      return {mode:'100644',bytes:lock};
-    }
+    if(name==='bun.lock')return {mode:'100644',bytes:historicalLock()};
     if(name==='package.json')return {mode:'100644',bytes:Buffer.from(embedded[name],'base64')};
     const raw=Buffer.from(embedded[name]??'','base64');
     expect(sha(raw)).toBe(beforeRows.find(r=>r[0]===name)[2]);
@@ -91,7 +104,7 @@ test('a recorded desktop row requires its verified transition originals',()=>{
     sourceSha:(desktop as any).sourceSha,runId:(desktop as any).run.id,
     runAttempt:(desktop as any).run.run_attempt};
   const readGitFor=(name:string)=>{
-    if(name==='bun.lock')return {mode:'100644',bytes:readFileSync(new URL('../../bun.lock',import.meta.url))};
+    if(name==='bun.lock')return {mode:'100644',bytes:historicalLock()};
     if(name==='package.json')return {mode:'100644',bytes:Buffer.from(embedded[name],'base64')};
     return {mode:'100644',bytes:Buffer.from(embedded[name],'base64')};
   };
@@ -119,7 +132,7 @@ test('a verified desktop transition admits the recorded snapshot row',()=>{
     sourceSha:(desktop as any).sourceSha,runId:(desktop as any).run.id,
     runAttempt:(desktop as any).run.run_attempt};
   const readGitWith=(name:string)=>name==='bun.lock'
-    ? {mode:'100644',bytes:readFileSync(new URL('../../bun.lock',import.meta.url))}
+    ? {mode:'100644',bytes:historicalLock()}
     : {mode:'100644',bytes:Buffer.from(embedded[name],'base64')};
   const call=(versionedManifests:any[])=>inspectServiceWorkspaceBuild({before:snapBuf,after:snapBuf,outputs,
     afterRoot:Buffer.from(embedded['package.json'],'base64'),versionedManifests,

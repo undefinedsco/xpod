@@ -52,6 +52,10 @@ def copy_seed(reference, retained, destination):
         need(identity(os.fstat(fd)) == identity(value), 'seed replaced before open')
         digest = hashlib.sha256(); count = 0
         with destination.open('xb') as output:
+            # Synthetic ABI seed (no user credential). The consuming container runs
+            # without CAP_DAC_OVERRIDE, so make the file plainly readable; an explicit
+            # fchmod keeps a restrictive umask from leaving 0600.
+            os.fchmod(output.fileno(), 0o644)
             while count < size:
                 retained.budget.check(10)
                 block = os.read(fd, min(65536, size-count))
@@ -271,7 +275,10 @@ def collect(*, image, config, source, retained, seed_reference, expected_abi,
     assert_current(); budget.check(10)
     nonce = secrets.token_hex(16); name = 'xpod-service-output-' + nonce
     scratch = retained.out / (name + '-scratch')
-    scratch.mkdir(mode=0o700, exist_ok=False)
+    # Bind source for the container's read-only /seed. Traversal is all the mount
+    # needs; the explicit chmod keeps a restrictive umask from leaving 0700.
+    scratch.mkdir(mode=0o755, exist_ok=False)
+    os.chmod(scratch, 0o755)
     cid = None; owned = False; absent = False; primary = None; seed_fd = None; session_started = False
     stages = []; failures = []; cleanup_errors = []
     result = dict(schemaVersion=1, kind='actual-service-native-protocol-session',

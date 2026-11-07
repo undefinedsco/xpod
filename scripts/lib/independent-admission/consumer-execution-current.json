@@ -33,7 +33,7 @@
   },
   {
     "path": "bun.lock",
-    "sha256": "ff70b48d929511d94b9350abbb91ee4980aa9e86532190574fe2f3e42b221042"
+    "sha256": "6cb041b44fdc2dfe9171e449a69eeeec4617b5ccf754a0312cd194b7b7e3aa7b"
   },
   {
     "path": "desktop/package.json",
@@ -45,7 +45,7 @@
   },
   {
     "path": "package.json",
-    "sha256": "f07277658e7d111655eb52ba560d6c2f2b3b3652a38ad0f137b2cb0812c206f6"
+    "sha256": "f09bc8ffce79f394825231e38eeff615179f99df977dc8b4b1654dd4e740feb4"
   },
   {
     "path": "packages/ai-connections-runtime/package.json",
@@ -521,7 +521,7 @@
   },
   {
     "path": "qlever/scripts/sdk-service-abi-collector.py",
-    "sha256": "606ca041d2be6682351d096d11c645a11d4bd795b49f54ed274b75d731744e13"
+    "sha256": "f88109de9c1ada0ccdd7a2abfae33ce3007e71cc657521159616b39453a560b4"
   },
   {
     "path": "qlever/scripts/sdk-service-abi-declarations.py",
@@ -941,7 +941,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "46d5da1fc3a442ce8ca2ab84cceaad912f50c001b137c77910ac801f003549e2"
+    "sha256": "784674ddf7538663d71b83d42d667fa51d1cfabeefde5c96ee81b60811580ca6"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",
@@ -1221,7 +1221,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "cae91883d43c370179485c51c3bc9ca73c0abf79f7d618db51bf8c0926c3946e"
+    "sha256": "10cda448aff1cda4a32aa237f7f0d516293631a0447c39cd110838c3dc5540d2"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -1337,7 +1337,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/source-rules.ts",
-    "sha256": "1575ced889fd9b7660be95356213d2a2b1706915bda6aca7c382344e23e26a16"
+    "sha256": "3779eb221f86da5ecf674eadba964e83bfb67bce38f14ca21ae352473e639d04"
   },
   {
     "path": "scripts/lib/independent-admission/verified-admission-cache.ts",
