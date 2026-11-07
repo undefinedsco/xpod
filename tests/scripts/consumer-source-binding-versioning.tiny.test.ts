@@ -383,7 +383,8 @@ test('current canonical has one unique row per path, covers the new collector, a
   // The count is a registration checkpoint, not a permanent constant: it moves
   // only when a genuinely new current file is registered. It is deliberately
   // NOT pinned at the historical 528.
-  expect(currentCanonical).toHaveLength(530);
+  // RC383 adds the shared candidate-run-state helper as one new canonical row.
+  expect(currentCanonical).toHaveLength(531);
   const paths=currentCanonical.map(value=>value.path);
   expect(new Set(paths).size).toBe(paths.length);
   const rows=new Map(currentCanonical.map(value=>[value.path,value.sha256]));

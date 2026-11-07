@@ -744,6 +744,26 @@ function failRuntime(reason: RuntimeFailureReason, httpStatus: number | undefine
   return fail('runtime', detail);
 }
 
+/** Which origin is authoritative for OIDC discovery in this mode.
+ * Managed Local is NOT its own IdP: Local stores/provisions only and its
+ * configured issuer is the Cloud. Cloud and Standalone are their own issuer. */
+export function preflightIdentityOrigin(mode: string, baseUrl: string, cloudIdp: string): string {
+  return mode === 'local' ? cloudIdp : baseUrl;
+}
+
+/** One bounded discovery probe against the authoritative origin.
+ * Returns the observed status (or undefined when transport failed) and whether it
+ * was OK. Same Accept header and 5s bound as the original checkServer parity. */
+export async function probeIdentityDiscovery(origin: string, fetchImpl: typeof fetch = fetch): Promise<{ status?: number; ok: boolean }> {
+  try {
+    const probe = await fetchImpl(new URL('.well-known/openid-configuration', origin), {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(5_000),
+    });
+    return { status: probe.status, ok: probe.ok };
+  } catch { return { ok: false }; }
+}
+
 async function main(): Promise<void> {
   report.stage = 'runtime';
   // checkServer() probes this origin's discovery endpoint and swallows transport
@@ -751,22 +771,21 @@ async function main(): Promise<void> {
   // non-2xx discovery response; record the observable status separately.
   // One probe supplies BOTH the boolean checkServer would compute and the status
   // we want to report, so the success path makes no extra request.
-  let discoveryStatus: number | undefined;
-  let discoveryOk = false;
-  try {
-    // EXACT parity with the previous checkServer(): same Accept header and the
-    // same 5s AbortSignal.timeout bound. Without the bound a stalled origin would
-    // hold the canary for the whole job instead of failing fast.
-    const probe = await fetch(new URL('.well-known/openid-configuration', BASE_URL), {
-      headers: { Accept: 'application/json' },
-      signal: AbortSignal.timeout(5_000),
-    });
-    discoveryStatus = probe.status;
-    discoveryOk = probe.ok;
-  } catch { discoveryOk = false; }
-  if (!discoveryOk) {
+  // The preflight verifies the AUTHORITATIVE identity origin, which is not the
+  // canary's own BASE_URL for managed Local: Local is the storage/provision target
+  // and its configured SOLID_OIDC_ISSUER is the Cloud issuer. Probing Local's own
+  // well-known is therefore wrong by contract (it answers 404 on purpose). Cloud
+  // and Standalone are their own issuer, so their BASE_URL stays authoritative.
+  // No new configuration: these are the existing XPOD_BASE_URL / XPOD_LIVE_CLOUD_IDP
+  // inputs the harness already supplies.
+  const identityOrigin = preflightIdentityOrigin(MODE, BASE_URL, CLOUD_IDP);
+  const preflight = await probeIdentityDiscovery(identityOrigin);
+  const discoveryStatus = preflight.status;
+  if (!preflight.ok) {
+    // Attribute to the origin actually probed: a Cloud discovery failure must not
+    // be reported as a Local gateway failure.
     failRuntime(discoveryStatus === undefined ? 'discovery-unreachable' : 'discovery-http', discoveryStatus,
-      `Gateway unreachable at ${BASE_URL}`);
+      MODE === 'local' ? `Identity issuer unreachable at ${identityOrigin}` : `Gateway unreachable at ${BASE_URL}`);
   }
   const statusResponse = await fetch(new URL('service/status', BASE_URL));
   if (!statusResponse.ok) {

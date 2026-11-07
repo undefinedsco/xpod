@@ -3,6 +3,7 @@ import { PUBLICATION_DISK_LIMITS } from './lib/independent-admission/publication
 import { archiveConsumerArtifactName } from './lib/independent-admission/archive-consumer-originals';
 import { registryConsumerArtifactName } from './lib/independent-admission/registry-consumer-originals';
 import {candidateServiceNativeRuntimeArtifactName} from './lib/independent-admission/candidate-service-native-runtime-contract';
+import {candidateNonterminalRunState} from './lib/independent-admission/candidate-run-state';
 import { createHash } from 'node:crypto';
 import { chmodSync, closeSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statfsSync, writeFileSync, writeSync } from 'node:fs';
 import path from 'node:path';
@@ -237,7 +238,15 @@ async function acquireProductInput(input: ArtifactAcquisitionInput, output: stri
     // and the issuer already closed the same-attempt producer job/steps and
     // artifact/source/ancestor custody before the capability was issued.
     const candidateCompletedFailure = candidateRole !== undefined && run?.status === 'completed' && run?.conclusion === 'failure';
-    if (run.id !== input.runId || run.run_attempt !== input.runAttempt || (!legacy && !candidateCompletedFailure && !(run.status==='completed'?run.conclusion==='success':(registryConsumer||candidateRole!==undefined)&&run.status==='in_progress'&&run.conclusion===null)) || (legacy && !['queued', 'in_progress', 'completed'].includes(run.status))
+    // The transport header check must agree with the private-issued candidate
+    // origin proof that admitted this call. RC383 failed here AFTER issuance with
+    // `untrusted producer run` because the header was still `queued`/null while
+    // the same-attempt build_image job had already completed successfully. Only
+    // the genuine candidate role may treat a conclusion-less non-terminal header
+    // as "producer unknown"; it is NEVER success evidence, and the strict
+    // job/step/artifact/source/ancestor closure below is still mandatory.
+    const candidateNonterminal = candidateRole !== undefined && candidateNonterminalRunState(run?.status,run?.conclusion);
+    if (run.id !== input.runId || run.run_attempt !== input.runAttempt || (!legacy && !candidateCompletedFailure && !candidateNonterminal && !(run.status==='completed'?run.conclusion==='success':registryConsumer&&run.status==='in_progress'&&run.conclusion===null)) || (legacy && !['queued', 'in_progress', 'completed'].includes(run.status))
       || run.repository?.full_name !== REPOSITORY || run.head_repository?.full_name !== REPOSITORY || run.head_sha !== input.runHeadSha
       || !['push', 'pull_request', 'workflow_dispatch'].includes(run.event) || !positive(run.workflow_id)) fail('untrusted producer run');
     if (!registryConsumer && run.event !== 'pull_request' && input.sourceSha !== input.runHeadSha) fail('non-PR build source differs from run head');
@@ -276,7 +285,7 @@ async function acquireProductInput(input: ArtifactAcquisitionInput, output: stri
           delete metadata[name]; delete originals[name];
           break;
         }
-        if (!['queued', 'in_progress', 'waiting', 'pending', 'requested'].includes(job.status) || job.conclusion !== null) fail('invalid nonterminal producer state');
+        if (!candidateNonterminalRunState(job.status, job.conclusion)) fail('invalid nonterminal producer state');
         if (!positive(job.id)) fail('nonterminal producer id missing');
         pendingJobId = job.id;
         delete metadata[name]; delete originals[name];
@@ -298,7 +307,12 @@ async function acquireProductInput(input: ArtifactAcquisitionInput, output: stri
         ? productTargets(workflow.path !== API_PRODUCT_WORKFLOW ? 'css' : 'api').filter(row => row.nativeSourceAvailable||workflow.path===CSS_ROUTED_PRODUCT_WORKFLOW)
           .map(row => `${workflow.path !== API_PRODUCT_WORKFLOW ? 'css' : 'api'}-module-products-${row.target}-${input.sourceSha}-${input.runId}-${input.runAttempt}`)
       : MODULE_TARGETS.flatMap(target => [`afs-module-products-${target.platform}-${target.arch}-${input.sourceSha}-${input.runId}-${input.runAttempt}`, `afs-module-production-${target.platform}-${target.arch}-${input.sourceSha}-${input.runId}-${input.runAttempt}`]);
-    const created = Date.parse(artifact.created_at), started = Date.parse(run.run_started_at), completed = (registryConsumer||candidateRole!==undefined) && run.status==='in_progress' ? Date.now() : Date.parse(legacy ? producerClosure!.completedAt : run.updated_at);
+    // Same candidate-only header tolerance as the guard above: a conclusion-less
+    // non-terminal header (including `queued`) means the overall run is still live,
+    // so the artifact window closes at the current instant. The artifact's own
+    // id/name/digest/run/head/size and the producer closure below remain exact.
+    const runStillLive = (registryConsumer||candidateRole!==undefined) && (run.status==='in_progress' || (candidateRole!==undefined && candidateNonterminalRunState(run.status,run.conclusion)));
+    const created = Date.parse(artifact.created_at), started = Date.parse(run.run_started_at), completed = runStillLive ? Date.now() : Date.parse(legacy ? producerClosure!.completedAt : run.updated_at);
     if (artifact.id !== input.artifactId || !allowedNames.includes(artifact.name) || artifact.expired !== false || artifact.workflow_run?.id !== run.id
       || artifact.workflow_run?.head_sha !== input.runHeadSha || artifact.digest !== 'sha256:' + input.artifactSha256
       || !positive(artifact.size_in_bytes) || artifact.size_in_bytes > limits.packedBytes
