@@ -4,6 +4,8 @@ import {readFileSync} from 'node:fs';
 import path from 'node:path';
 import {
   QLEVER_SDK_EXECUTION_GROUPS,
+  QLEVER_LINUX_EXECUTION_GROUPS,
+  QLEVER_NORMAL_BUILD_GROUPS,
   QLEVER_SDK_CONSUMER_GROUPS,
   QLEVER_LINUX_CONSUMER_GROUPS,
   QLEVER_NORMAL_SOURCE_GROUPS,
@@ -60,11 +62,16 @@ const sdk100=QLEVER_SDK_CONSUMER_GROUPS[99]!;
 const sdk101=QLEVER_SDK_CONSUMER_GROUPS[100]!;
 const sdk103=QLEVER_SDK_CONSUMER_GROUPS[102]!;
 const sdk102=QLEVER_SDK_CONSUMER_GROUPS[101]!;
-// SDK104 is the RC382 workspace-build identity repair; SDK105 is the CURRENT tail
-// (RC384 producer scratch boundary). Both stay at explicit indexes so appending a
-// later generation can never silently shift which published tuple is asserted.
+// SDK104 is the RC382 workspace-build identity repair; SDK105 was the RC384 producer
+// scratch boundary and is now FROZEN history; SDK106 is the CURRENT tail.
+// All stay at explicit indexes so a later append cannot silently shift them.
 const sdk104=QLEVER_SDK_CONSUMER_GROUPS[103]!;
 const sdk105=QLEVER_SDK_CONSUMER_GROUPS[104]!;
+const sdk106=QLEVER_SDK_CONSUMER_GROUPS.at(-1)!;
+// Whole-group aggregate of SDK105 as published (git-05cf baseline
+// families.sdkConsumer.aggregates[104]). Frozen history, never re-derived.
+const SDK105_FROZEN_WHOLE='6a2737d18a0b3fd4bee1250a818a80e4f65f2ab8609205a19bff40b92d097106';
+const SDK106_CURRENT_INDEX=105;
 const SDK97=publishedSdk94.sdk97;
 const SDK98=publishedSdk94.sdk98;
 const SDK99=publishedSdk94.sdk99;
@@ -119,7 +126,7 @@ test('SDK95 stays the exact published consumer that produced RC373 native',()=>{
 });
 
 test('SDK96 stays the consumed baseline that RC374 published from',()=>{
-  expect(QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(105);
+  expect(QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(106);
   expect(QLEVER_SDK_CONSUMER_GROUPS[95]).toBe(sdk96);
   expect(whole(sdk96)).toBe(publishedSdk94.published.sdk96GroupSha256);
   expect(whole(sdk96)).toBe(publishedSdk94.sdk96.groupSha256);
@@ -149,7 +156,7 @@ test('SDK97 stays the consumed baseline that RC375 built from',()=>{
     'scripts/lib/independent-admission/qlever-sdk-service-relationship.ts']){
     expect(anyRow(sdk97,path).every(value=>/^[a-f0-9]{64}$/u.test(value.sha256))).toBe(true);
   }
-  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-9)).toBe(sdk97);
+  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-10)).toBe(sdk97);
 });
 
 test('SDK98 stays the consumed baseline that RC375 built from',()=>{
@@ -166,7 +173,7 @@ test('SDK98 stays the consumed baseline that RC375 built from',()=>{
     expect(declared.length).toBeGreaterThan(0);
     expect(declared.every(value=>/^[a-f0-9]{64}$/u.test(value.sha256))).toBe(true);
   }
-  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-8)).toBe(sdk98);
+  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-9)).toBe(sdk98);
 });
 
 test('SDK99 stays the published staging baseline that RC377 consumed',()=>{
@@ -178,7 +185,7 @@ test('SDK99 stays the published staging baseline that RC377 consumed',()=>{
   // SDK99 is frozen history: it keeps the pre-repair collector and TS bytes.
   expect(row(sdk99,'qlever/scripts/sdk-service-image-originals.py').map(value=>value.sha256))
     .not.toEqual([disk('qlever/scripts/sdk-service-image-originals.py')]);
-  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-7)).toBe(sdk99);
+  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-8)).toBe(sdk99);
 });
 
 test('SDK100 stays the published staging baseline that RC377 consumed',()=>{
@@ -192,7 +199,7 @@ test('SDK100 stays the published staging baseline that RC377 consumed',()=>{
     'qlever/scripts/sdk-service-pack-bindings.py']){
     expect(row(sdk100,path).map(value=>value.sha256)).not.toEqual([disk(path)]);
   }
-  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-6)).toBe(sdk100);
+  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-7)).toBe(sdk100);
 });
 
 test('SDK101 stays the published staging baseline that RC378 consumed',()=>{
@@ -210,7 +217,7 @@ test('SDK101 stays the published staging baseline that RC378 consumed',()=>{
     expect(declared.length).toBeGreaterThan(0);
     expect(declared.every(value=>/^[a-f0-9]{64}$/u.test(value.sha256))).toBe(true);
   }
-  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-5)).toBe(sdk101);
+  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-6)).toBe(sdk101);
 });
 
 test('SDK102 remains the frozen RC379 typed pack-stream generation',()=>{
@@ -239,11 +246,12 @@ test('SDK102 remains the frozen RC379 typed pack-stream generation',()=>{
   }
   expect(sdk102.selectors).toEqual(sdk101.selectors);
   expect(sdk102.secondarySelectors).toEqual(sdk101.secondarySelectors);
-  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-4)).toBe(sdk102);
-  // SDK103/SDK104 stay pinned before the current tail; SDK105 is the new current.
-  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-3)).toBe(sdk103);
-  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-2)).toBe(sdk104);
-  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-1)).toBe(sdk105);
+  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-5)).toBe(sdk102);
+  // SDK103/SDK104/SDK105 stay pinned before the current tail; SDK106 is the new current.
+  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-4)).toBe(sdk103);
+  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-3)).toBe(sdk104);
+  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-2)).toBe(sdk105);
+  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-1)).toBe(sdk106);
   // Frozen history: its bytes were true when published. The GNU repair moved
   // both payload paths, so this generation is no longer compared to disk; the
   // frozen aggregate above is the real guard. Only the CURRENT generation is
@@ -283,17 +291,55 @@ test('SDK103 stays the FROZEN consumer for the RC380 GNU long-name pack repair',
   }
   expect(sdk103.selectors).toEqual(sdk102.selectors);
   expect(sdk103.secondarySelectors).toEqual(sdk102.secondarySelectors);
-  // Frozen axes must not move.
-  expect(QLEVER_NORMAL_SOURCE_GROUPS).toHaveLength(4);
+  // Frozen axes must not move: the published normal-source groups stay at their
+  // history, and only the appended CURRENT generation (group 5) tracks live bytes.
+  expect(QLEVER_NORMAL_SOURCE_GROUPS).toHaveLength(5);
   expect(whole(QLEVER_SDK_NORMAL_SOURCE_BINDINGS)).toBe(publishedSdk93.published.normalFlatBindingsSha256);
   expect(QLEVER_SDK_NORMAL_SOURCE_BINDINGS).toHaveLength(23);
   // SDK103 is FROZEN history, so its bytes are checked against the published
-  // aggregate above, not today's disk. Only the CURRENT generation (now SDK105)
-  // binds live disk; SDK104 is likewise frozen.
-  for(const binding of [...sdk105.selectors,...(sdk105.secondarySelectors??[]),
-    ...(sdk105.secondarySelectorStages??[]).flat(),...sdk105.sourceBindings]){
+  // aggregate above, not today's disk. SDK104 and SDK105 are likewise frozen; only
+  // the CURRENT generation (SDK106) binds live disk.
+  for(const binding of [...sdk106.selectors,...(sdk106.secondarySelectors??[]),
+    ...(sdk106.secondarySelectorStages??[]).flat(),...sdk106.sourceBindings]){
     expect({path:binding.path,sha256:disk(binding.path)}).toEqual({path:binding.path,sha256:binding.sha256});
   }
+});
+
+test('SDK105 is FROZEN history and SDK106 is the CURRENT one-stage append',()=>{
+  // SDK105 was the RC384 producer scratch boundary; whole-group aggregate captured
+  // from the git-05cf baseline (families.sdkConsumer.aggregates[104]).
+  expect(QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(106);
+  expect(whole(sdk105)).toBe(SDK105_FROZEN_WHOLE);
+  expect(QLEVER_SDK_CONSUMER_GROUPS[SDK106_CURRENT_INDEX]).toBe(sdk106);
+  // One NEW stage over SDK105, and it carries exactly the normal verifier row.
+  expect((sdk106.secondarySelectorStages??[]).length)
+    .toBe((sdk105.secondarySelectorStages??[]).length+1);
+  // The new capture flags also change this generation's reviewed workflow bytes.
+  // SDK105 itself stays frozen above; only the new generation advances that row.
+  const workflow='.github/workflows/candidate.yml';
+  const advancedStages=(sdk105.secondarySelectorStages??[]).map(stage=>stage.map(binding=>
+    binding.path===workflow?{...binding,sha256:disk(workflow)}:binding));
+  expect((sdk106.secondarySelectorStages??[]).slice(0,(sdk105.secondarySelectorStages??[]).length))
+    .toEqual(advancedStages);
+  const appended=(sdk106.secondarySelectorStages??[]).at(-1)!;
+  expect(appended.map((value:any)=>value.path)).toEqual([VERIFIER]);
+  expect(appended.map((value:any)=>value.sha256)).toEqual([disk(VERIFIER)]);
+  // The verifier was not a selector of SDK105 and supplies the appended stage.
+  expect((sdk105.selectors??[]).filter((value:any)=>value.path===VERIFIER)).toHaveLength(0);
+  // Current bindings all match disk; the frozen generation keeps its literal pins.
+  for(const binding of [...sdk106.selectors,...(sdk106.secondarySelectors??[]),
+    ...(sdk106.secondarySelectorStages??[]).flat(),...sdk106.sourceBindings]){
+    expect({path:binding.path,sha256:disk(binding.path)})
+      .toEqual({path:binding.path,sha256:binding.sha256});
+  }
+  // Linux consumer mirrors it: previous frozen at -2, current at -1.
+  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-2)).toBe(sdk105);
+  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-1)).toBe(sdk106);
+  // Historical producer axes never move.
+  expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(93);
+  expect(QLEVER_LINUX_EXECUTION_GROUPS).toHaveLength(94);
+  expect(QLEVER_NORMAL_BUILD_GROUPS).toHaveLength(3);
+  expect(QLEVER_SDK_NORMAL_SOURCE_BINDINGS).toHaveLength(23);
 });
 
 test('SDK96/97/98/99/100/101/102/103 trees select their own tuple; current tree selects SDK104',()=>{
@@ -346,8 +392,8 @@ test('SDK96/97/98/99/100/101/102/103 trees select their own tuple; current tree 
 });
 
 test('normal producer keeps the frozen 23-row flat list and all earlier groups',()=>{
-  expect(QLEVER_NORMAL_SOURCE_GROUPS).toHaveLength(4);
-  const [old,next,dockerignore,registry]=QLEVER_NORMAL_SOURCE_GROUPS;
+  expect(QLEVER_NORMAL_SOURCE_GROUPS).toHaveLength(5);
+  const [old,next,dockerignore,registry,currentNormal]=QLEVER_NORMAL_SOURCE_GROUPS;
   expect(old!.sourceBindings).toBe(QLEVER_SDK_NORMAL_SOURCE_BINDINGS);
   expect(QLEVER_SDK_NORMAL_SOURCE_BINDINGS).toHaveLength(23);
   expect(whole(QLEVER_SDK_NORMAL_SOURCE_BINDINGS)).toBe(publishedSdk93.published.normalFlatBindingsSha256);
@@ -357,6 +403,11 @@ test('normal producer keeps the frozen 23-row flat list and all earlier groups',
   expect(whole(registry!)).toBe(publishedSdk94.published.normalRegistryGroupSha256);
   // Group 4 advances only the executed normal-capture producer via an appended stage.
   expect(row(registry!,DOCKERIGNORE).map(value=>value.sha256)).toEqual([SDK96_DOCKERIGNORE]);
+  // Group 5 is the CURRENT normal-source append: the primary normal verifier changed
+  // and the stage count is unchanged (no new stage).
+  expect(row(currentNormal!,VERIFIER).map(value=>value.sha256)).toEqual([disk(VERIFIER)]);
+  expect((currentNormal!.secondarySelectorStages??[]).length)
+    .toBe((registry!.secondarySelectorStages??[]).length);
   expect(row(registry!,VERIFIER).map(value=>value.sha256)).toEqual([SDK94_VERIFIER]);
   expect((registry!.secondarySelectorStages??[]).length).toBe((dockerignore!.secondarySelectorStages??[]).length+1);
   expect(row(old!,VERIFIER).map(value=>value.sha256)).toEqual([OLD_VERIFIER]);
@@ -400,7 +451,8 @@ test('current canonical has one unique row per path, covers the new collector, a
     'scripts/lib/independent-admission/github-origin.ts',NATIVE_ORIGINALS,NORMAL_COLLECTOR]){
     expect({path:file,sha256:rows.get(file)}).toEqual({path:file,sha256:disk(file)});
   }
-  expect(rows.get(VERIFIER)).toBe(SDK94_VERIFIER);
+  // The canonical verifier row tracks the CURRENT verifier, not the historical SDK94 pin.
+  expect(rows.get(VERIFIER)).toBe(disk(VERIFIER));
   for(const value of currentCanonical)expect({path:value.path,sha256:disk(value.path)}).toEqual(value);
   // The ordinary local-runtime workflow is a bound group row, never a canonical
   // controller row: it is admitted through the SDK95 recipe instead.

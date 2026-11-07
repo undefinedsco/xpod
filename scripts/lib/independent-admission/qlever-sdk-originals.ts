@@ -1,6 +1,6 @@
 import {inspectCandidateServiceRelationship,inspectCandidateServiceJobChain} from './qlever-sdk-service-relationship';
 import {isCandidateServiceImageGitHubOrigin} from './github-origin';
-import {QLEVER_SDK_EXECUTION_GROUPS} from './qlever-sdk-origin-policy';
+import {QLEVER_SDK_CONSUMER_GROUPS} from './qlever-sdk-origin-policy';
 import {NORMAL_BUILD_MODEL,inspectNormalBuildSdkMasterBinding} from './qlever-sdk-normal-build';
 import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
@@ -9,6 +9,7 @@ import {observeQleverSdkGitHubOrigin,observeQleverSdkNormalBuildGitHubOrigin,isQ
 import {collectNativeAdmissionOriginals,nativeOriginalsView,assertCollectedNativeOriginalCustody,compactCollectedNativeOriginals} from './native-original-collector';
 import type {CollectedNativeOriginalsCapability,CollectedNativeOriginalsView} from './native-originals';
 import type {CollectedArtifactMember} from './artifact-contract';
+import type {GitHubSourceBindingGroup} from './github-source-binding-groups';
 const fail=(reason:string):never=>{throw Error('QLever SDK original custody: '+reason);};
 const positive=(value:unknown):value is number=>Number.isSafeInteger(value)&&(value as number)>0;
 const digest=(body:Buffer)=>createHash('sha256').update(body).digest('hex');
@@ -99,15 +100,47 @@ export function inspectRoutedQleverSdkReference(final:any,native:{sourceSha:stri
  if(!final?.sdkArtifact||typeof final.sdkArtifact.sourceSha!=='string')return fail('routed SDK locator missing');
  return inspectQleverSdkArtifactReference(final.sdkArtifact,{sourceSha:final.sdkArtifact.sourceSha,runId:native.runId,runAttempt:native.runAttempt,target:native.target,sdkImage:final.sdkImage,sdkProfile:'module-bookworm-gcc12'});
 }
+/** Resolve the candidate job-chain contract for exact retained workflow bytes.
+ *
+ * The authority is the CURRENT consumer axis (`QLEVER_SDK_CONSUMER_GROUPS`), not the
+ * frozen SDK-execution producer axis: the execution groups are historical and stop at
+ * the published generation, while the consumer axis carries the reviewed contract for
+ * each current recipe.
+ *
+ * Semantics: identical contracts for the same hash are de-duplicated and accepted
+ * once; two contracts with the SAME hash but DIFFERENT meaning are rejected rather
+ * than resolved last-wins. Unknown workflow bytes yield undefined, so the caller
+ * fails closed. */
+export function resolveCandidateWorkflowContract(workflowSha:string){
+ return resolveCandidateWorkflowContractFrom(QLEVER_SDK_CONSUMER_GROUPS,workflowSha);
+}
+
+/** Pure data resolver over an explicit recipe axis, so the authority choice and the
+ * ambiguity rule are testable without a second registry. Production always passes
+ * the CURRENT consumer axis. */
+export function resolveCandidateWorkflowContractFrom(groups:readonly GitHubSourceBindingGroup[],workflowSha:string){
+ if(!/^[a-f0-9]{64}$/u.test(workflowSha))return fail('reviewed candidate workflow hash required');
+ const bySha=new Map<string,NonNullable<GitHubSourceBindingGroup['candidateServiceRelationship']>>();
+ for(const group of groups){
+  const contract=group.candidateServiceRelationship;
+  if(!contract||typeof contract.workflowSha256!=='string')continue;
+  const existing=bySha.get(contract.workflowSha256);
+  if(existing===undefined){bySha.set(contract.workflowSha256,contract);continue;}
+  // Same hash must mean the same thing. Anything else is ambiguity, not precedence.
+  if(!isDeepStrictEqual(existing,contract))fail('conflicting candidate service relationship contracts for one workflow hash');
+ }
+ return bySha.get(workflowSha);
+}
+
 export function qleverSdkArtifactAcquisition(nativeOriginals:CollectedNativeOriginalsCapability):Readonly<{reference:QleverSdkArtifactReference;coordinates:ArtifactAcquisitionInput;buildExecutionModel:'controller-readonly-v1'|'normal-build-v1'}>{
  const native=nativeOriginalsView(nativeOriginals);
  if(native&&isCandidateServiceImageGitHubOrigin(native.origin)){
   assertCollectedNativeOriginalCustody(nativeOriginals);const relation=inspectCandidateServiceRelationship(native);
   const workflowRows=githubOriginOriginals(native.origin).filter(row=>row.name==='workflow-source.original.json');if(workflowRows.length!==1)return fail('unique retained candidate workflow original required');const workflow=JSON.parse(workflowRows[0]!.data.toString());if(workflow.type!=='file'||workflow.encoding!=='base64'||workflow.path!=='.github/workflows/candidate.yml'||typeof workflow.content!=='string')return fail('actual retained candidate workflow bytes missing');const workflowSha=digest(Buffer.from(workflow.content.replace(/\s/gu,''),'base64'));
-  const contracts=QLEVER_SDK_EXECUTION_GROUPS.map(group=>group.candidateServiceRelationship).filter(contract=>contract?.workflowSha256===workflowSha);
-  if(contracts.length!==1)return fail('unique exact candidate service relationship contract required');
+  const contract=resolveCandidateWorkflowContract(workflowSha);
+  if(!contract)return fail('unique exact candidate service relationship contract required');
   const jobs=githubOriginOriginals(native.origin).filter(row=>/^jobs(?:-page-\d+)?\.original\.json$/u.test(row.name)).flatMap(row=>JSON.parse(row.data.toString()).jobs??[]);
-  return inspectQleverSdkAppAcquisition({sdkLocator:relation.sdkArtifact,target:relation.target,sdkImage:relation.sdkImage,native:native.originFacts,jobs,contract:contracts[0]!});
+  return inspectQleverSdkAppAcquisition({sdkLocator:relation.sdkArtifact,target:relation.target,sdkImage:relation.sdkImage,native:native.originFacts,jobs,contract});
  }
  if(!native||isQleverSdkGitHubOrigin(native.origin)||native.originFacts.workflowPath!=='.github/workflows/css-native-products.yml')return fail('actual routed native runtime originals required');
  assertCollectedNativeOriginalCustody(nativeOriginals);

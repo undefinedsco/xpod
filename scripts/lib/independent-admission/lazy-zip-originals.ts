@@ -88,6 +88,11 @@ export function lazyZipOriginals(input: {
   return Object.freeze({
     readRange(name:string,offset:number,length:number,budget?:OriginalReadBudget) { const row=rows.get(name);if(!row||!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(length)||length<0||length>limits.rangeBytes||offset>row.bytes-length)return fail('registered original 64KiB range required');const result=reader(name,budget).readRange(offset,length);const remaining=budget?.remainingMilliseconds();if(remaining!==undefined&&(!Number.isFinite(remaining)||remaining<=0))fail('observer original deadline');return result; },
     assertRetainedOriginal(){if(!same(fs.lstatSync(input.archivePath,{bigint:true}))||(!closed&&!same(fs.fstatSync(fd,{bigint:true}))))fail('retained archive identity changed');},
+    /** Re-assert that a registered member is still the live cached reader, WITHOUT
+     * reading bytes and without resetting counters. A member that was legitimately
+     * evicted is rehydrated through the SAME bounded projection path, which keeps the
+     * aggregate rehydration budget and every existing guard in effect. */
+    assertMemberCurrent(name:string,budget?:OriginalReadBudget){return reader(name,budget).assertCurrent();},
     close,
     cacheBytes() { return [...cache.values()].reduce((sum,value)=>sum+value.bytes,0); },
   });

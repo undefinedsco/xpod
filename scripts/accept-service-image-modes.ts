@@ -241,6 +241,13 @@ export type ManagedLocalLiveFailureStage = ManagedLocalLiveStage | 'preflight' |
 export const MANAGED_LOCAL_RUNTIME_REASONS = ['discovery-unreachable','discovery-http','service-status-http','service-status-invalid','css-api-not-running'] as const;
 export type ManagedLocalRuntimeReason = typeof MANAGED_LOCAL_RUNTIME_REASONS[number];
 
+/** Fixed Pod read/write failure reasons the child may report. They name which
+ * probe step failed; no URL, body, header, credential or message is carried. */
+export const MANAGED_LOCAL_POD_REASONS = ['put-http','get-http','content-mismatch','route-target-mismatch'] as const;
+export type ManagedLocalPodReason = typeof MANAGED_LOCAL_POD_REASONS[number];
+export const MANAGED_LOCAL_POD_PHASES = ['put-probe','get-probe','route-observation'] as const;
+export type ManagedLocalPodPhase = typeof MANAGED_LOCAL_POD_PHASES[number];
+
 /** Fixed Local-identity substeps the child may have entered. */
 export const MANAGED_LOCAL_IDENTITY_SUBSTAGES = ['route-discovery', 'managed-pod-claim', 'account-create', 'client-credential', 'session-login'] as const;
 export type ManagedLocalIdentitySubstage = typeof MANAGED_LOCAL_IDENTITY_SUBSTAGES[number];
@@ -258,11 +265,17 @@ export interface ManagedLocalLiveFailure {
   /** Fixed reason code for a runtime-phase failure, plus the observed HTTP status. */
   readonly runtimeReason?: ManagedLocalRuntimeReason;
   readonly runtimeHttpStatus?: number;
+  /** Fixed reason/phase of a Pod read/write failure, plus the observed HTTP status. */
+  readonly podReason?: ManagedLocalPodReason;
+  readonly podPhase?: ManagedLocalPodPhase;
+  readonly podHttpStatus?: number;
 }
 
 const LIVE_STAGE_SET = new Set<string>([...MANAGED_LOCAL_LIVE_STAGES, 'preflight', 'after-layers']);
 const IDENTITY_SUBSTAGE_SET = new Set<string>(MANAGED_LOCAL_IDENTITY_SUBSTAGES);
 const RUNTIME_REASON_SET = new Set<string>(MANAGED_LOCAL_RUNTIME_REASONS);
+const POD_REASON_SET = new Set<string>(MANAGED_LOCAL_POD_REASONS);
+const POD_PHASE_SET = new Set<string>(MANAGED_LOCAL_POD_PHASES);
 const LIVE_MODES = new Set<string>(['cloud', 'local', 'standalone']);
 
 /** Project the child's own report onto fixed enums only.
@@ -285,6 +298,11 @@ export function projectManagedLocalLiveFailure(report: any): ManagedLocalLiveFai
   // the runtime phase. Emitting them for any other stage would be a stale field.
   const runtimeReason = declared === 'runtime' ? report?.runtimeReason : undefined;
   const runtimeHttpStatus = declared === 'runtime' ? report?.runtimeHttpStatus : undefined;
+  // Pod diagnostics are meaningful ONLY for a podReadWrite failure; any leftover
+  // value on another stage is dropped rather than projected as if it were current.
+  const podReason = declared === 'podReadWrite' ? report?.podReason : undefined;
+  const podPhase = declared === 'podReadWrite' ? report?.podPhase : undefined;
+  const podHttpStatus = declared === 'podReadWrite' ? report?.podHttpStatus : undefined;
   const projected: ManagedLocalLiveFailure = Object.freeze({
     mode: report.mode,
     stage: declared as ManagedLocalLiveFailureStage,
@@ -296,6 +314,12 @@ export function projectManagedLocalLiveFailure(report: any): ManagedLocalLiveFai
       ? { runtimeReason: runtimeReason as ManagedLocalRuntimeReason } : {}),
     ...(Number.isSafeInteger(runtimeHttpStatus) && runtimeHttpStatus >= 100 && runtimeHttpStatus <= 599
       ? { runtimeHttpStatus } : {}),
+    ...(typeof podReason === 'string' && POD_REASON_SET.has(podReason)
+      ? { podReason: podReason as ManagedLocalPodReason } : {}),
+    ...(typeof podPhase === 'string' && POD_PHASE_SET.has(podPhase)
+      ? { podPhase: podPhase as ManagedLocalPodPhase } : {}),
+    ...(Number.isSafeInteger(podHttpStatus) && podHttpStatus >= 100 && podHttpStatus <= 599
+      ? { podHttpStatus } : {}),
   });
   return projected;
 }

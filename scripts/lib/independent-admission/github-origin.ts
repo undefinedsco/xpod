@@ -1,6 +1,6 @@
 import {inspectReviewedSdkOuterExecutorOrigin,type QleverSdkOuterExecutorOriginAuthority} from './qlever-sdk-outer-authority';
 import {QLEVER_SDK_WORKFLOW,QLEVER_SDK_WORKFLOW_SHA,QLEVER_SDK_EXECUTION_GROUPS,QLEVER_SDK_CONSUMER_GROUPS,QLEVER_LINUX_CONSUMER_GROUPS,QLEVER_READONLY_SDK_WORKFLOW_SHA,QLEVER_SERVICE_SDK_WORKFLOW_SHA,QLEVER_CURRENT_SDK_WORKFLOW_SHA,QLEVER_SDK_NORMAL_CANDIDATE_WORKFLOW_SHA,QLEVER_NORMAL_SOURCE_GROUPS} from './qlever-sdk-origin-policy';
-import {acquireOwnedSecondaryBindings,selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey,type GitHubSourceBindingGroup} from './github-source-binding-groups';
+import {acquireOwnedSecondaryBindings,selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey,type GitHubSourceBinding,type GitHubSourceBindingGroup} from './github-source-binding-groups';
 import {immutableGitContentsEndpoint,cachedGitContentsOriginal,retainGitContentsOriginal} from './github-immutable-original-cache';
 import {QLEVER_LINUX_SOURCE_BINDINGS} from './qlever-linux-origin-policy';
 import {QLEVER_OBSERVER_PATH,QLEVER_OBSERVER_V20,QLEVER_OBSERVER_V22,QLEVER_OBSERVER_V23,qleverObserverCompanionBindings} from './qlever-observer-policy';
@@ -1497,6 +1497,39 @@ export async function observeQleverSdkGitHubOrigin(input:ArtifactAcquisitionInpu
  nativeOrigins.add(observation);sdkOrigins.add(observation);return observation;
 }
 
+/** Pure derivation of reviewed candidate-workflow versions from a group axis.
+ *
+ * A group declares ONE workflow identity: if its roles name different candidate
+ * hashes the declaration is malformed, so it is rejected rather than unioned.
+ * Versions are de-duplicated across groups in first-appearance order. */
+export function normalWorkflowVersionsFrom(groups:readonly GitHubSourceBindingGroup[]):readonly string[]{
+ const versions:string[]=[];
+ const seen=new Set<string>();
+ for(const group of groups){
+  let declared:string|undefined;
+  for(const row of [...group.selectors,...(group.secondarySelectors??[]),
+   ...(group.secondarySelectorStages??[]).flat(),...group.sourceBindings] as readonly GitHubSourceBinding[]){
+   if(row.path!=='.github/workflows/candidate.yml')continue;
+   if(typeof row.sha256!=='string'||!/^[a-f0-9]{64}$/u.test(row.sha256))fail('reviewed normal workflow hash required');
+   if(declared!==undefined&&declared!==row.sha256)fail('conflicting candidate workflow versions inside one normal group');
+   declared=row.sha256;
+  }
+  if(declared===undefined)return fail('normal group must declare the candidate workflow bytes');
+  if(seen.has(declared))continue;
+  seen.add(declared);versions.push(declared);
+ }
+ if(!versions.length)return fail('reviewed normal workflow versions required');
+ return Object.freeze(versions);
+}
+
+/** The reviewed normal workflow versions. The published constant must stay an
+ * accepted member so an older reviewed workflow keeps working. */
+export function normalWorkflowVersions():readonly string[]{
+ const versions=normalWorkflowVersionsFrom(QLEVER_NORMAL_SOURCE_GROUPS);
+ if(!versions.includes(QLEVER_SDK_NORMAL_CANDIDATE_WORKFLOW_SHA))return fail('published normal workflow version missing from the normal axis');
+ return versions;
+}
+
 /** Normal-build-v1 SDK artifact origin. The ordinary candidate job is a real
  * GitHub job with real artifact custody but no ptrace/lease observer. This
  * policy binds the exact candidate workflow bytes, the ordinary SDK recipe
@@ -1505,12 +1538,18 @@ export async function observeQleverSdkGitHubOrigin(input:ArtifactAcquisitionInpu
 export async function observeQleverSdkNormalBuildGitHubOrigin(input:ArtifactAcquisitionInput,target:string,options:{token?:string;proofArtifact?:Readonly<{id:number;digest:string;name:string}>}={}):Promise<GitHubOriginObservation>{
  if(target!=='linux-x64')return fail('normal SDK build target differs');
  const steps=['Resolve the QLever build inputs identity','Capture normal SDK build proof and originals','Upload the exact normal SDK build proof'];
+ // Derive the reviewed versions ONCE and reuse the same array everywhere.
+ const versions=normalWorkflowVersions();
+ const normalJobName=()=> 'publish_qlever_runtime_sdk / publish';
  const observation=await observeGitHubOrigin(input,{token:options.token},{
-  workflowPath:'.github/workflows/candidate.yml',workflowSha256:QLEVER_SDK_NORMAL_CANDIDATE_WORKFLOW_SHA,
-  events:['push','workflow_dispatch'],requiredBranch:'staging',stagingPushWorkflowSha256s:[QLEVER_SDK_NORMAL_CANDIDATE_WORKFLOW_SHA],
+  workflowPath:'.github/workflows/candidate.yml',workflowSha256:versions[0]!,
+  events:['push','workflow_dispatch'],requiredBranch:'staging',stagingPushWorkflowSha256s:versions,
   allowRunningRun:true,allowCandidateProducerFailure:true,sourceMayDiffer:true,workflowRef:'run-head',target,
   artifactNames:row=>[`qlever-sdk-originals-service-trixie-${target}-${row.sourceSha}-${row.runId}-${row.runAttempt}`],
-  jobName:()=> 'publish_qlever_runtime_sdk / publish',
+  jobName:normalJobName,
+  reviewedWorkflowVersions:versions.map(workflowSha256=>({
+    workflowSha256,jobName:normalJobName,sourceBindingGroups:QLEVER_NORMAL_SOURCE_GROUPS,
+  })),
   requiredStep:steps[2]!,requiredSteps:steps,
   ...(options.proofArtifact?{additionalArtifact:options.proofArtifact}:{}),
   sourceBindingGroups:QLEVER_NORMAL_SOURCE_GROUPS,

@@ -66,6 +66,10 @@ type IdentitySubstage = 'route-discovery' | 'managed-pod-claim' | 'account-creat
  * the next run needs no guesswork, and carry no URL/message/body. */
 type RuntimeFailureReason = 'discovery-unreachable' | 'discovery-http' | 'service-status-http' | 'service-status-invalid' | 'css-api-not-running';
 
+/** Fixed reasons for the Pod read/write layer only. They name WHICH probe step
+ * failed and never carry a message, body, URL or credential. */
+type PodFailureReason = 'put-http' | 'get-http' | 'content-mismatch' | 'route-target-mismatch';
+
 const report: {
   mode: string;
   startedAt: string;
@@ -78,6 +82,11 @@ const report: {
   /** Which fixed runtime check failed, and the numeric HTTP status if one was observed. */
   runtimeReason?: RuntimeFailureReason;
   runtimeHttpStatus?: number;
+  /** Which fixed Pod probe step failed, with the integer HTTP status if observed. */
+  podReason?: PodFailureReason;
+  podHttpStatus?: number;
+  /** Fixed substep of the Pod layer that was actually entered. */
+  podPhase?: 'put-probe' | 'get-probe' | 'route-observation';
   /** Fixed Local-identity substep actually entered, or the failing one. */
   substage?: IdentitySubstage;
   webId?: string;
@@ -764,6 +773,74 @@ export async function probeIdentityDiscovery(origin: string, fetchImpl: typeof f
   } catch { return { ok: false }; }
 }
 
+/** Which transport carries the Pod LDP probe, extracted so the regression test drives
+ * the real production choice. The Pod uses the client-credentials session's exchanged
+ * DPoP transport; `main` calls this, so changing it changes what the test exercises. */
+export function podProbeTransport<T>(session: { fetch: T }): T {
+  return session.fetch;
+}
+
+/** The Pod LDP read/write the acceptance performs, as ONE production helper.
+ *
+ * `main` calls this with the exchanged DPoP session transport, so a regression test
+ * can drive the same code path instead of re-implementing it. The result is a fixed
+ * classification plus an integer status: no body, URL, credential or header value is
+ * ever returned, so a failure can be projected without leaking private material. */
+export interface PodProbeResult {
+  readonly ok: boolean;
+  readonly reason?: PodFailureReason;
+  readonly status?: number;
+  readonly detail: string;
+}
+
+export async function probePodReadWrite(input: {
+  fetch: typeof fetch;
+  probeUrl: string;
+  probeBody: string;
+  acceptId: string;
+  onPhase?: (phase: 'put-probe' | 'get-probe', canonical?: string) => void;
+}): Promise<PodProbeResult> {
+  input.onPhase?.('put-probe', input.probeUrl);
+  let put: Response;
+  try {
+    put = await input.fetch(input.probeUrl, {
+      method: 'PUT',
+      headers: { 'content-type': 'text/turtle' },
+      body: input.probeBody,
+    });
+  } catch {
+    return { ok: false, reason: 'put-http', detail: 'Pod PUT transport failed' };
+  }
+  if (!put.ok) {
+    // The fixed reason and the integer status ARE the evidence. No response body,
+    // header, challenge or URL is read here: any of them can echo private material
+    // into a report, and `redact` is not a closed whitelist.
+    return { ok: false, reason: 'put-http', status: put.status, detail: `Pod PUT HTTP ${put.status}` };
+  }
+  input.onPhase?.('get-probe', input.probeUrl);
+  let got: Response;
+  try {
+    got = await input.fetch(input.probeUrl, { headers: { accept: 'text/turtle' } });
+  } catch {
+    return { ok: false, reason: 'get-http', detail: 'Pod GET transport failed' };
+  }
+  // A broken response stream must be classified, not thrown: otherwise the failure
+  // escapes with an arbitrary implementation message instead of fixed facts.
+  let gotBody: string;
+  try {
+    gotBody = await got.text();
+  } catch {
+    return { ok: false, reason: 'get-http', status: got.status, detail: `Pod GET body read failed (HTTP ${got.status})` };
+  }
+  if (!got.ok) {
+    return { ok: false, reason: 'get-http', status: got.status, detail: `Pod GET HTTP ${got.status}` };
+  }
+  if (!gotBody.includes(input.acceptId)) {
+    return { ok: false, reason: 'content-mismatch', status: got.status, detail: 'Pod GET content mismatch' };
+  }
+  return { ok: true, status: got.status, detail: 'pod probe ok' };
+}
+
 async function main(): Promise<void> {
   report.stage = 'runtime';
   // checkServer() probes this origin's discovery endpoint and swallows transport
@@ -913,11 +990,12 @@ async function main(): Promise<void> {
   delete report.substage;
   report.stage = 'podReadWrite';
   // The Gateway refuses a DPoP-bound session for Pod-backed work
-  // (`caller_dpop_replay_unsupported`): the proof belongs to the caller and cannot be replayed.
-  // The applet answers that refusal with the caller's own Pod credential and retries once; the
-  // acceptance does the same with the credential this session already logged in with. It does not
-  // go through the page's on-demand capability: those helpers resolve controls against
-  // `window`, which a server-side acceptance does not have.
+  // (`caller_dpop_replay_unsupported`) for API calls that act on the caller's behalf. That is an
+  // API-layer refusal and does not change how this session authenticates directly to the Pod.
+  // The canary therefore probes the Pod with the DPoP session it already exchanged above.
+  // It does not go through the page's on-demand
+  // capability: those helpers resolve controls against `window`, which a server-side acceptance
+  // does not have.
   const sessionCredential = `sk-${Buffer.from(
     `${account.clientId}:${account.clientSecret}`,
     'utf8',
@@ -941,13 +1019,11 @@ async function main(): Promise<void> {
     async () => `Bearer ${sessionCredential}`,
     credentialTransport,
   );
-  // The Pod probe carries the account credential on the ROUTE-AWARE PLAIN transport, never
-  // through `session.fetch`: a DPoP session transport unconditionally overwrites any
-  // pre-existing Authorization header with its own token (solid-client-authn
-  // fetchFactory: "Any pre-existing Authorization header should be overriden"), so a
-  // credential set in `init` would never reach the Pod. This is the SAME factory that
-  // already does owner-scoped Pod work below, so there is only one credential transport.
-  const podCredentialFetch = createOwnerCredentialFetch(account, credentialTransport);
+  // The Pod probe reuses the client-credentials session and its route-aware
+  // transport. The `sk-` interface key is for Gateway API calls: the server decodes
+  // it, sends Basic credentials to the token endpoint and gets back an access token
+  // bound to a DPoP key, which is what authorizes Pod traffic here.
+  const podCredentialFetch = podProbeTransport(session);
 
   const probePath = `acceptance/${ACCEPT_ID}.ttl`;
   const probeUrl = new URL(probePath, account.podUrl).toString();
@@ -957,29 +1033,33 @@ async function main(): Promise<void> {
     `  xpod:id "${ACCEPT_ID}" .`,
     '',
   ].join('\n');
-  log('podReadWrite', { phase: 'put-probe', canonical: probeUrl });
-  const put = await podCredentialFetch(probeUrl, {
-    method: 'PUT',
-    headers: { 'content-type': 'text/turtle' },
-    body: probeBody,
+  // One production helper owns the Pod LDP exchange so the test exercises the same
+  // code `main` runs, rather than a parallel copy.
+  const probe = await probePodReadWrite({
+    fetch: podCredentialFetch,
+    probeUrl,
+    probeBody,
+    acceptId: ACCEPT_ID,
+    onPhase: (phase, canonical) => {
+      report.podPhase = phase;
+      log('podReadWrite', { phase, ...(canonical ? { canonical } : {}) });
+    },
   });
-  if (!put.ok) {
-    const challenge = put.headers.get('www-authenticate');
-    const body = await put.text().catch(() => '');
-    fail('podReadWrite', `PUT ${probePath} HTTP ${put.status}${challenge ? ` challenge=${redact(challenge)}` : ''}${body ? ` body=${redact(body)}` : ''}`);
-  }
-  log('podReadWrite', { phase: 'get-probe', canonical: probeUrl });
-  const got = await podCredentialFetch(probeUrl, { headers: { accept: 'text/turtle' } });
-  const gotBody = await got.text();
-  if (!got.ok || !gotBody.includes(ACCEPT_ID)) {
-    fail('podReadWrite', `GET ${probePath} HTTP ${got.status} mismatch`);
+  if (!probe.ok) {
+    report.podReason = probe.reason;
+    if (probe.status !== undefined) report.podHttpStatus = probe.status;
+    fail('podReadWrite', probe.detail);
   }
   const expectedProbeTarget = report.localRoute
     ? new URL(probeUrl.slice(report.localRoute.canonicalBaseUrl.length), report.localRoute.localBaseUrl).toString()
     : probeUrl;
   for (const method of ['PUT', 'GET']) {
     if (!localSolidTargets.some((target) => target.url === expectedProbeTarget && target.method === method)) {
-      fail('podReadWrite', `${method} canonical Pod request was not observed at ${expectedProbeTarget}`);
+      // Fixed classification: the canonical->local route was not preserved for this
+      // method. No URL is projected.
+      report.podPhase = 'route-observation';
+      report.podReason = 'route-target-mismatch';
+      fail('podReadWrite', `${method} canonical Pod request was not observed at the expected local target`);
     }
   }
   report.probeUrl = probeUrl;

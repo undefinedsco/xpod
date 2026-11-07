@@ -28,7 +28,6 @@ const ROOT=path.resolve(import.meta.dir,'../..');
 const CANDIDATE='.github/workflows/candidate.yml';
 const JOB='publish_qlever_runtime_sdk / publish';
 const STEPS=['Resolve the QLever build inputs identity','Capture normal SDK build proof and originals','Upload the exact normal SDK build proof'];
-const VERIFIER='scripts/lib/independent-admission/qlever-sdk-normal-build.ts';
 
 let serial=910000;
 const sha=(value:Buffer|string)=>createHash('sha256').update(value).digest('hex');
@@ -41,7 +40,7 @@ function scenario(options:{
   proofHeadSha?:string;
   proofCreatedAt?:string;
   omitProof?:boolean;
-  currentVerifier?:boolean;
+  currentSource?:boolean;
 }={}){
   const source=(++serial).toString(16).padStart(40,'0');
   const runId=serial;
@@ -76,7 +75,7 @@ function scenario(options:{
     else if(relative==='actions/workflows/7')body={id:7,path:CANDIDATE};
     else if(relative.startsWith('contents/')){
       const name=decodeURIComponent(relative.slice('contents/'.length));
-      const source=options.currentVerifier&&name===VERIFIER?fs.readFileSync(path.join(ROOT,name)):committed(name);
+      const source=options.currentSource?fs.readFileSync(path.join(ROOT,name)):committed(name);
       body={type:'file',path:name,encoding:'base64',content:source.toString('base64')};
     } else if(relative===`actions/artifacts/${artifactId}`)body=mainArtifact;
     else if(relative===`actions/artifacts/${proofId}`){
@@ -107,8 +106,8 @@ test('normal SDK observer reaches real origin validation with proofArtifact inst
   expect(githubOriginOriginals(observation).map(row=>row.name)).toContain('additional-artifact.original.json');
 });
 
-test('normal SDK observer selects the current verifier group for the future cold producer',async()=>{
-  const value=scenario({currentVerifier:true});
+test('normal SDK observer selects the current source group for the future cold producer',async()=>{
+  const value=scenario({currentSource:true});
   const observation=await value.observe();
   expect(githubOriginFacts(observation)?.runId).toBe(value.runId);
 });

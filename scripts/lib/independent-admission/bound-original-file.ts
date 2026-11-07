@@ -35,6 +35,10 @@ export function openBoundOriginalFile(file: string, reference: BoundOriginalRefe
     if (hash.digest('hex') !== reference.sha256 || !same(fs.fstatSync(fd)) || !same(fs.lstatSync(file))) fail('full original identity changed');
   } catch (error) { fs.closeSync(fd); throw error; }
   const check = () => { if (closed || !same(fs.fstatSync(fd)) || !same(fs.lstatSync(file))) fail('original revoked or changed'); };
+  /** Custody re-assertion WITHOUT reading a byte: the exact same closed/held-FD/path
+   * identity test `readRange` performs, plus the caller's remaining deadline. It does
+   * not touch readCalls/readBytes, so repeated checks cannot consume range budget. */
+  const assertCurrent = () => { checkBudget(); check(); };
   return Object.freeze({
     readRange(offset: number, length: number): Buffer {
       check();
@@ -46,6 +50,7 @@ export function openBoundOriginalFile(file: string, reference: BoundOriginalRefe
       while (used < length) { const count = fs.readSync(fd, bytes, used, length - used, offset + used); if (!count) fail('original range truncated'); used += count; }
       check(); return bytes;
     },
+    assertCurrent,
     close(): void { if (!closed) { closed = true; fs.closeSync(fd); } },
   });
 }
