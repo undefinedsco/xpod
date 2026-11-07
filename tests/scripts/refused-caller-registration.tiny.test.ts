@@ -10,7 +10,7 @@ import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as api} from '../../scripts/lib/
 import {CLI_SOURCE_VERSION_GROUPS as cli} from '../../scripts/lib/independent-admission/source-rules';
 import {selectGitHubSourceBindingGroup as select,sourceBindingKey,secondaryGitHubSourceBindingSelectors as secondary} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
-import {CURRENT_CANONICAL_SOURCE_ROWS, CURRENT_SOURCE_GROUP_COUNTS, completeObserved} from './source-binding-group.fixture';
+import {CURRENT_CANONICAL_SUFFIX, CURRENT_CANONICAL_SOURCE_ROWS, CURRENT_SOURCE_GROUP_COUNTS, completeObserved} from './source-binding-group.fixture';
 
 /** This module's ONLY authority is the actual git data at the published 9d02
  * commit plus the files on disk now. The fixture was captured from those blobs. */
@@ -208,7 +208,8 @@ test('the canonical path/hash closure still holds and the frozen 9d02 snapshot i
   'scripts/lib/independent-admission/qlever-sdk-normal-build.ts',
   'scripts/lib/normal-local-runtime-smoke-cases.json',
   'scripts/select-normal-sdk-proof.ts',
-  'tests/scripts/sdk70-remap-policy.test.ts']);;
+  'tests/scripts/sdk70-remap-policy.test.ts',
+  ...CURRENT_CANONICAL_SUFFIX].sort());
  expect(current.slice(0,483).map(row=>digest(row))).not.toEqual([]);
  // the published 483 row paths are all retained exactly once
  const live=new Set(current.map(row=>row.path));
@@ -285,7 +286,8 @@ test('published consumer binding rows are unchanged and the two new rows are exa
   'scripts/lib/independent-admission/qlever-sdk-normal-build.ts',
   'scripts/lib/normal-local-runtime-smoke-cases.json',
   'scripts/select-normal-sdk-proof.ts',
-  'tests/scripts/sdk70-remap-policy.test.ts']);;
+  'tests/scripts/sdk70-remap-policy.test.ts',
+  ...CURRENT_CANONICAL_SUFFIX].sort());
 });
 
 test('SDK90 CURRENT owned-input helper and changed core bytes bind exactly and tamper refuses',()=>{

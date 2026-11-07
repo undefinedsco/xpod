@@ -41,18 +41,29 @@ export type SourceGzipBlockIndex=Readonly<{schemaVersion:1;kind:'source-tar-gzip
 
 /** Controlled-only encoded input. Locations deliberately are not returned: tar
  * expanded offsets are never physical gzip offsets or ordinary raw locations. */
-export function createGzipBlockSourceReader(input:{archive:SourceTarReference;index:unknown;readRange(name:string,offset:number,length:number):Buffer;check():void}){
+/** Optional size profile for a caller that legitimately transports more than the
+ * shared source shard bound (the runtime whole-root capture). Defaults keep the
+ * ordinary source limits exactly as before. */
+export type SourceGzipSizeProfile=Readonly<{encodedBytes:number;expandedBytes:number}>;
+export function createGzipBlockSourceReader(input:{archive:SourceTarReference;index:unknown;readRange(name:string,offset:number,length:number):Buffer;check():void;sizeProfile?:SourceGzipSizeProfile}){
  const fail=(why:string):never=>{throw Error('Source gzip originals: '+why);};
  const need:(value:unknown,why:string)=>asserts value=(value,why)=>{if(!value)fail(why);};
  const supplied=input.index as any,ref=Object.freeze({...input.archive});input.check();
+ // Default profile is the unchanged shared source cap; only an explicit caller
+ // profile may raise it, and it is validated as positive safe integers first.
+ const profile=input.sizeProfile;
+ need(profile===undefined||(Number.isSafeInteger(profile.encodedBytes)&&profile.encodedBytes>0
+  &&Number.isSafeInteger(profile.expandedBytes)&&profile.expandedBytes>0),'bounded gzip size profile');
+ const encodedMaximum=profile?.encodedBytes??limits.shardBytes;
+ const expandedMaximum=profile?.expandedBytes??limits.shardBytes;
  // Detach mutable caller containers; this is a byte decoder, never an issuer.
  const index=supplied&&{...supplied,archive:supplied.archive&&{...supplied.archive},expanded:supplied.expanded&&{...supplied.expanded},blocks:Array.isArray(supplied.blocks)?supplied.blocks.map((row:any)=>row&&({...row})):supplied.blocks};
  const integer=(value:unknown):value is number=>typeof value==='number'&&Number.isSafeInteger(value)&&value>=0;
  need(index?.schemaVersion===1&&index.kind==='source-tar-gzip-block-index'&&Object.keys(index).sort().join(',')==='archive,blocks,expanded,kind,schemaVersion'&&index.archive&&Object.keys(index.archive).sort().join(',')==='bytes,path,sha256'&&index.archive.path===ref.path&&index.archive.bytes===ref.bytes&&index.archive.sha256===ref.sha256,'same encoded archive index');
- need(integer(ref.bytes)&&ref.bytes<=limits.shardBytes&&/^[a-f0-9]{64}$/u.test(ref.sha256)&&index.expanded&&Object.keys(index.expanded).sort().join(',')==='bytes,sha256'&&integer(index.expanded.bytes)&&index.expanded.bytes>0&&index.expanded.bytes<=limits.shardBytes&&/^[a-f0-9]{64}$/u.test(index.expanded.sha256),'expanded and retained shard bounds');
- need(Array.isArray(index.blocks)&&index.blocks.length>0&&index.blocks.length<=Math.ceil(limits.shardBytes/limits.rangeBytes),'gzip block count');
+ need(integer(ref.bytes)&&ref.bytes<=encodedMaximum&&/^[a-f0-9]{64}$/u.test(ref.sha256)&&index.expanded&&Object.keys(index.expanded).sort().join(',')==='bytes,sha256'&&integer(index.expanded.bytes)&&index.expanded.bytes>0&&index.expanded.bytes<=expandedMaximum&&/^[a-f0-9]{64}$/u.test(index.expanded.sha256),'expanded and retained shard bounds');
+ need(Array.isArray(index.blocks)&&index.blocks.length>0&&index.blocks.length<=Math.ceil(expandedMaximum/limits.rangeBytes),'gzip block count');
  let packedEnd=0,expandedEnd=0;
- for(let i=0;i<index.blocks.length;i++){input.check();const row=index.blocks[i];need(row&&Object.keys(row).sort().join(',')==='bytes,expandedBytes,expandedOffset,offset'&&[row.offset,row.bytes,row.expandedOffset,row.expandedBytes].every(integer)&&row.offset===packedEnd&&row.expandedOffset===expandedEnd&&row.bytes>=18&&row.bytes<=limits.rangeBytes+1024&&row.expandedBytes>0&&row.expandedBytes<=limits.rangeBytes&&(i===index.blocks.length-1||row.expandedBytes===limits.rangeBytes),'contiguous bounded gzip blocks');packedEnd+=row.bytes;expandedEnd+=row.expandedBytes;need(packedEnd<=ref.bytes&&expandedEnd<=limits.shardBytes,'gzip index aggregate bound');}
+ for(let i=0;i<index.blocks.length;i++){input.check();const row=index.blocks[i];need(row&&Object.keys(row).sort().join(',')==='bytes,expandedBytes,expandedOffset,offset'&&[row.offset,row.bytes,row.expandedOffset,row.expandedBytes].every(integer)&&row.offset===packedEnd&&row.expandedOffset===expandedEnd&&row.bytes>=18&&row.bytes<=limits.rangeBytes+1024&&row.expandedBytes>0&&row.expandedBytes<=limits.rangeBytes&&(i===index.blocks.length-1||row.expandedBytes===limits.rangeBytes),'contiguous bounded gzip blocks');packedEnd+=row.bytes;expandedEnd+=row.expandedBytes;need(packedEnd<=ref.bytes&&expandedEnd<=expandedMaximum,'gzip index aggregate bound');}
  need(packedEnd===ref.bytes&&expandedEnd===index.expanded.bytes,'exact gzip index closure');
  const packedHash=createHash('sha256'),expandedHash=createHash('sha256'),blockHashes:string[]=[];let complete=false,nextBlock=0,cachedIndex=-1,cached=Buffer.alloc(0);
  const decoded=(number:number)=>{input.check();if(cachedIndex===number)return cached;need(complete||number===nextBlock,'sequential encoded archive required');const row=index.blocks[number],packed=Buffer.alloc(row.bytes);

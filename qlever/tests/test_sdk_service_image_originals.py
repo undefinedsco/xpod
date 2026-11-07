@@ -390,4 +390,161 @@ class _RecordingBudget:
 class _NeverCalled:
  def __call__(self,*_a,**_k):raise AssertionError('transport must not be reached')
 
+def _runtime_temp():
+ import tempfile
+ root=Path(__file__).resolve().parents[2]/'.test-data'/'service-runtime-profile'
+ root.mkdir(parents=True,exist_ok=True)
+ return tempfile.TemporaryDirectory(dir=root)
+
+class _RuntimeTarFixture:
+ def _tar(self,entries):
+  """Build a minimal real tar in memory (no external tooling)."""
+  import io,tarfile
+  buf=io.BytesIO()
+  with tarfile.open(fileobj=buf,mode='w',format=tarfile.PAX_FORMAT) as tf:
+   for name,kind,payload,link in entries:
+    info=tarfile.TarInfo(name)
+    if kind=='dir':
+     info.type=tarfile.DIRTYPE;info.mode=0o755;tf.addfile(info)
+    elif kind=='file':
+     info.size=len(payload);info.mode=0o644;tf.addfile(info,io.BytesIO(payload))
+    elif kind=='sym':
+     info.type=tarfile.SYMTYPE;info.linkname=link;tf.addfile(info)
+    elif kind=='hard':
+     info.type=tarfile.LNKTYPE;info.linkname=link;tf.addfile(info)
+  return buf.getvalue()
+
+
+class RuntimeTarMemberProfile(_RuntimeTarFixture,unittest.TestCase):
+ """RC387: the real /app root is a whole installed tree - it carries hard-linked
+ package files and 121,665 members, far past the 50k package-archive default. The
+ scanner must model hardlinks as members and use the runtime member ceiling."""
+
+ def test_hardlink_members_are_modelled_not_rejected(self):
+  payload=b'package bytes\n'
+  raw=self._tar([('app','dir',b'',None),('app/a.js','file',payload,None),
+                 ('app/b.js','hard',b'','app/a.js')])
+  with _runtime_temp() as tmp:
+   path=Path(tmp)/'root.tar';path.write_bytes(raw)
+   members,digest,content=service.scan_runtime_tar(path,'/app','app',lambda:None)
+  kinds={r['type']:r for r in members}
+  self.assertIn('hardlink',kinds)
+  self.assertEqual(kinds['hardlink']['path'],'b.js')
+  self.assertEqual(kinds['hardlink']['target'],'app/a.js')
+  # a hardlink carries no payload, so content counts only the real file
+  self.assertEqual(content,len(payload))
+  self.assertEqual(kinds['file']['bytes'],len(payload))
+
+ def test_hardlink_target_must_stay_inside_the_archive_root(self):
+  raw=self._tar([('app','dir',b'',None),('app/x','hard',b'','../../etc/passwd')])
+  with _runtime_temp() as tmp:
+   path=Path(tmp)/'root.tar';path.write_bytes(raw)
+   with self.assertRaises(ValueError):
+    service.scan_runtime_tar(path,'/app','app',lambda:None)
+
+
+
+class RetainedUniverse(unittest.TestCase):
+ """RC387 R2: the retainer universe is per-instance and opt-in; the runtime capture
+ must reserve a real >128MB original instead of failing on a hardcoded 32*META cap."""
+ class Budget:
+  def __init__(self):self.used=[]
+  def check(self,cost=0):self.used.append(cost)
+
+ def test_default_universe_is_the_ordinary_32meta_control_cap(self):
+  with _runtime_temp() as tmp:
+   r=service.Retained(Path(tmp),self.Budget())
+   self.assertEqual(r.universe,32*service.META)
+   self.assertEqual(service.META,service.LIMITS['metadataBytes'])
+   with self.assertRaises(ValueError):
+    r.reserve(32*service.META+1)
+
+ def test_runtime_universe_admits_the_real_first_root_reservation(self):
+  with _runtime_temp() as tmp:
+   r=service.Retained(Path(tmp),self.Budget(),service.RUNTIME_ENCODED_LIMIT)
+   self.assertEqual(r.universe,service.LIMITS['packedBytes'])
+   # ~356MB share from shared_runtime_cp_bound must actually be reservable.
+   share=service.shared_runtime_cp_bound(type('R',(),{'total':0})(),2)
+   self.assertGreater(share,32*service.META)
+   held=r.reserve(share+service.RUNTIME_STAGE_OVERHEAD)
+   self.assertEqual(held,share+service.RUNTIME_STAGE_OVERHEAD)
+
+ def test_runtime_universe_still_bounded_and_save_defaults_to_metadata(self):
+  with _runtime_temp() as tmp:
+   r=service.Retained(Path(tmp),self.Budget(),service.RUNTIME_ENCODED_LIMIT)
+   with self.assertRaises(ValueError):
+    r.reserve(service.RUNTIME_ENCODED_LIMIT+1)
+   # ordinary save keeps the 4 MiB metadata default even on a runtime run
+   payload=b'x'*(service.META+1)
+   with self.assertRaises(ValueError):
+    r.save('control.json',payload)
+   index=r.save('runtime-index.json',payload,maximum=service.RUNTIME_INDEX_LIMIT)
+   self.assertEqual(index['bytes'],len(payload))
+   self.assertEqual((Path(tmp)/index['path']).read_bytes(),payload)
+   ref=r.save('control.json',b'{}')
+   self.assertEqual(ref['bytes'],2)
+
+ def test_settle_uses_the_instance_universe_and_maximum_map(self):
+  with _runtime_temp() as tmp:
+   out=Path(tmp).resolve();body=b'original bytes';name='stages/x/stdout.raw'
+   (out/name).parent.mkdir(parents=True);(out/name).write_bytes(body)
+   import hashlib
+   ref=dict(path=name,bytes=len(body),sha256=hashlib.sha256(body).hexdigest())
+   r=service.Retained(out,self.Budget(),service.RUNTIME_ENCODED_LIMIT)
+   # settle() registers the path itself; an already-registered path is a duplicate.
+   reserved=r.reserve(len(body))
+   r.settle(reserved,[ref],{name:service.RUNTIME_ENCODED_LIMIT})
+   self.assertEqual(r.refs[name],ref)
+   self.assertEqual(r.total,len(body))   # reservation tightened to actual bytes
+   again=r.reserve(len(body))
+   with self.assertRaises(ValueError):
+    r.settle(again,[ref],{name:service.RUNTIME_ENCODED_LIMIT})
+   # a maximum above the instance universe is refused
+   r2=service.Retained(out,self.Budget())
+   other='stages/y/stdout.raw';(out/other).parent.mkdir(parents=True);(out/other).write_bytes(b'z')
+   import hashlib as _h
+   with self.assertRaises(ValueError):
+    r2.settle(0,[dict(path=other,bytes=1,sha256=_h.sha256(b'z').hexdigest())],
+              {other:service.RUNTIME_ENCODED_LIMIT})
+
+
+class RuntimeIndexAndHardlinkGuard(_RuntimeTarFixture,unittest.TestCase):
+
+
+ def _scan(self,entries):
+  raw=self._tar(entries)
+  with _runtime_temp() as tmp:
+   path=Path(tmp)/'root.tar';path.write_bytes(raw)
+   return service.scan_runtime_tar(path,'/app','app',lambda:None)
+
+ def test_real_hardlink_to_prior_file_is_accepted_with_raw_target(self):
+  members,_,content=self._scan([('app','dir',b'',None),
+                                ('app/a.js','file',b'data',None),
+                                ('app/b.js','hard',b'','app/a.js')])
+  hard=[m for m in members if m['type']=='hardlink'][0]
+  self.assertEqual(hard['target'],'app/a.js')      # truthful raw header string
+  self.assertEqual(set(hard),{'path','type','mode','bytes','target'})
+  self.assertEqual(content,4)
+
+ def test_hardlink_to_prior_hardlink_resolves_to_its_file(self):
+  members,_,_=self._scan([('app','dir',b'',None),
+                          ('app/a.js','file',b'data',None),
+                          ('app/b.js','hard',b'','app/a.js'),
+                          ('app/c.js','hard',b'','app/b.js'),
+                          ('app/d.js','hard',b'','app/c.js')])
+  self.assertEqual(len([m for m in members if m['type']=='hardlink']),3)
+  self.assertTrue(all('resolved' not in m for m in members))
+
+ def test_hardlink_negative_cases_are_refused(self):
+  neg=[
+   [('app','dir',b'',None),('app/other/a.js','file',b'd',None),('app/b.js','hard',b'','other/a.js')],   # outside root
+   [('app','dir',b'',None),('app/b.js','hard',b'','app/missing.js')],                              # missing
+   [('app','dir',b'',None),('app/d','dir',b'',None),('app/b.js','hard',b'','app/d')],               # directory
+   [('app','dir',b'',None),('app/s','sym',b'','app/x'),('app/b.js','hard',b'','app/s')],            # symlink target
+   [('app','dir',b'',None),('app/a.js','file',b'd',None),('app/b.js','hard',b'','app/../app/a.js')],# traversal
+  ]
+  for entries in neg:
+   with self.assertRaises(ValueError):
+    self._scan(entries)
+
 if __name__=='__main__':unittest.main()

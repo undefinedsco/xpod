@@ -3073,5 +3073,29 @@ const SDK107_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK106_GROUP,
     sha256:row.path==='qlever/scripts/sdk-service-image-originals.py'?QLEVER_RC386_IMAGES_HASH
       :row.path==='qlever/scripts/sdk-service-abi-source-custody.py'?QLEVER_RC386_CUSTODY_HASH:row.sha256}))),
 });
-export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP]);
-export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP]);
+const QLEVER_RC387_IMAGES_HASH='cf7dde3024e10d50ae949c43b5f5823ec1e7456b9b1beab24b04d1dcd7dca19e';
+const QLEVER_RC387_STREAM_HASH='0a1ff50c0002f8cfb89f20c4d0efdbe35694a7e25ce6c36b76781bccaa4ea700';
+const QLEVER_RC387_TAR_HASH='c791cdca95344b059b192594a4d5c3661ad25ab54157061ebcb001b1c5c7921b';
+/** RC387 (APPEND-ONLY, SDK108 / Linux109).
+ *
+ * `sdk-service-image-originals.py` already owns stage index 9 of 15 plus a
+ * sourceBinding, so its new bytes are rebound IN PLACE (a redundant stage would
+ * request a role the group already owns and break never-future-GET).
+ * `source-original-tar.ts` is an already-owned sourceBinding-only row, so it is
+ * rebound in place. `candidate-service-runtime-artifact.ts` is NOT owned by the SDK
+ * axis at all (it belongs to the consumer/CI axes), so it is deliberately absent
+ * here — registering it would invent a role the group never had.
+ * `qlever/scripts/sdk-service-runtime-stream.py` is a genuinely NEW canonical path
+ * with no prior role, so it is APPENDED to sourceBindings exactly once.
+ * Every other row, all 15 inherited stages and the relationship stay unchanged. */
+const SDK108_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK107_GROUP,
+  secondarySelectorStages:Object.freeze((SDK107_GROUP.secondarySelectorStages??[]).map(stage=>
+    Object.freeze(stage.map(row=>Object.freeze({...row,
+      sha256:row.path==='qlever/scripts/sdk-service-image-originals.py'?QLEVER_RC387_IMAGES_HASH:row.sha256}))))),
+  sourceBindings:Object.freeze([...SDK107_GROUP.sourceBindings.map(row=>Object.freeze({...row,
+    sha256:row.path==='qlever/scripts/sdk-service-image-originals.py'?QLEVER_RC387_IMAGES_HASH
+      :row.path==='scripts/lib/independent-admission/source-original-tar.ts'?QLEVER_RC387_TAR_HASH:row.sha256})),
+    Object.freeze({path:'qlever/scripts/sdk-service-runtime-stream.py',sha256:QLEVER_RC387_STREAM_HASH})]),
+});
+export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP]);
+export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP]);

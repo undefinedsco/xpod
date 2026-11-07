@@ -9,7 +9,7 @@ import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as api} from '../../scripts/lib/
 import {CLI_SOURCE_VERSION_GROUPS as cli} from '../../scripts/lib/independent-admission/source-rules';
 import {selectGitHubSourceBindingGroup as select,sourceBindingKey as key} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
-import {CURRENT_CANONICAL_SOURCE_ROWS, CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
+import {CURRENT_CANONICAL_SUFFIX, CURRENT_CANONICAL_SOURCE_ROWS, CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
 
 /** Authority is the actual working tree plus the frozen f803 published fixture.
  * No serialized approval boolean is consulted anywhere in this file. */
@@ -99,7 +99,8 @@ test('the frozen f803 snapshot is the published canonical bytes and the moving c
     // RC383 appended the candidate run-state helper; RC384 appends the declared
     // test-scratch declaration. Every earlier row keeps its published position.
     'scripts/lib/independent-admission/candidate-run-state.ts',
-    'packages/xpod-afs/.npmignore']);
+    'packages/xpod-afs/.npmignore',
+    ...CURRENT_CANONICAL_SUFFIX]);
   expect(new Set(current.map(row => row.path)).size).toBe(current.length);
 });
 
