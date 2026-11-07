@@ -3051,5 +3051,27 @@ const SDK106_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK105_GROUP,
     workflowSha256:QLEVER_SDK_NORMAL_CANDIDATE_WORKFLOW_HASH_RC385,
   })}:{}),
 });
-export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP]);
-export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP]);
+const QLEVER_RC386_IMAGES_HASH='ca95d420244405b61e1bab3763528c01b9f6a031ea2cbed45b0a92d80ff3167e';
+const QLEVER_RC386_CUSTODY_HASH='9173161f3f9a649e4ce503326b4262d8d8dc9fbef7a758b9146cb5ff2b372139';
+/** RC386 (APPEND-ONLY, SDK107 / Linux108). The ABI helper-custody fix changes
+ * `sdk-service-image-originals.py` and `sdk-service-abi-source-custody.py`.
+ *
+ * In SDK106 `sdk-service-image-originals.py` ALREADY holds a real
+ * secondarySelectorStage row (stage index 9 of 15) plus a sourceBinding, so the
+ * existing stage discriminates the new bytes and must simply be rebound - adding a
+ * redundant stage would request a role the group already owns and break the
+ * never-future-GET contract. `sdk-service-abi-source-custody.py` is a
+ * sourceBinding-only row, so it is rebound in place.
+ *
+ * Every other row and all 15 inherited stages keep their exact bytes; SDK106's entire
+ * prefix is frozen, and the bound producer-regression fixture hash is untouched. */
+const SDK107_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK106_GROUP,
+  secondarySelectorStages:Object.freeze((SDK106_GROUP.secondarySelectorStages??[]).map(stage=>
+    Object.freeze(stage.map(row=>Object.freeze({...row,
+      sha256:row.path==='qlever/scripts/sdk-service-image-originals.py'?QLEVER_RC386_IMAGES_HASH:row.sha256}))))),
+  sourceBindings:Object.freeze(SDK106_GROUP.sourceBindings.map(row=>Object.freeze({...row,
+    sha256:row.path==='qlever/scripts/sdk-service-image-originals.py'?QLEVER_RC386_IMAGES_HASH
+      :row.path==='qlever/scripts/sdk-service-abi-source-custody.py'?QLEVER_RC386_CUSTODY_HASH:row.sha256}))),
+});
+export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP]);
+export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP]);

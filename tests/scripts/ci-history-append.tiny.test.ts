@@ -26,6 +26,10 @@ const FROZEN_CI204='800f39a26c83e6cdd81fc1a9ce85069a7d8dbe7c4f6ee9ff5dc26ff06d25
 // captured from the real snapshot, NOT normalised live rows.
 const FROZEN_CI205='796fff7d5f284698609b6faa834012147c0d5b5ed37317b81a5fbe6bf256393b';
 const FROZEN_CI206='d3374556a5aed612b5f32e696cba2c91b192248e5c68d0269e02fe6a50d9d4d0';
+// CI207/CI208 whole-group aggregates captured from the authoritative 45dbc3af
+// baseline (rc386-published-baseline-private). RC386 must never move them.
+const FROZEN_CI207='0e06bdf1a54dbfe4567a290064503eb9493bbdd68ec1be6d5ce725aeb7d83740';
+const FROZEN_CI208='ebf1f2db17aa7520a92285088d6da103662304eada8d3a4e1d32b62a96deb35e';
 const rowsOf=(g:any)=>{const o:any[]=[];for(const k of ['selectors','secondarySelectors','secondarySelectorStages','sourceBindings']){
   const v=g[k]??[];o.push(...(k==='secondarySelectorStages'?v.flat():v));}return o;};
 const pairOf=(g:any)=>new Map(rowsOf(g).map((r:any)=>[r.path+'|'+(r.ref??''),r.sha256]));
@@ -48,17 +52,20 @@ test('CI197/CI198 are FROZEN to their exact 1a01 values, not rebuilt live',()=>{
   expect(current1a01.ci198).toBe('2d7a4f3001bfe2869401748166444d6be149b398617a7a6a20855786206b7dcc');
 });
 
-test('exactly ten NEW variants are appended, and the shared count reflects 208',()=>{
+test('exactly twelve NEW variants are appended, and the shared count reflects 210',()=>{
   // RC381 added CI199/200 (origin fix); RC382 appended CI201/202 (workspace-build
   // replay identity repair); RC383 appended CI203/204 (candidate queued-run state);
   // RC384 appended CI205/206 (producer test-scratch boundary); RC385 appended
-  // CI207/208. CI195..CI206 are all frozen published history.
-  expect(CI_CONSUMER_SOURCE_GROUPS.length).toBe(208);
-  expect(CURRENT_SOURCE_GROUP_COUNTS.ci).toBe(208);
-  // The RC384 pair is now historical too: freeze it rather than letting a later
-  // append re-bind it.
+  // CI207/208; RC386 appended CI209/210 (ABI helper custody). CI195..CI208 are all
+  // frozen published history.
+  expect(CI_CONSUMER_SOURCE_GROUPS.length).toBe(210);
+  expect(CURRENT_SOURCE_GROUP_COUNTS.ci).toBe(210);
+  // The RC384 and RC385 pairs are now historical: freeze them rather than letting a
+  // later append re-bind them.
   expect(sha(CI_CONSUMER_SOURCE_GROUPS[204]!)).toBe(FROZEN_CI205);
   expect(sha(CI_CONSUMER_SOURCE_GROUPS[205]!)).toBe(FROZEN_CI206);
+  expect(sha(CI_CONSUMER_SOURCE_GROUPS[206]!)).toBe(FROZEN_CI207);
+  expect(sha(CI_CONSUMER_SOURCE_GROUPS[207]!)).toBe(FROZEN_CI208);
   // CI203/CI204 are frozen at the exact whole-group aggregates captured from the
   // real 9bd snapshot. The RC384 append must never move them, exactly like
   // CI195/CI196 above.
@@ -87,13 +94,13 @@ test('CI199/CI200 are FROZEN to the true-928 anchors and are no longer live',()=
   }
 });
 
-test('every non-run-head row of the CURRENT pair CI207/CI208 equals real source bytes',()=>{
+test('every non-run-head row of the CURRENT pair CI209/CI210 equals real source bytes',()=>{
   // Only explicitly run-head rows are runtime-owned; everything else must match disk.
-  for(const index of [206,207]){
+  for(const index of [208,209]){
     for(const row of rowsOf(CI_CONSUMER_SOURCE_GROUPS[index]!)){
       if(row.ref==='run-head') continue;            // runtime-owned namespace
-      // CI207/CI208 are CURRENT groups built from live anchors: unlike the frozen
-      // CI195..CI206 pairs, EVERY row - including github-origin.ts, the policy
+      // CI209/CI210 are CURRENT groups built from live anchors: unlike the frozen
+      // CI195..CI208 pairs, EVERY row - including github-origin.ts, the policy
       // self-row and the canonical row - must equal today's disk. There is no
       // fixed product-origin pin left in the current pair.
       expect(row.sha256).toBe(disk(row.path));
@@ -115,18 +122,23 @@ test('consumer101 and CI205/CI206 are FROZEN whole-group history, not live',()=>
   // ci.aggregates[204]/[205]. Whole-group hashes, so a rewritten row is caught
   // without normalising the controller rows these snapshots already pin.
   const FROZEN_CONSUMER101='3f019d13f2463af02b1f21fb0613e56a2849489f0a0e545aa6df218a417ca48d';
-  expect(CONSUMER_SOURCE_GROUPS.length).toBe(102);
+  // RC385's consumer102 is frozen at the authoritative 45dbc3af aggregate.
+  const FROZEN_CONSUMER102='b71fce5ee9b536b860038fe3d65de27d2ab021c2088ed716bcba0b3bf63434d2';
+  expect(CONSUMER_SOURCE_GROUPS.length).toBe(103);
   expect(sha(CONSUMER_SOURCE_GROUPS[100]!)).toBe(FROZEN_CONSUMER101);
+  expect(sha(CONSUMER_SOURCE_GROUPS[101]!)).toBe(FROZEN_CONSUMER102);
   expect(sha(CI_CONSUMER_SOURCE_GROUPS[204]!)).toBe(FROZEN_CI205);
   expect(sha(CI_CONSUMER_SOURCE_GROUPS[205]!)).toBe(FROZEN_CI206);
-  // The current pair is the LAST two, and it is NOT equal to the frozen pair.
-  expect(sha(CI_CONSUMER_SOURCE_GROUPS[206]!)).not.toBe(FROZEN_CI205);
-  expect(sha(CI_CONSUMER_SOURCE_GROUPS[207]!)).not.toBe(FROZEN_CI206);
-  expect(CURRENT_SOURCE_GROUP_COUNTS.consumer).toBe(102);
+  // The RC385 pair is frozen too; the current pair is the LAST two and differs.
+  expect(sha(CI_CONSUMER_SOURCE_GROUPS[206]!)).toBe(FROZEN_CI207);
+  expect(sha(CI_CONSUMER_SOURCE_GROUPS[207]!)).toBe(FROZEN_CI208);
+  expect(sha(CI_CONSUMER_SOURCE_GROUPS[208]!)).not.toBe(FROZEN_CI207);
+  expect(sha(CI_CONSUMER_SOURCE_GROUPS[209]!)).not.toBe(FROZEN_CI208);
+  expect(CURRENT_SOURCE_GROUP_COUNTS.consumer).toBe(103);
 });
 
-test('real resolver picks CI208 for current bytes and refuses an old-origin mix',()=>{
-  const last=CI_CONSUMER_SOURCE_GROUPS[207]!;
+test('real resolver picks CI210 for current bytes and refuses an old-origin mix',()=>{
+  const last=CI_CONSUMER_SOURCE_GROUPS[209]!;
   const current=new Map(completeObserved(CI_CONSUMER_SOURCE_GROUPS,last) as Map<string,string>);
   for(const key of [...current.keys()]) current.set(key,disk(key.split(':').slice(1).join(':')));
   expect(selectGitHubSourceBindingGroup(CI_CONSUMER_SOURCE_GROUPS,current)).toBe(last);

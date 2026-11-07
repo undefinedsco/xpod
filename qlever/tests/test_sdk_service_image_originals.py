@@ -7,6 +7,110 @@ CID='c'*64
 NAME='xpod-service-output-'+'d'*32
 NONCE='d'*32
 CONFIG='sha256:'+'b'*64
+class AbiCustodyWiring(unittest.TestCase):
+ """RC386: the capture handed 15 ABI helper roles to Custody() while HELPERS held 10.
+ The producer now reads the helper inventory as DATA from the custody source (ast
+ literal_eval, never exec/import), so a second role->path table cannot drift. These
+ tests construct the REAL Custody with real helper bytes and prove both negatives. """
+ def _custody(self):
+  spec=importlib.util.spec_from_file_location('abi_custody',HERE/'sdk-service-abi-source-custody.py')
+  module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+  return module
+
+ def _fixture(self):
+  """Real source tree, retained bodies and computed Git blob OIDs for every helper."""
+  import tempfile
+  custody=self._custody();root=HERE.parents[1]
+  base=root/'.test-data/service-abi-custody-ctor';base.mkdir(parents=True,exist_ok=True)
+  tmp=tempfile.TemporaryDirectory(dir=base);src=Path(tmp.name).resolve()
+  out=src/'out';out.mkdir();refs={};rows={}
+  shared=root/'scripts/lib/module-artifact-limits.json'
+  target=src/'scripts/lib/module-artifact-limits.json';target.parent.mkdir(parents=True,exist_ok=True)
+  target.write_bytes(shared.read_bytes())
+  for role,relative in custody.HELPERS.items():
+   raw=(root/relative).read_bytes()
+   path=src/relative;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(raw)
+   oid=hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()
+   ref=dict(path='body-'+role+'.original.json',bytes=len(raw),
+            sha256=hashlib.sha256(raw).hexdigest())
+   (out/ref['path']).write_bytes(raw);refs[ref['path']]=ref
+   rows[role]=dict(path=relative,gitBlobOid=oid,body=ref)
+  class Budget:
+   def check(self,_seconds):return None
+  retained=types.SimpleNamespace(refs=refs,out=out,budget=Budget())
+  return custody,tmp,src,rows,retained
+
+ def test_real_custody_constructor_accepts_the_complete_inventory(self):
+  custody,tmp,src,rows,retained=self._fixture()
+  try:
+   value=custody.Custody(src,rows,retained)
+   self.assertEqual(set(value.modules),set(custody.HELPERS))
+   self.assertEqual(len(value.modules),15)
+   value.close()
+  finally:tmp.cleanup()
+
+ def test_missing_row_raises_in_the_real_constructor(self):
+  custody,tmp,src,rows,retained=self._fixture()
+  try:
+   for drop in ('declarations','source_custody','seed','role_collector','elf_module'):
+    bad=dict(rows);bad.pop(drop)
+    with self.assertRaises(ValueError):
+     custody.Custody(src,bad,retained)
+  finally:tmp.cleanup()
+
+ def test_extra_row_raises_in_the_real_constructor(self):
+  custody,tmp,src,rows,retained=self._fixture()
+  try:
+   bad=dict(rows);bad['not_a_real_helper']=dict(rows['seed'])
+   with self.assertRaises(ValueError):
+    custody.Custody(src,bad,retained)
+  finally:tmp.cleanup()
+
+ def test_tampered_helper_body_raises_in_the_real_constructor(self):
+  custody,tmp,src,rows,retained=self._fixture()
+  try:
+   bad=dict(rows);tampered=dict(bad['seed']);tampered['gitBlobOid']='0'*40
+   bad['seed']=tampered
+   with self.assertRaises(ValueError):
+    custody.Custody(src,bad,retained)
+  finally:tmp.cleanup()
+
+ def test_producer_inventory_comes_from_the_custody_source_by_data_only_read(self):
+  custody=self._custody()
+  self.assertEqual(service.SERVICE_ABI_HELPER_PATHS,dict(custody.HELPERS))
+  self.assertEqual(len(custody.HELPERS),15)
+  for required in ('role_commands','role_session','role_collector',
+                   'read_budget_module','elf_module'):
+   self.assertIn(required,custody.HELPERS)
+
+ def test_data_reader_rejects_nonliteral_or_duplicate_helpers_without_executing(self):
+  payload='\n'.join([
+   'import sys',
+   'sys.modules["xpod_should_not_run"]="executed"',
+   'executed_flag=True',
+   'HELPERS={"a":"qlever/scripts/x.py"}',
+   'HELPERS={"b":"qlever/scripts/y.py"}',
+  ])
+  with self.assertRaises(ValueError):
+   service.declared_abi_helpers(payload)
+  self.assertNotIn('xpod_should_not_run',__import__('sys').modules)
+  # A pure side effect with a valid single dict must also not run.
+  import tempfile
+  base=HERE.parents[1]/'.test-data/service-abi-data-reader';base.mkdir(parents=True,exist_ok=True)
+  with tempfile.TemporaryDirectory(dir=base) as directory:
+   marker=Path(directory)/'xpod_abi_should_not_exist'
+   tricky='open(%r,"w").write("x")\nHELPERS={"a":"qlever/scripts/x.py"}' % str(marker)
+   helpers=service.declared_abi_helpers(tricky)
+   self.assertEqual(helpers,{'a':'qlever/scripts/x.py'})
+   self.assertFalse(marker.exists(),'the data reader must never execute the source')
+  # Non-literal values and bad role/path shapes are refused.
+  for bad in ['HELPERS=dict(a="qlever/scripts/x.py")',
+              'HELPERS={"A":"qlever/scripts/x.py"}',
+              'HELPERS={"a":"/etc/passwd"}',
+              'HELPERS={"a":"qlever/scripts/x.py","a":"qlever/scripts/y.py"}']:
+   with self.assertRaises(ValueError,msg=bad):
+    service.declared_abi_helpers(bad)
+
 class ServiceOriginals(unittest.TestCase):
  def setUp(self):
   # Deterministic source identity for the registry fixtures that do not create a git repo.
