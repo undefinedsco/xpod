@@ -35,3 +35,97 @@ test('shared gzip reader verifies full bytes before random access and detaches i
  reader.assertComplete();const first=reader.readRange(0,64),saved=Buffer.from(first);first.fill(0);expect(reader.readRange(0,64)).toEqual(saved);
  reader.readRange(reader.expanded.bytes-1,1);f.packed[0]^=1;expect(()=>reader.readRange(0,1)).toThrow('held gzip block bytes changed');
 }));
+
+/**
+ * RC387 runtime profile: a real whole /app root decodes to 568,774,144 bytes, which is
+ * above the shared source shard bound (512 MiB) that this reader uses by default. The
+ * reader gains an OPTIONAL profile so only the runtime caller may pass the larger
+ * central limits. The default path must still reject.
+ *
+ * No giant allocation: a highly compressible 600 MiB payload becomes a small gzip, and
+ * it is produced block-by-block with the real gzip codec, so the geometry and digests
+ * are genuine.
+ */
+function profileFixture(expectedBytes: number) {
+  const base = path.resolve(import.meta.dir, '../../.test-data');
+  fs.mkdirSync(base, { recursive: true });
+  const root = fs.mkdtempSync(path.join(base, 'gzip-profile-'));
+  try {
+    const code = [
+      'import gzip, hashlib, json, pathlib, sys',
+      'r = pathlib.Path(sys.argv[1]); size = int(sys.argv[2]); chunk = 65536',
+      'blocks = []; packed_total = 0; expanded_off = 0',
+      'body = bytes(chunk)',
+      'out = open(r / "packed.bin", "wb")',
+      'while expanded_off < size:',
+      '    take = min(chunk, size - expanded_off)',
+      '    block = gzip.compress(body[:take], compresslevel=6, mtime=0)',
+      '    blocks.append(dict(offset=packed_total, bytes=len(block), expandedOffset=expanded_off, expandedBytes=take))',
+      '    out.write(block); packed_total += len(block); expanded_off += take',
+      'out.close()',
+      'packed = (r / "packed.bin").read_bytes()',
+      'di = hashlib.sha256()',
+      'for i in range(size // chunk): di.update(bytes(chunk))',
+      'rem = size % chunk',
+      'if rem: di.update(bytes(rem))',
+      'index = dict(schemaVersion=1, kind="source-tar-gzip-block-index",',
+      '    archive=dict(path="stages/x/stdout.raw", bytes=len(packed), sha256=hashlib.sha256(packed).hexdigest()),',
+      '    expanded=dict(bytes=size, sha256=di.hexdigest()), blocks=blocks)',
+      '(r / "index.json").write_text(json.dumps(index))',
+    ].join('\n');
+    const result = spawnSync('/usr/bin/python3', ['-I', '-S', '-B', '-c', code, root, String(expectedBytes)], { encoding: 'utf8' });
+    if (result.status !== 0) throw Error(result.stderr);
+    return {
+      root,
+      packed: fs.readFileSync(path.join(root, 'packed.bin')),
+      index: JSON.parse(fs.readFileSync(path.join(root, 'index.json'), 'utf8')),
+    };
+  } catch (error) { fs.rmSync(root, { recursive: true, force: true }); throw error; }
+}
+
+test('the runtime profile accepts a decoded archive above the shared source cap and hashes the real bytes', () => {
+  // 600 MiB decoded: above limits.shardBytes, below limits.expandedBytes.
+  const decoded = 600 * 1024 * 1024;
+  const value = profileFixture(decoded);
+  try {
+    const archive = value.index.archive;
+    const make = (sizeProfile?: any) => createGzipBlockSourceReader({
+      archive, index: value.index,
+      readRange: (_name, offset, length) => value.packed.subarray(offset, offset + length),
+      check: () => {},
+      ...(sizeProfile ? { sizeProfile } : {}),
+    });
+    // Default (shared source 512 MiB) MUST still reject this archive.
+    expect(() => make()).toThrow(/expanded and retained shard bounds/u);
+    // The runtime profile accepts it and the complete decoded digest is verified.
+    const reader = make({ encodedBytes: limits.packedBytes, expandedBytes: limits.expandedBytes });
+    // readRange is decoded-range access; drive the FULL decoded archive so the reader
+    // verifies every gzip block and both complete digests (no giant allocation: the
+    // source is read piecewise from the real compressed bytes).
+    let offset = 0;
+    while (offset < decoded) {
+      const length = Math.min(limits.rangeBytes, decoded - offset);
+      expect(reader.readRange(offset, length).length).toBe(length);
+      offset += length;
+    }
+    expect(() => reader.assertComplete()).not.toThrow();
+    expect(reader.expanded.bytes).toBe(decoded);
+  } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
+}, 120_000);
+
+test('the runtime profile is still bounded: a decoded archive above expandedBytes is refused', () => {
+  // Encode only a small prefix but CLAIM an enormous expanded size to prove the bound.
+  const value = profileFixture(1024 * 1024);
+  try {
+    const inflated = structuredClone(value.index);
+    inflated.expanded.bytes = limits.expandedBytes + 1;
+    const reader = () => createGzipBlockSourceReader({
+      archive: { ...value.index.archive },
+      index: inflated,
+      readRange: (_n, o, l) => value.packed.subarray(o, o + l),
+      check: () => {},
+      sizeProfile: { encodedBytes: limits.packedBytes, expandedBytes: limits.expandedBytes },
+    });
+    expect(reader).toThrow(/expanded and retained shard bounds/u);
+  } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
+});

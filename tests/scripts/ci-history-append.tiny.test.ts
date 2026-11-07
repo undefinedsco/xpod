@@ -52,14 +52,14 @@ test('CI197/CI198 are FROZEN to their exact 1a01 values, not rebuilt live',()=>{
   expect(current1a01.ci198).toBe('2d7a4f3001bfe2869401748166444d6be149b398617a7a6a20855786206b7dcc');
 });
 
-test('exactly twelve NEW variants are appended, and the shared count reflects 210',()=>{
+test('NEW variants are appended, and the shared CI total reflects 212',()=>{
   // RC381 added CI199/200 (origin fix); RC382 appended CI201/202 (workspace-build
   // replay identity repair); RC383 appended CI203/204 (candidate queued-run state);
   // RC384 appended CI205/206 (producer test-scratch boundary); RC385 appended
   // CI207/208; RC386 appended CI209/210 (ABI helper custody). CI195..CI208 are all
   // frozen published history.
-  expect(CI_CONSUMER_SOURCE_GROUPS.length).toBe(210);
-  expect(CURRENT_SOURCE_GROUP_COUNTS.ci).toBe(210);
+  expect(CI_CONSUMER_SOURCE_GROUPS.length).toBe(212);
+  expect(CURRENT_SOURCE_GROUP_COUNTS.ci).toBe(212);
   // The RC384 and RC385 pairs are now historical: freeze them rather than letting a
   // later append re-bind them.
   expect(sha(CI_CONSUMER_SOURCE_GROUPS[204]!)).toBe(FROZEN_CI205);
@@ -94,9 +94,9 @@ test('CI199/CI200 are FROZEN to the true-928 anchors and are no longer live',()=
   }
 });
 
-test('every non-run-head row of the CURRENT pair CI209/CI210 equals real source bytes',()=>{
+test('every non-run-head row of the CURRENT pair CI211/CI212 equals real source bytes',()=>{
   // Only explicitly run-head rows are runtime-owned; everything else must match disk.
-  for(const index of [208,209]){
+  for(const index of [210,211]){
     for(const row of rowsOf(CI_CONSUMER_SOURCE_GROUPS[index]!)){
       if(row.ref==='run-head') continue;            // runtime-owned namespace
       // CI209/CI210 are CURRENT groups built from live anchors: unlike the frozen
@@ -124,7 +124,7 @@ test('consumer101 and CI205/CI206 are FROZEN whole-group history, not live',()=>
   const FROZEN_CONSUMER101='3f019d13f2463af02b1f21fb0613e56a2849489f0a0e545aa6df218a417ca48d';
   // RC385's consumer102 is frozen at the authoritative 45dbc3af aggregate.
   const FROZEN_CONSUMER102='b71fce5ee9b536b860038fe3d65de27d2ab021c2088ed716bcba0b3bf63434d2';
-  expect(CONSUMER_SOURCE_GROUPS.length).toBe(103);
+  expect(CONSUMER_SOURCE_GROUPS.length).toBe(104);
   expect(sha(CONSUMER_SOURCE_GROUPS[100]!)).toBe(FROZEN_CONSUMER101);
   expect(sha(CONSUMER_SOURCE_GROUPS[101]!)).toBe(FROZEN_CONSUMER102);
   expect(sha(CI_CONSUMER_SOURCE_GROUPS[204]!)).toBe(FROZEN_CI205);
@@ -133,12 +133,12 @@ test('consumer101 and CI205/CI206 are FROZEN whole-group history, not live',()=>
   expect(sha(CI_CONSUMER_SOURCE_GROUPS[206]!)).toBe(FROZEN_CI207);
   expect(sha(CI_CONSUMER_SOURCE_GROUPS[207]!)).toBe(FROZEN_CI208);
   expect(sha(CI_CONSUMER_SOURCE_GROUPS[208]!)).not.toBe(FROZEN_CI207);
-  expect(sha(CI_CONSUMER_SOURCE_GROUPS[209]!)).not.toBe(FROZEN_CI208);
-  expect(CURRENT_SOURCE_GROUP_COUNTS.consumer).toBe(103);
+  expect(sha(CI_CONSUMER_SOURCE_GROUPS[211]!)).not.toBe(FROZEN_CI208);
+  expect(CURRENT_SOURCE_GROUP_COUNTS.consumer).toBe(104);
 });
 
-test('real resolver picks CI210 for current bytes and refuses an old-origin mix',()=>{
-  const last=CI_CONSUMER_SOURCE_GROUPS[209]!;
+test('real resolver picks CI212 for current bytes and refuses an old-origin mix',()=>{
+  const last=CI_CONSUMER_SOURCE_GROUPS[211]!;
   const current=new Map(completeObserved(CI_CONSUMER_SOURCE_GROUPS,last) as Map<string,string>);
   for(const key of [...current.keys()]) current.set(key,disk(key.split(':').slice(1).join(':')));
   expect(selectGitHubSourceBindingGroup(CI_CONSUMER_SOURCE_GROUPS,current)).toBe(last);
@@ -147,4 +147,41 @@ test('real resolver picks CI210 for current bytes and refuses an old-origin mix'
   mixed.set(sourceBindingKey({path:ORIGIN,sha256:''}),current1a01.ci197 && '0b51a7ea65872293d0d7d2fd2839c3f8af7c69e60c6b544e5a474dbf741d048e');
   const selected=(()=>{try{return selectGitHubSourceBindingGroup(CI_CONSUMER_SOURCE_GROUPS,mixed);}catch{return undefined;}})();
   expect(selected).not.toBe(last);
+});
+
+/**
+ * RC387 predecessors: consumer103 and the CI209/CI210 pair became FROZEN HISTORY when
+ * consumer104 / CI211+CI212 were appended.
+ *
+ * Every value below is an immutable constant captured from the PRISTINE published
+ * baseline at 096a27bf (rc387-published-baseline-private/BASELINE.json,
+ * families.consumer.aggregates[102] and families.ci.aggregates[208..209]). They are NOT
+ * recomputed from the live groups, so editing a predecessor cannot keep these green.
+ */
+const RC387_CONSUMER103_PREDECESSOR_WHOLE =
+  '3d8f9e92662f49a23bd362794820be6e53fdbd182efe2c6c028552b1450e1926';
+const RC387_CI209_PREDECESSOR_WHOLE =
+  'e76c0f15e91f0c2972ec4faf504d7c99d471fe98da9521658118ed4050bec04f';
+const RC387_CI210_PREDECESSOR_WHOLE =
+  '72d034b1d6fcbe0423c18829c651ba53e2e8dca7526f479a447a2aa2a13e7a7c';
+
+test('RC387 predecessor: consumer103 stays byte-identical to its published aggregate', () => {
+  expect(CONSUMER_SOURCE_GROUPS).toHaveLength(104);
+  const frozen = CONSUMER_SOURCE_GROUPS[102]!;
+  expect(sha(frozen as any)).toBe(RC387_CONSUMER103_PREDECESSOR_WHOLE);
+  // consumer104 is the CURRENT tail and must differ from the frozen predecessor.
+  expect(CONSUMER_SOURCE_GROUPS[103]).not.toBe(frozen);
+  expect(sha(CONSUMER_SOURCE_GROUPS[103]! as any)).not.toBe(RC387_CONSUMER103_PREDECESSOR_WHOLE);
+});
+
+test('RC387 predecessor: CI209 and CI210 stay byte-identical to their published aggregates', () => {
+  expect(CI_CONSUMER_SOURCE_GROUPS).toHaveLength(212);
+  const first = CI_CONSUMER_SOURCE_GROUPS[208]!;
+  const second = CI_CONSUMER_SOURCE_GROUPS[209]!;
+  expect(sha(first as any)).toBe(RC387_CI209_PREDECESSOR_WHOLE);
+  expect(sha(second as any)).toBe(RC387_CI210_PREDECESSOR_WHOLE);
+  // They remain a distinct ordered pair, and the new CI211/CI212 tail is separate.
+  expect(first).not.toBe(second);
+  expect(sha(CI_CONSUMER_SOURCE_GROUPS[210]! as any)).not.toBe(RC387_CI209_PREDECESSOR_WHOLE);
+  expect(sha(CI_CONSUMER_SOURCE_GROUPS[211]! as any)).not.toBe(RC387_CI210_PREDECESSOR_WHOLE);
 });

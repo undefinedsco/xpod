@@ -21,8 +21,8 @@ CHUNK_BYTES = 65536
 SELECT_TIMEOUT = 0.05
 
 
-def _load_codec():
-    spec = importlib.util.spec_from_file_location('service_runtime_source_materials', CODEC_PATH)
+def _load_codec(name='service_runtime_source_materials'):
+    spec = importlib.util.spec_from_file_location(name, CODEC_PATH)
     if spec is None or spec.loader is None:
         raise ImportError('existing source gzip block codec is unavailable')
     module = importlib.util.module_from_spec(spec)
@@ -32,6 +32,24 @@ def _load_codec():
 
 CODEC = _load_codec()
 GzipBlockWriter = CODEC.GzipBlockWriter
+
+
+def _runtime_codec(expanded_limit):
+    """A SEPARATE codec module instance whose ARCHIVE_LIMIT is the runtime profile.
+
+    importlib gives this instance its own module globals, so `GzipBlockWriter` on it
+    resolves ARCHIVE_LIMIT against the runtime bound while the normal/source codec
+    instance loaded above keeps its `shardBytes` default untouched. The requested
+    bound may never exceed the reviewed central `expandedBytes` contract.
+    """
+    ceiling=CODEC.LIMITS.get('expandedBytes')
+    if type(expanded_limit) is not int or expanded_limit < 1:
+        raise ValueError('positive runtime expanded bound required')
+    if type(ceiling) is not int or expanded_limit > ceiling:
+        raise ValueError('runtime expanded bound exceeds reviewed contract')
+    module = _load_codec('service_runtime_stream_codec')
+    module.ARCHIVE_LIMIT = expanded_limit
+    return module
 
 
 def _write_all(stream, data, check):
@@ -130,7 +148,7 @@ def _cleanup(process, selector):
                 pass
 
 
-def encode_process(command, stdout, stderr, encoded_limit, check):
+def encode_process(command, stdout, stderr, encoded_limit, check, *, expanded_limit=None):
     """Run ``command`` and stream its stdout as concatenated gzip blocks.
 
     Returns only after the child was naturally waited for with exit 0 and both
@@ -152,7 +170,10 @@ def encode_process(command, stdout, stderr, encoded_limit, check):
     stderr_bytes = 0
     stderr_sha256 = hashlib.sha256()
     limited = _LimitedWriter(stdout, encoded_limit, check)
-    encoded = GzipBlockWriter(limited)
+    # Runtime roots carry whole installed trees: select the runtime expanded profile
+    # explicitly so the source-archive default cannot reject a valid runtime payload.
+    codec = CODEC if expanded_limit is None else _runtime_codec(expanded_limit)
+    encoded = codec.GzipBlockWriter(limited)
     metadata_limit = CODEC.LIMITS['metadataBytes']
 
     try:

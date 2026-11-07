@@ -41,15 +41,25 @@ def inspect_relationship(service,local,source_sha):
     return dict(serviceRootfsFromLocalRuntimeVerified=True,wholeApplicationSourceVerified=False,runtimeAbiVerified=False,wholeSdkSourceVerified=False)
 
 class Retained:
-    def __init__(self,out,budget):
+    """Bounded set of retained originals for ONE capture run.
+
+    ``universe`` is the per-instance aggregate cap. It defaults to the ordinary
+    ``32*META`` control universe; the runtime-originals capture opts in to the
+    approved packed transport bound because real runtime roots are whole installed
+    trees. Nothing global is widened: a run that does not opt in keeps 32*META, and
+    ``save`` still defaults to ``metadataBytes`` per artifact.
+    """
+    def __init__(self,out,budget,universe=None):
         self.out=out;self.budget=budget;self.total=0;self.refs={}
+        self.universe=32*META if universe is None else universe
+        need(type(self.universe) is int and self.universe>0,'positive retained universe required')
     def reserve(self,amount):
-        self.budget.check(0);need(type(amount) is int and amount>=0 and self.total+amount<=32*META,'fixed service original universe before write');self.total+=amount;return amount
+        self.budget.check(0);need(type(amount) is int and amount>=0 and self.total+amount<=self.universe,'fixed service original universe before write');self.total+=amount;return amount
     def settle(self,reserved,refs,maximum_by_path=None):
         actual=0;maximum_by_path=maximum_by_path or {}
         for ref in refs:
             maximum=maximum_by_path.get(ref['path'],META)
-            need(type(maximum) is int and 0<=maximum<=32*META and type(ref['bytes']) is int and 0<=ref['bytes']<=maximum and ref['path'] not in self.refs,'unique bounded actual service original')
+            need(type(maximum) is int and 0<=maximum<=self.universe and type(ref['bytes']) is int and 0<=ref['bytes']<=maximum and ref['path'] not in self.refs,'unique bounded actual service original')
             path=self.out/ref['path'];need(path.resolve(strict=True)==path and not path.is_symlink(),'canonical actual retained stage original')
             self.budget.check(0)
             named=path.lstat();need(stat.S_ISREG(named.st_mode) and named.st_nlink==1 and named.st_size==ref['bytes'],'bounded single-link regular stage original before open')
@@ -72,8 +82,12 @@ class Retained:
                     if primary is None:raise
             self.refs[ref['path']]=ref;actual+=count
         need(actual<=reserved,'actual fixed original exceeded reservation');self.total-=reserved-actual
-    def save(self,name,data):
-        need(isinstance(data,bytes) and len(data)<=META and name not in self.refs,'bounded unique source original before open');self.reserve(len(data));path=self.out/name;path.parent.mkdir(parents=True,exist_ok=True)
+    def save(self,name,data,maximum=None):
+        """Retain one artifact. ``maximum`` defaults to metadataBytes; only the
+        runtime member INDEX passes the shard profile explicitly."""
+        limit=META if maximum is None else maximum
+        need(type(limit) is int and 0<limit<=self.universe,'bounded artifact maximum required')
+        need(isinstance(data,bytes) and len(data)<=limit and name not in self.refs,'bounded unique source original before open');self.reserve(len(data));path=self.out/name;path.parent.mkdir(parents=True,exist_ok=True)
         with path.open('xb') as raw:raw.write(data);raw.flush();os.fsync(raw.fileno())
         ref=dict(path=name,bytes=len(data),sha256=hashlib.sha256(data).hexdigest());self.refs[name]=ref;return ref
 
@@ -86,7 +100,7 @@ def retain_pack_body_stream(input_path,expected,retained):
     """
     check=lambda:retained.budget.check(0)
     need(isinstance(expected,dict) and set(expected)=={'bytes','sha256'} and type(expected['bytes']) is int and expected['bytes']>=0 and isinstance(expected['sha256'],str) and re.fullmatch('[a-f0-9]{64}',expected['sha256']),'exact bounded body identity required')
-    check();size=expected['bytes'];digest=expected['sha256'];remaining=32*META-retained.total
+    check();size=expected['bytes'];digest=expected['sha256'];remaining=retained.universe-retained.total
     if size>remaining:
         return dict(bodyOriginalCaptured=False,pending=['service-pack-body-exceeds-actual-retained-remaining'],expectedBytes=size,remainingBytes=remaining)
     path=Path(input_path);need(path.is_absolute() and path.resolve(strict=True)==path,'canonical actual body input required')
@@ -123,10 +137,10 @@ def retain_pack_body_tar(input_ref,expected,retained):
     check=lambda:retained.budget.check(0)
     need(isinstance(input_ref,dict) and set(input_ref)=={'path','bytes','sha256'} and isinstance(input_ref.get('path'),str) and retained.refs.get(input_ref['path'])==input_ref,'same retained raw cp tar required')
     need(isinstance(expected,dict) and set(expected)=={'path','bytes','sha256'} and isinstance(expected.get('path'),str) and re.fullmatch(r'service-pack-bodies/objects/[0-9]{4}-[a-f0-9]{64}\.original',expected['path']) and expected['path'].split('-')[-1]==expected['sha256']+'.original' and type(expected['bytes']) is int and expected['bytes']>=0 and isinstance(expected['sha256'],str) and re.fullmatch('[a-f0-9]{64}',expected['sha256']),'exact expected body identity required')
-    check();remaining=32*META-retained.total
+    check();remaining=retained.universe-retained.total
     if expected['bytes']>remaining:return dict(bodyOriginalCaptured=False,pending=['service-pack-body-exceeds-actual-retained-remaining'])
     raw_path=retained.out/input_ref['path'];need(raw_path.is_absolute() and raw_path.resolve(strict=True)==raw_path,'canonical retained raw tar required')
-    size=input_ref['bytes'];need(type(size) is int and 0<size<=32*META,'bounded retained raw tar size');fd=os.open(raw_path,os.O_RDONLY|os.O_CLOEXEC|os.O_NOFOLLOW)
+    size=input_ref['bytes'];need(type(size) is int and 0<size<=retained.universe,'bounded retained raw tar size');fd=os.open(raw_path,os.O_RDONLY|os.O_CLOEXEC|os.O_NOFOLLOW)
     identity=lambda s:(s.st_dev,s.st_ino,s.st_mode,s.st_size,s.st_mtime_ns,s.st_ctime_ns,s.st_nlink)
     output_name='output/'+expected['path'];need(output_name not in retained.refs,'duplicate body needs explicit existing-ref join')
     output=retained.out/output_name;output.parent.mkdir(parents=True,exist_ok=True);need(output.parent.resolve(strict=True)==output.parent,'canonical body output parent');parent=output.parent.stat();parent_identity=(parent.st_dev,parent.st_ino,parent.st_mode)
@@ -163,7 +177,9 @@ OUTPUT_ROLES=('pull','create','inspect','copy','remove','confirm-absent')
 LIMITS=json.loads((HERE.parents[1]/'scripts/lib/module-artifact-limits.json').read_text())
 RUNTIME_ROOTS=(('/app','app','copy-runtime-app'),('/opt/xpod/qlever','qlever','copy-runtime-sdk'))
 RUNTIME_ROLES=tuple(role for _,_,role in RUNTIME_ROOTS)
-RUNTIME_MEMBER_MAXIMUM=50000
+# Runtime roots are whole installed trees, so their member ceiling is the reviewed
+# `sourceMembers` bound rather than the 50k package-archive `members` default.
+RUNTIME_MEMBER_MAXIMUM=LIMITS['sourceMembers']
 
 OUTPUT_PACK_ROLE=pack_bindings.OUTPUT_PACK_ROLE
 OUTPUT_PACK_PHASE_ROLE=pack_bindings.OUTPUT_PACK_PHASE_ROLE
@@ -173,12 +189,28 @@ OUTPUT_PACK_BODY_ROLE=pack_bindings.OUTPUT_PACK_BODY_ROLE
 RUNTIME_KIND='actual-service-image-runtime-members-v1'
 RUNTIME_META_MAXIMUM=4096
 RUNTIME_CLEANUP_ROOM=14*META
+# Runtime roots are whole installed trees. Their bound is the reviewed artifact
+# contract's expanded bound, not the source-archive shard default and not a fixed
+# multiple of META. Encoded transport uses packedBytes; logical tar bytes use
+# expandedBytes, independently of the source-code archive's shard profile.
+RUNTIME_EXPANDED_LIMIT=LIMITS['expandedBytes']
+RUNTIME_ENCODED_LIMIT=LIMITS['packedBytes']
+# Fixed per-root allowance for the retained stdout original plus the command
+# receipt/stderr/supervision receipts. stderr is capped at META by the caller.
+RUNTIME_STAGE_OVERHEAD=4*META
+# Runtime member inventories are artifact indexes (whole installed trees), so they use
+# the reviewed inventory shard bound rather than the 4 MiB control-metadata default.
+RUNTIME_INDEX_LIMIT=LIMITS['shardBytes']
+RUNTIME_COPY_TIMEOUT=LIMITS['timeoutMs']/1000
 
 def shared_runtime_cp_bound(retained,remaining_roots):
-    """Remaining ordinary 32*META budget after fixed metadata/cleanup room."""
+    """Encoded stdout share for one runtime root from the runtime universe."""
     need(type(remaining_roots) is int and remaining_roots>0,'runtime root share count')
-    available=32*META-retained.total-RUNTIME_CLEANUP_ROOM
-    share=(available-remaining_roots*3*META)//(2*remaining_roots)
+    # The runtime pool is the reviewed packed transport bound; each root reserves one
+    # encoded original plus fixed overhead, so the share is what remains divided by
+    # the number of roots still to capture.
+    available=RUNTIME_ENCODED_LIMIT-retained.total-RUNTIME_CLEANUP_ROOM
+    share=(available-remaining_roots*RUNTIME_STAGE_OVERHEAD)//remaining_roots
     need(share>0,'service runtime cp remaining budget unavailable')
     return share
 
@@ -210,8 +242,8 @@ class runtime_gzip_reader:
     def __init__(self,fd,index,physical_size,check):
         self.fd,self.index,self.check=fd,index,check;self.number=0;self.pending=b'';self.at=0;self.packed_hash=hashlib.sha256();self.logical_hash=hashlib.sha256()
         need(isinstance(index,dict) and set(index)=={'schemaVersion','kind','archive','expanded','blocks'} and index['schemaVersion']==1 and index['kind']=='source-tar-gzip-block-index','runtime gzip index schema')
-        need(isinstance(index['expanded'],dict) and set(index['expanded'])=={'bytes','sha256'} and type(index['expanded']['bytes']) is int and 0<index['expanded']['bytes']<=LIMITS['shardBytes'] and re.fullmatch('[a-f0-9]{64}',index['expanded']['sha256']),'runtime gzip logical bound')
-        need(index['archive']['bytes']==physical_size,'runtime gzip physical size');blocks=index['blocks'];need(isinstance(blocks,list) and 0<len(blocks)<=(LIMITS['shardBytes']+65535)//65536,'runtime gzip block count')
+        need(isinstance(index['expanded'],dict) and set(index['expanded'])=={'bytes','sha256'} and type(index['expanded']['bytes']) is int and 0<index['expanded']['bytes']<=RUNTIME_EXPANDED_LIMIT and re.fullmatch('[a-f0-9]{64}',index['expanded']['sha256']),'runtime gzip logical bound')
+        need(index['archive']['bytes']==physical_size,'runtime gzip physical size');blocks=index['blocks'];need(isinstance(blocks,list) and 0<len(blocks)<=(RUNTIME_EXPANDED_LIMIT+65535)//65536,'runtime gzip block count')
         packed=logical=0
         for i,row in enumerate(blocks):
             check();need(isinstance(row,dict) and set(row)=={'offset','bytes','expandedOffset','expandedBytes'} and all(type(v) is int for v in row.values()) and row['offset']==packed and row['expandedOffset']==logical and 18<=row['bytes']<=65536+1024 and 0<row['expandedBytes']<=65536 and (i==len(blocks)-1 or row['expandedBytes']==65536),'runtime gzip contiguous blocks')
@@ -239,10 +271,10 @@ def scan_runtime_tar(path,root,archive_root,check,encoding=None):
     need(isinstance(root,str) and root.startswith('/') and not root.endswith('/'),'fixed absolute runtime root')
     need(isinstance(archive_root,str) and re.fullmatch(r'[a-z0-9][a-z0-9._-]*',archive_root),'canonical archive root name')
     named=path.lstat();need(stat.S_ISREG(named.st_mode) and named.st_nlink==1,'single bounded runtime tar original')
-    physical_size=named.st_size;need(0<physical_size<=32*META,'runtime tar byte bound');size=encoding['expanded']['bytes'] if encoding else physical_size;need(type(size) is int and 0<size<=LIMITS['shardBytes'],'runtime logical tar bound')
+    physical_size=named.st_size;need(0<physical_size<=RUNTIME_ENCODED_LIMIT,'runtime tar byte bound');size=encoding['expanded']['bytes'] if encoding else physical_size;need(type(size) is int and 0<size<=RUNTIME_EXPANDED_LIMIT,'runtime logical tar bound')
     fd=os.open(path,os.O_RDONLY|os.O_NONBLOCK|os.O_NOFOLLOW|os.O_CLOEXEC)
     decoded=runtime_gzip_reader(fd,encoding,physical_size,check) if encoding else None
-    digest=hashlib.sha256();offset=0;ended=False;members=[];seen=set();content=0;pax={};long_name=None;long_link=None;prefix=archive_root+'/'
+    digest=hashlib.sha256();offset=0;ended=False;members=[];by_path={};hardlink_files={};seen=set();content=0;pax={};long_name=None;long_link=None;prefix=archive_root+'/'
     def read_exact(amount):
         nonlocal offset
         check();data=bytearray()
@@ -274,7 +306,7 @@ def scan_runtime_tar(path,root,archive_root,check,encoding=None):
             need(stored==actual,'runtime tar header checksum')
             raw_type=header[156:157];entry_type=raw_type.decode('latin-1')
             length=_octal(header[124:136],'member size')
-            need(length<=32*META,'runtime tar member byte bound')
+            need(length<=RUNTIME_EXPANDED_LIMIT,'runtime tar member byte bound')
             if entry_type in ('x','g'):
                 need(length<=LIMITS['metadataBytes'],'bounded runtime pax block')
                 payload=read_exact(length);read_exact((512-length%512)%512)
@@ -300,7 +332,7 @@ def scan_runtime_tar(path,root,archive_root,check,encoding=None):
                 path_part=name[len(prefix):].rstrip('/')
                 need((path_part or entry_type=='5') and not re.search(r'[\u0000-\u001f\u007f\\]',path_part) and not any(part in ('','.','..') for part in path_part.split('/')),'canonical runtime member path')
             need(path_part not in seen,'duplicate runtime member path');seen.add(path_part)
-            need(len(members)<min(LIMITS['members'],RUNTIME_MEMBER_MAXIMUM),'runtime member count bound')
+            need(len(members)<RUNTIME_MEMBER_MAXIMUM,'runtime member count bound')
             mode=_octal(header[100:108],'member mode');need(0<=mode<=0o7777,'runtime member mode')
             data_offset=offset
             if entry_type in ('0','\0','7'):
@@ -309,11 +341,40 @@ def scan_runtime_tar(path,root,archive_root,check,encoding=None):
                 while remaining:
                     check();block=read_exact(min(65536,remaining));member_digest.update(block);remaining-=len(block)
                 read_exact((512-length%512)%512)
-                content+=length;need(content<=(LIMITS['shardBytes'] if encoding else 32*META),'runtime member aggregate byte bound')
-                members.append(dict(path=path_part,type='file',mode=mode,bytes=length,sha256=member_digest.hexdigest(),offset=data_offset))
+                content+=length;need(content<=(RUNTIME_EXPANDED_LIMIT if encoding else RUNTIME_ENCODED_LIMIT),'runtime member aggregate byte bound')
+                row=dict(path=path_part,type='file',mode=mode,bytes=length,sha256=member_digest.hexdigest(),offset=data_offset);members.append(row);by_path[path_part]=row
             elif entry_type=='5':
                 need(length==0 and not linkname,'runtime directory shape')
-                members.append(dict(path=path_part,type='directory',mode=mode,bytes=0))
+                row=dict(path=path_part,type='directory',mode=mode,bytes=0);members.append(row);by_path[path_part]=row
+            elif entry_type=='1':
+                # Installed trees routinely hardlink identical package files, so a
+                # hardlink member is real content, not a special/unhandled type. It
+                # carries no payload of its own: its bytes are the target member's.
+                # Record the link target and keep it inside the declared root, exactly
+                # like a symlink, so provenance cannot be widened.
+                need(length==0,'runtime hardlink member size')
+                need(0<len(linkname)<=4096 and not re.search(r'[\u0000-\u001f\u007f\\]',linkname),'runtime hardlink target')
+                # The honest tar header names the target relative to the archive root
+                # (e.g. 'app/a.js'). Require the canonical prefix and reject empty, dot
+                # and traversal segments before resolving anything.
+                prefix=archive_root+'/'
+                need(linkname.startswith(prefix),'runtime hardlink target outside archive root')
+                tail=linkname[len(prefix):]
+                parts=tail.split('/')
+                need(tail and all(part not in ('','.','..') for part in parts),'runtime hardlink target segments')
+                need(posixpath.normpath(linkname)==linkname,'runtime hardlink target not canonical')
+                target_path=tail
+                # A hardlink must point at content that already exists in THIS root: a
+                # prior regular file, or a prior hardlink that safely resolved to one.
+                resolved=by_path.get(target_path)
+                need(resolved is not None and resolved['type'] in ('file','hardlink'),'runtime hardlink requires prior real member')
+                if resolved['type']=='hardlink':
+                    resolved=hardlink_files.get(target_path)
+                    need(resolved is not None and resolved['type']=='file','runtime hardlink chain must end at a file')
+                need(resolved['type']=='file','runtime hardlink must resolve to a regular file')
+                # Keep the raw target as the only serialized fact. The private map
+                # resolves arbitrary prior-link chains once, in constant time.
+                row=dict(path=path_part,type='hardlink',mode=mode,bytes=0,target=linkname);members.append(row);by_path[path_part]=row;hardlink_files[path_part]=resolved
             elif entry_type=='2':
                 need(length==0,'runtime symlink size');need(0<len(linkname)<=4096 and not re.search(r'[\u0000-\u001f\u007f\\]',linkname),'runtime symlink target')
                 if linkname.startswith('/'):
@@ -322,7 +383,7 @@ def scan_runtime_tar(path,root,archive_root,check,encoding=None):
                     target=posixpath.normpath(posixpath.join(posixpath.dirname(root+'/'+path_part),linkname))
                     need(target.startswith('/') and not target.startswith('//'),'runtime symlink target form')
                 need(target==root or target.startswith(root+'/'),'runtime symlink escapes declared root')
-                members.append(dict(path=path_part,type='symlink',mode=mode,bytes=0,target=linkname))
+                row=dict(path=path_part,type='symlink',mode=mode,bytes=0,target=linkname);members.append(row);by_path[path_part]=row
             else:
                 raise ValueError('runtime special tar member type '+repr(entry_type)+' for '+path_part)
         need(ended,'runtime tar requires two zero EOF blocks')
@@ -343,7 +404,7 @@ def capture_runtime_root(retained,role,stage,root,archive_root,image,config,cid,
     stage stdout original and every member's exact tar data offset/link target.
     """
     need(root in [value for value,_,_ in RUNTIME_ROOTS],'declared runtime root')
-    stdout=stage['stdout'];raw_path=retained.out/stdout['path'];need(stdout['bytes']<=32*META,'runtime stage stdout bound');need(retained.refs.get(stdout['path'])==stdout,'same held runtime stage stdout original')
+    stdout=stage['stdout'];raw_path=retained.out/stdout['path'];need(stdout['bytes']<=RUNTIME_ENCODED_LIMIT,'runtime stage stdout bound');need(retained.refs.get(stdout['path'])==stdout,'same held runtime stage stdout original')
     stderr=outer.bounded_original(retained.out/stage['stderr']['path'],META,check);marker=stderr.rfind(RUNTIME_CODEC_MARKER);need(marker>=0,'actual runtime worker gzip codec closure required');encoding=None
     if marker>=0:
         state=json.loads(stderr[marker+len(RUNTIME_CODEC_MARKER):]);need(isinstance(state,dict) and set(state)=={'expanded','blocks','encoded','process'},'runtime stream codec state')
@@ -356,8 +417,12 @@ def capture_runtime_root(retained,role,stage,root,archive_root,image,config,cid,
     need(len(evidence)<=RUNTIME_META_MAXIMUM,'bounded actual /app provenance inventory')
     index=dict(schemaVersion=1,kind=RUNTIME_KIND,imageReferenceByDigest=image,configDigest=config,containerId=cid,targetRoot=root,archiveRoot=archive_root,archive=dict(path=stdout['path'],bytes=stdout['bytes'],sha256=stdout['sha256']),members=members,memberContentBytes=content,evidencePayloadPaths=evidence,**(dict(encoding=encoding) if encoding else {}),sourceCoverageInferred=False,wholeServiceSourceVerified=False)
     raw=json.dumps(index,separators=(',',':'),sort_keys=True).encode()
-    need(len(raw)<=LIMITS['metadataBytes'],'runtime member index metadata bound')
-    reference=retained.save('output/service-runtime-members/'+role+'.original.json',raw)
+    # The runtime member inventory is an ARTIFACT INDEX, not control metadata: a real
+    # installed tree has >100k members and its JSON exceeds metadataBytes. It is
+    # bounded by the approved inventory shard profile, while every ordinary
+    # control JSON keeps the 4 MiB metadata default.
+    need(len(raw)<=RUNTIME_INDEX_LIMIT,'runtime member index artifact bound')
+    reference=retained.save('output/service-runtime-members/'+role+'.original.json',raw,maximum=RUNTIME_INDEX_LIMIT)
     check();return dict(schemaVersion=1,kind=RUNTIME_KIND,imageReferenceByDigest=image,configDigest=config,containerId=cid,targetRoot=root,archiveRoot=archive_root,archive=index['archive'],index=reference,members=len(members),memberContentBytes=content,declaredRootMember=root,evidencePayloadInventoried=root=='/app' and bool(index['evidencePayloadPaths']),sourceCoverageInferred=False,wholeServiceSourceVerified=False)
 
 def output_image_command(mode,image,name,nonce,cid=None,body_path=None):
@@ -385,7 +450,7 @@ def image_worker(args):
     command=output_image_command(args.image_worker,args.service_image,args.container_name,args.owner_nonce,args.container_id,getattr(args,'body_path',None))
     maximum=OUTPUT_TAR_LIMIT if args.image_worker=='copy' else META
     if args.image_worker in RUNTIME_ROLES:
-        maximum=args.copy_byte_bound;need(type(maximum) is int and 0<maximum<=32*META,'fixed actual runtime cp stream bound')
+        maximum=args.copy_byte_bound;need(type(maximum) is int and 0<maximum<=RUNTIME_ENCODED_LIMIT,'fixed actual runtime cp stream bound')
     if args.image_worker==OUTPUT_PACK_ROLE:
         # Role-derived, so the reviewed plan command carries no extra argument.
         maximum=pack_bindings.PACK_OBSERVATION_METADATA_BYTES
@@ -395,7 +460,7 @@ def image_worker(args):
     if args.image_worker in RUNTIME_ROLES:
         codec=load('sdk-service-runtime-stream')
         def check():need(shutil.disk_usage(args.source).free>=LIMITS['freeFloorBytes'],'runtime codec disk reserve')
-        state=codec.encode_process(command,sys.stdout.buffer,sys.stderr.buffer,maximum,check)
+        state=codec.encode_process(command,sys.stdout.buffer,sys.stderr.buffer,maximum,check,expanded_limit=RUNTIME_EXPANDED_LIMIT)
         footer=RUNTIME_CODEC_MARKER+json.dumps(state,separators=(',',':'),sort_keys=True).encode()+b'\n'
         need(state['process']['stderrBytes']+len(footer)<=META,'runtime codec stderr/index metadata bound');sys.stderr.buffer.write(footer);sys.stderr.buffer.flush();return
     os.execvp(command[0],command)
@@ -487,8 +552,8 @@ def observe_output_image(image,config,retained,source,source_sha,*,capture_pack_
     budget=retained.budget;nonce=secrets.token_hex(16);name='xpod-service-output-'+nonce;cid=None;owned=False;removed=False;stages=[];failures=[];cleanup_errors=[]
     def stage(role,*,cleanup=False,cap=15,image_stage=True,body_ref=None,copy_bound=None):
         label='service-output-'+role+('-'+Path(body_ref['path']).name[:4] if body_ref else '')
-        if copy_bound is not None:need(type(copy_bound) is int and 0<copy_bound<=32*META,'exact cp stdout bound')
-        held=retained.reserve((2*copy_bound+3*META) if copy_bound is not None else 5*META)
+        if copy_bound is not None:need(type(copy_bound) is int and 0<copy_bound<=RUNTIME_ENCODED_LIMIT,'exact cp stdout bound')
+        held=retained.reserve((copy_bound+RUNTIME_STAGE_OVERHEAD) if copy_bound is not None else 5*META)
         argv=pack_bindings.service_output_worker_argv(str(source),source_sha,role,image,name,nonce,cid,body_ref['path'] if body_ref else None,None if role==OUTPUT_PACK_ROLE else copy_bound)
         # Construct the same fixed argv here before any command executes.
         output_image_command(role,image,name,nonce,cid,body_ref['path'] if body_ref else None)
@@ -520,7 +585,7 @@ def observe_output_image(image,config,retained,source,source_sha,*,capture_pack_
         if capture_runtime_members:
             runtime_roots=[]
             for index,(root,archive_root,role) in enumerate(RUNTIME_ROOTS):
-                runtime_stage,_=stage(role,image_stage=False,copy_bound=shared_runtime_cp_bound(retained,len(RUNTIME_ROOTS)-index))
+                runtime_stage,_=stage(role,image_stage=False,cap=RUNTIME_COPY_TIMEOUT,copy_bound=shared_runtime_cp_bound(retained,len(RUNTIME_ROOTS)-index))
                 runtime_roots.append(capture_runtime_root(retained,role,runtime_stage,root,archive_root,image,config,cid,lambda:budget.check(10)))
             runtime_observation=dict(schemaVersion=1,kind='actual-stopped-service-image-runtime-roots',imageReferenceByDigest=image,configDigest=config,containerId=cid,roots=runtime_roots,wholeServiceSourceVerified=False,producerImageAcquisitionVerified=True)
         pack_observation=None
@@ -543,7 +608,7 @@ def observe_output_image(image,config,retained,source,source_sha,*,capture_pack_
                 tar_bound=pack_bindings.body_copy_bound(ref)
                 # Existing two cleanup stages and final master retain their
                 # own worst-case allocations; no body can consume their slot.
-                need(retained.total+2*tar_bound+3*META+ref['bytes']+11*META<=32*META,'pending service-pack-body-exceeds-actual-retained-remaining')
+                need(retained.total+2*tar_bound+3*META+ref['bytes']+11*META<=retained.universe,'pending service-pack-body-exceeds-actual-retained-remaining')
                 body_stage,_=stage(OUTPUT_PACK_BODY_ROLE,image_stage=False,body_ref=ref,copy_bound=tar_bound)
                 observed=retain_pack_body_tar(body_stage['stdout'],ref,retained);need(observed['bodyOriginalCaptured'],'actual full body capture pending')
                 captured[ref['path']]=ref;body_observations.append(dict(reference=ref,original=observed['original'],rawTarOriginal=body_stage['stdout'],stage=body_stage))
@@ -692,7 +757,10 @@ def capture(args):
     abi_custody=None;abi_primary=None
     try:
         with collection.absolute_budget(budget):
-            retained=Retained(out,budget);stages=[]
+            # Only a genuine runtime-originals capture opts in to the approved runtime
+            # universe; every other capture keeps the ordinary 32*META control cap.
+            universe=RUNTIME_ENCODED_LIMIT if getattr(args,'capture_service_runtime_members',False) else None
+            retained=Retained(out,budget,universe);stages=[]
             def stage(mode):
                 held=retained.reserve(5*META);row=outer.commands.capture('service-source-'+mode,['/usr/bin/python3','-I','-S','-B',str(Path(__file__).resolve()),'--worker',mode,'--source',str(source),'--source-sha',args.source_sha],out,source,timeout=budget.timeout(15),resource_profile='observation');stages.append(row);retained.settle(held,[row[key] for key in ['receipt','stdout','stderr','supervisionReceipt','supervisionRaw']]);return outer.bounded_original(out/row['stdout']['path'],META,lambda:budget.check(0))
             need(stage('head').decode().strip()==args.source_sha,'actual checkout HEAD/source differs');committed=stage('manifest');stage('status')

@@ -20,7 +20,24 @@ const BINDINGS='qlever/scripts/sdk-service-pack-bindings.py';
 const EXECUTED=[SELF,'scripts/lib/independent-admission/source-original-tar.ts','scripts/lib/module-source-materials.py','qlever/scripts/sdk-service-runtime-stream.py','scripts/lib/independent-admission/candidate-service-image-output.ts','scripts/lib/independent-admission/candidate-service-root-mutation.ts','scripts/lib/independent-admission/candidate-service-output-stage.ts','scripts/lib/independent-admission/native-original-collector.ts','scripts/lib/independent-admission/source-context.ts','scripts/lib/independent-admission/github-origin.ts','scripts/lib/independent-admission/candidate-service-native-runtime-contract.ts','scripts/lib/independent-admission/qlever-sdk-service-relationship.ts',PRODUCER,BINDINGS,'scripts/lib/module-artifact-limits.json'] as const;
 const ROOT_KIND='actual-stopped-service-image-runtime-roots',INDEX_KIND='actual-service-image-runtime-members-v1';
 const IMAGE=/^ghcr\.io\/undefinedsco\/xpod@sha256:[a-f0-9]{64}$/u,CONFIG=/^sha256:[a-f0-9]{64}$/u,CID=/^[a-f0-9]{64}$/u,SHA=/^[a-f0-9]{64}$/u;
-const MAX=limits.metadataBytes,RANGE=limits.rangeBytes,RUNTIME_MEMBER_MAXIMUM=50000,STAGE_MAXIMUM=32*1024**2;
+const MAX=limits.metadataBytes,RANGE=limits.rangeBytes,STAGE_MAXIMUM=32*1024**2;
+/** Runtime-only size profile.
+ *
+ * The measured same-image roots carry ~568 MB decoded / ~124 MB encoded for /app
+ * and ~32 MB decoded / ~9 MB encoded for /opt/xpod/qlever, so a runtime transport
+ * legitimately exceeds the shared source shard bound. Encoded and decoded stay
+ * DISTINCT: the encoded stream/total capture pool uses packedBytes, while the
+ * decoded tar and member content use expandedBytes. Ordinary command stages and the
+ * source gzip module keep their existing smaller defaults. */
+const RUNTIME_ENCODED_MAXIMUM=limits.packedBytes,RUNTIME_EXPANDED_MAXIMUM=limits.expandedBytes;
+/** Runtime inventory and index-artifact profile.
+ *
+ * A real /app root has ~121k members and its JSON index is necessarily larger than the
+ * 4 MiB ordinary control bound, so the runtime index uses the existing shard bound and
+ * the existing sourceMembers count. Ordinary package/control JSON keeps MAX. */
+const RUNTIME_MEMBER_LIMIT=limits.sourceMembers,RUNTIME_INDEX_MAXIMUM=limits.shardBytes;
+/** Only the closed, declared runtime copy roles may emit a stdout this large. */
+const RUNTIME_STAGE_MAXIMUM=RUNTIME_ENCODED_MAXIMUM;
 const sha=(raw:Buffer)=>createHash('sha256').update(raw).digest('hex');
 function need(value:unknown,why:string):asserts value{if(!value)throw Error('Candidate service runtime artifact: '+why);}
 type Ref=Readonly<{path:string;bytes:number;sha256:string}>;
@@ -56,8 +73,20 @@ function canonicalLink(root:string,relative:string,target:string):string{
 export type CandidateServiceRuntimeFileMember=Readonly<{path:string;type:'file';mode:number;bytes:number;sha256:string}>;
 export type CandidateServiceRuntimeDirectoryMember=Readonly<{path:string;type:'directory';mode:number;bytes:0}>;
 export type CandidateServiceRuntimeSymlinkMember=Readonly<{path:string;type:'symlink';mode:number;bytes:0;target:string}>;
+/** Return the member-relative name from an exact raw archive-root hardlink target. */
+function resolveHardlinkTarget(archiveRoot:string,target:string){
+ need(archiveRootName(archiveRoot)&&relativePath(target)&&Buffer.byteLength(target)<=4096,'canonical archive-relative hardlink target');
+ need(target.startsWith(archiveRoot+'/'),'hardlink target must stay inside the declared archive root');
+ return target.slice(archiveRoot.length+1);
+}
+/** Raw whole-root TAR inventory types. POSIX hardlinks are PHYSICAL tar facts and
+ * stay internal: the public runtime filesystem view presents them as ordinary verified
+ * files whose bytes/hash come from the resolved target inode. */
+export type CandidateServiceRuntimeHardlinkMember=Readonly<{path:string;type:'hardlink';mode:number;bytes:0;target:string}>;
 export type CandidateServiceRuntimeMember=CandidateServiceRuntimeFileMember|CandidateServiceRuntimeDirectoryMember|CandidateServiceRuntimeSymlinkMember;
-type ParsedMember=CandidateServiceRuntimeMember&Readonly<{root:string;absolutePath:string;dataOffset?:number}>;
+type RawMember=CandidateServiceRuntimeMember|CandidateServiceRuntimeHardlinkMember;
+export type CandidateServiceRuntimeParsedMember=RawMember&Readonly<{root:string;absolutePath:string;dataOffset?:number;resolvedAnchor?:string}>;
+type ParsedMember=CandidateServiceRuntimeParsedMember;
 type RuntimeIdentity=Readonly<{sourceSha:string;runId:number;runAttempt:number;imageDigest:string;imageConfigDigest:string;containerId:string}>;
 type InternalRoot=Readonly<{root:string;archiveRoot:string;role:string;index:Ref;archive:Ref;members:readonly ParsedMember[];readArchiveRange:(offset:number,length:number)=>Buffer}>;
 type Scanned=Readonly<{identity:RuntimeIdentity;roots:readonly InternalRoot[]}>;
@@ -76,7 +105,7 @@ export type CandidateServiceRuntimeArtifactView=Readonly<{
 export type CandidateServiceRuntimeArtifactCapability=Readonly<{view:CandidateServiceRuntimeArtifactView;assertCurrent():void}>;
 
 function parseIndex(capture:Buffer,scope:CandidateServiceRuntimeScope){
- need(Buffer.isBuffer(capture)&&capture.length>0&&capture.length<=MAX,'bounded actual runtime index original');
+ need(Buffer.isBuffer(capture)&&capture.length>0&&capture.length<=RUNTIME_INDEX_MAXIMUM,'bounded actual runtime index original');
  need(Buffer.from(capture.toString('utf8')).equals(capture),'actual UTF-8 runtime index');
  let value:any;try{value=JSON.parse(capture.toString('utf8'));}catch{throw Error('Candidate service runtime artifact: actual runtime index JSON');}
  need(value&&Object.keys(value).sort().join(',')==='archive,archiveRoot,configDigest,containerId,evidencePayloadPaths,imageReferenceByDigest,kind,memberContentBytes,members,schemaVersion,sourceCoverageInferred,targetRoot,wholeServiceSourceVerified','exact actual runtime index schema');
@@ -84,23 +113,37 @@ function parseIndex(capture:Buffer,scope:CandidateServiceRuntimeScope){
  need(IMAGE.test(value.imageReferenceByDigest)&&CONFIG.test(value.configDigest)&&CID.test(value.containerId),'actual image/config/CID identity');
  need(value.targetRoot===scope.root&&archiveRootName(value.archiveRoot),'declared runtime root/archive name');
  need(value.sourceCoverageInferred===false&&value.wholeServiceSourceVerified===false,'runtime index cannot infer source coverage');
- need(plainRef(value.archive)&&value.archive.bytes<=limits.shardBytes,'bounded plain actual runtime stdout reference');
+ need(plainRef(value.archive)&&value.archive.bytes<=RUNTIME_EXPANDED_MAXIMUM,'bounded plain actual runtime stdout reference');
  need(Array.isArray(value.evidencePayloadPaths)&&value.evidencePayloadPaths.length<=4096&&value.evidencePayloadPaths.every((path:unknown)=>path==='provenance'||(typeof path==='string'&&path.startsWith('provenance/')&&relativePath(path))),'bounded actual /app evidence inventory');
- need(Array.isArray(value.members)&&value.members.length>0&&value.members.length<=Math.min(limits.members,RUNTIME_MEMBER_MAXIMUM),'bounded runtime member inventory');
- const members:ParsedMember[]=[];const seen=new Set<string>();let content=0;
+ need(Array.isArray(value.members)&&value.members.length>0&&value.members.length<=RUNTIME_MEMBER_LIMIT,'bounded runtime member inventory');
+ const members:ParsedMember[]=[];const seen=new Set<string>();const anchors=new Map<string,string>();let content=0;
  for(const row of value.members){
   const keys=row&&typeof row==='object'&&!Array.isArray(row)?Object.keys(row).sort().join(','):'';
   need(row&&typeof row.path==='string'&&(row.path===''||relativePath(row.path))&&!seen.has(row.path),'unique canonical runtime member path');seen.add(row.path);
   need(modeValue(row.mode),'actual runtime member mode');
   if(row.type==='file'){
-   need(keys==='bytes,mode,offset,path,sha256,type'&&Number.isSafeInteger(row.bytes)&&row.bytes>=0&&row.bytes<=limits.shardBytes&&SHA.test(row.sha256)&&Number.isSafeInteger(row.offset)&&row.offset>=0,'full regular runtime member bytes/hash/offset');
+   need(keys==='bytes,mode,offset,path,sha256,type'&&Number.isSafeInteger(row.bytes)&&row.bytes>=0&&row.bytes<=RUNTIME_EXPANDED_MAXIMUM&&SHA.test(row.sha256)&&Number.isSafeInteger(row.offset)&&row.offset>=0,'full regular runtime member bytes/hash/offset');
    content+=row.bytes;need(content<=limits.sourceMaterialBytes,'runtime member aggregate byte bound');
+   anchors.set(row.path,row.path);
    members.push(Object.freeze({path:row.path,root:scope.root,absolutePath:scope.root+'/'+row.path,type:'file',mode:row.mode,bytes:row.bytes,sha256:row.sha256,dataOffset:row.offset}));
   }else if(row.type==='directory'){
    need(keys==='bytes,mode,path,type'&&row.bytes===0,'directory runtime member shape');
    members.push(Object.freeze({path:row.path,root:scope.root,absolutePath:row.path===''?scope.root:scope.root+'/'+row.path,type:'directory',mode:row.mode,bytes:0}));
+  }else if(row.type==='hardlink'){
+   // A real whole-runtime root carries hardlinks (RC387: 48257 of them). The target
+   // must be an earlier REGULAR file, or an earlier hardlink that resolves to one,
+   // inside the same declared root. Nothing is fabricated: bytes stay 0 and the
+   // consumer follows `target` to the prior member's payload.
+   need(keys==='bytes,mode,path,target,type'&&row.bytes===0&&typeof row.target==='string','hardlink runtime member shape');
+   const resolvedMember=resolveHardlinkTarget(value.archiveRoot,row.target);
+   // O(1) anchor: every accepted member records the file path its bytes live in, so a
+   // chain of any length resolves in one lookup with no repeated walk and no cycles.
+   const prior=anchors.get(resolvedMember);
+   need(prior,'hardlink target must be a prior regular file or resolvable hardlink in the same root');
+   anchors.set(row.path,prior);
+   members.push(Object.freeze({path:row.path,root:scope.root,absolutePath:scope.root+'/'+row.path,type:'hardlink',mode:row.mode,bytes:0,target:row.target,resolvedAnchor:prior}));
   }else{
-   need(row.type==='symlink'&&keys==='bytes,mode,path,target,type'&&row.bytes===0&&typeof row.target==='string','regular/directory/symlink runtime member only');
+   need(row.type==='symlink'&&keys==='bytes,mode,path,target,type'&&row.bytes===0&&typeof row.target==='string','regular/directory/symlink/hardlink runtime member only');
    canonicalLink(scope.root,row.path,row.target);
    members.push(Object.freeze({path:row.path,root:scope.root,absolutePath:scope.root+'/'+row.path,type:'symlink',mode:row.mode,bytes:0,target:row.target}));
   }
@@ -146,11 +189,12 @@ function parsePax(payload:Buffer){
  * bounded pax/long-name metadata, and independently rehashes the whole archive
  * and each file. It is a mechanical parser; it issues no private capability. */
 export function inspectCandidateServiceRuntimeArchive(input:{capture:Buffer;scope:CandidateServiceRuntimeScope;readRange:(offset:number,length:number)=>Buffer;check?:()=>void}){
- const check=input.check??(()=>{});check();need(input.capture.length<=MAX,'bounded runtime index');
+ const check=input.check??(()=>{});check();need(input.capture.length<=RUNTIME_INDEX_MAXIMUM,'bounded runtime index');
  const supplied=JSON.parse(input.capture.toString('utf8'));
  if(supplied?.encoding!==undefined){
-  const physical=supplied.archive;need(plainRef(physical),'encoded runtime archive reference');
-  const reader=createGzipBlockSourceReader({archive:physical,index:supplied.encoding,readRange(name,offset,length){need(name===physical.path,'same encoded runtime stream');return input.readRange(offset,length);},check});
+  const physical=supplied.archive;
+  need(plainRef(physical)&&physical.bytes<=RUNTIME_ENCODED_MAXIMUM,'encoded runtime archive reference');
+  const reader=createGzipBlockSourceReader({archive:physical,index:supplied.encoding,readRange(name,offset,length){need(name===physical.path,'same encoded runtime stream');return input.readRange(offset,length);},check,sizeProfile:{encodedBytes:RUNTIME_ENCODED_MAXIMUM,expandedBytes:RUNTIME_EXPANDED_MAXIMUM}});
   const {encoding,...index}=supplied;
   const observed=inspectDecodedRuntimeArchive({...input,capture:Buffer.from(JSON.stringify({...index,archive:{path:physical.path,...reader.expanded}})),readRange:reader.readRange});
   reader.assertComplete();return Object.freeze({...observed,archive:Object.freeze({...physical}) as Ref,readArchiveRange:reader.readRange});
@@ -159,7 +203,7 @@ export function inspectCandidateServiceRuntimeArchive(input:{capture:Buffer;scop
 }
 function inspectDecodedRuntimeArchive(input:{capture:Buffer;scope:CandidateServiceRuntimeScope;readRange:(offset:number,length:number)=>Buffer;check?:()=>void}){
  const check=input.check??(()=>{}),scope=input.scope;need(scopeValue(scope),'declared runtime scope');const index=parseIndex(input.capture,scope),size=index.archive.bytes;
- need(size>0&&size<=limits.shardBytes,'bounded actual runtime archive');
+ need(size>0&&size<=RUNTIME_EXPANDED_MAXIMUM,'bounded actual runtime archive');
  let cachedOffset=-1,cached=Buffer.alloc(0);
  const readBlock=(offset:number,length:number):Buffer=>{
   need(Number.isSafeInteger(offset)&&Number.isSafeInteger(length)&&offset>=0&&length>=0&&length<=RANGE&&offset+length<=size,'bounded actual runtime range');
@@ -182,7 +226,7 @@ function inspectDecodedRuntimeArchive(input:{capture:Buffer;scope:CandidateServi
    break;
   }
   const stored=octal(header,148,8,'header checksum');let actual=0;for(let byte=0;byte<512;byte++)actual+=byte>=148&&byte<156?0x20:header[byte]!;need(stored===actual,'actual runtime tar header checksum');
-  const rawType=header[156]!,type=rawType===0?'0':String.fromCharCode(rawType),length=octal(header,124,12,'member size');need(length<=limits.shardBytes,'runtime tar member byte bound');
+  const rawType=header[156]!,type=rawType===0?'0':String.fromCharCode(rawType),length=octal(header,124,12,'member size');need(length<=RUNTIME_EXPANDED_MAXIMUM,'runtime tar member byte bound');
   if(type==='x'){
    need(length>0&&length<=RANGE,'bounded actual runtime pax block');const payload=readBlock(offset,length);offset+=length;const pad=(512-length%512)%512;readBlock(offset,pad);offset+=pad;
    pax=new Map([...(pax??[]),...parsePax(payload)]);continue;
@@ -213,6 +257,12 @@ function inspectDecodedRuntimeArchive(input:{capture:Buffer;scope:CandidateServi
   }else if(type==='5'){
    need(length===0&&expected.type==='directory'&&expected.mode===mode&&expected.bytes===0,'runtime archive directory differs from index');
    members.push(Object.freeze({...expected}));
+  }else if(type==='1'){
+   // POSIX hardlink: zero payload, and the header linkname must match the index row
+   // exactly (the raw archive-root-relative form).
+   need(length===0&&expected.type==='hardlink'&&expected.mode===mode&&expected.bytes===0
+    &&link.length>0&&expected.target===link,'runtime archive hardlink differs from index');
+   members.push(Object.freeze({...expected}));
   }else if(type==='2'){
    need(length===0&&expected.type==='symlink'&&expected.mode===mode&&expected.bytes===0&&link.length>0&&expected.target===link,'runtime archive symlink differs from index');
    canonicalLink(scope.root,relative,link);members.push(Object.freeze({...expected}));
@@ -231,6 +281,30 @@ function inspectDecodedRuntimeArchive(input:{capture:Buffer;scope:CandidateServi
  * observers, and the same actual full service image/config/CID. Each declared
  * runtime root is re-read from its one held stdout tar; producer JSON is never
  * accepted as image acquisition, source closure, ABI or legal coverage. */
+/** Read one large RUNTIME INDEX artifact through the approved range interface.
+ *
+ * The collector's `readOriginal` deliberately caps a single request at 8 MiB (it is
+ * the small-original path), so a real ~30 MB runtime index can never travel through
+ * it. Large runtime artifacts already use `readOriginalRange`, so this reuses exactly
+ * that approved interface: verify the declared ref is within the runtime index
+ * profile, allocate exactly the declared size, stream it in RANGE-sized chunks, and
+ * re-check length, hash, custody and deadline against the actual held bytes. No
+ * fallback and no second physical copy. */
+export function readRuntimeIndexByRange(view:Readonly<{readOriginalRange(name:string,offset:number,length:number):Buffer}>,ref:Readonly<{path:string;bytes:number;sha256:string}>,check:()=>void,maximum:number):Buffer{
+ need(Number.isSafeInteger(maximum)&&maximum>0&&maximum<=RUNTIME_INDEX_MAXIMUM,'runtime index read bound');
+ need(plainRef(ref)&&ref.bytes<=maximum,'bounded runtime index artifact reference');
+ const out=Buffer.alloc(ref.bytes);
+ for(let offset=0;offset<ref.bytes;offset+=RANGE){
+  check();
+  const want=Math.min(RANGE,ref.bytes-offset);
+  const block=view.readOriginalRange(ref.path,offset,want);
+  need(Buffer.isBuffer(block)&&block.length===want,'exact runtime index range bytes');
+  block.copy(out,offset);
+ }
+ check();
+ need(out.length===ref.bytes&&sha(out)===ref.sha256,'actual runtime index artifact drift');
+ return out;
+}
 export function observeCandidateServiceRuntimeArtifact(input:{originals:unknown;source:unknown;budget:NativeArchiveObservationBudget}){
  // No budget call, source read or relationship lookup may precede this check.
  const view=nativeOriginalsView(input.originals),source=derivedSourceView(input.source);
@@ -263,7 +337,7 @@ export function observeCandidateServiceRuntimeArtifact(input:{originals:unknown;
  };
  const memberRef=(path:string)=>{const row=members.get(path);need(row,'runtime stage original missing');return retainedRef({path,bytes:row.bytes,sha256:row.sha256},MAX);};
  const readSmall=(value:any,maximum:number)=>{check();const ref=retainedRef(value,maximum),raw=view.readOriginal(ref.path,maximum);need(raw.length===ref.bytes&&sha(raw)===ref.sha256,'actual small runtime original drift');return raw;};
- const rangeReader=(archive:Ref)=>(offset:number,length:number)=>{check();const ref=retainedRef(archive,limits.shardBytes);need(ref.path===archive.path&&ref.bytes===archive.bytes&&ref.sha256===archive.sha256,'runtime archive reference changed');const block=view.readOriginalRange(ref.path,offset,length);need(block.length===length,'exact actual runtime range bytes');return Buffer.from(block);};
+ const rangeReader=(archive:Ref)=>(offset:number,length:number)=>{check();const ref=retainedRef(archive,RUNTIME_ENCODED_MAXIMUM);need(ref.path===archive.path&&ref.bytes===archive.bytes&&ref.sha256===archive.sha256,'runtime archive reference changed');const block=view.readOriginalRange(ref.path,offset,length);need(block.length===length,'exact actual runtime range bytes');return Buffer.from(block);};
 
  const scan=():Scanned=>{
   closure();const relation=readCandidateServiceRelationship(input.originals),master=relation.master,record=master.runtimeMemberObservation,output=master.outputImageObservation;
@@ -287,10 +361,10 @@ export function observeCandidateServiceRuntimeArtifact(input:{originals:unknown;
    need(observed.imageReferenceByDigest===record.imageReferenceByDigest&&observed.configDigest===record.configDigest&&observed.containerId===record.containerId,'runtime stage image/config/CID differs');
    need(observed.sourceCoverageInferred===false&&observed.wholeServiceSourceVerified===false&&typeof observed.evidencePayloadInventoried==='boolean','runtime root cannot infer source coverage/acquisition');
    need(plainRef(observed.index)&&observed.index.path==='output/service-runtime-members/'+scope.role+'.original.json','fixed actual runtime index original');
-   const indexRef=retainedRef(observed.index,MAX),indexRaw=readSmall(indexRef,MAX),indexValue=JSON.parse(indexRaw.toString('utf8'));
+   const indexRef=retainedRef(observed.index,RUNTIME_INDEX_MAXIMUM),indexRaw=readRuntimeIndexByRange(view,indexRef,check,RUNTIME_INDEX_MAXIMUM),indexValue=JSON.parse(indexRaw.toString('utf8'));
    need(indexValue.archiveRoot===observed.archiveRoot&&indexValue.evidencePayloadPaths.length>0===observed.evidencePayloadInventoried,'runtime index/root declaration differs');
    need(indexValue.imageReferenceByDigest===record.imageReferenceByDigest&&indexValue.configDigest===record.configDigest&&indexValue.containerId===record.containerId,'runtime index image/config/CID differs');
-   const archiveRef=retainedRef(observed.archive,limits.shardBytes);need(isDeepStrictEqual(indexValue.archive,archiveRef),'runtime index archive is not the same held stdout original');
+   const archiveRef=retainedRef(observed.archive,RUNTIME_ENCODED_MAXIMUM);need(isDeepStrictEqual(indexValue.archive,archiveRef),'runtime index archive is not the same held stdout original');
    need(archiveRef.path==='stages/service-output-'+scope.role+'/stdout.raw','runtime archive is not the same actual stage stdout original');
    const label='service-output-'+scope.role,parent='stages/'+label+'/';
    const stage={name:label,inputs:[],outputs:[],stdout:archiveRef,stderr:memberRef(parent+'stderr.raw'),receipt:memberRef(parent+'command.receipt.json'),supervisionReceipt:memberRef('stages/'+label+'.receipt.json'),supervisionRaw:memberRef('stages/'+label+'.raw.log')};
@@ -303,9 +377,9 @@ export function observeCandidateServiceRuntimeArtifact(input:{originals:unknown;
    const receipt=JSON.parse(readSmall(stage.receipt,MAX).toString());
    const base=['/usr/bin/python3','-I','-S','-B',master.controllerPath,'--source',master.sourcePath,'--source-sha',master.sourceSha,'--image-worker',scope.role,'--service-image',record.imageReferenceByDigest,'--container-name',output.containerName,'--owner-nonce',output.ownerNonce,'--container-id',record.containerId];
    need(Array.isArray(receipt.command)&&receipt.command.length===base.length+2&&isDeepStrictEqual(receipt.command.slice(0,base.length),base),'actual runtime worker command differs from sole service_output_worker_argv');
-   const bound=receipt.command[base.length+1];need(receipt.command[base.length]==='--copy-byte-bound'&&/^[1-9][0-9]*$/u.test(bound)&&Number.isSafeInteger(Number(bound))&&Number(bound)<=STAGE_MAXIMUM&&Number(bound)>=archiveRef.bytes,'bounded actual runtime copy-byte-bound');
+   const bound=receipt.command[base.length+1];need(receipt.command[base.length]==='--copy-byte-bound'&&/^[1-9][0-9]*$/u.test(bound)&&Number.isSafeInteger(Number(bound))&&Number(bound)<=RUNTIME_STAGE_MAXIMUM&&Number(bound)>=archiveRef.bytes,'bounded actual runtime copy-byte-bound');
    const command=[...base,'--copy-byte-bound',bound];
-   const observedStage=inspectServiceOutputStage({stage,label,command,sourcePath:master.sourcePath,stdoutMaximum:STAGE_MAXIMUM,read:(ref:any,maximum:number)=>readSmall(ref,Math.min(maximum,MAX)),readStdout:()=>undefined,jobStartNs:jobStart,jobEndNs:jobEnd,startedAfterNs:previous});
+   const observedStage=inspectServiceOutputStage({stage,label,command,sourcePath:master.sourcePath,stdoutMaximum:RUNTIME_STAGE_MAXIMUM,read:(ref:any,maximum:number)=>readSmall(ref,Math.min(maximum,MAX)),readStdout:()=>undefined,jobStartNs:jobStart,jobEndNs:jobEnd,startedAfterNs:previous});
    previous=observedStage.completedUnixNs;
    const organized=inspectCandidateServiceRuntimeArchive({capture:indexRaw,scope,readRange:rangeReader(archiveRef),check});
    need(organized.members.length===observed.members&&observed.memberContentBytes===organized.members.reduce((total,row)=>total+(row.type==='file'?row.bytes:0),0),'runtime index/archive membership summary differs');
@@ -320,15 +394,7 @@ export function observeCandidateServiceRuntimeArtifact(input:{originals:unknown;
  };
 
  const scanned=scan();
- const publicMembers:PublicMember[]=[];const internal=new Map<string,{member:ParsedMember;archive:Ref;readArchiveRange:(offset:number,length:number)=>Buffer}>();
- for(const root of scanned.roots)for(const member of root.members){
-  const row:PublicMember=Object.freeze(member.type==='file'?{path:member.absolutePath,type:'file',mode:member.mode,bytes:member.bytes,sha256:member.sha256}
-   :member.type==='directory'?{path:member.absolutePath,type:'directory',mode:member.mode,bytes:0}
-   :{path:member.absolutePath,type:'symlink',mode:member.mode,bytes:0,target:member.target});
-  publicMembers.push(row);
-  internal.set(member.absolutePath,{member,archive:root.archive,readArchiveRange:root.readArchiveRange});
- }
- const rows=Object.freeze(publicMembers),byPath=new Map(rows.map(row=>[row.path,row]));
+ const {rows,byPath,internal}=organizeRuntimeRoots(scanned.roots);
  const custody=()=>{check();need(readCandidateServiceRelationship(input.originals)===initial,'runtime relationship seal changed');need(nativeOriginalsView(input.originals)===view&&derivedSourceView(input.source)===source,'private original/source handle changed');assertCollectedNativeOriginalCustody(input.originals);assertDerivedSourceCurrent(input.source,input.budget);};
  const issuedView=Object.freeze({
   identity:scanned.identity,
@@ -356,6 +422,36 @@ export function observeCandidateServiceRuntimeArtifact(input:{originals:unknown;
  });
  issued.set(issuedView,{originals:input.originals,source:input.source,assertCurrent:()=>issuedView.assertCurrent()});
  return issuedView;
+}
+
+/** Public filesystem view over the raw whole-root inventory.
+ *
+ * A raw tar hardlink entry is the SAME inode as its resolved target, so it is presented
+ * as an ordinary verified file carrying that target's real bytes and hash. The raw
+ * entry stays internal for tar/header validation only. This keeps the public
+ * `CandidateServiceRuntimeMember` union at file|directory|symlink.
+ */
+export function organizeRuntimeRoots(roots:readonly {root:string;archiveRoot:string;role:string;index:Ref;archive:Ref;members:readonly ParsedMember[];readArchiveRange:(offset:number,length:number)=>Buffer}[]){
+ const publicMembers:PublicMember[]=[];
+ const internal=new Map<string,{member:ParsedMember;archive:Ref;readArchiveRange:(offset:number,length:number)=>Buffer}>();
+ for(const root of roots){
+ const byRelativePath=new Map(root.members.map(member=>[member.path,member]));
+ for(const member of root.members){
+  if(member.type==='hardlink'){
+   const anchor=member.resolvedAnchor!;
+   const target=byRelativePath.get(anchor);
+   need(target?.type==='file'&&target.dataOffset!==undefined,'hardlink anchor must be an actual regular file');
+   publicMembers.push(Object.freeze({path:member.absolutePath,type:'file',mode:member.mode,bytes:target.bytes,sha256:target.sha256}));
+   internal.set(member.absolutePath,{member:target,archive:root.archive,readArchiveRange:root.readArchiveRange});
+   continue;
+  }
+  publicMembers.push(Object.freeze(member.type==='file'?{path:member.absolutePath,type:'file',mode:member.mode,bytes:member.bytes,sha256:member.sha256}
+   :member.type==='directory'?{path:member.absolutePath,type:'directory',mode:member.mode,bytes:0}
+   :{path:member.absolutePath,type:'symlink',mode:member.mode,bytes:0,target:member.target}));
+  internal.set(member.absolutePath,{member,archive:root.archive,readArchiveRange:root.readArchiveRange});
+ }
+ }
+ return {rows:Object.freeze(publicMembers),byPath:new Map(publicMembers.map(row=>[row.path,row])),internal};
 }
 
 const issued=new WeakMap<CandidateServiceRuntimeArtifactView,Readonly<{originals:unknown;source:unknown;assertCurrent():void}>>();

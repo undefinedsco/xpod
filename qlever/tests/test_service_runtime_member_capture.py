@@ -94,6 +94,7 @@ class RuntimeCaptureTests(unittest.TestCase):
         self.image = 'ghcr.io/undefinedsco/xpod@sha256:' + 'a' * 64
         self.config = 'sha256:' + 'b' * 64
         self.calls = []
+        self.timeouts = {}
         self.stdout = {}
         self.app = build_tar('app', APP_ROWS)
         self.sdk = build_tar('qlever', SDK_ROWS)
@@ -103,11 +104,13 @@ class RuntimeCaptureTests(unittest.TestCase):
     def fresh(self):
         self.out = Path(tempfile.mkdtemp(dir=self.root))
         self.calls = []
+        self.timeouts = {}
         self.stdout = {}
 
     def capture(self, label, argv, *args, **kwargs):
         role = argv[argv.index('--image-worker') + 1]
         self.calls.append(role)
+        self.timeouts[role] = kwargs.get('timeout')
         if role == 'pull':
             body = b'pulled'
         elif role in ('create', 'remove'):
@@ -150,7 +153,7 @@ class RuntimeCaptureTests(unittest.TestCase):
     def observe(self):
         with patch.object(M.secrets, 'token_hex', return_value=self.nonce), \
                 patch.object(M.outer.commands, 'capture', side_effect=self.capture):
-            return M.observe_output_image(self.image, self.config, M.Retained(self.out, Budget()),
+            return M.observe_output_image(self.image, self.config, M.Retained(self.out, Budget(), M.RUNTIME_ENCODED_LIMIT),
                                           self.out, self.sha, capture_runtime_members=True)
 
     def test_native_locator_optional_exact_same_capture_identity(self):
@@ -194,6 +197,9 @@ class RuntimeCaptureTests(unittest.TestCase):
         self.assertEqual(self.calls, ['pull', 'create', 'inspect', 'copy',
                                       'copy-runtime-app', 'copy-runtime-sdk',
                                       'remove', 'confirm-absent'])
+        self.assertEqual(self.timeouts['copy'], 15)
+        for role in M.RUNTIME_ROLES:
+            self.assertEqual(self.timeouts[role], M.LIMITS['timeoutMs'] / 1000)
         runtime = result['runtimeMemberObservation']
         self.assertEqual(runtime['kind'], 'actual-stopped-service-image-runtime-roots')
         self.assertEqual(runtime['containerId'], self.cid)
@@ -270,24 +276,24 @@ class RuntimeCaptureTests(unittest.TestCase):
     def test_member_and_byte_budgets_are_shared_and_bounded(self):
         self.app = build_tar('app', [('', 'directory', b'', None)] +
                              [(f'f{index}', 'file', b'x', None) for index in range(5)])
-        with patch.object(M, 'LIMITS', dict(self.limits, members=4)):
+        with patch.object(M, 'RUNTIME_MEMBER_MAXIMUM', 4):
             with self.assertRaisesRegex(ValueError, 'member count'):
                 self.observe()
-        # No material universe: runtime cp is bounded by the one 32*META ledger.
-        retained = M.Retained(self.out, Budget())
+        # No parallel material universe: all runtime originals share one opted-in ledger.
+        retained = M.Retained(self.out, Budget(), M.RUNTIME_ENCODED_LIMIT)
         self.assertFalse(hasattr(retained, 'material'))
         self.assertFalse(hasattr(retained, 'reserve_material'))
         self.assertFalse(hasattr(retained, 'settle_material'))
         bound = M.shared_runtime_cp_bound(retained, len(M.RUNTIME_ROOTS))
         self.assertGreater(bound, 0)
-        self.assertLessEqual(retained.total + 2 * bound * len(M.RUNTIME_ROOTS)
-                             + 3 * M.META * len(M.RUNTIME_ROOTS) + M.RUNTIME_CLEANUP_ROOM,
-                             32 * M.META)
+        self.assertLessEqual(retained.total + bound * len(M.RUNTIME_ROOTS)
+                             + M.RUNTIME_STAGE_OVERHEAD * len(M.RUNTIME_ROOTS) + M.RUNTIME_CLEANUP_ROOM,
+                             retained.universe)
         # The runtime tar scan/inventory itself cannot exceed the same ledger.
         self.assertEqual(M.RUNTIME_CLEANUP_ROOM, 14 * M.META)
         retained.reserve(4 * M.META)
         self.assertLess(M.shared_runtime_cp_bound(retained, 2), bound)
-        retained.total = 32 * M.META - M.RUNTIME_CLEANUP_ROOM
+        retained.reserve(retained.universe - M.RUNTIME_CLEANUP_ROOM - retained.total)
         with self.assertRaisesRegex(ValueError, 'remaining budget unavailable'):
             M.shared_runtime_cp_bound(retained, 1)
 
