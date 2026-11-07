@@ -13,18 +13,44 @@ const {applyPlatformOptionalDependencies}=require('../../platform-binaries.cjs')
 const sha=(value:Buffer)=>createHash('sha256').update(value).digest('hex');
 const MAXIMUM=128*1024;
 function need(value:unknown,why:string):asserts value{if(!value)throw Error('Candidate service root mutation: '+why);}
-function manifest(raw:Buffer):any{need(raw.length>0&&raw.length<=MAXIMUM,'bounded actual root manifest required');const value=JSON.parse(raw.toString());need(value&&typeof value==='object'&&!Array.isArray(value)&&value.name==='@undefineds.co/xpod','actual root identity');return value;}
+function manifest(raw:Buffer,expectedName:string):any{need(raw.length>0&&raw.length<=MAXIMUM,'bounded actual root manifest required');const value=JSON.parse(raw.toString());need(value&&typeof value==='object'&&!Array.isArray(value)&&value.name===expectedName,'actual '+expectedName+' identity');return value;}
 
 /** Pure byte mechanics, not an issuer. The operational caller below supplies
  * the existing private GitHub run original and immutable Git source bytes. */
 export function inspectCandidateRootMutation(input:{before:Buffer;after:Buffer;immutable:Buffer;run:any;sourceSha:string;runId:number;runAttempt:number}){
  const {run}=input;need(run&&run.id===input.runId&&run.run_attempt===input.runAttempt&&run.head_sha===input.sourceSha&&run.head_branch==='staging'&&['push','workflow_dispatch'].includes(run.event)&&Number.isSafeInteger(run.run_number)&&run.run_number>0,'actual same staging run/head/attempt/number');
  need(input.before.equals(input.immutable),'before differs from immutable Git root');
- const before=manifest(input.before),after=manifest(input.after);
+ const before=manifest(input.before,'@undefineds.co/xpod'),after=manifest(input.after,'@undefineds.co/xpod');
  const candidate=deriveCandidate({branch:'staging',version:before.version,runNumber:run.run_number,runAttempt:input.runAttempt,sha:input.sourceSha});
  const expected=applyPlatformOptionalDependencies({...before,version:candidate.candidateVersion},candidate.candidateVersion);
  need(isDeepStrictEqual(after,expected),'unexpected root mutation outside candidate/platform SSOT');
  return Object.freeze({candidateVersion:candidate.candidateVersion,beforeSha256:sha(input.before),afterSha256:sha(input.after),rootCandidateMutationVerified:true as const});
+}
+
+/** The ONE manifest-transition verifier for a version-stamped input.
+ *
+ * `--apply-root-version` writes BOTH the root `package.json` and
+ * `desktop/package.json` with the SAME derived candidate version. The root keeps
+ * its extra platform optional-dependency rewrite, which is why root has its own
+ * checker; the desktop manifest is a pure single-field version transition, so it
+ * is verified here by the same derivation and the same strict identity rules —
+ * not by a parallel copy of the logic.
+ *
+ * `before` must equal the immutable Git bytes; `after` must equal `before` with
+ * only `version` set to the version derived from the actual run. Any other field
+ * change, any foreign namespace, or any mismatched version is refused. */
+export function inspectCandidateVersionedManifestMutation(input:{before:Buffer;after:Buffer;immutable:Buffer;name:string;run:any;sourceSha:string;runId:number;runAttempt:number;expectedVersion?:string}){
+ const {run}=input;need(run&&run.id===input.runId&&run.run_attempt===input.runAttempt&&run.head_sha===input.sourceSha&&run.head_branch==='staging'&&['push','workflow_dispatch'].includes(run.event)&&Number.isSafeInteger(run.run_number)&&run.run_number>0,'actual same staging run/head/attempt/number');
+ need(typeof input.name==='string'&&input.name.length>0&&input.name.length<=128,'bounded manifest identity');
+ need(input.before.equals(input.immutable),'before differs from immutable Git '+input.name);
+ const before=manifest(input.before,input.name),after=manifest(input.after,input.name);
+ const candidate=deriveCandidate({branch:'staging',version:before.version,runNumber:run.run_number,runAttempt:input.runAttempt,sha:input.sourceSha});
+ const version=input.expectedVersion??candidate.candidateVersion;
+ need(version===candidate.candidateVersion,'expected version differs from run-derived candidate version');
+ need(after.version===version,'recorded after version differs from derived candidate version');
+ const expected={...before,version};
+ need(isDeepStrictEqual(after,expected),'unexpected '+input.name+' mutation outside candidate version transition');
+ return Object.freeze({name:input.name,candidateVersion:version,beforeSha256:sha(input.before),afterSha256:sha(input.after),versionedManifestMutationVerified:true as const});
 }
 
 /** Same native/source private issuers; no serialized report can enter here.

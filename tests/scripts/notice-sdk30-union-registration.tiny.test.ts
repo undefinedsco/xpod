@@ -16,8 +16,9 @@ test('SDK30 and Notice fork whole originals both survive before the single actua
  // consumer 91 -> 92 (+1) and CI 180 -> 182 (+2). The additive constants below
  // therefore track the real current tail delta, never a historical index.
  // Genuine post-baseline appends: the published tail is retained, CI197/198 are
- // the FROZEN 1a01 variants, and CI199/200 are the 3fb origin-fix appends. The
- // captured parent union therefore grows by 120, never a historical index.
+ // the FROZEN 1a01 variants, CI199/200 the 3fb origin-fix appends, and CI201/202
+ // the RC382 workspace-build appends. The captured parent union therefore grows
+ // by 122, never a historical index.
  expect(new Set([...parents.sdk30Consumer,...parents.noticeConsumer ]).size+58).toBe(c.length);
- expect(new Set([...parents.sdk30CI,...parents.noticeCI]).size+120).toBe(ci.length);
+ expect(new Set([...parents.sdk30CI,...parents.noticeCI]).size+122).toBe(ci.length);
 });

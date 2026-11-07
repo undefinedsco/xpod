@@ -909,11 +909,11 @@
   },
   {
     "path": "scripts/lib/independent-admission/candidate-service-pack-output.ts",
-    "sha256": "3c57db1747f87e8bec6c9cb842e7ef50ebc089b4070c57852baf9b0d5e85301e"
+    "sha256": "df8be46a92835c6e0df65fca11f44cba2a3d6873632166bf87f23fd4fce616ec"
   },
   {
     "path": "scripts/lib/independent-admission/candidate-service-root-mutation.ts",
-    "sha256": "484c64fe912f0403d36b50cdeb55f137f0211011cbdffb603f559710cbf124f3"
+    "sha256": "a43c51a31c0fbf54b13375c62d1d621fb9902166ea46a2118a18edeab68fdf68"
   },
   {
     "path": "scripts/lib/independent-admission/candidate-service-runtime-protocol.ts",
@@ -1221,7 +1221,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "7ee640bafe896e2b951959e6d1c9314983073fe8bd2720fd2c07ca604d602c8a"
+    "sha256": "e54fe59d65e4d4f6042a35e2ac74e0cd514d364cb9cf5088423ac56a155c02d3"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -1317,7 +1317,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/service-workspace-build-replay.ts",
-    "sha256": "6cd08e4698bbd68a13f704ebbb34c593e6bbeb3d09b55f7be1cd3c31f6d6ffea"
+    "sha256": "72fc0344dca03682f4dce32d72f6b581827e9f4ce97ec865d79854315fc2bee7"
   },
   {
     "path": "scripts/lib/independent-admission/shared-source-lifetime.ts",

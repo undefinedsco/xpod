@@ -102,14 +102,10 @@ services:
       CSS_LOGGING_LEVEL: info
       XPOD_RDF_NATIVE_SPARQL_ENABLED: 'false'
     ports: ['127.0.0.1:16310:16310']
-    # The matrix starts local with `up --wait`, so local needs its own readiness
-    # probe like cloud; a running container alone does not establish readiness.
-    # Probe OIDC discovery before the live canary starts.
-    healthcheck:
-      test: [CMD, curl, --fail, --silent, http://localhost:16310/.well-known/openid-configuration]
-      interval: 5s
-      timeout: 5s
-      retries: 30
+    # No local readiness probe: this service never declared one before, and adding
+    # a discovery healthcheck was an unsupported startup constraint. Readiness is
+    # established by the existing waits (waitManagedLocalRegistration plus
+    # waitRuntime requiring CSS and API running) and by the live canary itself.
     depends_on:
       cloud: {condition: service_healthy}
     volumes:
