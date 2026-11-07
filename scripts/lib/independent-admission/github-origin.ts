@@ -1261,8 +1261,31 @@ const apiCurrentSharedParserGroup=Object.freeze({...apiCurrentCombinedGroup,name
 /** The CURRENT API build-source bindings. It tracks the newest appended tuple so
  * consumers always see today's bytes; every API1..API30 group itself stays
  * byte-identical. */
-export const API_SERVICE_BUILD_SOURCE_BINDINGS=apiCurrentSharedParserGroup.sourceBindings;
-export const API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS:readonly (GitHubSourceBindingGroup&{readonly name?:string})[]=Object.freeze([...PRE_BUILD_API_GROUPS,apiControlledDescriptorSourceGroup25,apiCaptureInputsTimingGroup,apiCapturePerformanceGroup,apiFinalJointGroup,apiOrm326JointGroup,apiCurrentCombinedGroup,apiCurrentSharedParserGroup]);
+const API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS_BASE:readonly (GitHubSourceBindingGroup&{readonly name?:string})[]=Object.freeze([...PRE_BUILD_API_GROUPS,apiControlledDescriptorSourceGroup25,apiCaptureInputsTimingGroup,apiCapturePerformanceGroup,apiFinalJointGroup,apiOrm326JointGroup,apiCurrentCombinedGroup,apiCurrentSharedParserGroup]);
+
+/** RC159 API32 (APPEND-ONLY): package.json and bun.lock are ALREADY owned
+ * sourceBindings of the CURRENT tuple, so API32 clones API31 and rebinds those two
+ * rows in place. No path, selector, stage or relation is added and every published
+ * API1..API31 tuple keeps its exact bytes. */
+const apiRc159PackageHash='f09bc8ffce79f394825231e38eeff615179f99df977dc8b4b1654dd4e740feb4';
+const apiRc159LockHash='6cb041b44fdc2dfe9171e449a69eeeec4617b5ccf754a0312cd194b7b7e3aa7b';
+/** API31 survivors already own package.json and bun.lock as sourceBindings, but with
+ * byte-identical selectors API31/API32 are indistinguishable to the stage-union
+ * resolver. Promoting the SAME already-owned originals into secondarySelectors makes
+ * each requested role owned by both survivors, so actual observed package/lock bytes
+ * separate old from new without changing the parser, ref policy or API31. */
+const apiRc159Tuple=Object.freeze({...apiCurrentSharedParserGroup,name:'api-current-undici-runtime-dependency',
+  secondarySelectors:Object.freeze([...(apiCurrentSharedParserGroup.secondarySelectors??[]).map(row=>Object.freeze({...row,
+    sha256:row.path==='package.json'?apiRc159PackageHash
+      :row.path==='bun.lock'?apiRc159LockHash:row.sha256})),
+    Object.freeze({path:'package.json',sha256:apiRc159PackageHash}),
+    Object.freeze({path:'bun.lock',sha256:apiRc159LockHash})]),
+  sourceBindings:Object.freeze((apiCurrentSharedParserGroup.sourceBindings??[]).map(row=>Object.freeze({...row,
+    sha256:row.path==='package.json'?apiRc159PackageHash
+      :row.path==='bun.lock'?apiRc159LockHash:row.sha256})))});
+export const API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS:readonly (GitHubSourceBindingGroup&{readonly name?:string})[]=Object.freeze([...API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS_BASE,apiRc159Tuple]);
+/** CURRENT API32 sourceBindings; the frozen API31 tuple keeps its own object. */
+export const API_SERVICE_BUILD_SOURCE_BINDINGS=apiRc159Tuple.sourceBindings;
 
 export const API_WORKSPACE_SOURCE_GROUPS=Object.freeze(API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS.filter(group=>group.sourceBindings.some(row=>row.path==='scripts/lib/api-scoped-dependency-state.ts')));
 

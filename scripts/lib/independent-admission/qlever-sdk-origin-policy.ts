@@ -3097,5 +3097,39 @@ const SDK108_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK107_GROUP,
       :row.path==='scripts/lib/independent-admission/source-original-tar.ts'?QLEVER_RC387_TAR_HASH:row.sha256})),
     Object.freeze({path:'qlever/scripts/sdk-service-runtime-stream.py',sha256:QLEVER_RC387_STREAM_HASH})]),
 });
-export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP]);
-export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP]);
+/**
+ * PR159 consumer tail (APPEND-ONLY, consumer axes only).
+ *
+ * The frozen producer contracts `QLEVER_SDK_EXECUTION_GROUPS` (SDK1..93),
+ * `QLEVER_LINUX_EXECUTION_GROUPS` (Linux1..94) and `QLEVER_NORMAL_BUILD_GROUPS`
+ * (3 tuples) are HISTORICAL: the current normal-build APP identity resolves through
+ * `QLEVER_NORMAL_SOURCE_GROUPS`, not through those axes, so they stay byte-identical
+ * to the published 1cc4 baseline and are NOT advanced here.
+ *
+ * Only the two consumer arrays gain one tuple. `package.json`, `bun.lock` and
+ * `qlever/scripts/sdk-service-abi-collector.py` are already owned rows of SDK108, so
+ * the new group clones SDK108 and rebinds those rows in place: no path, role, stage
+ * or relation is added and all 15 inherited stages are preserved.
+ *
+ * ONE object is created and BOTH consumer arrays reference it, exactly as the original
+ * two arrays shared `SDK108_GROUP`.
+ */
+const PR159_PACKAGE_HASH='f09bc8ffce79f394825231e38eeff615179f99df977dc8b4b1654dd4e740feb4';
+const PR159_LOCK_HASH='6cb041b44fdc2dfe9171e449a69eeeec4617b5ccf754a0312cd194b7b7e3aa7b';
+const PR159_COLLECTOR_HASH='f88109de9c1ada0ccdd7a2abfae33ce3007e71cc657521159616b39453a560b4';
+const PR159_SDK109_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK108_GROUP,
+  secondarySelectorStages:Object.freeze((SDK108_GROUP.secondarySelectorStages??[]).map(stage=>
+    Object.freeze(stage.map(row=>Object.freeze({...row,
+      sha256:row.path==='package.json'?PR159_PACKAGE_HASH:row.sha256}))))),
+  secondarySelectors:SDK108_GROUP.secondarySelectors
+    ?Object.freeze(SDK108_GROUP.secondarySelectors.map(row=>Object.freeze({...row,
+      sha256:row.path==='package.json'?PR159_PACKAGE_HASH
+        :row.path==='bun.lock'?PR159_LOCK_HASH:row.sha256})))
+    :SDK108_GROUP.secondarySelectors,
+  sourceBindings:Object.freeze(SDK108_GROUP.sourceBindings.map(row=>Object.freeze({...row,
+    sha256:row.path==='package.json'?PR159_PACKAGE_HASH
+      :row.path==='bun.lock'?PR159_LOCK_HASH
+      :row.path==='qlever/scripts/sdk-service-abi-collector.py'?PR159_COLLECTOR_HASH:row.sha256}))),
+});
+export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP]);
+export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP]);

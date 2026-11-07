@@ -41,7 +41,7 @@ const PRE_ENTITY_CLI_SOURCE_VERSION_GROUPS:readonly CliSourceVersionGroup[]=Obje
 const entityCliParent=PRE_ENTITY_CLI_SOURCE_VERSION_GROUPS[PRE_ENTITY_CLI_SOURCE_VERSION_GROUPS.length-1]!;
 const PRE_BUILD_CLI_SOURCE_VERSION_GROUPS:readonly CliSourceVersionGroup[]=Object.freeze([...PRE_ENTITY_CLI_SOURCE_VERSION_GROUPS,Object.freeze({...entityCliParent,secondarySourcePaths:Object.freeze([...(entityCliParent.secondarySourcePaths??[]),'scripts/workspace-package-payload.cjs']),sourceBindings:Object.freeze((entityCliParent.sourceBindings??[]).map(row=>Object.freeze({...row,sha256:row.path==='scripts/workspace-package-payload.cjs'?'89a63085908a414251a34d0fae5143a6a20c28e4b8dfb05d3ea8b9113b8fdc49':row.sha256})))})]);
 const buildCliParent=PRE_BUILD_CLI_SOURCE_VERSION_GROUPS[PRE_BUILD_CLI_SOURCE_VERSION_GROUPS.length-1]!;
-export const CLI_SOURCE_VERSION_GROUPS:readonly CliSourceVersionGroup[]=Object.freeze([...PRE_BUILD_CLI_SOURCE_VERSION_GROUPS,Object.freeze({...buildCliParent,sourceHelper:'d0bcdbdec78a1bdb2cebb90910b4dd7c678c5027fc9856fc5475961b3da10dd1'}),/** Final combined slice: the reviewed catalog CLI tuple re-bound to the ACTUAL
+const CLI_SOURCE_VERSION_BASE:readonly CliSourceVersionGroup[]=Object.freeze([...PRE_BUILD_CLI_SOURCE_VERSION_GROUPS,Object.freeze({...buildCliParent,sourceHelper:'d0bcdbdec78a1bdb2cebb90910b4dd7c678c5027fc9856fc5475961b3da10dd1'}),/** Final combined slice: the reviewed catalog CLI tuple re-bound to the ACTUAL
 * R226 supervisor bytes; every earlier supervisor variant stays declared. */
 Object.freeze({...buildCliParent,sourceHelper:'d0bcdbdec78a1bdb2cebb90910b4dd7c678c5027fc9856fc5475961b3da10dd1',supervisors:Object.freeze(['30b890b9b73e819b40b1fc4de511b80cad50255d99af7d0699315b06e4a5a2c3'] as const),sourceBindings:Object.freeze((buildCliParent.sourceBindings??[]).map(row=>Object.freeze({...row,sha256:row.path==='scripts/workspace-package-payload.cjs'?'f88176458eba63d238cf99412bbc834143fe6b1e74089b27c290c0be040d2d33':row.sha256})))}),
  /** ORM 0.3.26 joint CLI tuple: ONLY the two manifest facts moved (package.json
@@ -57,6 +57,14 @@ Object.freeze({...buildCliParent,sourceHelper:'d0bcdbdec78a1bdb2cebb90910b4dd7c6
  * every earlier CLI tuple keeps its exact published bytes. */
  Object.freeze({...buildCliParent,sourceHelper:'d0bcdbdec78a1bdb2cebb90910b4dd7c678c5027fc9856fc5475961b3da10dd1',supervisors:Object.freeze(['30b890b9b73e819b40b1fc4de511b80cad50255d99af7d0699315b06e4a5a2c3'] as const),secondarySourcePaths:Object.freeze([...(buildCliParent.secondarySourcePaths??[]),'package.json','bun.lock']),sourceBindings:Object.freeze((buildCliParent.sourceBindings??[]).map(row=>Object.freeze({...row,sha256:row.path==='scripts/workspace-package-payload.cjs'?'058c6f633ed805cf0af2f5f3ebac1cfd1706c8ed106da2f16766dde4a20c145a':row.path==='package.json'?'f07277658e7d111655eb52ba560d6c2f2b3b3652a38ad0f137b2cb0812c206f6':row.path==='bun.lock'?'ff70b48d929511d94b9350abbb91ee4980aa9e86532190574fe2f3e42b221042':row.sha256}))),sourceLimits:'5eb76b0cfcefc0b0352342fe0bf2d46dab2cbfa4a6f549af17c819e8cf90494c'})
 ]);
+export const CLI_SOURCE_VERSION_GROUPS:readonly CliSourceVersionGroup[]=Object.freeze([...CLI_SOURCE_VERSION_BASE,
+ /** RC159 CLI15 (APPEND-ONLY): package.json and bun.lock are ALREADY owned
+  * sourceBindings of the CURRENT CLI tuple, so CLI15 clones the last base tuple and
+  * rebinds only those two rows. Earlier CLI tuples keep their exact bytes. */
+ Object.freeze({...CLI_SOURCE_VERSION_BASE[CLI_SOURCE_VERSION_BASE.length-1]!,sourceBindings:Object.freeze((CLI_SOURCE_VERSION_BASE[CLI_SOURCE_VERSION_BASE.length-1]!.sourceBindings??[]).map(row=>Object.freeze({...row,
+   sha256:row.path==='package.json'?'f09bc8ffce79f394825231e38eeff615179f99df977dc8b4b1654dd4e740feb4':row.path==='bun.lock'?'6cb041b44fdc2dfe9171e449a69eeeec4617b5ccf754a0312cd194b7b7e3aa7b':row.sha256})))}),
+]);
+
 function reviewedCliSourceGroup(observed:Readonly<Record<keyof typeof CLI_SOURCE_POLICY,string>>,readTracked?:(name:string)=>Buffer):CliSourceVersionGroup|undefined{
  let candidates=CLI_SOURCE_VERSION_GROUPS.filter(group=>
   (['producer','publicationBudget','sourceHelper','sourceLimits','copier'] as const).every(key=>observed[key]===group[key])

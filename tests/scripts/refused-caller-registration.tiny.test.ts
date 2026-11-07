@@ -45,11 +45,14 @@ test('every ACTUAL 9d02 published prefix is byte-identical and only genuine tupl
   if(name==='cli'){
    // The 9d02 fixture publishes CLI only as its plain hash list, so compare the
    // published PREFIX to that list and let the appended tuples follow: ORM 0.3.26,
-   // the current 8GiB tuple, and the shared-parser CLI14 tuple. The exact published
-   // prefix stays a real immutable anchor.
+   // the current 8GiB tuple, the shared-parser CLI14 tuple, and the PR159 CLI15
+   // tuple that carries the new root undici runtime dependency. The exact published
+   // prefix stays a real immutable anchor; the append count is derived from the
+   // current registration count rather than a stale literal.
    expect(live.slice(0,published.cliHashes.length).map(digest)).toEqual(published.cliHashes);
    expect(published.publishedAll.cli).toBe(published.cliHashes.length);
-   expect(live.length-published.cliHashes.length).toBe(3);
+   expect(live.length-published.cliHashes.length)
+     .toBe(CURRENT_SOURCE_GROUP_COUNTS.cli-published.cliHashes.length);
    continue;
   }
   const frozen=(published.groupHashes as Record<string,string[]>)[name]!;

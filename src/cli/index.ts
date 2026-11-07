@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { ensureSupportedBun } from '../runtime/compat/ensureSupportedBun';
+import { ensureBunUndiciCompat } from '../runtime/compat/ensureBunUndiciCompat';
 import '../runtime/configure-drizzle-solid';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
@@ -47,6 +48,8 @@ async function createCommandParser(requestedCommand?: string) {
 
 async function main() {
   ensureSupportedBun();
+  // Command imports can load Components.js, which needs Bun's Undici cache APIs.
+  ensureBunUndiciCompat();
   const argv = process.argv.slice(2);
   if (argv[0] === 'agent-fs' && argv[1] === 'rg') {
     const { runRgWrapperMain } = await import('./agent-fs/rg-entry');

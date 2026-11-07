@@ -2,6 +2,7 @@ import history from '../fixtures/independent-admission/pre-private-service-cli-g
 import{preServicePackOriginal}from'./pre-service-pack-api-originals';
 import {test,expect} from 'bun:test';
 import {readFileSync} from 'node:fs';
+import {gunzipSync} from 'node:zlib';
 import {createHash} from 'node:crypto';
 import {CLI_SOURCE_POLICY,CLI_SOURCE_VERSION_GROUPS,reviewedCliSourceVersion,verifyCliInputSet} from '../../scripts/lib/independent-admission/source-rules';
 const files={producer:'scripts/check-cli-publication.cjs',publicationBudget:'scripts/lib/cli-publication-budget.cjs',sourceHelper:'scripts/lib/module-source-materials.py',sourceLimits:'scripts/lib/module-artifact-limits.json',copier:'scripts/cli-build-inputs.cjs',supervisor:'scripts/lib/afs-publication-command.cjs',workflow:'.github/workflows/cli-package.yml'};
@@ -61,7 +62,7 @@ test('new same-primary CLI source tuple observes its own manifest bytes and pres
  // Every historically published tuple stays byte-identical at its own index; the
  // ORM 0.3.26 joint tuple is a genuine append bound to the ACTUAL manifest bytes.
  const publishedCount=history.hashes.length;
- expect(CLI_SOURCE_VERSION_GROUPS.length).toBe(publishedCount+7);
+ expect(CLI_SOURCE_VERSION_GROUPS.length).toBe(publishedCount+8);
  for(let i=0;i<history.hashes.length;i++)expect(createHash('sha256').update(JSON.stringify(CLI_SOURCE_VERSION_GROUPS[i])).digest('hex')).toBe(history.hashes[i]!);
  const orm326=(CLI_SOURCE_VERSION_GROUPS as any[]).at(-1)!;
  for(const binding of orm326.sourceBindings??[])expect(createHash('sha256').update(readFileSync(binding.path)).digest('hex')).toBe(binding.sha256);
@@ -81,11 +82,30 @@ test('new same-primary CLI source tuple observes its own manifest bytes and pres
 import entityHistory from '../fixtures/independent-admission/pre-sdk46-cli-whole-hashes.original.json';
 import historicParser from '../fixtures/independent-admission/pre-shared-parser-f881.original.json';
 import priorShared from '../fixtures/independent-admission/pre-sdk46-shared-api-originals.original.json';
-/** Historical READ of the shared parser at its pre-append bytes. The working tree
- * now carries the new parser, so a historical tuple must be exercised against the
- * exact captured original instead of today's file. Verified byte-for-byte below. */
+/** Historical READ: a historical tuple must be exercised against the exact
+ * captured originals, not against today's working tree. Two independent inputs moved
+ * after these tuples were published:
+ *  - the shared parser (captured in `pre-shared-parser-f881.original.json`);
+ *  - the root `package.json`/`bun.lock`, which later gained the Undici dependency.
+ * The old lock is reused from the already-public RC382 gzip fixture
+ * (`ff70b48d…`, 790732 bytes). The old root manifest is the immutable public
+ * `package.json` at 1cc4ffae (`f0727765…`, 19403 bytes).
+ * Current tuples keep reading the live tree (`readFileSync`). */
 const historicParserRaw=Buffer.from(historicParser.files[0]!.rawBase64,'base64');
-const historicalRead=(name:string)=>name==='scripts/workspace-package-payload.cjs'?historicParserRaw:readFileSync(name);
+const historicalLockRaw=gunzipSync(readFileSync(new URL('./fixtures/rc382-workspace-build-bun.lock.gz',import.meta.url)));
+const historicalPackageRaw=readFileSync(new URL('./fixtures/pr159-pre-undici-package.json',import.meta.url));
+const HISTORICAL_PACKAGE_SHA256='f07277658e7d111655eb52ba560d6c2f2b3b3652a38ad0f137b2cb0812c206f6';
+const HISTORICAL_LOCK_SHA256='ff70b48d929511d94b9350abbb91ee4980aa9e86532190574fe2f3e42b221042';
+expect(historicalPackageRaw.length).toBe(19403);
+expect(createHash('sha256').update(historicalPackageRaw).digest('hex')).toBe(HISTORICAL_PACKAGE_SHA256);
+expect(historicalLockRaw.length).toBe(790732);
+expect(createHash('sha256').update(historicalLockRaw).digest('hex')).toBe(HISTORICAL_LOCK_SHA256);
+const historicalRead=(name:string)=>{
+ if(name==='scripts/workspace-package-payload.cjs')return historicParserRaw;
+ if(name==='package.json')return historicalPackageRaw;
+ if(name==='bun.lock')return historicalLockRaw;
+ return readFileSync(name);
+};
 test('shared payload CLI version preserves all eight actual f72 recipes and stages only already-owned discriminators',()=>{
  expect(entityHistory.base).toBe('f72f8a8ab3f304631e7d4357be552dd441ea9a0d');expect(entityHistory.hashes.length).toBe(8);
  for(let i=0;i<entityHistory.hashes.length;i++)expect(createHash('sha256').update(JSON.stringify(CLI_SOURCE_VERSION_GROUPS[i])).digest('hex')).toBe(entityHistory.hashes[i]!);
