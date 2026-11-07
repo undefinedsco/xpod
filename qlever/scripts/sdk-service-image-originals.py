@@ -577,8 +577,48 @@ SERVICE_ABI_SOURCE_PATHS={
     'abi-runtime':'qlever/qlever_local_runtime/src/xpod_qlever_local_runtime.cpp',
     'abi-client':'src/storage/rdf/LocalQleverNativeSparqlClient.ts',
 }
-SERVICE_ABI_HELPER_PATHS={'declarations': 'qlever/scripts/sdk-service-abi-declarations.py', 'collector': 'qlever/scripts/sdk-service-abi-collector.py', 'direct_commands': 'qlever/scripts/sdk-service-abi-direct-runtime-commands.py', 'retained_session': 'qlever/scripts/sdk-service-abi-retained-session.py', 'host_session': 'qlever/scripts/sdk-service-abi-host-session.py', 'transport': 'qlever/scripts/sdk-service-abi-transport.py', 'replay': 'qlever/scripts/sdk-service-abi-protocol-replay.py', 'helper': 'qlever/scripts/verify-local-runtime-artifacts.py', 'seed': 'qlever/scripts/sdk-service-abi-seed.py', 'source_custody': 'qlever/scripts/sdk-service-abi-source-custody.py'}
-SERVICE_ABI_HELPER_PATHS.update({'role_commands': 'qlever/scripts/sdk-service-abi-role-commands.py', 'role_session': 'qlever/scripts/sdk-service-abi-bun-role-session.py', 'role_collector': 'qlever/scripts/sdk-service-abi-role-collector.py', 'read_budget_module': 'qlever/scripts/sdk-service-abi-read-budget.py', 'elf_module': 'qlever/scripts/sdk-service-abi-elf.py'})
+SERVICE_ABI_HELPER_SOURCE='qlever/scripts/sdk-service-abi-source-custody.py'
+SERVICE_ABI_HELPER_LIMIT=1024**2
+
+
+def declared_abi_helpers(source_text):
+    """Read HELPERS as DATA from the custody source, without executing it.
+
+    Only a literal `HELPERS = {...}` assignment is accepted: the module is parsed with
+    ast, exactly one top-level assignment to HELPERS may exist, and its value must be a
+    dict literal of str->str. Nothing from the source is imported, compiled or run, so
+    malicious or non-literal content cannot execute here.
+    """
+    import ast
+    need(isinstance(source_text,str) and 0<len(source_text)<=SERVICE_ABI_HELPER_LIMIT,
+         'bounded ABI custody source required')
+    tree=ast.parse(source_text)
+    found=[node for node in tree.body
+           if isinstance(node,ast.Assign) and len(node.targets)==1
+           and isinstance(node.targets[0],ast.Name) and node.targets[0].id=='HELPERS']
+    need(len(found)==1,'exactly one top-level HELPERS assignment required')
+    value=found[0].value
+    need(isinstance(value,ast.Dict),'HELPERS must be a literal dict')
+    # A duplicate key is silently collapsed by dict(), so reject it at the AST level.
+    keys=[]
+    for key in value.keys:
+        need(isinstance(key,ast.Constant) and isinstance(key.value,str),
+             'literal helper role key required')
+        keys.append(key.value)
+    need(len(keys)==len(set(keys)),'duplicate helper role in HELPERS')
+    helpers=ast.literal_eval(value)
+    need(isinstance(helpers,dict) and helpers,'declared ABI helper inventory required')
+    for role,relative in helpers.items():
+        need(isinstance(role,str) and re.fullmatch('[a-z_]+',role),'fixed helper role name required')
+        need(isinstance(relative,str) and re.fullmatch('qlever/scripts/[A-Za-z0-9._-]+',relative),
+             'fixed helper path required')
+    return helpers
+
+
+with (HERE.parents[1]/SERVICE_ABI_HELPER_SOURCE).open('rb') as helper_source:
+    helper_source_bytes=helper_source.read(SERVICE_ABI_HELPER_LIMIT+1)
+need(len(helper_source_bytes)<=SERVICE_ABI_HELPER_LIMIT,'bounded ABI custody source required')
+SERVICE_ABI_HELPER_PATHS=declared_abi_helpers(helper_source_bytes.decode('utf-8'))
 SERVICE_ABI_PASSIVE_PATHS={'abi-role-probe':'qlever/scripts/sdk-service-abi-role-probe.mjs'}
 SERVICE_CAPTURE_PATHS={**SERVICE_ABI_SOURCE_PATHS,**{'abi-helper-'+role.replace('_','-'):path for role,path in SERVICE_ABI_HELPER_PATHS.items()},**SERVICE_ABI_PASSIVE_PATHS}
 SERVICE_SOURCE_ROLES=('head','manifest','status',*SERVICE_CAPTURE_PATHS,*(role+'-oid' for role in SERVICE_CAPTURE_PATHS))

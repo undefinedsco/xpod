@@ -22,6 +22,14 @@ HELPERS = {
     'helper': 'qlever/scripts/verify-local-runtime-artifacts.py',
     'seed': 'qlever/scripts/sdk-service-abi-seed.py',
     'source_custody': 'qlever/scripts/sdk-service-abi-source-custody.py',
+    # The ABI collector's role pass consumes these five modules directly, so they are
+    # part of the same fixed helper authority rather than optional extras. Omitting
+    # them made the capture hand over 15 roles to a 10-role custody contract.
+    'role_commands': 'qlever/scripts/sdk-service-abi-role-commands.py',
+    'role_session': 'qlever/scripts/sdk-service-abi-bun-role-session.py',
+    'role_collector': 'qlever/scripts/sdk-service-abi-role-collector.py',
+    'read_budget_module': 'qlever/scripts/sdk-service-abi-read-budget.py',
+    'elf_module': 'qlever/scripts/sdk-service-abi-elf.py',
 }
 
 

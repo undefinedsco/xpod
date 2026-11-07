@@ -553,7 +553,7 @@
   },
   {
     "path": "qlever/scripts/sdk-service-abi-source-custody.py",
-    "sha256": "3f00770f2951414508704eeecc41ec006865752b06652a3cd627e809281a8534"
+    "sha256": "9173161f3f9a649e4ce503326b4262d8d8dc9fbef7a758b9146cb5ff2b372139"
   },
   {
     "path": "qlever/scripts/sdk-service-abi-transport.py",
@@ -561,7 +561,7 @@
   },
   {
     "path": "qlever/scripts/sdk-service-image-originals.py",
-    "sha256": "4a1cab2d35865d75bf45f718be1c63f6840ccb6b9114dba383eac879b9116413"
+    "sha256": "ca95d420244405b61e1bab3763528c01b9f6a031ea2cbed45b0a92d80ff3167e"
   },
   {
     "path": "qlever/scripts/sdk-service-pack-bindings.py",
@@ -1221,7 +1221,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "c12d1e455df368b0f71bea9f22ddbef0af0bc99e3a234ffb60b543537ece20ee"
+    "sha256": "68e9b709bab3e5e839afd733797378ada397bf355732a8af7f843324fb0c35e3"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",

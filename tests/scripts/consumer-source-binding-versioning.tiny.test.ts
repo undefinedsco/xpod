@@ -67,11 +67,19 @@ const sdk102=QLEVER_SDK_CONSUMER_GROUPS[101]!;
 // All stay at explicit indexes so a later append cannot silently shift them.
 const sdk104=QLEVER_SDK_CONSUMER_GROUPS[103]!;
 const sdk105=QLEVER_SDK_CONSUMER_GROUPS[104]!;
-const sdk106=QLEVER_SDK_CONSUMER_GROUPS.at(-1)!;
+// SDK106 is now FROZEN history (RC385); SDK107 is the CURRENT tail (RC386 ABI helper
+// custody). Both are pinned to explicit indexes so a later append can never silently
+// shift which published tuple an assertion targets.
+const sdk106=QLEVER_SDK_CONSUMER_GROUPS[105]!;
+const sdk107=QLEVER_SDK_CONSUMER_GROUPS[106]!;
 // Whole-group aggregate of SDK105 as published (git-05cf baseline
 // families.sdkConsumer.aggregates[104]). Frozen history, never re-derived.
 const SDK105_FROZEN_WHOLE='6a2737d18a0b3fd4bee1250a818a80e4f65f2ab8609205a19bff40b92d097106';
-const SDK106_CURRENT_INDEX=105;
+// SDK106 whole-group aggregate from the authoritative 45dbc3af baseline
+// (families.sdkConsumer.aggregates[105]); RC386 must never move it.
+const SDK106_FROZEN_WHOLE='07c4255848e0fc496be0a2ea97512956c7c8541b01d55ca0d8dc8728453165cf';
+const SDK106_FROZEN_INDEX=105;
+const SDK107_CURRENT_INDEX=106;
 const SDK97=publishedSdk94.sdk97;
 const SDK98=publishedSdk94.sdk98;
 const SDK99=publishedSdk94.sdk99;
@@ -126,7 +134,7 @@ test('SDK95 stays the exact published consumer that produced RC373 native',()=>{
 });
 
 test('SDK96 stays the consumed baseline that RC374 published from',()=>{
-  expect(QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(106);
+  expect(QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(107);
   expect(QLEVER_SDK_CONSUMER_GROUPS[95]).toBe(sdk96);
   expect(whole(sdk96)).toBe(publishedSdk94.published.sdk96GroupSha256);
   expect(whole(sdk96)).toBe(publishedSdk94.sdk96.groupSha256);
@@ -156,7 +164,7 @@ test('SDK97 stays the consumed baseline that RC375 built from',()=>{
     'scripts/lib/independent-admission/qlever-sdk-service-relationship.ts']){
     expect(anyRow(sdk97,path).every(value=>/^[a-f0-9]{64}$/u.test(value.sha256))).toBe(true);
   }
-  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-10)).toBe(sdk97);
+  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-11)).toBe(sdk97);
 });
 
 test('SDK98 stays the consumed baseline that RC375 built from',()=>{
@@ -173,7 +181,7 @@ test('SDK98 stays the consumed baseline that RC375 built from',()=>{
     expect(declared.length).toBeGreaterThan(0);
     expect(declared.every(value=>/^[a-f0-9]{64}$/u.test(value.sha256))).toBe(true);
   }
-  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-9)).toBe(sdk98);
+  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-10)).toBe(sdk98);
 });
 
 test('SDK99 stays the published staging baseline that RC377 consumed',()=>{
@@ -185,7 +193,7 @@ test('SDK99 stays the published staging baseline that RC377 consumed',()=>{
   // SDK99 is frozen history: it keeps the pre-repair collector and TS bytes.
   expect(row(sdk99,'qlever/scripts/sdk-service-image-originals.py').map(value=>value.sha256))
     .not.toEqual([disk('qlever/scripts/sdk-service-image-originals.py')]);
-  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-8)).toBe(sdk99);
+  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-9)).toBe(sdk99);
 });
 
 test('SDK100 stays the published staging baseline that RC377 consumed',()=>{
@@ -199,7 +207,7 @@ test('SDK100 stays the published staging baseline that RC377 consumed',()=>{
     'qlever/scripts/sdk-service-pack-bindings.py']){
     expect(row(sdk100,path).map(value=>value.sha256)).not.toEqual([disk(path)]);
   }
-  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-7)).toBe(sdk100);
+  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-8)).toBe(sdk100);
 });
 
 test('SDK101 stays the published staging baseline that RC378 consumed',()=>{
@@ -217,7 +225,7 @@ test('SDK101 stays the published staging baseline that RC378 consumed',()=>{
     expect(declared.length).toBeGreaterThan(0);
     expect(declared.every(value=>/^[a-f0-9]{64}$/u.test(value.sha256))).toBe(true);
   }
-  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-6)).toBe(sdk101);
+  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-7)).toBe(sdk101);
 });
 
 test('SDK102 remains the frozen RC379 typed pack-stream generation',()=>{
@@ -246,12 +254,13 @@ test('SDK102 remains the frozen RC379 typed pack-stream generation',()=>{
   }
   expect(sdk102.selectors).toEqual(sdk101.selectors);
   expect(sdk102.secondarySelectors).toEqual(sdk101.secondarySelectors);
-  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-5)).toBe(sdk102);
+  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-6)).toBe(sdk102);
   // SDK103/SDK104/SDK105 stay pinned before the current tail; SDK106 is the new current.
-  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-4)).toBe(sdk103);
-  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-3)).toBe(sdk104);
-  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-2)).toBe(sdk105);
-  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-1)).toBe(sdk106);
+  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-5)).toBe(sdk103);
+  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-4)).toBe(sdk104);
+  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-3)).toBe(sdk105);
+  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-2)).toBe(sdk106);
+  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-1)).toBe(sdk107);
   // Frozen history: its bytes were true when published. The GNU repair moved
   // both payload paths, so this generation is no longer compared to disk; the
   // frozen aggregate above is the real guard. Only the CURRENT generation is
@@ -298,43 +307,49 @@ test('SDK103 stays the FROZEN consumer for the RC380 GNU long-name pack repair',
   expect(QLEVER_SDK_NORMAL_SOURCE_BINDINGS).toHaveLength(23);
   // SDK103 is FROZEN history, so its bytes are checked against the published
   // aggregate above, not today's disk. SDK104 and SDK105 are likewise frozen; only
-  // the CURRENT generation (SDK106) binds live disk.
-  for(const binding of [...sdk106.selectors,...(sdk106.secondarySelectors??[]),
-    ...(sdk106.secondarySelectorStages??[]).flat(),...sdk106.sourceBindings]){
+  // the CURRENT generation (SDK107) binds live disk.
+  for(const binding of [...sdk107.selectors,...(sdk107.secondarySelectors??[]),
+    ...(sdk107.secondarySelectorStages??[]).flat(),...sdk107.sourceBindings]){
     expect({path:binding.path,sha256:disk(binding.path)}).toEqual({path:binding.path,sha256:binding.sha256});
   }
 });
 
-test('SDK105 is FROZEN history and SDK106 is the CURRENT one-stage append',()=>{
-  // SDK105 was the RC384 producer scratch boundary; whole-group aggregate captured
-  // from the git-05cf baseline (families.sdkConsumer.aggregates[104]).
-  expect(QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(106);
+test('SDK106 is FROZEN history and SDK107 is the CURRENT in-place rebind',()=>{
+  // SDK105/106 are frozen history. SDK106's whole-group aggregate is pinned from the
+  // authoritative 45dbc3af baseline so RC386 can never move it, and SDK107 is the
+  // current generation: the ABI fix rebinds an EXISTING stage row, so the stage count
+  // must NOT grow (a redundant stage would request an already-owned role).
+  expect(QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(107);
   expect(whole(sdk105)).toBe(SDK105_FROZEN_WHOLE);
-  expect(QLEVER_SDK_CONSUMER_GROUPS[SDK106_CURRENT_INDEX]).toBe(sdk106);
-  // One NEW stage over SDK105, and it carries exactly the normal verifier row.
-  expect((sdk106.secondarySelectorStages??[]).length)
-    .toBe((sdk105.secondarySelectorStages??[]).length+1);
-  // The new capture flags also change this generation's reviewed workflow bytes.
-  // SDK105 itself stays frozen above; only the new generation advances that row.
-  const workflow='.github/workflows/candidate.yml';
-  const advancedStages=(sdk105.secondarySelectorStages??[]).map(stage=>stage.map(binding=>
-    binding.path===workflow?{...binding,sha256:disk(workflow)}:binding));
-  expect((sdk106.secondarySelectorStages??[]).slice(0,(sdk105.secondarySelectorStages??[]).length))
-    .toEqual(advancedStages);
-  const appended=(sdk106.secondarySelectorStages??[]).at(-1)!;
-  expect(appended.map((value:any)=>value.path)).toEqual([VERIFIER]);
-  expect(appended.map((value:any)=>value.sha256)).toEqual([disk(VERIFIER)]);
-  // The verifier was not a selector of SDK105 and supplies the appended stage.
-  expect((sdk105.selectors??[]).filter((value:any)=>value.path===VERIFIER)).toHaveLength(0);
+  expect(whole(sdk106)).toBe(SDK106_FROZEN_WHOLE);
+  expect(QLEVER_SDK_CONSUMER_GROUPS[SDK106_FROZEN_INDEX]).toBe(sdk106);
+  expect(QLEVER_SDK_CONSUMER_GROUPS[SDK107_CURRENT_INDEX]).toBe(sdk107);
+  expect((sdk107.secondarySelectorStages??[]).length)
+    .toBe((sdk106.secondarySelectorStages??[]).length);
+  // RC386 rebinds two EXISTING rows instead of appending: the image-originals stage
+  // row and both sourceBindings. Every inherited stage keeps its shape, and the only
+  // byte deltas are the two ABI files.
+  const IMAGES='qlever/scripts/sdk-service-image-originals.py';
+  const CUSTODY='qlever/scripts/sdk-service-abi-source-custody.py';
+  const stageRow=(group:any)=>group.secondarySelectorStages.flat().filter((r:any)=>r.path===IMAGES);
+  expect(stageRow(sdk107)).toHaveLength(1);
+  expect(stageRow(sdk107)[0].sha256).toBe(disk(IMAGES));
+  expect(stageRow(sdk107)[0].sha256).not.toBe(stageRow(sdk106)[0].sha256);
+  const sbRow=(group:any,p:string)=>group.sourceBindings.filter((r:any)=>r.path===p);
+  for(const p of [IMAGES,CUSTODY]){
+    expect(sbRow(sdk107,p)).toHaveLength(1);
+    expect(sbRow(sdk107,p)[0].sha256).toBe(disk(p));
+    expect(sbRow(sdk107,p)[0].sha256).not.toBe(sbRow(sdk106,p)[0].sha256);
+  }
   // Current bindings all match disk; the frozen generation keeps its literal pins.
-  for(const binding of [...sdk106.selectors,...(sdk106.secondarySelectors??[]),
-    ...(sdk106.secondarySelectorStages??[]).flat(),...sdk106.sourceBindings]){
+  for(const binding of [...sdk107.selectors,...(sdk107.secondarySelectors??[]),
+    ...(sdk107.secondarySelectorStages??[]).flat(),...sdk107.sourceBindings]){
     expect({path:binding.path,sha256:disk(binding.path)})
       .toEqual({path:binding.path,sha256:binding.sha256});
   }
-  // Linux consumer mirrors it: previous frozen at -2, current at -1.
-  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-2)).toBe(sdk105);
-  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-1)).toBe(sdk106);
+  // Linux consumer mirrors it: SDK106 frozen at -2, current at -1.
+  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-2)).toBe(sdk106);
+  expect(QLEVER_LINUX_CONSUMER_GROUPS.at(-1)).toBe(sdk107);
   // Historical producer axes never move.
   expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(93);
   expect(QLEVER_LINUX_EXECUTION_GROUPS).toHaveLength(94);
