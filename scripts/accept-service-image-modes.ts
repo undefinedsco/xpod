@@ -57,16 +57,91 @@ export function assertManagedLocalRegistration(status: any): void {
  * The operations are injected so the ordering contract is directly testable
  * without a container runtime.
  */
+export type ManagedLocalBootstrapPhase = 'infra-cloud' | 'cloud-api-readiness' | 'local' | 'local-registration';
+
+/** Optional diagnostics hook for the ordered bootstrap.
+ *
+ * The SAME executor below owns phase tracking, the per-phase command-record start
+ * index and the actual 0..255 code derivation, so no caller has to reimplement
+ * attribution. Both members are optional and a hook that throws can never change
+ * what the caller sees: the identical original error is always rethrown.
+ */
+export interface ManagedLocalBootstrapDiagnostics {
+  /** The command records received so far (the caller's own live array). */
+  readonly readCommandRecords?: () => readonly any[];
+  /** Called with the phase that ACTUALLY failed. `mode` is present only for a
+   * genuine START phase (infra-cloud => cloud, local => local); readiness and
+   * registration failures have a phase but no container and no code. */
+  readonly onFailure?: (context: {
+    readonly phase: ManagedLocalBootstrapPhase;
+    readonly mode?: 'cloud' | 'local';
+    readonly commandExitCode?: number;
+  }) => void | Promise<void>;
+}
+
+/** Exit status of the LAST command record this phase appended, when that record
+ * carries a real 0..255 integer. Anything else is `undefined` (unknown).
+ *
+ * Why the LAST record: a phase can append several of its own rows. Only the final
+ * one describes how the phase actually ended, so an earlier successful `0` must
+ * never mask a later failure, and a trailing `null` means "no numeric code" rather
+ * than falling back to an earlier row. `start` is the phase's own record boundary;
+ * rows before it belong to earlier phases and are never consulted. */
+function lastRecordedExitCode(records: readonly any[], start: number): number | undefined {
+  if (!Number.isSafeInteger(start) || start < 0 || start >= records.length) return undefined;
+  const code = records[records.length - 1]?.code;
+  if (Number.isSafeInteger(code) && (code as number) >= 0 && (code as number) <= 255) return code as number;
+  return undefined;
+}
+
 export async function runOrderedManagedLocalBootstrap(operations: {
   readonly startInfrastructureAndCloud: () => Promise<unknown>;
   readonly awaitCloudApiReady: () => Promise<void>;
   readonly startLocal: () => Promise<unknown>;
   readonly awaitLocalRegistration: () => Promise<void>;
-}): Promise<void> {
-  await operations.startInfrastructureAndCloud();
-  await operations.awaitCloudApiReady();
-  await operations.startLocal();
-  await operations.awaitLocalRegistration();
+}, diagnostics?: ManagedLocalBootstrapDiagnostics): Promise<void> {
+  const phases: readonly [ManagedLocalBootstrapPhase, () => Promise<unknown>][] = [
+    ['infra-cloud', () => operations.startInfrastructureAndCloud()],
+    ['cloud-api-readiness', () => operations.awaitCloudApiReady()],
+    ['local', () => operations.startLocal()],
+    ['local-registration', () => operations.awaitLocalRegistration()],
+  ];
+  /** Read the current record count, or `undefined` when the reader is absent or
+   * throws. A failed read yields an UNKNOWN boundary: it must never degrade to 0,
+   * because that would let rows from earlier phases be mistaken for this phase's. */
+  const boundary = (): number | undefined => {
+    try {
+      const rows = diagnostics?.readCommandRecords?.();
+      if (!Array.isArray(rows)) return undefined;
+      return Number.isSafeInteger(rows.length) && rows.length >= 0 ? rows.length : undefined;
+    } catch { return undefined; }
+  };
+  for (const [phase, run] of phases) {
+    // Boundary capture is diagnostic only: a throwing reader must not stop the
+    // real operation from running.
+    const start = boundary();
+    try {
+      await run();
+    } catch (error) {
+      // Every diagnostic read and call happens inside this protected try, so a
+      // throwing reader/callback can neither run a later phase nor replace the
+      // original error.
+      try {
+        if (diagnostics?.onFailure) {
+          const mode = phase === 'infra-cloud' ? 'cloud' : phase === 'local' ? 'local' : undefined;
+          let commandExitCode: number | undefined;
+          if (mode !== undefined && start !== undefined) {
+            try {
+              const rows = diagnostics.readCommandRecords?.();
+              if (Array.isArray(rows)) commandExitCode = lastRecordedExitCode(rows, start);
+            } catch { commandExitCode = undefined; }
+          }
+          await diagnostics.onFailure({ phase, ...(mode ? { mode } : {}), ...(commandExitCode !== undefined ? { commandExitCode } : {}) });
+        }
+      } catch { /* diagnostics never affect the operation or the thrown error */ }
+      throw error;
+    }
+  }
 }
 
 /** Bounded bootstrap failure carrying only boolean facts and a fixed
@@ -246,6 +321,70 @@ export async function readManagedLocalLiveFailure(directory: string, mode: strin
   } catch { return undefined; }
 }
 
+/** Fixed container states Docker actually reports, plus two honest sentinels. */
+export const STARTUP_CONTAINER_STATES = ['created','running','exited','dead','paused','restarting','removing','absent','unavailable'] as const;
+export type StartupContainerState = typeof STARTUP_CONTAINER_STATES[number];
+export const STARTUP_HEALTH_STATUSES = ['starting','healthy','unhealthy','none'] as const;
+export type StartupHealthStatus = typeof STARTUP_HEALTH_STATUSES[number];
+/** Why the owned startup container could not be classified, if it could not. */
+export const STARTUP_REASONS = ['inspect-failed','inspect-unparseable','container-absent','docker-unavailable'] as const;
+export type StartupReason = typeof STARTUP_REASONS[number];
+
+/** Minimal, safe projection of a failed OWNED topology startup. Fixed enums and
+ * integer exit/health codes only: never Env, Config, tokens, node identity, URLs,
+ * response bodies, health output or container logs. */
+export interface StartupFailureFacts {
+  readonly mode: 'local' | 'cloud' | 'standalone';
+  readonly containerState: StartupContainerState;
+  readonly healthStatus?: StartupHealthStatus;
+  /** Docker's own numeric exit code when the container has exited. */
+  readonly containerExitCode?: number;
+  /** The compose/`docker` command's own exit status, always preserved. */
+  readonly commandExitCode: number;
+  readonly reason?: StartupReason;
+}
+
+const STATE_SET = new Set<string>(STARTUP_CONTAINER_STATES);
+const HEALTH_SET = new Set<string>(STARTUP_HEALTH_STATUSES);
+const REASON_SET = new Set<string>(STARTUP_REASONS);
+const integerExit = (value: unknown): number | undefined =>
+  Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= 255 ? value as number : undefined;
+
+/** Project Docker inspect output for one OWNED container onto fixed enums.
+ * `inspect` is the parsed array from `docker inspect`, or undefined when the
+ * container did not exist / could not be read. Nothing else is copied. */
+export function projectStartupFailure(input: {
+  mode: string;
+  commandExitCode: unknown;
+  inspect?: any;
+  reason?: unknown;
+}): StartupFailureFacts | undefined {
+  const mode = input.mode === 'local' || input.mode === 'cloud' || input.mode === 'standalone' ? input.mode : undefined;
+  const commandExitCode = integerExit(input.commandExitCode);
+  if (!mode || commandExitCode === undefined) return undefined;
+  const row = Array.isArray(input.inspect) ? input.inspect[0] : undefined;
+  const reason = typeof input.reason === 'string' && REASON_SET.has(input.reason) ? input.reason as StartupReason : undefined;
+  if (!row || typeof row !== 'object') {
+    // ABSENT means a successful owned query returned zero containers. Any other
+    // inability to read (failed, unparseable, ambiguous, docker down) is
+    // UNAVAILABLE: absence is a fact, not a catch-all.
+    const state: StartupContainerState = reason === 'container-absent' ? 'absent' : 'unavailable';
+    return Object.freeze({ mode, containerState: state, commandExitCode, ...(reason ? { reason } : {}) });
+  }
+  const rawState = row?.State?.Status;
+  const containerState: StartupContainerState = typeof rawState === 'string' && STATE_SET.has(rawState)
+    ? rawState as StartupContainerState : 'unavailable';
+  const rawHealth = row?.State?.Health?.Status;
+  const healthStatus: StartupHealthStatus | undefined =
+    typeof rawHealth === 'string' && HEALTH_SET.has(rawHealth) ? rawHealth as StartupHealthStatus : undefined;
+  const containerExitCode = integerExit(row?.State?.ExitCode);
+  return Object.freeze({
+    mode, containerState, commandExitCode,
+    ...(healthStatus ? { healthStatus } : {}),
+    ...(containerExitCode !== undefined ? { containerExitCode } : {}),
+  });
+}
+
 export async function runMatrix(options: { image: string; platform: string; sourceSha: string; runId: string; runAttempt: string; output: string; providerFile: string }): Promise<void> {
   need(process.platform === 'linux', 'Owned host-network matrix requires Linux CI');
   need(/^.+@sha256:[a-f0-9]{64}$/.test(options.image) && /^[a-f0-9]{40}$/.test(options.sourceSha), 'Immutable inputs required');
@@ -395,17 +534,82 @@ export async function runMatrix(options: { image: string; platform: string; sour
       });
     }
 
+    /** Snapshot ONLY our own compose project's failing container, before cleanup.
+     * Unlike the cleanup paths this is NOT the cleanup flag: it must respect
+     * cancellation and the REMAINING budget, recomputed before EACH command, and
+     * it must trust a command's stdout only when that record is fully eligible.
+     * Any problem here is swallowed so the ORIGINAL error is what propagates. */
+    async function captureStartupFailure(mode: 'local' | 'cloud' | 'standalone', commandExitCode: number | undefined): Promise<StartupFailureFacts | undefined> {
+      // A record is trustworthy only when the owned-command contract closed
+      // cleanly: observed exit, closed stdout, raw-eligible, and none of the
+      // cleanup/cancel/spawn/ownership/truncation/timeout failure modes.
+      const usable = (record: any): boolean =>
+        !!record && record.exitObserved === true && record.closeObserved === true && record.rawEligible === true
+        && record.forcedCleanup === false && record.cancelled === false && record.spawnFailed === false
+        && record.ownershipUnknown === false && record.outputTruncated === false && record.timedOut === false
+        && record.signal === null && record.groupAbsent === true;
+      /** Remaining budget for ONE more command, or undefined when we must not run. */
+      const budgetFor = (): number | undefined => {
+        if (cancellation.signal.aborted) return undefined;
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) return undefined;
+        return Math.min(5_000, remaining);
+      };
+      let inspect: any;
+      let reason: StartupReason | undefined;
+      try {
+        const listBudget = budgetFor();
+        if (listBudget === undefined) return projectStartupFailure({ mode, commandExitCode, reason: 'inspect-failed' });
+        const listed = await runOwnedModeCommand('docker', ['ps', '-aq', '--filter', `label=com.docker.compose.project=${project}`, '--filter', `label=com.docker.compose.service=${mode}`], {
+          cwd: repo, env: process.env, timeoutMs: listBudget, outputBytes: LIMITS.outputBytes,
+          signal: cancellation.signal, terminationGraceMs: 1000,
+        });
+        if (!usable(listed.record) || listed.record.code !== 0) reason = 'docker-unavailable';
+        else {
+          const ids = listed.stdout.toString().trim().split(/\s+/u).filter(Boolean);
+          if (!ids.length) reason = 'container-absent';
+          // Ambiguous ownership is NOT "absent": refuse to pick an arbitrary first id.
+          else if (ids.length > 1) reason = 'inspect-unparseable';
+          else if (!/^[a-f0-9]{12,64}$/u.test(ids[0]!)) reason = 'inspect-unparseable';
+          else {
+            const inspectBudget = budgetFor();
+            if (inspectBudget === undefined) return projectStartupFailure({ mode, commandExitCode, reason: 'inspect-failed' });
+            const detail = await runOwnedModeCommand('docker', ['inspect', '--format', '{{json .State}}', ids[0]!], {
+              cwd: repo, env: process.env, timeoutMs: inspectBudget, outputBytes: LIMITS.outputBytes,
+              signal: cancellation.signal, terminationGraceMs: 1000,
+            });
+            if (!usable(detail.record) || detail.record.code !== 0) reason = 'inspect-failed';
+            else {
+              try { inspect = [{ State: JSON.parse(detail.stdout.toString()) }]; }
+              catch { reason = 'inspect-unparseable'; }
+            }
+          }
+        }
+      } catch { reason = 'inspect-failed'; }
+      return projectStartupFailure({ mode, commandExitCode, inspect, reason });
+    }
+
+    /** Run one ordered bootstrap. Phase tracking, per-phase record boundary and
+     * code derivation all live in the REAL executor; this only supplies the
+     * concrete compose/readiness operations plus a diagnostics hook that records
+     * the failing phase and captures bounded owned-container facts. */
     async function startOrderedTopology(label: string, forceRecreate: boolean): Promise<void> {
       await runOrderedManagedLocalBootstrap({
-        // Infrastructure is only ensured; the derived-policy Cloud must actually
-        // be recreated so it reads the new config mount, while PG/Redis/MinIO are
-        // not needlessly recreated.
         startInfrastructureAndCloud: () => forceRecreate
           ? compose(`${label}-infra-cloud`, ['up', '-d', '--force-recreate', '--no-deps', '--wait', '--wait-timeout', '180', 'cloud'])
           : compose(`${label}-infra-cloud`, ['up', '-d', '--wait', '--wait-timeout', '180', 'postgres', 'redis', 'minio', 'cloud']),
         awaitCloudApiReady: () => waitCloudApiReady(),
         startLocal: () => compose(`${label}-local`, ['up', '-d', ...(forceRecreate ? ['--force-recreate', '--no-deps'] : []), '--wait', '--wait-timeout', '180', 'local']),
         awaitLocalRegistration: () => waitManagedLocalRegistration(),
+      }, {
+        readCommandRecords: () => commands,
+        onFailure: async context => {
+          // Only a genuine START phase can name a container. Readiness and
+          // registration failures keep a phase and never gain command facts.
+          if (!context.mode) { report.startupFailurePhase = context.phase; return; }
+          const facts = await captureStartupFailure(context.mode, context.commandExitCode);
+          if (facts) report.startupFailure = facts;
+        },
       });
     }
     await startOrderedTopology('start-base-topology', false);

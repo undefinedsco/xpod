@@ -2820,7 +2820,23 @@ const SDK103_GNU_LONGNAME_STAGE=Object.freeze([
 const SDK103_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK102_GROUP,
   secondarySelectorStages:Object.freeze([...(SDK102_GROUP.secondarySelectorStages??[]),SDK103_GNU_LONGNAME_STAGE]),
   sourceBindings:Object.freeze(SDK102_GROUP.sourceBindings.map(row=>Object.freeze({...row,sha256:SDK103_SOURCE_HASHES[row.path]??row.sha256})))});
-export const QLEVER_NORMAL_BUILD_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([SDK93_GROUP]);
+const SDK104_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
+  'scripts/lib/independent-admission/service-workspace-build-replay.ts':'72fc0344dca03682f4dce32d72f6b581827e9f4ce97ec865d79854315fc2bee7',
+  'scripts/lib/independent-admission/candidate-service-pack-output.ts':'df8be46a92835c6e0df65fca11f44cba2a3d6873632166bf87f23fd4fce616ec',
+  'scripts/lib/independent-admission/candidate-service-root-mutation.ts':'a43c51a31c0fbf54b13375c62d1d621fb9902166ea46a2118a18edeab68fdf68',
+});
+/** The normal BUILD group keeps its published SDK93_GROUP unchanged and gains one
+ * CURRENT append whose only moved row is the RC382 replay bytes. H is untouched:
+ * the replay is not a RECIPE_FILE and not under `qlever/`, so the normal input
+ * identity stays f9316a2e and no recompile or proof relabel is involved. */
+const SDK93_RC382_BUILD_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK93_GROUP,
+  secondarySelectors:Object.freeze((SDK93_GROUP.secondarySelectors??[]).map(row=>Object.freeze({...row,
+    sha256:SDK104_SOURCE_HASHES[row.path]??row.sha256}))),
+  secondarySelectorStages:Object.freeze((SDK93_GROUP.secondarySelectorStages??[]).map(stage=>Object.freeze(stage.map(row=>Object.freeze({...row,
+    sha256:SDK104_SOURCE_HASHES[row.path]??row.sha256}))))),
+  sourceBindings:Object.freeze(SDK93_GROUP.sourceBindings.map(row=>Object.freeze({...row,
+    sha256:SDK104_SOURCE_HASHES[row.path]??row.sha256})))});
+export const QLEVER_NORMAL_BUILD_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([SDK93_GROUP,SDK93_RC382_BUILD_GROUP]);
 export const QLEVER_SDK_NORMAL_SOURCE_BINDINGS:readonly GitHubSourceBinding[]=Object.freeze([
  Object.freeze({path:'.github/workflows/candidate.yml',sha256:'1446b2ceb6c53b8888e07d0b822854b934c95d508f93dfd901a4687e28d22d9d'}),
  Object.freeze({path:'.github/workflows/publish-qlever-runtime-sdk.yml',sha256:'db1b81d967936dfeaaa8da875ab3be4106ebc8328cf344d444a585139fd6b0b2'}),
@@ -2914,5 +2930,31 @@ export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=O
  * frozen SDK94..SDK101 tuples plus the current SDK102 tuple.
  * QLEVER_SDK_EXECUTION_GROUPS itself stays at exactly SDK1..93 for the published
  * producer contract. */
-export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP]);
-export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP]);
+/** SDK104 is the CURRENT consumer for the RC382 workspace-build identity repair.
+ *
+ * `scripts/lib/independent-admission/service-workspace-build-replay.ts` is a plain
+ * `sourceBindings` row in the SDK tail, so rebinding that one row is enough; no new
+ * stage is needed because the path was never a selector or a stage. SDK1..SDK103,
+ * the normal groups and flat23 stay byte-identical. The replay is not a
+ * RECIPE_FILE and is not under `qlever/`, so the normal SDK input identity H does
+ * NOT move: no normal group 5, no workflow pin, no recompile. */
+/** ONE appended stage over the replay: this path had no selector and no stage in
+ * SDK1..SDK103, so a sourceBindings-only rebind could not be discriminated (the
+ * same reason SDK102 needed its append). SDK103's own twelve stages stay byte
+ * identical and mixed trees are refused. */
+/** ONE appended stage carrying the full set of paths this generation actually
+ * moved, so the stage itself discriminates SDK104 from SDK103. None of these was a
+ * selector or a stage in SDK1..SDK103 (they rode only sourceBindings), which is why
+ * a rebind alone could not be discriminated — the same reason SDK102/103 appended.
+ * SDK103's own twelve stages stay byte-identical. */
+const SDK104_MOVED_STAGE_PATHS=Object.freeze([
+  'scripts/lib/independent-admission/service-workspace-build-replay.ts',
+  'scripts/lib/independent-admission/candidate-service-pack-output.ts',
+  'scripts/lib/independent-admission/candidate-service-root-mutation.ts',
+] as const);
+const SDK104_REPLAY_STAGE=Object.freeze(SDK104_MOVED_STAGE_PATHS.map(path=>Object.freeze({path,sha256:SDK104_SOURCE_HASHES[path]!})));
+const SDK104_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK103_GROUP,
+  secondarySelectorStages:Object.freeze([...(SDK103_GROUP.secondarySelectorStages??[]),SDK104_REPLAY_STAGE]),
+  sourceBindings:Object.freeze(SDK103_GROUP.sourceBindings.map(row=>Object.freeze({...row,sha256:SDK104_SOURCE_HASHES[row.path]??row.sha256})))});
+export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP]);
+export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP]);

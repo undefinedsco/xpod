@@ -1196,7 +1196,13 @@ const PUBLISHED_CI_TAIL_FROZEN_HASHES:Readonly<Record<string,string>>=Object.fre
  'scripts/workspace-package-payload.cjs':'f88176458eba63d238cf99412bbc834143fe6b1e74089b27c290c0be040d2d33',
  'scripts/lib/independent-admission/consumer-observer-policy.ts':'6290e69e84cea179c97fb67d45c256b23006bee01bb2981022699f715d85a6e6',
  'scripts/lib/independent-admission/consumer-execution-current.json':'4f8c9f05a41eab43857afd9e10e21db49d945bc04d472bb48a9e5b2d5fb37fd7',
- 'scripts/lib/independent-admission/github-origin.ts':'085253ae2b0eea690a0104a978ba756aa3733ee146fd4a7107e858219dfbecb2'
+ 'scripts/lib/independent-admission/github-origin.ts':'085253ae2b0eea690a0104a978ba756aa3733ee146fd4a7107e858219dfbecb2',
+ // Published CI195/CI196 bound the 6bb replay bytes (same blob as true 928 here);
+ // freeze it so a later source edit cannot rewrite the published aggregate.
+ 'scripts/lib/independent-admission/service-workspace-build-replay.ts':'6cd08e4698bbd68a13f704ebbb34c593e6bbeb3d09b55f7be1cd3c31f6d6ffea',
+ // candidate-service-root-mutation.ts was never pinned here, so it live-tracked
+ // source and silently rewrote the published aggregate. Pin its 6bb bytes.
+ 'scripts/lib/independent-admission/candidate-service-root-mutation.ts':'484c64fe912f0403d36b50cdeb55f137f0211011cbdffb603f559710cbf124f3'
 });
 /** Rebind a published tail group to the exact frozen 6bb row values. */
 const freezePublishedCiRow=(row:{path:string;sha256:string;ref?:'run-head'})=>{
@@ -1224,7 +1230,10 @@ const CURRENT_1A01_CI_FROZEN_HASHES:Readonly<Record<string,string>>=Object.freez
  'scripts/workspace-package-payload.cjs':'058c6f633ed805cf0af2f5f3ebac1cfd1706c8ed106da2f16766dde4a20c145a',
  'scripts/lib/independent-admission/consumer-observer-policy.ts':'22c9639ea85964e97f30e223aa336792aa1e707989ec7ca089be6e1e143beb32',
  'scripts/lib/independent-admission/consumer-execution-current.json':'5c6b5cec930b2eb19a42a09dc338d5b46b9bd326684cf0069046f743e0b388c3',
- 'scripts/lib/independent-admission/github-origin.ts':'0b51a7ea65872293d0d7d2fd2839c3f8af7c69e60c6b544e5a474dbf741d048e'
+ 'scripts/lib/independent-admission/github-origin.ts':'0b51a7ea65872293d0d7d2fd2839c3f8af7c69e60c6b544e5a474dbf741d048e',
+ // Frozen at the true 928 replay bytes so the CI197/198 pair does not track live
+ // source; the RC382 repair is bound by the NEW current pair instead.
+ 'scripts/lib/independent-admission/service-workspace-build-replay.ts':'6cd08e4698bbd68a13f704ebbb34c593e6bbeb3d09b55f7be1cd3c31f6d6ffea'
 });
 const freezeCurrent1a01CiRow=(row:{path:string;sha256:string;ref?:'run-head'})=>{
  const frozen=CURRENT_1A01_CI_FROZEN_HASHES[row.path];
@@ -1251,12 +1260,50 @@ const currentCiFixedRecipe=(g:GitHubSourceBindingGroup)=>indexedControllerRecipe
   sourceBindings:Object.freeze([...(canonicalCurrent as readonly {path:string;sha256:string}[]),...CONTROLLER_POLICY_BINDINGS])
     .map(row=>Object.freeze({...row,sha256:row.path===ORIGIN_POLICY_PATH?CURRENT_CI_GITHUB_ORIGIN_FIXED:row.sha256}))}),
   'source:scripts/lib/independent-admission/qlever-sdk-generation.ts');
+/** Immutable EXACT true-928 row values for CI199/CI200.
+ *
+ * CI199/CI200 are themselves now HISTORY: they bound the 928 controller anchors
+ * (policy `5633324d`, canonical `8b47a0d2`) and the 928 replay bytes. Freezing
+ * them as literals stops any later canonical/policy refresh from rewriting them
+ * in place. Provenance: the true-928 isolated evaluation that reproduces the
+ * independent PR152 review (CI199 b48e6c88 / CI200 49ace11a). */
+const CURRENT_928_CI_FROZEN_HASHES:Readonly<Record<string,string>>=Object.freeze({
+ ...PUBLISHED_CI_TAIL_FROZEN_HASHES,
+ 'scripts/lib/independent-admission/qlever-sdk-origin-policy.ts':'7ee640bafe896e2b951959e6d1c9314983073fe8bd2720fd2c07ca604d602c8a',
+ 'scripts/lib/independent-admission/candidate-service-pack-output.ts':'3c57db1747f87e8bec6c9cb842e7ef50ebc089b4070c57852baf9b0d5e85301e',
+ 'scripts/lib/independent-admission/source-rules.ts':'1575ced889fd9b7660be95356213d2a2b1706915bda6aca7c382344e23e26a16',
+ 'scripts/workspace-package-payload.cjs':'058c6f633ed805cf0af2f5f3ebac1cfd1706c8ed106da2f16766dde4a20c145a',
+ 'scripts/lib/independent-admission/consumer-observer-policy.ts':'5633324d5ea1ddba8cfe56ca8fefab09e407068945fb54f0399b1f7a676a1108',
+ 'scripts/lib/independent-admission/consumer-execution-current.json':'8b47a0d2b190ba8701b11c6eda7ce72d9318cb62a257383d3be7cb88926f0210',
+ 'scripts/lib/independent-admission/github-origin.ts':'759eefd48a0bbac724546cc12dda18f377a34b0e4ad6cf0c004df6cea54e7f12',
+ 'scripts/lib/independent-admission/service-workspace-build-replay.ts':'6cd08e4698bbd68a13f704ebbb34c593e6bbeb3d09b55f7be1cd3c31f6d6ffea',
+ 'scripts/lib/independent-admission/candidate-service-root-mutation.ts':'484c64fe912f0403d36b50cdeb55f137f0211011cbdffb603f559710cbf124f3'
+});
+const freezeCurrent928CiRow=(row:{path:string;sha256:string;ref?:'run-head'})=>{
+ const frozen=CURRENT_928_CI_FROZEN_HASHES[row.path];
+ return frozen===undefined?row:Object.freeze({...row,sha256:frozen});};
+const freezeCurrent928CiGroup=(group:GitHubSourceBindingGroup)=>Object.freeze({...group,
+ secondarySelectors:Object.freeze((group.secondarySelectors??[]).map(freezeCurrent928CiRow)),
+ secondarySelectorStages:Object.freeze((group.secondarySelectorStages??[]).map(stage=>Object.freeze(stage.map(freezeCurrent928CiRow)))),
+ sourceBindings:Object.freeze(group.sourceBindings.map(freezeCurrent928CiRow))});
 const CURRENT_CI_TAIL_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze(
+ PUBLISHED_CI_CONSUMER_SOURCE_GROUPS.slice(-2).map(group=>freezeCurrent928CiGroup(currentCiFixedRecipe(group))));
+/** The two CURRENT variants for the RC382 workspace-build identity repair.
+ *
+ * Why this axis: `service-workspace-build-replay.ts` is a `sourceBindings` row in
+ * the CI closure (86 groups) and in the SDK93 normal BUILD group, so a source
+ * change there must be bound. These groups are genuinely CURRENT, so they bind the
+ * LIVE controller anchors (`canonicalCurrent` + `CONTROLLER_POLICY_BINDINGS`, which
+ * now carry the reviewed replay bytes) plus the frozen 3fb origin hash. They are
+ * APPENDED after the frozen CI197/198 and CI199/200 pairs, so every earlier
+ * aggregate stays byte-identical. */
+const CURRENT_CI_TAIL_GROUPS_RC382:readonly GitHubSourceBindingGroup[]=Object.freeze(
  PUBLISHED_CI_CONSUMER_SOURCE_GROUPS.slice(-2).map(group=>currentCiFixedRecipe(group)));
 export const CI_CONSUMER_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
  ...PUBLISHED_CI_CONSUMER_SOURCE_GROUPS.slice(0,-2),
  ...PUBLISHED_CI_TAIL_GROUPS,
  ...CURRENT_1A01_CI_TAIL_GROUPS,
- ...CURRENT_CI_TAIL_GROUPS]);
+ ...CURRENT_CI_TAIL_GROUPS,
+ ...CURRENT_CI_TAIL_GROUPS_RC382]);
 freezeGitHubSourceBindingGroups(CONSUMER_SOURCE_GROUPS);
 freezeGitHubSourceBindingGroups(CI_CONSUMER_SOURCE_GROUPS);

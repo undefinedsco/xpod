@@ -39,9 +39,11 @@ test('CI197/CI198 are FROZEN to their exact 1a01 values, not rebuilt live',()=>{
   expect(current1a01.ci198).toBe('2d7a4f3001bfe2869401748166444d6be149b398617a7a6a20855786206b7dcc');
 });
 
-test('exactly two NEW variants are appended, and the shared count reflects 200',()=>{
-  expect(CI_CONSUMER_SOURCE_GROUPS.length).toBe(200);
-  expect(CURRENT_SOURCE_GROUP_COUNTS.ci).toBe(200);
+test('exactly four NEW variants are appended, and the shared count reflects 202',()=>{
+  // RC381 added CI199/200 (origin fix); RC382 appended CI201/202 (workspace-build
+  // replay identity repair). CI197/198 remain frozen history.
+  expect(CI_CONSUMER_SOURCE_GROUPS.length).toBe(202);
+  expect(CURRENT_SOURCE_GROUP_COUNTS.ci).toBe(202);
   // Appends, never rewrites of 195/196 or 197/198.
   expect(sha(CI_CONSUMER_SOURCE_GROUPS[194]!)).toBe(PUBLISHED_CI[194]!);
   expect(sha(CI_CONSUMER_SOURCE_GROUPS[195]!)).toBe(PUBLISHED_CI[195]!);
@@ -51,24 +53,23 @@ test('exactly two NEW variants are appended, and the shared count reflects 200',
   expect(sha(CI_CONSUMER_SOURCE_GROUPS[199]!)).not.toBe(current1a01.ci198);
 });
 
-test('CI199/CI200 carry the frozen 3fb origin hash plus LIVE controller anchors',()=>{
-  // They are genuinely CURRENT groups, so they bind the live controller anchors
-  // (like CONSUMER99) and the frozen 3fb product origin. They must NOT reuse the
-  // frozen 1a01 policy/canonical rows, which would leave stale anchors behind.
+test('CI199/CI200 are FROZEN to the true-928 anchors and are no longer live',()=>{
+  // They bound the 902 controller anchors + 3fb origin by LITERAL now, so a later
+  // canonical/policy refresh cannot rewrite them in place.
   for(const index of [198,199]){
     const rows=rowsOf(CI_CONSUMER_SOURCE_GROUPS[index]!);
     const origin=rows.filter((r:any)=>r.path===ORIGIN).map((r:any)=>r.sha256);
     expect(new Set(origin)).toEqual(new Set([FIXED_ORIGIN]));
     const policy=rows.filter((r:any)=>r.path===POLICY_SELF).map((r:any)=>r.sha256);
-    expect(new Set(policy)).toEqual(new Set([disk(POLICY_SELF)]));
+    expect(new Set(policy)).toEqual(new Set(['5633324d5ea1ddba8cfe56ca8fefab09e407068945fb54f0399b1f7a676a1108']));
     const canonical=rows.filter((r:any)=>r.path===CANONICAL_SELF).map((r:any)=>r.sha256);
-    expect(new Set(canonical)).toEqual(new Set([disk(CANONICAL_SELF)]));
+    expect(new Set(canonical)).toEqual(new Set(['8b47a0d2b190ba8701b11c6eda7ce72d9318cb62a257383d3be7cb88926f0210']));
   }
 });
 
-test('every non-run-head row of CI199/CI200 equals its real source bytes',()=>{
+test('every non-run-head row of the CURRENT pair CI201/CI202 equals real source bytes',()=>{
   // Only explicitly run-head rows are runtime-owned; everything else must match disk.
-  for(const index of [198,199]){
+  for(const index of [200,201]){
     for(const row of rowsOf(CI_CONSUMER_SOURCE_GROUPS[index]!)){
       if(row.ref==='run-head') continue;            // runtime-owned namespace
       if(row.path===ORIGIN) { expect(row.sha256).toBe(FIXED_ORIGIN); continue; }
@@ -89,8 +90,8 @@ test('published CI197/CI198 keep their historical (non-disk) origin row',()=>{
   }
 });
 
-test('real resolver picks CI200 for current bytes and refuses an old-origin mix',()=>{
-  const last=CI_CONSUMER_SOURCE_GROUPS[199]!;
+test('real resolver picks CI202 for current bytes and refuses an old-origin mix',()=>{
+  const last=CI_CONSUMER_SOURCE_GROUPS[201]!;
   const current=new Map(completeObserved(CI_CONSUMER_SOURCE_GROUPS,last) as Map<string,string>);
   for(const key of [...current.keys()]) current.set(key,disk(key.split(':').slice(1).join(':')));
   expect(selectGitHubSourceBindingGroup(CI_CONSUMER_SOURCE_GROUPS,current)).toBe(last);
