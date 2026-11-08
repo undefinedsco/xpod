@@ -24,7 +24,11 @@ test('legacy metadata remains small; JSON-only role declarations cannot authoriz
  const data=Buffer.from('legacy'),row={path:'legacy.json',bytes:data.length,sha256:sha(data)};let reads=0;const view:any={members:[{path:'service-image-materials.json',bytes:2,sha256:sha(Buffer.from('{}'))},row],readOriginalRange(){reads++;return data;}};inspect(view,{originals:[row]});expect(reads).toBe(1);
 });
 test('actual closed member budget is checked before reads and byte drift/truncation cannot pass',()=>{
- const f=fixture();f.view.members[0].bytes=128*1024**2;expect(()=>inspect(f.view,f.master)).toThrow();expect(f.counts().calls).toBe(0);
+ // A member above the PRODUCER'S OWN transport bound is still refused, and still
+ // refused BEFORE any range read. (128 MiB used to be the threshold, but that was a
+ // metadata-derived number; the reviewed artifact contract's packedBytes is 768 MiB.)
+ const {packedBytes}=require('../../scripts/lib/module-artifact-limits.json');
+ const f=fixture();f.view.members[0].bytes=packedBytes+1;expect(()=>inspect(f.view,f.master)).toThrow();expect(f.counts().calls).toBe(0);
  for(const mode of['drift','short']){const g=fixture(),read=g.view.readOriginalRange;g.view.readOriginalRange=(p:string,o:number,n:number)=>{const b=read(p,o,n);return mode==='short'?b.subarray(0,Math.max(0,b.length-1)):Buffer.alloc(n);};expect(()=>inspect(g.view,g.master)).toThrow();}
 });
 test('actual RC379 pack metadata TAR above one 4MiB limit but inside the producer observation bound is admitted',()=>{

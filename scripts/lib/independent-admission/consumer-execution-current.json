@@ -29,7 +29,7 @@
   },
   {
     "path": "Dockerfile",
-    "sha256": "9c77e18c1719ddc8b29f9661ca0bf47c04004d541a65df068ddbc3680df2e6e3"
+    "sha256": "a1fa9dd8ad90879434d30e3eb33d3a4d58301164d1bb61b2196b9eea89ca6368"
   },
   {
     "path": "bun.lock",
@@ -45,7 +45,7 @@
   },
   {
     "path": "package.json",
-    "sha256": "f09bc8ffce79f394825231e38eeff615179f99df977dc8b4b1654dd4e740feb4"
+    "sha256": "effb5cbd1c4d9e191b2e4f3052b1c76fed2c172063ba2274d8558fefa6fa282f"
   },
   {
     "path": "packages/ai-connections-runtime/package.json",
@@ -701,7 +701,7 @@
   },
   {
     "path": "scripts/check-dependency-state.ts",
-    "sha256": "1cabdc527ed712e0f3521bc773fec06ff698eb2eb61ac98a6853454041433509"
+    "sha256": "23130269e9c1de72fde31347821ad8fd477a9502ee37d7889a5306bd9fcdfc3d"
   },
   {
     "path": "scripts/check-package-registry-consumer.cjs",
@@ -1221,7 +1221,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "29cb689f75c73ba5130e37e2344a9e7caa05ae77030f29eda7c2998da198138d"
+    "sha256": "f72203224c3dc0a4cc2f7060141504339f5c84ce3cb278e1fb5de3ad8bb3ea12"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -1241,7 +1241,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-service-relationship.ts",
-    "sha256": "f30f78f1b7e26d973f019bc2ee8ff90a9c47da11d7d865e3181de772bd744bf2"
+    "sha256": "974f80fce4c7ad2990f2758d75b60ddac670f8f9cbcb9be570a8ca2e5da4cb29"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
@@ -2130,5 +2130,9 @@
   {
     "path": "qlever/scripts/sdk-service-runtime-stream.py",
     "sha256": "0a1ff50c0002f8cfb89f20c4d0efdbe35694a7e25ce6c36b76781bccaa4ea700"
+  },
+  {
+    "path": "patches/comunica-undici-entry.cjs",
+    "sha256": "d3e118347eef031adda164a503b0ba0eb1a709ff228c7c33f94e108b42767158"
   }
 ]

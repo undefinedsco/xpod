@@ -10,12 +10,30 @@ describe('Docker runtime workspace packaging', () => {
     const manifest = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8'));
     const installStage = dockerfile.slice(0, dockerfile.indexOf('bun install --frozen-lockfile'));
 
-    const patchScripts = [...manifest.scripts.postinstall.matchAll(/\bbun\s+(scripts\/[^\s;&|]+)/gu)]
+    // Postinstall helpers live in TWO namespaces with DIFFERENT delivery rules:
+    //   scripts/<file> -> needs its own COPY + its own .dockerignore re-include
+    //   patches/<file> -> covered by the existing `COPY patches ./patches` and `!patches/**`
+    // Each helper must be present in the build context BEFORE `bun install` runs.
+    const postinstallScripts = [...manifest.scripts.postinstall.matchAll(/\bbun\s+((?:scripts|patches)\/[^\s;&|]+)/gu)]
       .map((match) => match[1]);
+    expect(postinstallScripts.length).toBeGreaterThan(0);
+    const patchScripts = postinstallScripts.filter(script => script.startsWith('scripts/'));
+    const patchDirScripts = postinstallScripts.filter(script => script.startsWith('patches/'));
     expect(patchScripts.length).toBeGreaterThan(0);
+    expect(patchDirScripts.length).toBeGreaterThan(0);
+    for (const script of postinstallScripts) {
+      expect(existsSync(path.join(process.cwd(), script)), `${script} must exist on disk`).toBe(true);
+      expect(installStage, `${script} must be supplied before install runs`)
+        .toContain('COPY patches ./patches');
+    }
     for (const script of patchScripts) {
       expect(installStage, `${script} must exist before postinstall runs`).toContain(`COPY ${script} ./${script}`);
       expect(ignore, `${script} must be included in the Docker build context`).toContain(`!${script}`);
+    }
+    for (const script of patchDirScripts) {
+      // delivered by the directory COPY, allowed by the patches/ re-include
+      expect(installStage).not.toContain(`COPY ${script}`);
+      expect(ignore).toContain('!patches/**');
     }
     expect(installStage).toContain('COPY patches ./patches');
     expect(ignore).toContain('!patches/**');

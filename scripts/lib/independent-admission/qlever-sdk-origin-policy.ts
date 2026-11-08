@@ -3216,5 +3216,20 @@ const RC392_SDK111_GROUP:GitHubSourceBindingGroup=Object.freeze({...RC391_SDK110
   sourceBindings:Object.freeze(RC391_SDK110_GROUP.sourceBindings.map(row=>
     Object.freeze({...row,sha256:row.path==='.github/workflows/candidate.yml'?RC392_CANDIDATE_WORKFLOW_HASH:row.sha256}))),
 });
-export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP,RC391_SDK110_GROUP,RC392_SDK111_GROUP]);
-export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP,RC391_SDK110_GROUP,RC392_SDK111_GROUP]);
+const RC393_SERVICE_REPINS:Readonly<Record<string,string>>=Object.freeze({"Dockerfile":"a1fa9dd8ad90879434d30e3eb33d3a4d58301164d1bb61b2196b9eea89ca6368","package.json":"effb5cbd1c4d9e191b2e4f3052b1c76fed2c172063ba2274d8558fefa6fa282f","scripts/check-dependency-state.ts":"23130269e9c1de72fde31347821ad8fd477a9502ee37d7889a5306bd9fcdfc3d","scripts/lib/independent-admission/qlever-sdk-service-relationship.ts":"974f80fce4c7ad2990f2758d75b60ddac670f8f9cbcb9be570a8ca2e5da4cb29","patches/comunica-undici-entry.cjs":"d3e118347eef031adda164a503b0ba0eb1a709ff228c7c33f94e108b42767158"});
+const rc393SourceRow=(row:Readonly<{path:string;sha256:string}>)=>Object.freeze({
+  ...row,sha256:RC393_SERVICE_REPINS[row.path]??row.sha256,
+});
+/** One unpublished shared consumer tail; producers and published parents stay fixed. */
+const RC393_SDK112_GROUP:GitHubSourceBindingGroup=Object.freeze({...RC392_SDK111_GROUP,
+  secondarySelectors:RC392_SDK111_GROUP.secondarySelectors
+    ?Object.freeze(RC392_SDK111_GROUP.secondarySelectors.map(rc393SourceRow)):undefined,
+  secondarySelectorStages:Object.freeze((RC392_SDK111_GROUP.secondarySelectorStages??[]).map((stage,index)=>
+    Object.freeze([...stage.map(rc393SourceRow),
+      ...(index===(RC392_SDK111_GROUP.secondarySelectorStages??[]).length-1
+        ?[rc393SourceRow({path:'scripts/lib/independent-admission/qlever-sdk-service-relationship.ts',sha256:''})]:[])]))),
+  sourceBindings:Object.freeze([...RC392_SDK111_GROUP.sourceBindings.map(rc393SourceRow),
+    rc393SourceRow({path:'patches/comunica-undici-entry.cjs',sha256:''})]),
+});
+export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP,RC391_SDK110_GROUP,RC392_SDK111_GROUP,RC393_SDK112_GROUP]);
+export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP,RC391_SDK110_GROUP,RC392_SDK111_GROUP,RC393_SDK112_GROUP]);

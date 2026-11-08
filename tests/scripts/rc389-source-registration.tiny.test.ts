@@ -76,13 +76,13 @@ test('RC389: only the allowed current axes grew, and the historical five did not
   // dd7 baseline -> current: api/cli never grew; consumer-side axes grew only by the
   // RC159 + RC389 + RC391 appends (consumer/sdkConsumer/linuxConsumer +2, CI +4).
   if(name==='api'||name==='cli'){expect(delta).toBe(0);continue;}
-  if(name==='ci'){expect(delta).toBe(6);continue;}
-  expect(delta).toBe(3); }
+  if(name==='ci'){expect(delta).toBe(8);continue;}
+  expect(delta).toBe(4); }
  // Concrete current counts for the four advanced arcs plus the unchanged API/CLI.
- expect(families.consumer!.length-BASE_COUNTS.consumer!).toBe(3);
- expect(families.ci!.length-BASE_COUNTS.ci!).toBe(6);
- expect(families.sdkConsumer!.length-BASE_COUNTS.sdkConsumer!).toBe(3);
- expect(families.linuxConsumer!.length-BASE_COUNTS.linuxConsumer!).toBe(3);
+ expect(families.consumer!.length-BASE_COUNTS.consumer!).toBe(4);
+ expect(families.ci!.length-BASE_COUNTS.ci!).toBe(8);
+ expect(families.sdkConsumer!.length-BASE_COUNTS.sdkConsumer!).toBe(4);
+ expect(families.linuxConsumer!.length-BASE_COUNTS.linuxConsumer!).toBe(4);
  expect(families.api!.length).toBe(BASE_COUNTS.api);
  expect(families.cli!.length).toBe(BASE_COUNTS.cli);
 });
@@ -185,13 +185,14 @@ test('RC389: the promoted collector discriminator rejects a mixed predecessor',(
  expect(missingRejected).toBe(true);
 });
 
-test('RC389: canonical is 533 rows, original order, disk-bound and has no new paths',()=>{
+test('current canonical preserves the published order and appends the Undici patch once',()=>{
  const canonical=JSON.parse(readFileSync(
   'scripts/lib/independent-admission/consumer-execution-current.json','utf8')) as any[];
- expect(canonical).toHaveLength(533);
- expect(new Set(canonical.map(x=>x.path)).size).toBe(533);
+ expect(canonical).toHaveLength(534);
+ expect(new Set(canonical.map(x=>x.path)).size).toBe(534);
  expect(hash(canonical.map(x=>x.path)))
-  .toBe('37c1ab757d47f7248534e2ee69003093f8becd36b5463ad699e811b9fbd5f3fb');
+  .toBe('7077fc3c6af7c0b6b24a48308924546a63c5bacc51736e06040646b763bd7d50');
+ expect(canonical.at(-1).path).toBe('patches/comunica-undici-entry.cjs');
  for(const row of canonical){
   expect(Object.keys(row).sort()).toEqual(['path','sha256']);
   expect(row.sha256).toBe(disk(row.path));
@@ -218,25 +219,24 @@ test('RC391: the HEAD202 consumer-side prefixes are byte-identical before the ap
 });
 
 test('RC391: only the four consumer-side axes grew by exactly one (CI a pair)',()=>{
- expect(families.consumer!.length).toBe(108);
- expect(families.ci!.length).toBe(220);
- expect(families.sdkConsumer!.length).toBe(112);
- expect(families.linuxConsumer!.length).toBe(113);
+ expect(families.consumer!.length).toBe(109);
+ expect(families.ci!.length).toBe(222);
+ expect(families.sdkConsumer!.length).toBe(113);
+ expect(families.linuxConsumer!.length).toBe(114);
  expect(families.api!.length).toBe(32);
  expect(families.cli!.length).toBe(15);
  // the producer axes are the exact HEAD arrays: no growth at all
  for(const name of HISTORICAL) expect(families[name]!.length).toBe(BASE_COUNTS[name]!);
 });
 
-test('RC391: the appended tails bind the frozen Dockerfile and keep the stage shapes',()=>{
+test('current consumer tails bind the actual Dockerfile and keep the stage shapes',()=>{
  for(const name of ['consumer','ci','sdkConsumer','linuxConsumer']){
   const tail=families[name]!.at(-1) as any;
   const rows=[...(tail.selectors??[]),...(tail.secondarySelectors??[]),
     ...(tail.secondarySelectorStages??[]).flat(),...(tail.sourceBindings??[])];
   const docker=rows.filter((r:any)=>r.path==='Dockerfile');
   expect(docker.length).toBeGreaterThanOrEqual(1);
-  for(const row of docker) expect(row.sha256).toBe(
-    '9c77e18c1719ddc8b29f9661ca0bf47c04004d541a65df068ddbc3680df2e6e3');
+  for(const row of docker) expect(row.sha256).toBe(disk('Dockerfile'));
  }
  expect((families.sdkConsumer!.at(-1) as any).secondarySelectorStages.length).toBe(15);
  expect((families.linuxConsumer!.at(-1) as any).secondarySelectorStages.length).toBe(15);
@@ -251,6 +251,9 @@ test('RC391: the Dockerfile stage declaration separates the new shared tail from
  // RC391 shipped as SDK111 (index 110) on top of SDK110 (index 109). Pin those FIXED
  // published indices so a later append cannot silently re-target this assertion.
  const current=family[110] as any,previous=family[109] as any;
+ // Resolve within the RC391-era slice: a LATER generation legitimately also satisfies
+ // this observation, so "unique selection" is only meaningful inside its own era.
+ const era=family.slice(0,111);
  const rows=(group:any)=>[...(group.selectors??[]),...(group.secondarySelectors??[]),
    ...(group.secondarySelectorStages??[]).flat(),...(group.sourceBindings??[])];
  const observe=(group:any)=>new Map(rows(group).map((row:any)=>[sourceBindingKey(row),row.sha256]));
@@ -262,14 +265,14 @@ test('RC391: the Dockerfile stage declaration separates the new shared tail from
  expect(staging(current)).not.toBe(staging(previous));
 
  // Current bytes select the new tail uniquely from the FULL family.
- expect(selectGitHubSourceBindingGroup(family,observe(current))).toBe(current);
+ expect(selectGitHubSourceBindingGroup(era,observe(current))).toBe(current);
  // A complete historical observation still resolves to the predecessor.
- expect(selectGitHubSourceBindingGroup(family,observe(previous))).toBe(previous);
+ expect(selectGitHubSourceBindingGroup(era,observe(previous))).toBe(previous);
 
  // Missing the Dockerfile observation cannot qualify the new tail.
  const missing=observe(current);
  missing.delete('source:Dockerfile');
- expect(()=>selectGitHubSourceBindingGroup(family,missing)).toThrow();
+ expect(()=>selectGitHubSourceBindingGroup(era,missing)).toThrow();
 
  // A contradictory context (current bytes with the OLD Dockerfile) must not qualify the
  // NEW tail. It legitimately resolves to the historical predecessor instead of throwing,
@@ -277,7 +280,7 @@ test('RC391: the Dockerfile stage declaration separates the new shared tail from
  // generation is never selected from bytes it does not own.
  const mixed=observe(current);
  mixed.set('source:Dockerfile',(previous.sourceBindings??[]).find((row:any)=>row.path==='Dockerfile')!.sha256);
- expect(selectGitHubSourceBindingGroup(family,mixed)).toBe(previous);
+ expect(selectGitHubSourceBindingGroup(era,mixed)).toBe(previous);
 
  // The SDK111/Linux112 generation is ONE shared object across both axes.
  expect(family[110]).toBe(families.linuxConsumer![111]);

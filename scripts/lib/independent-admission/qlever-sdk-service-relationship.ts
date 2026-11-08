@@ -25,14 +25,45 @@ const PACK_OBSERVATION_METADATA_BYTES:number=createRequire(import.meta.url)('../
 /** Byte custody only. Typed pack paths select a streaming read bound; they do
  * not establish pack input resolution, transformation, source or legal facts. */
 export function inspectCandidateServiceOriginalUniverse(view:CollectedNativeOriginalsView,master:any):void {
- const metadataLimit=4*1024**2,totalLimit=32*metadataLimit,rangeLimit=65536;
+ const metadataLimit=4*1024**2,rangeLimit=65536;
+ // The retained transport bound is the PRODUCER'S OWN reviewed artifact contract, not a
+ // number derived from the single control-metadata ceiling. Two different metadata
+ // bounds already exist and neither is a total:
+ //   * a plain/control metadata original is bounded by `metadataLimit` (4 MiB),
+ //   * the pack observation archive is bounded by `OBSERVATION_BOUNDS.metadataBytes`
+ //     (8 MiB), imported below as PACK_OBSERVATION_METADATA_BYTES.
+ // The artifact's TOTAL encoded bytes are bounded by
+ // `module-artifact-limits.json.packedBytes`, which the producer already enforces while
+ // capturing (sdk-service-image-originals.py: RUNTIME_ENCODED_LIMIT). Deriving a total as
+ // N x metadataLimit conflated metadata with real runtime/TAR/body streams and rejected a
+ // legitimate artifact (264,470,174 uncompressed bytes across 814 original members).
+ const moduleLimits:any=createRequire(import.meta.url)('../module-artifact-limits.json');
+ const totalLimit:number=moduleLimits.packedBytes;
+ // Per-stream caps, each imported from (or the exact formula of) the producer that
+ // CREATES that stream. `permit` never falls back to the aggregate bound: a total bound
+ // is not a per-stream licence, and widening one must never widen the others.
+ const META=4*1024**2;                                   // one control metadata original
+ // Producer `META` IS module-artifact-limits.metadataBytes (4 MiB). The pack phase copy
+ // bound is `4*META` = 16 MiB (sdk-service-pack-bindings.py phases list), NOT one META.
+ const packPhaseLimit:number=4*META;
+ // An ORIGINAL body is <= 32*META (128 MiB). Its raw TAR stdout is FRAMED, so the producer
+ // bound is body_copy_bound(ref) = ceil(bytes/512)*512 + 10240 + 512; capping the raw TAR
+ // at the unframed 128 MiB would reject a valid near-bound body. Mirrored exactly below.
+ const packBodyLimit:number=32*META;
+ const rawPackTarLimit=(bodyBytes:number):number=>Math.ceil(bodyBytes/512)*512+10240+512;
+ const registryArchiveLimit:number=moduleLimits.shardBytes; // legal-registry-originals.ts retained-build packed
+ const runtimeArchiveLimit:number=moduleLimits.packedBytes; // sdk-service-image-originals.py RUNTIME_ENCODED_LIMIT
+ const runtimeIndexLimit:number=moduleLimits.shardBytes;    // candidate-service-runtime-artifact.ts RUNTIME_INDEX_MAXIMUM
  const members=new Map(view.members.map(row=>[row.path,row]));
  need(members.size===view.members.length&&Array.isArray(master.originals)&&master.originals.length===members.size-1,'complete closed service original universe');
- const refs=new Map<string,any>();let total=0;
- for(const row of view.members){need(Number.isSafeInteger(row.bytes)&&row.bytes>=0&&/^[a-f0-9]{64}$/u.test(row.sha256),'actual bounded service member');total+=row.bytes;need(total<=totalLimit,'actual service retained byte ceiling');}
+ const refs=new Map<string,any>();
+ // Every member must still be a well-formed bounded original. The TOTAL retained bytes
+ // are checked once, after each member is classified as metadata vs a typed stream, so a
+ // legitimate large runtime/TAR/body stream is not mistaken for oversized metadata.
+ for(const row of view.members)need(Number.isSafeInteger(row.bytes)&&row.bytes>=0&&row.bytes<=totalLimit&&/^[a-f0-9]{64}$/u.test(row.sha256),'actual bounded service member');
  for(const row of master.originals){need(row&&Object.keys(row).sort().join(',')==='bytes,path,sha256'&&typeof row.path==='string'&&!refs.has(row.path),'unique plain service original');const actual=members.get(row.path);need(actual&&actual.bytes===row.bytes&&actual.sha256===row.sha256&&row.path!=='service-image-materials.json','exact service original reference');refs.set(row.path,row);}
  const streamed=new Map<string,number>();
- const permit=(ref:any,pattern:RegExp,maximum=totalLimit)=>{need(ref&&pattern.test(ref.path)&&refs.has(ref.path)&&isDeepStrictEqual(ref,refs.get(ref.path))&&!streamed.has(ref.path)&&ref.bytes<=maximum,'exact typed service stream reference');streamed.set(ref.path,maximum);};
+ const permit=(ref:any,pattern:RegExp,maximum:number)=>{need(ref&&pattern.test(ref.path)&&refs.has(ref.path)&&isDeepStrictEqual(ref,refs.get(ref.path))&&!streamed.has(ref.path)&&ref.bytes<=maximum,'exact typed service stream reference');streamed.set(ref.path,maximum);};
  const build=master.buildInputObservation;
  if(build!==undefined){
   need(build?.schemaVersion===1&&build.kind==='retained-official-registry-build-inputs'&&Array.isArray(build.packages)&&build.packages.length<=512,'typed retained build input layout');
@@ -43,7 +74,7 @@ export function inspectCandidateServiceOriginalUniverse(view:CollectedNativeOrig
    const coordinate=row.name+'@'+row.version;need(!coordinates.has(coordinate),'unique retained build coordinate');coordinates.add(coordinate);
    const prefix='build-inputs/registry/'+hash.toString('hex')+'/';
    need(row.archive?.path===prefix+'archive.tgz'&&row.metadata?.path===prefix+'metadata.json'&&row.transport?.path===prefix+'transport.json','canonical typed build original paths');
-   permit(row.archive,/^build-inputs\/registry\/[a-f0-9]{128}\/archive\.tgz$/u);
+   permit(row.archive,/^build-inputs\/registry\/[a-f0-9]{128}\/archive\.tgz$/u,registryArchiveLimit);
    for(const ref of [row.metadata,row.transport])need(ref&&refs.has(ref.path)&&isDeepStrictEqual(ref,refs.get(ref.path))&&ref.bytes<=metadataLimit,'exact bounded build metadata original');
   }
  }
@@ -55,8 +86,8 @@ export function inspectCandidateServiceOriginalUniverse(view:CollectedNativeOrig
   // It legitimately exceeds one metadata original; per-member bounds are still
   // enforced by service_pack_sidecar_tar when the archive is parsed.
   permit(pack.stage?.stdout,/^stages\/service-output-copy-pack-inputs\/stdout\.raw$/u,PACK_OBSERVATION_METADATA_BYTES);
-  permit(pack.phase?.stage?.stdout,/^stages\/service-output-copy-pack-phase\/stdout\.raw$/u);
-  for(const row of pack.bodies){permit(row.original,/^output\/service-pack-bodies\/objects\/[0-9]{4}-[a-f0-9]{64}\.original$/u);permit(row.rawTarOriginal,/^stages\/service-output-copy-pack-body-[0-9]{4}\/stdout\.raw$/u);need(isDeepStrictEqual(row.rawTarOriginal,row.stage?.stdout),'same actual body stage stdout');}
+  permit(pack.phase?.stage?.stdout,/^stages\/service-output-copy-pack-phase\/stdout\.raw$/u,packPhaseLimit);
+  for(const row of pack.bodies){permit(row.original,/^output\/service-pack-bodies\/objects\/[0-9]{4}-[a-f0-9]{64}\.original$/u,packBodyLimit);permit(row.rawTarOriginal,/^stages\/service-output-copy-pack-body-[0-9]{4}\/stdout\.raw$/u,rawPackTarLimit(row.original.bytes));need(isDeepStrictEqual(row.rawTarOriginal,row.stage?.stdout),'same actual body stage stdout');}
  }
  const runtime=master.runtimeMemberObservation;
  if(runtime!==undefined){
@@ -66,12 +97,30 @@ export function inspectCandidateServiceOriginalUniverse(view:CollectedNativeOrig
   for(const [index,[root,role]] of [['/app','copy-runtime-app'],['/opt/xpod/qlever','copy-runtime-sdk']].entries()){
    const row=runtime.roots[index];need(row?.targetRoot===root&&row.imageReferenceByDigest===runtime.imageReferenceByDigest&&row.configDigest===runtime.configDigest&&row.containerId===runtime.containerId,'fixed runtime root identity');
    need(row.archive?.path==='stages/service-output-'+role+'/stdout.raw','fixed runtime raw stdout');
-   permit(row.archive,/^stages\/service-output-copy-runtime-(?:app|sdk)\/stdout\.raw$/u);
+   permit(row.archive,/^stages\/service-output-copy-runtime-(?:app|sdk)\/stdout\.raw$/u,runtimeArchiveLimit);
+   // The runtime INVENTORY index is a typed stream of its own: the producer writes it to
+   // output/service-runtime-members/<role>.original.json under RUNTIME_INDEX_LIMIT, and
+   // candidate-service-runtime-artifact.ts already owns that same reviewed bound
+   // (limits.shardBytes) plus the ranged reader. A whole /app inventory is necessarily
+   // far larger than one control-metadata original, so it must be admitted here with the
+   // SAME contract rather than re-capped.
+   need(row.index?.path==='output/service-runtime-members/'+role+'.original.json','fixed runtime index original');
+   permit(row.index,/^output\/service-runtime-members\/(?:copy-runtime-app|copy-runtime-sdk)\.original\.json$/u,
+     runtimeIndexLimit);
   }
  }
  for(const row of candidateServiceAbiSeedStreams(master)){
   permit(row.reference,/^(?:abi-seed|xpod-service-output-[a-f0-9]{32}-scratch)\/abi\.sqlite$/u,row.maximumBytes);
  }
+ // Total retained bytes, now that every member is classified: metadata stays under the
+ // single-metadata ceiling, and typed streams were each admitted by `permit` above with
+ // their own reviewed maximum. One aggregate ceiling over the producer's transport bound
+ // still refuses a genuinely oversized artifact.
+ // The aggregate must cover EVERY retained member, including the master relationship
+ // original itself, which is deliberately not a `refs` entry (`refs` holds the originals
+ // the master declares; the master is the document that declares them).
+ let total=0;
+ for(const row of view.members){total+=row.bytes;need(total<=totalLimit,'actual service retained byte ceiling');}
  for(const row of refs.values()){
   need(row.bytes<=metadataLimit||streamed.has(row.path),'large service original requires exact typed pack stream');
   const hash=createHash('sha256');for(let offset=0;offset<row.bytes;offset+=rangeLimit){const length=Math.min(rangeLimit,row.bytes-offset),raw=view.readOriginalRange(row.path,offset,length);need(raw.length===length,'complete actual service original range');hash.update(raw);}

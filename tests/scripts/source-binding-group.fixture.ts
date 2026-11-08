@@ -6,13 +6,16 @@ import {secondaryGitHubSourceBindingSelectors,sourceBindingKey,type GitHubSource
 //
 // The RC386 canonical ends at 532 rows. Everything appended AFTER that point is
 // listed here ONCE, in canonical order, so no suite keeps its own copy of it.
-export const CURRENT_CANONICAL_SUFFIX = Object.freeze(['qlever/scripts/sdk-service-runtime-stream.py']);
+export const CURRENT_CANONICAL_SUFFIX = Object.freeze([
+  'qlever/scripts/sdk-service-runtime-stream.py',
+  'patches/comunica-undici-entry.cjs',
+]);
 export const CURRENT_CANONICAL_SOURCE_ROWS = 532 + CURRENT_CANONICAL_SUFFIX.length;
 /** The single explicit CURRENT registration expectation. Historical suites keep
  * their own frozen prefix/hash fixtures; only genuine current-source checks use
  * these values. A future append updates this ONE object, never 41 scattered
  * literals. */
-export const CURRENT_SOURCE_GROUP_COUNTS = Object.freeze({api:32,sdk:93,consumer:108,ci:220,linux:94,cli:15,current:CURRENT_CANONICAL_SOURCE_ROWS});
+export const CURRENT_SOURCE_GROUP_COUNTS = Object.freeze({api:32,sdk:93,consumer:109,ci:222,linux:94,cli:15,current:CURRENT_CANONICAL_SOURCE_ROWS});
 export const CURRENT_OBSERVER_GROUPS = 64;
 export const CURRENT_HELPER_GROUP_COUNTS = Object.freeze({controller:43,fetch:46,maximum:46});
 
