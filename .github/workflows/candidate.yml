@@ -258,7 +258,17 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          # The retention step re-reads this exact immutable digest from the registry,
+          # so the just-built image must also exist in THIS runner's Docker engine.
+          # `load` exports to the local store in the same build; the registry push and
+          # the immutable digest remain authoritative and are still verified by the
+          # existing pull admission. Both exporters run against the one existing target.
+          load: true
           push: true
+          # Explicitly preserve the provenance policy the pre-existing default produced
+          # (`--attest type=provenance,mode=max,builder-id=<run>`). The docker exporter
+          # cannot carry attestations, so this must be spelled out rather than inherited.
+          provenance: mode=max
           tags: |
             ghcr.io/undefinedsco/xpod:sha-${{ needs.metadata.outputs.sourceSha }}
             ghcr.io/undefinedsco/xpod:${{ needs.metadata.outputs.candidate }}
