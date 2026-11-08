@@ -3216,7 +3216,7 @@ const RC392_SDK111_GROUP:GitHubSourceBindingGroup=Object.freeze({...RC391_SDK110
   sourceBindings:Object.freeze(RC391_SDK110_GROUP.sourceBindings.map(row=>
     Object.freeze({...row,sha256:row.path==='.github/workflows/candidate.yml'?RC392_CANDIDATE_WORKFLOW_HASH:row.sha256}))),
 });
-const RC393_SERVICE_REPINS:Readonly<Record<string,string>>=Object.freeze({"Dockerfile":"a1fa9dd8ad90879434d30e3eb33d3a4d58301164d1bb61b2196b9eea89ca6368","package.json":"effb5cbd1c4d9e191b2e4f3052b1c76fed2c172063ba2274d8558fefa6fa282f","scripts/check-dependency-state.ts":"23130269e9c1de72fde31347821ad8fd477a9502ee37d7889a5306bd9fcdfc3d","scripts/lib/independent-admission/qlever-sdk-service-relationship.ts":"974f80fce4c7ad2990f2758d75b60ddac670f8f9cbcb9be570a8ca2e5da4cb29","patches/comunica-undici-entry.cjs":"d3e118347eef031adda164a503b0ba0eb1a709ff228c7c33f94e108b42767158"});
+const RC393_SERVICE_REPINS:Readonly<Record<string,string>>=Object.freeze({"Dockerfile":"a1fa9dd8ad90879434d30e3eb33d3a4d58301164d1bb61b2196b9eea89ca6368","package.json":"effb5cbd1c4d9e191b2e4f3052b1c76fed2c172063ba2274d8558fefa6fa282f","scripts/check-dependency-state.ts":"012ba511fbb68b441a25821933d53a49a47aa5ad39c64a3b25c5dc58ba4a0950","scripts/lib/independent-admission/qlever-sdk-service-relationship.ts":"974f80fce4c7ad2990f2758d75b60ddac670f8f9cbcb9be570a8ca2e5da4cb29","patches/comunica-undici-entry.cjs":"d3e118347eef031adda164a503b0ba0eb1a709ff228c7c33f94e108b42767158"});
 const rc393SourceRow=(row:Readonly<{path:string;sha256:string}>)=>Object.freeze({
   ...row,sha256:RC393_SERVICE_REPINS[row.path]??row.sha256,
 });

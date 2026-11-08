@@ -5,9 +5,11 @@ import * as s from '../../scripts/lib/independent-admission/qlever-sdk-origin-po
 import * as c from '../../scripts/lib/independent-admission/consumer-observer-policy';
 import * as g from '../../scripts/lib/independent-admission/github-origin';
 import {CLI_SOURCE_VERSION_GROUPS} from '../../scripts/lib/independent-admission/source-rules';
+import {CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
 
 /** Whole-group hash over the raw parsed group (JSON.stringify, as the existing guards do). */
 const whole=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
+const PUBLISHED_API32='d5cd753585246cd7225e006811eb2100e0cca4aa28567c116696c7e5147778bc';
 
 /**
  * PR159 immutable predecessor constants. Each value was computed ONCE from the
@@ -51,13 +53,13 @@ test('PR159: fixed producer execution counts hold; reviewer-owned heads advanced
   // workflow version allow-list, so RC392's genuine workflow change legitimately adds
   // one reviewed version (5 -> 6). Its published history rows stay byte-identical.
   expect(s.QLEVER_NORMAL_SOURCE_GROUPS).toHaveLength(6);
-  // CURRENT totals after RC389 + RC391 + RC392. The PR159 objects remain at their fixed
+  // CURRENT totals after RC389 + RC391 + RC392 + RC393. The PR159 objects remain at their fixed
   // published indexes (108/109/103/210/211 above are unchanged); only these four
   // consumer-side CURRENT totals advanced with the real appends.
-  expect(s.QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(112);
-  expect(s.QLEVER_LINUX_CONSUMER_GROUPS).toHaveLength(113);
-  expect(c.CONSUMER_SOURCE_GROUPS).toHaveLength(108);
-  expect(c.CI_CONSUMER_SOURCE_GROUPS).toHaveLength(220);
+  expect(s.QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(113);
+  expect(s.QLEVER_LINUX_CONSUMER_GROUPS).toHaveLength(114);
+  expect(c.CONSUMER_SOURCE_GROUPS).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.consumer);
+  expect(c.CI_CONSUMER_SOURCE_GROUPS).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.ci);
   expect(g.API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS).toHaveLength(32);
   expect(CLI_SOURCE_VERSION_GROUPS).toHaveLength(15);
 });
@@ -73,6 +75,7 @@ test('PR159: the CURRENT API alias is API32 and API31 keeps its own frozen bindi
   const api=g.API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as any[];
   expect(g.API_SERVICE_BUILD_SOURCE_BINDINGS).toBe(api[31].sourceBindings);
   expect(api[31].sourceBindings).not.toBe(api[30].sourceBindings);
+  expect(whole(api[31])).toBe(PUBLISHED_API32);
 });
 
 /** API (GitHub-shaped) resolver positives and negatives via the REAL selection API.
@@ -88,19 +91,28 @@ const apiGroups=()=>g.API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as any[];
 const rolesOf=(group:any)=>[...(group.selectors??[]),...(group.secondarySelectors??[]),
   ...(group.secondarySelectorStages??[]).flat(),...group.sourceBindings];
 
-/** Complete observation for the CURRENT working tree. */
+/** Complete declared observation for the frozen API32 producer snapshot.
+ * Service-only changes do not publish a new independent API producer tuple. */
 function completeObservedForApi(){
   const observed=new Map<string,string>();
   for(const role of rolesOf(apiGroups()[31])){
     if(role.ref==='run-head')continue;
-    observed.set(sourceBindingKey({path:role.path,sha256:''}),diskHash(role.path));
+    observed.set(sourceBindingKey({path:role.path,sha256:''}),role.sha256);
   }
   return observed;
 }
 
-test('PR159 API: the CURRENT tree selects API32 uniquely', () => {
+test('PR159 API: its frozen producer snapshot selects API32 uniquely', () => {
   const selected=selectGitHubSourceBindingGroup(apiGroups(),completeObservedForApi());
   expect(selected).toBe(apiGroups()[31]);
+});
+
+test('a changed service manifest does not qualify as the frozen API32 producer', () => {
+  const observed=completeObservedForApi();
+  const manifest=apiGroups()[31].sourceBindings.find((row:any)=>row.path==='package.json');
+  expect(diskHash('package.json')).not.toBe(manifest.sha256);
+  observed.set(sourceBindingKey({path:'package.json',sha256:''}),diskHash('package.json'));
+  expect(()=>selectGitHubSourceBindingGroup(apiGroups(),observed)).toThrow();
 });
 
 test('PR159 API: an all-old-bytes tree selects API31 uniquely', () => {

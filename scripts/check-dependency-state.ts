@@ -302,7 +302,7 @@ function checkPostinstallPatches(): void {
   }
   if (postinstall.includes('comunica-undici-entry.cjs')) {
     // Reuse the patch module's OWN discovery + predicate: one scanner, one rule.
-    // A bare `require('undici')` makes Bun load its builtin shim, which has no
+    // The bare Undici specifier makes Bun load its builtin shim, which has no
     // cacheStores, so an actor left unpatched is a real startup hazard.
     const { inspectInstalledPackage } = require(path.join(authorityRoot, 'patches/comunica-undici-entry.cjs')) as {
       inspectInstalledPackage: (repositoryRoot?: string, actorDirectories?: readonly string[]) => Array<{
