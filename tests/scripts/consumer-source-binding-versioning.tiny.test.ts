@@ -18,7 +18,7 @@ import publishedSdk93 from './fixtures/published-sdk93-source-binding-versioning
 import publishedSdk94 from './fixtures/published-sdk94-source-binding-versioning.json';
 
 const ROOT=path.resolve(import.meta.dir,'../..');
-const CURRENT_SDK_CONSUMER_GROUP_COUNT=113;
+const CURRENT_SDK_CONSUMER_GROUP_COUNT=114;
 const sha=(value:Buffer|string)=>createHash('sha256').update(value).digest('hex');
 const disk=(name:string)=>sha(readFileSync(path.join(ROOT,name)));
 const whole=(group:unknown)=>sha(JSON.stringify(group));

@@ -56,8 +56,8 @@ test('PR159: fixed producer execution counts hold; reviewer-owned heads advanced
   // CURRENT totals after RC389 + RC391 + RC392 + RC393. The PR159 objects remain at their fixed
   // published indexes (108/109/103/210/211 above are unchanged); only these four
   // consumer-side CURRENT totals advanced with the real appends.
-  expect(s.QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(113);
-  expect(s.QLEVER_LINUX_CONSUMER_GROUPS).toHaveLength(114);
+  expect(s.QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(114);
+  expect(s.QLEVER_LINUX_CONSUMER_GROUPS).toHaveLength(115);
   expect(c.CONSUMER_SOURCE_GROUPS).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.consumer);
   expect(c.CI_CONSUMER_SOURCE_GROUPS).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.ci);
   // CURRENT totals follow the single shared expectation, never a scattered literal.

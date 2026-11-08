@@ -3231,5 +3231,23 @@ const RC393_SDK112_GROUP:GitHubSourceBindingGroup=Object.freeze({...RC392_SDK111
   sourceBindings:Object.freeze([...RC392_SDK111_GROUP.sourceBindings.map(rc393SourceRow),
     rc393SourceRow({path:'patches/comunica-undici-entry.cjs',sha256:''})]),
 });
-export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP,RC391_SDK110_GROUP,RC392_SDK111_GROUP,RC393_SDK112_GROUP]);
-export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP,RC391_SDK110_GROUP,RC392_SDK111_GROUP,RC393_SDK112_GROUP]);
+/** RC395 SDK113 (APPEND-ONLY): the only moved row is the shared tar reader, which is
+ *  ALREADY an owned sourceBinding of SDK112 and appears at a different value in it. It is
+ *  re-pinned FLAT in the existing secondarySelectors (no new stage, no new path, no new
+ *  axis, no owned controller hash). Every earlier SDK group keeps its exact bytes. */
+const RC395_SDK113_GROUP:GitHubSourceBindingGroup=Object.freeze({...RC393_SDK112_GROUP,
+  secondarySelectors:RC393_SDK112_GROUP.secondarySelectors
+    ?Object.freeze([...RC393_SDK112_GROUP.secondarySelectors.filter(row=>row.path!=='scripts/lib/independent-admission/source-original-tar.ts'),
+        Object.freeze({path:'scripts/lib/independent-admission/source-original-tar.ts',sha256:'e2c59ae1bee5a7d051b55a02d0dc5f5ccabc615758de289f9c31c7f5391a08c9'})])
+    :undefined,
+  secondarySelectorStages:RC393_SDK112_GROUP.secondarySelectorStages
+    ?Object.freeze(RC393_SDK112_GROUP.secondarySelectorStages.map(stage=>Object.freeze(stage.map(row=>
+        row.path==='scripts/lib/independent-admission/source-original-tar.ts'
+          ?Object.freeze({...row,sha256:'e2c59ae1bee5a7d051b55a02d0dc5f5ccabc615758de289f9c31c7f5391a08c9'}):row))))
+    :undefined,
+  sourceBindings:Object.freeze(RC393_SDK112_GROUP.sourceBindings.map(row=>
+    row.path==='scripts/lib/independent-admission/source-original-tar.ts'
+      ?Object.freeze({...row,sha256:'e2c59ae1bee5a7d051b55a02d0dc5f5ccabc615758de289f9c31c7f5391a08c9'}):row)),
+});
+export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP,RC391_SDK110_GROUP,RC392_SDK111_GROUP,RC393_SDK112_GROUP,RC395_SDK113_GROUP]);
+export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP,RC391_SDK110_GROUP,RC392_SDK111_GROUP,RC393_SDK112_GROUP,RC395_SDK113_GROUP]);
