@@ -23,7 +23,13 @@ def read_file(path,maximum,check):
 def inspect_container(raw,*,role,nonce,cid,config,image,probe,execution_identity=None,before=False,terminal=False,ownership_only=False):
  name='xpod-service-abi-'+role+'-'+nonce
  rows=json.loads(raw);need(type(rows)is list and len(rows)==1,'one actual inspect record required');v=rows[0];c=v.get('Config',{});h=v.get('HostConfig',{});state=v.get('State',{})
- need(v.get('Id')==cid and v.get('Name')=='/'+name and v.get('Image')==config and c.get('Image')==image,'actual role image/config/CID/name differs')
+ # Docker reports `.Image` as the image MANIFEST digest (or the config ID), never as an
+ # arbitrary reference. Both accepted values are immutable identities of the SAME reviewed
+ # image reference, so this stays an exact-identity check and matches the service-side
+ # collector's already-reviewed form; anything else is still rejected.
+ need(v.get('Id')==cid and v.get('Name')=='/'+name
+      and v.get('Image') in (image.split('@',1)[1],config)
+      and c.get('Image')==image,'actual role image/config/CID/name differs')
  labels=c.get('Labels',{});need(labels.get('org.xpod.service-abi-owner')==nonce and labels.get('org.xpod.service-abi-role')==role,'actual role ownership differs')
  if ownership_only and execution_identity is None:return v
  need(c.get('Entrypoint')==['/usr/local/bin/bun'] and c.get('Cmd')==['/probe.mjs',role,nonce],'actual source-bound role command differs')

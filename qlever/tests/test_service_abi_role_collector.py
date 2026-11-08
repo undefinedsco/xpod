@@ -57,7 +57,7 @@ class WrongIdentityRejectionTest(unittest.TestCase):
     def _record(self, user, scratch_owner):
         name = 'xpod-service-abi-bun-node-addon-' + 'e' * 32
         return [dict(
-            Id='b' * 64, Name='/' + name, Image='sha256:' + 'd' * 64,
+            Id='b' * 64, Name='/' + name, Image='sha256:' + 'c' * 64,
             Config=dict(Image='ghcr.io/undefinedsco/xpod@sha256:' + 'c' * 64,
                         User=user,
                         Labels={'org.xpod.service-abi-owner': 'e' * 32,
@@ -109,6 +109,30 @@ class WrongIdentityRejectionTest(unittest.TestCase):
         raw = json.dumps(self._record('1000:1000', world)).encode()
         with self.assertRaisesRegex(ValueError, 'bounded role scratch differs'):
             collector.inspect_container(raw, **self._args())
+
+    def test_manifest_digest_and_config_id_are_both_accepted(self):
+        """Docker reports `.Image` as the manifest digest (or the config ID), never an
+        arbitrary reference. Both are immutable identities of the SAME reviewed image, so
+        both must be accepted; the old strict `Image == config` form rejected the real
+        RC390 record even though every other field matched."""
+        for image_value in ('sha256:' + 'c' * 64, 'sha256:' + 'd' * 64):
+            record = self._record('1000:1000', self._owner)
+            record[0]['Image'] = image_value
+            with self.subTest(image=image_value):
+                self.assertEqual(
+                    collector.inspect_container(json.dumps(record).encode(), **self._args())['Id'],
+                    'b' * 64)
+
+    def test_unrelated_image_digest_is_still_rejected(self):
+        """The tolerant form must not accept an unrelated image identity."""
+        for image_value in ('sha256:' + '0' * 64, 'sha256:' + 'a' * 64,
+                            'ghcr.io/undefinedsco/xpod@sha256:' + 'c' * 64):
+            record = self._record('1000:1000', self._owner)
+            record[0]['Image'] = image_value
+            with self.subTest(image=image_value), self.assertRaisesRegex(
+                    ValueError, 'image/config/CID/name differs'):
+                collector.inspect_container(json.dumps(record).encode(), **self._args())
+
 
 
 class NativeOuterRoleCallTest(unittest.TestCase):
