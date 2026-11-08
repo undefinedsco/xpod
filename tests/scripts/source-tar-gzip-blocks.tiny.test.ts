@@ -1,6 +1,7 @@
 import {test,expect} from 'bun:test';
 import fs from 'node:fs';import path from 'node:path';import {spawnSync} from 'node:child_process';import {createHash} from 'node:crypto';import {gzipSync} from 'node:zlib';
 import {inspectSourceOriginalTar,inspectGzipBlockSourceOriginalTar,createGzipBlockSourceReader} from '../../scripts/lib/independent-admission/source-original-tar';
+import {openBoundOriginalFile} from '../../scripts/lib/independent-admission/bound-original-file';
 import limits from '../../scripts/lib/module-artifact-limits.json';
 const sha=(b:Buffer)=>createHash('sha256').update(b).digest('hex');
 function fixture(run:(f:any)=>void){const base=path.resolve(import.meta.dir,'../../.test-data');fs.mkdirSync(base,{recursive:true});const root=fs.mkdtempSync(path.join(base,'gzip-originals-'));
@@ -128,4 +129,100 @@ test('the runtime profile is still bounded: a decoded archive above expandedByte
     });
     expect(reader).toThrow(/expanded and retained shard bounds/u);
   } finally { fs.rmSync(value.root, { recursive: true, force: true }); }
+});
+
+test('one encoded page window keeps two passes on the SAME reader inside the unchanged call budget', () => {
+  // REAL owned originals, no giant allocations: ONE compressed block is generated and
+  // reused 1100 times, so the encoded archive is a valid concatenation of identical
+  // gzip members whose index offsets are still distinct and contiguous. Expanded bytes
+  // are hashed as a streaming hash of the same reusable 64KiB plain page.
+  const base = path.resolve(import.meta.dir, '../../.test-data');
+  fs.mkdirSync(base, { recursive: true });
+  const root = fs.mkdtempSync(path.join(base, 'gzip-page-window-'));
+  const owners: Array<{ close(): void }> = [];
+  try {
+    const BLOCKS = 1100;                 // > 1024 blocks => old per-block shape blows the cap
+    const PAGE = limits.rangeBytes;      // each block legitimately expands to a full page
+    const plain = Buffer.alloc(PAGE, 0x61);
+    const member = gzipSync(plain);      // one reusable member
+
+    const blockCount = member.length;
+    const encodedBytes = blockCount * BLOCKS;
+    const expandedBytes = PAGE * BLOCKS;
+
+    // Streaming expanded hash over the SAME reusable page, BLOCKS times.
+    const expandedHash = createHash('sha256');
+    for (let i = 0; i < BLOCKS; i++) expandedHash.update(plain);
+
+    const file = path.join(root, 'archive.gz');
+    // Write the encoded archive without holding it all: reuse the member buffer.
+    const fdOut = fs.openSync(file, 'w');
+    try { for (let i = 0; i < BLOCKS; i++) fs.writeSync(fdOut, member); } finally { fs.closeSync(fdOut); }
+    const encodedSha = sha(fs.readFileSync(file));
+    const encodedSize = fs.statSync(file).size;
+    expect(encodedSize).toBe(encodedBytes);
+
+    const archive = { path: 'runtime-app/stdout.raw', bytes: encodedSize, sha256: encodedSha };
+    const blocks = Array.from({ length: BLOCKS }, (_unused, i) => ({
+      offset: i * blockCount, bytes: blockCount, expandedOffset: i * PAGE, expandedBytes: PAGE,
+    }));
+    const index = { schemaVersion: 1, kind: 'source-tar-gzip-block-index', archive,
+      expanded: { bytes: expandedBytes, sha256: expandedHash.digest('hex') }, blocks };
+
+    const callCap = Math.max(1024, Math.ceil(encodedSize / limits.rangeBytes) * 8);
+    const pagesPerPass = Math.ceil(encodedSize / limits.rangeBytes);
+    // OLD shape: one original read per block per pass.
+    expect(BLOCKS * 2 > callCap).toBe(true);
+
+    // (1) OLD SHAPE must ACTUALLY fail against a real bound file, not merely by arithmetic.
+    const oldOwner = openBoundOriginalFile(file, { path: archive.path, bytes: encodedSize, sha256: encodedSha });
+    owners.push(oldOwner);
+    let oldReads = 0;
+    expect(() => {
+      for (let pass = 0; pass < 2; pass += 1) {
+        for (const row of blocks) {
+          oldReads += 1;
+          oldOwner.readRange(row.offset, Math.min(limits.rangeBytes, row.bytes));
+        }
+      }
+    }).toThrow(/cumulative original range budget exceeded/u);
+    oldOwner.close();
+    owners.pop();
+
+    // (2) NEW SHAPE: ONE bound file + ONE reader, readWhole twice on the SAME handles.
+    const owner = openBoundOriginalFile(file, { path: archive.path, bytes: encodedSize, sha256: encodedSha });
+    owners.push(owner);
+    const counter = { reads: 0 };
+    const reader = createGzipBlockSourceReader({ archive, index, check: () => owner.assertCurrent(),
+      readRange: (_n: string, o: number, l: number) => { counter.reads += 1; return owner.readRange(o, l); } });
+    const readWhole = () => {
+      let done = 0;
+      while (done < expandedBytes) {
+        const step = Math.min(limits.rangeBytes, expandedBytes - done);
+        reader.readRange(done, step);
+        done += step;
+      }
+    };
+    readWhole();
+    reader.assertComplete();
+    readWhole();
+    reader.assertComplete();
+    // Two passes over the SAME handles: no budget reset between them.
+    expect(counter.reads <= callCap).toBe(true);
+    // With this geometry each pass needs exactly one fetch per encoded page.
+    expect(counter.reads).toBe(2 * pagesPerPass);
+
+    // (3) A cached expanded page is still revocation-checked on a hit, and public buffers
+    // stay private: mutate what the caller received, then reread the same cached page.
+    const borrowed = reader.readRange(0, PAGE);
+    const original = Buffer.from(borrowed);
+    borrowed.fill(0xff);
+    expect(reader.readRange(0, PAGE)).toEqual(original);
+    owner.close();
+    owners.pop();
+    expect(() => reader.readRange(0, PAGE)).toThrow();
+  } finally {
+    for (const owner of owners) { try { owner.close(); } catch { /* already closed */ } }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

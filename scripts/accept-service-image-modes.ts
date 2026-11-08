@@ -248,6 +248,12 @@ export type ManagedLocalPodReason = typeof MANAGED_LOCAL_POD_REASONS[number];
 export const MANAGED_LOCAL_POD_PHASES = ['put-probe','get-probe','route-observation'] as const;
 export type ManagedLocalPodPhase = typeof MANAGED_LOCAL_POD_PHASES[number];
 
+/** Fixed chat-phase failure reasons the child may report. They name the branch
+ * that actually failed: a provider error payload, a non-200 response, or a 200
+ * response whose body did not carry the exact acceptance marker. No free text. */
+export const MANAGED_LOCAL_CHAT_REASONS = ['upstream-error','http-error','completion-mismatch'] as const;
+export type ManagedLocalChatReason = typeof MANAGED_LOCAL_CHAT_REASONS[number];
+
 /** Fixed Local-identity substeps the child may have entered. */
 export const MANAGED_LOCAL_IDENTITY_SUBSTAGES = ['route-discovery', 'managed-pod-claim', 'account-create', 'client-credential', 'session-login'] as const;
 export type ManagedLocalIdentitySubstage = typeof MANAGED_LOCAL_IDENTITY_SUBSTAGES[number];
@@ -269,6 +275,12 @@ export interface ManagedLocalLiveFailure {
   readonly podReason?: ManagedLocalPodReason;
   readonly podPhase?: ManagedLocalPodPhase;
   readonly podHttpStatus?: number;
+  /** Fixed reason for a chat-phase failure, plus the observed HTTP status. The
+   * status is the child's own reported status integer; the reason is a closed
+   * enum naming which chat step failed. No body, model text, token, key, URL or
+   * header is carried. */
+  readonly chatReason?: ManagedLocalChatReason;
+  readonly chatHttpStatus?: number;
 }
 
 const LIVE_STAGE_SET = new Set<string>([...MANAGED_LOCAL_LIVE_STAGES, 'preflight', 'after-layers']);
@@ -276,6 +288,7 @@ const IDENTITY_SUBSTAGE_SET = new Set<string>(MANAGED_LOCAL_IDENTITY_SUBSTAGES);
 const RUNTIME_REASON_SET = new Set<string>(MANAGED_LOCAL_RUNTIME_REASONS);
 const POD_REASON_SET = new Set<string>(MANAGED_LOCAL_POD_REASONS);
 const POD_PHASE_SET = new Set<string>(MANAGED_LOCAL_POD_PHASES);
+const CHAT_REASON_SET = new Set<string>(MANAGED_LOCAL_CHAT_REASONS);
 const LIVE_MODES = new Set<string>(['cloud', 'local', 'standalone']);
 
 /** Project the child's own report onto fixed enums only.
@@ -303,6 +316,10 @@ export function projectManagedLocalLiveFailure(report: any): ManagedLocalLiveFai
   const podReason = declared === 'podReadWrite' ? report?.podReason : undefined;
   const podPhase = declared === 'podReadWrite' ? report?.podPhase : undefined;
   const podHttpStatus = declared === 'podReadWrite' ? report?.podHttpStatus : undefined;
+  // Chat diagnostics are meaningful ONLY for a chat failure; a leftover value on
+  // another stage is dropped rather than projected as if it were current.
+  const chatReason = declared === 'chat' ? report?.chatReason : undefined;
+  const chatHttpStatus = declared === 'chat' ? report?.chatStatus : undefined;
   const projected: ManagedLocalLiveFailure = Object.freeze({
     mode: report.mode,
     stage: declared as ManagedLocalLiveFailureStage,
@@ -320,6 +337,10 @@ export function projectManagedLocalLiveFailure(report: any): ManagedLocalLiveFai
       ? { podPhase: podPhase as ManagedLocalPodPhase } : {}),
     ...(Number.isSafeInteger(podHttpStatus) && podHttpStatus >= 100 && podHttpStatus <= 599
       ? { podHttpStatus } : {}),
+    ...(typeof chatReason === 'string' && CHAT_REASON_SET.has(chatReason)
+      ? { chatReason: chatReason as ManagedLocalChatReason } : {}),
+    ...(Number.isSafeInteger(chatHttpStatus) && chatHttpStatus >= 100 && chatHttpStatus <= 599
+      ? { chatHttpStatus } : {}),
   });
   return projected;
 }

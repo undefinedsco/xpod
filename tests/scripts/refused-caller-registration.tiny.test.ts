@@ -86,25 +86,22 @@ test('the appended tuples are exactly two genuine slices each and the deltas are
  expect(linux.slice(1).map(digest)).toEqual(sdk.map(digest));
  // CI is the published CI slice plus one appended pair per new consumer recipe.
  expect(ci.slice(0,172).map(digest)).toEqual((published.groupHashes as Record<string,string[]>).ci!);
- // The NEW current slice preserves its predecessor's ENTIRE secondary recipe and
- // adds exactly ONE further role: the flat controller-policy row that legally
- // discriminates this append. It is not a rewrite of any historical selector and
- // it is not a loosened count bound.
+ // Retain the previous generation's roles, rebinding only the two changed
+ // policies. Both members of the new CI pair share the same secondary recipe.
  const tail=ci[ci.length-1]!,prior=ci[ci.length-3]!;
  const priorSecondary=prior.secondarySelectors??[];
  const tailSecondary=tail.secondarySelectors??[];
- expect(tailSecondary.slice(0,priorSecondary.length)).toEqual([...priorSecondary]);
- expect(tailSecondary.length).toBe(priorSecondary.length+1);
- const added=tailSecondary.slice(priorSecondary.length);
- expect(added).toHaveLength(1);
- expect(added[0]!.path).toBe(CONTROLLER_POLICY_PATH);
- // The added role is ALREADY OWNED by this same group as an own source original at
- // the identical SHA: the request and the owned fact agree, which is exactly why
- // the flat union stays valid.
- expect(added[0]!.sha256).toBe(sha(CONTROLLER_POLICY_PATH));
+ const rebound=new Set([CONTROLLER_POLICY_PATH,'scripts/lib/independent-admission/qlever-sdk-origin-policy.ts']);
+ expect(tailSecondary).toEqual(priorSecondary.map(row=>rebound.has(row.path)?{...row,sha256:sha(row.path)}:row));
+ expect(ci[ci.length-2]!.secondarySelectors).toEqual(tailSecondary);
+ const controller=tailSecondary.filter(row=>row.path===CONTROLLER_POLICY_PATH);
+ expect(controller).toHaveLength(1);
+ expect(controller[0]!.sha256).toBe(sha(CONTROLLER_POLICY_PATH));
  const ownedController=tail.sourceBindings.filter(row=>row.path===CONTROLLER_POLICY_PATH);
  expect(ownedController).toHaveLength(1);
- expect(ownedController[0]!.sha256).toBe(added[0]!.sha256);
+ expect(ownedController[0]!.sha256).toBe(controller[0]!.sha256);
+ const owned=new Map(tail.sourceBindings.map(row=>[row.path,row.sha256]));
+ for(const row of tailSecondary)expect(owned.get(row.path)).toBe(row.sha256);
 });
 
 test('the published refused-caller tuple binds its actual bytes and registers the new test',()=>{

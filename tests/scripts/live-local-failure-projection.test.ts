@@ -266,3 +266,53 @@ test('real child: an OK but non-array service/status is service-status-invalid',
     expect(rep.runtimeHttpStatus).toBe(200);
   }finally{srv.close();rmSync(root,{recursive:true,force:true});}
 },30_000);
+
+test('chat diagnostics project only for a chat failure, as a fixed enum plus integer status',()=>{
+  const base={mode:'cloud',layers:layers({chat:false}),failedStage:'chat'};
+  // a genuine cloud chat failure keeps the child's own status and fixed reason
+  for(const reason of ['upstream-error','http-error','completion-mismatch'] as const){
+    const got=projectManagedLocalLiveFailure({...base,chatReason:reason,chatStatus:200})!;
+    expect(got.chatReason).toBe(reason);
+    expect(got.chatHttpStatus).toBe(200);
+  }
+  // unknown reason and out-of-range / non-integer status are dropped, not guessed
+  for(const badStatus of [9999,5.5,-1,0,600,'200']){
+    expect(projectManagedLocalLiveFailure({...base,chatStatus:badStatus})!.chatHttpStatus).toBeUndefined();
+  }
+  const badReason=projectManagedLocalLiveFailure({...base,chatReason:'totally-secret-host',chatStatus:502})!;
+  expect(badReason.chatReason).toBeUndefined();
+  expect(badReason.chatHttpStatus).toBe(502);
+  // no reason still projects the status: a missing/network chat failure stays unknown
+  const noReason=projectManagedLocalLiveFailure({...base,chatStatus:504})!;
+  expect(noReason.chatReason).toBeUndefined();
+  expect(noReason.chatHttpStatus).toBe(504);
+});
+
+test('chat diagnostics are emitted ONLY when the failed stage is chat (no stale fields)',()=>{
+  const stale={chatReason:'upstream-error',chatStatus:500};
+  // chat: passes through
+  const chat=projectManagedLocalLiveFailure({mode:'cloud',layers:layers({chat:false}),failedStage:'chat',...stale})!;
+  expect(chat.chatReason).toBe('upstream-error');
+  expect(chat.chatHttpStatus).toBe(500);
+  // another stage must not inherit stale chat facts, even when present in the report
+  for(const failedStage of ['runtime','identity','podReadWrite','gatewayAuth','aiConnections','models','after-layers'] as const){
+    const other=projectManagedLocalLiveFailure({mode:'cloud',layers:layers({chat:false}),failedStage,...stale})!;
+    expect(other.chatReason).toBeUndefined();
+    expect(other.chatHttpStatus).toBeUndefined();
+    expect(Object.keys(other).sort()).toEqual(['completedLayers','mode','stage','status']);
+  }
+});
+
+test('chat diagnostics never carry an error body, model text, token, key, URL or header',()=>{
+  const hostile={mode:'cloud',layers:layers({chat:false}),failedStage:'chat',
+    chatStatus:502,chatReason:'upstream-error',
+    chatDetail:'POST https://secret.example/v1/chat/completions HTTP 502 body={"error":"Bearer sk-live-abcdef token=abc"} model=deepseek-v4-pro',
+    baseUrl:'https://secret.example/',provider:'deepseek',modelIds:['deepseek-v4-pro'],chatModel:'deepseek-v4-pro',
+    authorization:'Bearer sk-live-abcdef',apiKey:'sk-live-abcdef',proxyUrl:'https://secret.example/proxy'};
+  const got=projectManagedLocalLiveFailure(hostile)!;
+  const wire=JSON.stringify(got);
+  for(const leak of ['secret.example','sk-live','Bearer','token=abc','body=','https://','deepseek','chatDetail','modelIds','authorization','apiKey','proxyUrl']){
+    expect(wire).not.toContain(leak);
+  }
+  expect(Object.keys(got).sort()).toEqual(['chatHttpStatus','chatReason','completedLayers','mode','stage','status']);
+});

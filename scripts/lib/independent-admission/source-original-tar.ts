@@ -66,8 +66,35 @@ export function createGzipBlockSourceReader(input:{archive:SourceTarReference;in
  for(let i=0;i<index.blocks.length;i++){input.check();const row=index.blocks[i];need(row&&Object.keys(row).sort().join(',')==='bytes,expandedBytes,expandedOffset,offset'&&[row.offset,row.bytes,row.expandedOffset,row.expandedBytes].every(integer)&&row.offset===packedEnd&&row.expandedOffset===expandedEnd&&row.bytes>=18&&row.bytes<=limits.rangeBytes+1024&&row.expandedBytes>0&&row.expandedBytes<=limits.rangeBytes&&(i===index.blocks.length-1||row.expandedBytes===limits.rangeBytes),'contiguous bounded gzip blocks');packedEnd+=row.bytes;expandedEnd+=row.expandedBytes;need(packedEnd<=ref.bytes&&expandedEnd<=expandedMaximum,'gzip index aggregate bound');}
  need(packedEnd===ref.bytes&&expandedEnd===index.expanded.bytes,'exact gzip index closure');
  const packedHash=createHash('sha256'),expandedHash=createHash('sha256'),blockHashes:string[]=[];let complete=false,nextBlock=0,cachedIndex=-1,cached=Buffer.alloc(0);
+ /** ONE fixed 64KiB ENCODED-page window. Gzip members are tiny (18..66560 bytes) and the
+  * original call budget is charged per readRange CALL, not per byte, so reading each
+  * member separately spends one call per member: ~10504 calls per pass, two passes
+  * 21008, over the unchanged per-file cap of ceil(encoded/65536)*8 = 19560. Coalescing
+  * consecutive members into page-aligned reads spends one call per PAGE instead
+  * (~2445 per pass). Every original cap, deadline and both whole-SHA checks are
+  * unchanged; the page is a private copy and every public byte is still copied out. */
+ const pageBytes=limits.rangeBytes;
+ let pageStart=-1,page=Buffer.alloc(0);
+ const readPacked=(offset:number,length:number,target:Buffer,targetOffset:number)=>{
+  let used=0;
+  while(used<length){
+   // Deadline/currentness are enforced on cache HITS too: the caller's check runs
+   // before every chunk, so a hit can never extend a stale observation.
+   input.check();
+   const at=offset+used,start=Math.floor(at/pageBytes)*pageBytes;
+   if(!(pageStart===start&&at-pageStart+1<=page.length)){
+    const size=Math.min(pageBytes,ref.bytes-start);
+    const fetched=input.readRange(ref.path,start,size);
+    need(fetched.length===size,'gzip original truncated');
+    page=Buffer.from(fetched);pageStart=start;
+   }
+   const within=at-pageStart,count=Math.min(length-used,page.length-within);
+   need(count>0,'gzip page window truncation');
+   page.copy(target,targetOffset+used,within,within+count);used+=count;
+  }
+ };
  const decoded=(number:number)=>{input.check();if(cachedIndex===number)return cached;need(complete||number===nextBlock,'sequential encoded archive required');const row=index.blocks[number],packed=Buffer.alloc(row.bytes);
-  for(let offset=0;offset<packed.length;offset+=limits.rangeBytes){input.check();const size=Math.min(limits.rangeBytes,packed.length-offset),bytes=input.readRange(ref.path,row.offset+offset,size);need(bytes.length===size,'gzip original truncated');bytes.copy(packed,offset);}
+  for(let offset=0;offset<packed.length;offset+=limits.rangeBytes){input.check();const size=Math.min(limits.rangeBytes,packed.length-offset);readPacked(row.offset+offset,size,packed,offset);}
   const packedDigest=createHash('sha256').update(packed).digest('hex');if(complete)need(blockHashes[number]===packedDigest,'held gzip block bytes changed');else{packedHash.update(packed);blockHashes.push(packedDigest);}
   // Producer uses the canonical fixed gzip header (no optional metadata).
   need(packed[0]===31&&packed[1]===139&&packed[2]===8&&packed[3]===0&&packed.readUInt32LE(4)===0,'fixed gzip member header');

@@ -98,6 +98,7 @@ const report: {
   modelIds?: string[];
   chatModel?: string;
   chatStatus?: number;
+  chatReason?: 'upstream-error' | 'http-error' | 'completion-mismatch';
   taskApproval?: LiveTaskEvidence;
   keyCleanup?: { ok: boolean; detail: string };
 } = {
@@ -1421,11 +1422,16 @@ async function chatOnce(gatewayKey: string, chatModel: string): Promise<void> {
     }),
   });
   report.chatStatus = chatResponse.status;
+  // A non-200 is already a fixed fact here. Record the fixed reason BEFORE reading
+  // the body because readJson throws on a non-2xx response; the reason is a closed
+  // enum literal, never parsed text.
+  if (chatResponse.status !== 200) report.chatReason = 'http-error';
   const chatPayload = await readJson(chatResponse, 'POST /v1/chat/completions') as {
     choices?: Array<{ message?: { content?: unknown } }>;
     error?: { message?: string; code?: string };
   };
   if (chatPayload.error) {
+    report.chatReason = 'upstream-error';
     fail('chat', `Chat error ${chatPayload.error.code ?? ''}: ${redact(chatPayload.error.message ?? 'unknown')}`);
   }
   const content = chatPayload.choices?.[0]?.message?.content;
@@ -1435,6 +1441,9 @@ async function chatOnce(gatewayKey: string, chatModel: string): Promise<void> {
       ? content.map((part) => (typeof part === 'object' && part && 'text' in part ? String(part.text) : '')).join('')
       : '';
   if (chatResponse.status !== 200 || !chatCompletionBodyMatches(chatPayload, 'XPOD_OK')) {
+    // Only a genuine 200 whose body lacks the exact marker is a completion
+    // mismatch; a non-200 already carries the fixed http-error reason.
+    if (chatResponse.status === 200) report.chatReason = 'completion-mismatch';
     const observed = text.trim().slice(0, 160);
     const payloadShape = redact(JSON.stringify(chatPayload).slice(0, 500));
     fail('chat', `Chat HTTP ${chatResponse.status} did not return the exact acceptance marker${observed ? `; observed=${redact(observed)}` : '; observed=<empty>'}; payload=${payloadShape}`);
