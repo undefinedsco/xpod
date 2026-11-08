@@ -16,6 +16,36 @@ import types
 
 META = 1024**2
 TMPFS_OPTIONS = 'rw,noexec,nosuid,nodev,size=8388608,mode=0700'
+
+
+def observer_execution_identity():
+    """The ONE numeric uid/gid boundary owned by the current host observer.
+
+    Derived from the actual process once per collection. It is never caller
+    configuration, never an environment override and never a client-supplied PID
+    authority. uid 0 is a valid value; nothing forces or forbids root here.
+    """
+    uid, gid = os.geteuid(), os.getegid()
+    need(type(uid) is int and type(gid) is int, 'numeric observer uid/gid required')
+    # 0xFFFFFFFF is the kernel invalid-uid sentinel; a real euid/egid never needs it.
+    need(0 <= uid < 0xFFFFFFFF and 0 <= gid < 0xFFFFFFFF,
+         'observer uid/gid inside the real kernel identity range')
+    return (uid, gid)
+
+
+def _require_identity(value):
+    need(isinstance(value, tuple) and len(value) == 2, 'exact uid/gid tuple required')
+    uid, gid = value
+    need(type(uid) is int and type(gid) is int, 'numeric uid/gid required')
+    need(0 <= uid < 0xFFFFFFFF and 0 <= gid < 0xFFFFFFFF,
+         'uid/gid inside the real kernel identity range')
+    return value
+
+
+def tmpfs_options(identity):
+    """Mode stays 0700; ownership is granted to the bound execution identity."""
+    uid, gid = _require_identity(identity)
+    return TMPFS_OPTIONS + ',uid=' + str(uid) + ',gid=' + str(gid)
 NATIVE_RUNTIME = '/opt/xpod/qlever/bin/xpod_qlever_local_runtime'
 FIXED_BOOTSTRAP = 'cp /seed/abi.sqlite /scratch/abi.sqlite; exec ' + NATIVE_RUNTIME + ' --sqlite-path /scratch/abi.sqlite'
 ROLES = ('receipt', 'stdin', 'stdout', 'stderr')
@@ -226,7 +256,14 @@ def capture_bounded_control(label, command, retained, source, *, transport, end)
     return refs
 
 
-def command_for(direct_commands, image_commands, role, image, name, nonce, cid, scratch):
+def command_for(direct_commands, image_commands, role, image, name, nonce, cid,
+                scratch, identity):
+    """Build one native command bound to the single owned execution identity.
+
+    The pure builder never calls os; the identity is derived once by the collector
+    and validated here before it reaches the reviewed argument suffix.
+    """
+    uid, gid = _require_identity(identity)
     command = direct_commands.command(image_commands, role, image, name, nonce,
                                       cid=cid, scratch=scratch)
     if role == 'create':
@@ -237,7 +274,9 @@ def command_for(direct_commands, image_commands, role, image, name, nonce, cid, 
              'sole reviewed native entrypoint suffix required')
         prefix = [part.replace(',dst=/scratch', ',dst=/seed,readonly')
                   if part == mount else part for part in command[:-5]]
-        command = [*prefix, '--tmpfs', '/scratch:' + TMPFS_OPTIONS,
+        need('--user' not in prefix, 'no caller supplied execution identity')
+        command = [*prefix, '--user', str(uid) + ':' + str(gid),
+                   '--tmpfs', '/scratch:' + tmpfs_options(identity),
                    '--entrypoint', '/bin/sh', image, '-ec', FIXED_BOOTSTRAP]
     return command
 
@@ -274,6 +313,9 @@ def collect(*, image, config, source, retained, seed_reference, expected_abi,
          'exact expected service config required')
     assert_current(); budget.check(10)
     nonce = secrets.token_hex(16); name = 'xpod-service-output-' + nonce
+    # ONE ownership boundary for the whole collection: the actual numeric host
+    # observer identity, derived once, never caller configuration.
+    execution_identity = observer_execution_identity()
     scratch = retained.out / (name + '-scratch')
     # Bind source for the container's read-only /seed. Traversal is all the mount
     # needs; the explicit chmod keeps a restrictive umask from leaving 0700.
@@ -287,7 +329,11 @@ def collect(*, image, config, source, retained, seed_reference, expected_abi,
                   cleanupErrors=cleanup_errors, releaseAccepted=False,
                   serviceAbiVerified=False, runtimeProtocolObserved=False,
                   pending=['candidate-native-loader-and-membership-unverified',
-                           'whole-service-abi-unverified'])
+                           'whole-service-abi-unverified'],
+                  # Bound ONCE from the actual host observer and retained so the role
+                  # replay can validate the same numeric tuple without deriving the
+                  # verifier host's uid (remote CI and local differ).
+                  executionIdentity=[execution_identity[0], execution_identity[1]])
     # Three cleanup operations plus final result cannot be consumed by protocol IO.
     cleanup_slots = [retained.reserve(2*META) for _ in range(5)]
     result_allocation = retained.reserve(META)
@@ -299,7 +345,8 @@ def collect(*, image, config, source, retained, seed_reference, expected_abi,
         if not cleanup:
             assert_current()
         budget.check(0 if cleanup else 10)
-        command = command_for(direct_commands, image_commands, role, image, name, nonce, cid, scratch)
+        command = command_for(direct_commands, image_commands, role, image, name, nonce, cid,
+                              scratch, execution_identity)
         allocation = cleanup_slots.pop() if cleanup and cleanup_slots else retained.reserve(2*META)
         label = 'service-abi-' + str(len(stages)+len(failures)) + '-' + role
         try:
@@ -338,8 +385,15 @@ def collect(*, image, config, source, retained, seed_reference, expected_abi,
              and mounts[0].get('Source') == str(scratch)
              and mounts[0].get('Destination') == '/seed'
              and mounts[0].get('RW') is False, 'actual read-only seed mount differs')
-        need(host.get('Tmpfs') == {'/scratch': TMPFS_OPTIONS},
+        # The scratch tmpfs keeps mode 0700 but is owned by the same bound identity
+        # that runs the probe, otherwise the reviewed original seed copy cannot write.
+        need(host.get('Tmpfs') == {'/scratch': tmpfs_options(execution_identity)},
              'actual kernel-bounded private scratch differs')
+        # The actual container user must be exactly the bound execution identity, so a
+        # drifted --user (or a caller override) cannot silently change the boundary.
+        uid, gid = execution_identity
+        need(value.get('Config', {}).get('User') == str(uid) + ':' + str(gid),
+             'actual container execution identity differs from the bound uid/gid')
         if not before:
             need(state.get('Running') is False and state.get('Paused') is False
                  and state.get('Status') == 'exited' and state.get('Pid') == 0
@@ -418,7 +472,8 @@ def collect(*, image, config, source, retained, seed_reference, expected_abi,
                 host_session=host_session, transport=transport,
                 control=types.SimpleNamespace(capture_bounded_control=capture_bounded_control),
                 read_budget=shared_reads, elf_module=elf_module,
-                deadline=protocol_end, assert_current=assert_current))
+                deadline=protocol_end, assert_current=assert_current,
+                execution_identity=execution_identity))
         result['sharedRoleReadBytes'] = shared_reads.consumed
     except BaseException as error:
         primary = error

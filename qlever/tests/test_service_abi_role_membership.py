@@ -4,12 +4,14 @@ These are synthetic proc/files trees on ordinary local bytes. They prove the
 observer's file-identity and retention mechanics only; they are not evidence
 that any real container image or service master produced these values.
 """
+import errno
 import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
 import tempfile
+import time
 import types
 import unittest
 from unittest.mock import patch
@@ -244,6 +246,203 @@ class UnsafeDeclarationTests(unittest.TestCase):
                     module.observe_process(99, retained=Ledger(fixture_root / ('out-' + str(index))),
                                            proc_root=str(fixture_root / 'missing'),
                                            expected_executable=executable)
+
+
+class FindContainerPidDiagnosticsTest(unittest.TestCase):
+    """The bounded ledger must explain zero/duplicate outcomes without changing the
+    selection rule. Synthetic proc trees only: mechanics, not a claim that a real
+    container produced these values."""
+
+    CID = 'a' * 64
+    RUNTIME = b'/opt/xpod/qlever/bin/xpod_qlever_local_runtime'
+
+    def _candidate(self, root, pid, parts, cgroup, with_binary=True, block_parent=False):
+        base = os.path.join(root, str(pid))
+        os.makedirs(base)
+        open(os.path.join(base, 'cmdline'), 'wb').write(b'\0'.join(parts) + b'\0')
+        open(os.path.join(base, 'cgroup'), 'wb').write(cgroup)
+        runtime = os.path.join(base, 'root/opt/xpod/qlever/bin')
+        os.makedirs(runtime)
+        if with_binary:
+            open(os.path.join(runtime, 'xpod_qlever_local_runtime'), 'wb').write(b'x')
+        if block_parent:
+            # A regular file where a directory is expected yields ENOTDIR on stat; use a
+            # permission-denied parent instead below when the platform permits it.
+            pass
+
+    def _owned_cgroup(self):
+        return ('0::/docker/' + self.CID).encode()
+
+    def test_exactly_one_owned_process_is_selected(self):
+        with tempfile.TemporaryDirectory(dir=TEST_ROOT) as directory:
+            root = Path(directory).resolve()
+            self._candidate(root, 11, [self.RUNTIME, b'--sqlite-path', b'/scratch/abi.sqlite'],
+                            self._owned_cgroup())
+            ledger = module.MembershipDiagnostics(self.CID)
+            self.assertEqual(module.find_container_pid(self.CID, proc_root=str(root),
+                                                       diagnostics=ledger), 11)
+            self.assertEqual(ledger.as_dict()['matches'], 1)
+
+    def test_cgroup_matched_but_wrong_cmdline_is_still_reported(self):
+        with tempfile.TemporaryDirectory(dir=TEST_ROOT) as directory:
+            root = Path(directory).resolve()
+            # No runtime token in cmdline: this must still be recorded because the cgroup
+            # matches, instead of silently reporting zero candidates.
+            self._candidate(root, 12, [b'/usr/bin/qemu-x86_64', b'/bin/sleep', b'60'],
+                            self._owned_cgroup())
+            ledger = module.MembershipDiagnostics(self.CID)
+            with self.assertRaisesRegex(ValueError, 'exactly one actual live process'):
+                module.find_container_pid(self.CID, proc_root=str(root), diagnostics=ledger)
+            state = ledger.as_dict()
+            self.assertEqual(state['cgroupCandidateTotal'], 1)
+            self.assertEqual(state['matches'], 0)
+            self.assertFalse(state['candidates'][0]['cmdlineRuntimePart'])
+
+    def test_root_binary_permission_denied_is_distinct_from_missing(self):
+        with tempfile.TemporaryDirectory(dir=TEST_ROOT) as directory:
+            root = Path(directory).resolve()
+            self._candidate(root, 13, [self.RUNTIME, b'--sqlite-path', b'/scratch/abi.sqlite'],
+                            self._owned_cgroup(), with_binary=False)
+            missing = module._root_binary_state(os.path.join(root, '13'))
+            self.assertFalse(missing[0])
+            self.assertEqual(missing[1], errno.ENOENT)
+            # Replace the runtime file's parent with a mode-0 directory: stat then fails
+            # with EACCES for an unprivileged observer.
+            runtime_dir = os.path.join(root, '13/root/opt/xpod/qlever/bin')
+            open(os.path.join(runtime_dir, 'xpod_qlever_local_runtime'), 'wb').write(b'x')
+            if os.geteuid() != 0:
+                os.chmod(runtime_dir, 0o000)
+                try:
+                    blocked = module._root_binary_state(os.path.join(root, '13'))
+                finally:
+                    os.chmod(runtime_dir, 0o755)
+                self.assertFalse(blocked[0])
+                self.assertEqual(blocked[1], errno.EACCES)
+
+    def test_ledger_stops_at_sixty_four_candidates_but_counts_all(self):
+        with tempfile.TemporaryDirectory(dir=TEST_ROOT) as directory:
+            root = Path(directory).resolve()
+            for pid in range(70):
+                self._candidate(root, 200 + pid, [b'/usr/bin/unrelated', b'x'],
+                                self._owned_cgroup())
+            ledger = module.MembershipDiagnostics(self.CID)
+            with self.assertRaisesRegex(ValueError, 'exactly one actual live process'):
+                module.find_container_pid(self.CID, proc_root=str(root), diagnostics=ledger)
+            state = ledger.as_dict()
+            self.assertEqual(state['cgroupCandidateTotal'], 70)
+            self.assertEqual(state['cgroupCandidatesRetained'], 64)
+            self.assertTrue(state['truncated'])
+
+    def test_duplicate_matching_candidates_are_still_rejected(self):
+        with tempfile.TemporaryDirectory(dir=TEST_ROOT) as directory:
+            root = Path(directory).resolve()
+            for pid in (300, 301):
+                self._candidate(root, pid,
+                                [self.RUNTIME, b'--sqlite-path', b'/scratch/abi.sqlite'],
+                                self._owned_cgroup())
+            ledger = module.MembershipDiagnostics(self.CID)
+            with self.assertRaisesRegex(ValueError, 'exactly one actual live process'):
+                module.find_container_pid(self.CID, proc_root=str(root), diagnostics=ledger)
+            self.assertEqual(ledger.as_dict()['matches'], 2)
+
+    def test_embedded_container_id_is_not_accepted(self):
+        with tempfile.TemporaryDirectory(dir=TEST_ROOT) as directory:
+            root = Path(directory).resolve()
+            embedded = self.CID.encode() + b'ff'
+            self._candidate(root, 400, [self.RUNTIME, b'--sqlite-path', b'/scratch/abi.sqlite'],
+                            b'0::/docker/' + embedded)
+            ledger = module.MembershipDiagnostics(self.CID)
+            with self.assertRaisesRegex(ValueError, 'exactly one actual live process'):
+                module.find_container_pid(self.CID, proc_root=str(root), diagnostics=ledger)
+            self.assertEqual(ledger.as_dict()['cgroupCandidateTotal'], 0)
+
+
+class MembershipPlumbingDiagnosticTest(unittest.TestCase):
+    """Proves the collector->provider->hook wiring reaches the bounded ledger.
+
+    This drives the REAL collector.membership_arguments, the REAL
+    ContainerPidProvider and the REAL retention helper, exercising the exact
+    pre-shutdown failure path without faking the transport session.
+    """
+
+    CID = 'c' * 64
+
+    def _collector(self):
+        path = HERE / 'sdk-service-abi-collector.py'
+        spec = importlib.util.spec_from_file_location('abi_collector', path)
+        module_ = importlib.util.module_from_spec(spec); spec.loader.exec_module(module_)
+        return module_
+
+    def test_collector_provider_declares_and_receives_the_bounded_ledger(self):
+        collector = self._collector()
+        args = collector.membership_arguments(module, self.CID,
+                                             'sha256:' + 'd' * 64, 'sha256:' + 'e' * 64)
+        provider = args['membership_pid_provider']
+        self.assertTrue(getattr(provider, 'accepts_diagnostics', False),
+                        'the trusted provider must declare the diagnostics capability')
+        self.assertEqual(args['membership_container']['containerId'], self.CID)
+
+    def test_pre_shutdown_failure_retains_nonempty_ledger(self):
+        proc_root = TEST_ROOT / ('plumbing-' + str(os.getpid()))
+        proc_root.mkdir(parents=True, exist_ok=True)
+        base = proc_root / '4242'
+        base.mkdir()
+        (base / 'cmdline').write_bytes(b'/usr/bin/qemu-x86_64\0/bin/exec\0')
+        (base / 'cgroup').write_bytes(b'0::/docker/' + self.CID.encode() + b'\n')
+        (base / 'root/opt/xpod/qlever/bin').mkdir(parents=True)
+        (base / 'root/opt/xpod/qlever/bin/xpod_qlever_local_runtime').write_bytes(b'x')
+
+        class Session:
+            raw = {'stdin.raw': b'{}', 'stdout.raw': b'', 'stderr.raw': b''}
+            cleanup = dict(actualRootWait=True, actualRootReturnCode=0,
+                           ownedGroupAbsent=True, cleanupErrors=[])
+
+        class Harness:
+            ready_checked = True
+            pre_shutdown_done = False
+            session = Session()
+
+            def __init__(self, *a, pre_shutdown_hook=None, **k):
+                self.hook = pre_shutdown_hook
+
+            def __enter__(self):
+                # the real hook runs while stdin is still open
+                self.hook()
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def kill(self):
+                pass
+
+        ledger = Ledger(TEST_ROOT / ('plumbing-out-' + str(os.getpid())))
+        provider = module.ContainerPidProvider(self.CID, proc_root=str(proc_root))
+        args = LedgerArgs = dict(
+            membership_pid_provider=provider,
+            membership_container=dict(containerId=self.CID,
+                                      configDigest='sha256:' + 'd' * 64,
+                                      imageDigest='sha256:' + 'e' * 64))
+        with self.assertRaisesRegex(ValueError, 'exactly one actual live process'):
+            module.observe(
+                ['/bin/true'], helper=types.SimpleNamespace(
+                    _run_runtime_smoke_session=lambda _c: (1, 1)),
+                transport=types.SimpleNamespace(SmokeProcess=Harness), replay=None,
+                expected_abi=None, output=Path(ledger.out) / 'observe',
+                parent_deadline=time.monotonic() + 30,
+                outer_parent_deadline=time.monotonic() + 60,
+                reserve=lambda count: count, membership=ledger,
+                membership_module=types.SimpleNamespace(
+                    observe_process=lambda *a, **k: {'observation': {'ok': True}}),
+                **args)
+        retained = list(Path(ledger.out).rglob('candidate-rejections.original.json'))
+        self.assertEqual(len(retained), 1)
+        payload = json.loads(retained[0].read_text())
+        self.assertEqual(payload['cgroupCandidateTotal'], 1)
+        self.assertEqual(payload['matches'], 0)
+        self.assertFalse(payload['candidates'][0]['cmdlineRuntimePart'])
+        self.assertEqual(payload['failureClass'], 'ValueError')
+        self.assertIn('observeEuid', payload)
 
 
 if __name__ == '__main__':

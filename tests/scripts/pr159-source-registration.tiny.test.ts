@@ -47,10 +47,11 @@ test('PR159: historical producer axes keep their published counts; only consumer
   expect(s.QLEVER_NORMAL_BUILD_GROUPS).toHaveLength(3);
   expect(s.QLEVER_NORMAL_SOURCE_GROUPS).toHaveLength(5);
   expect(s.QLEVER_SDK_NORMAL_SOURCE_BINDINGS).toHaveLength(23);
-  expect(s.QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(109);
-  expect(s.QLEVER_LINUX_CONSUMER_GROUPS).toHaveLength(110);
-  expect(c.CONSUMER_SOURCE_GROUPS).toHaveLength(105);
-  expect(c.CI_CONSUMER_SOURCE_GROUPS).toHaveLength(214);
+  // Current totals include RC389; the PR159 objects remain at their frozen indexes.
+  expect(s.QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(110);
+  expect(s.QLEVER_LINUX_CONSUMER_GROUPS).toHaveLength(111);
+  expect(c.CONSUMER_SOURCE_GROUPS).toHaveLength(106);
+  expect(c.CI_CONSUMER_SOURCE_GROUPS).toHaveLength(216);
   expect(g.API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS).toHaveLength(32);
   expect(CLI_SOURCE_VERSION_GROUPS).toHaveLength(15);
 });

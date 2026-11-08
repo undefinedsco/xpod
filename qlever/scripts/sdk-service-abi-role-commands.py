@@ -59,6 +59,38 @@ _ISOLATION_ARGS = (
 )
 
 
+def _require_identity(identity: object) -> tuple[int, int]:
+    """Validate the numeric host-observer uid/gid handed in by the collector.
+
+    This builder stays pure: it never probes the process itself.
+    """
+    if not isinstance(identity, tuple) or len(identity) != 2:
+        raise ValueError("exact uid/gid tuple required")
+    uid, gid = identity
+    # 0xFFFFFFFF is the kernel's invalid-uid/gid sentinel and is never a real observer
+    # value, so it is rejected alongside bool, negative and out-of-range inputs.
+    for value in (uid, gid):
+        if type(value) is not int or not 0 <= value < 0xFFFFFFFF:
+            raise ValueError("uid/gid must be real kernel identity integers")
+    return uid, gid
+
+
+def isolation_args(identity: object) -> tuple[str, ...]:
+    """The reviewed isolation flags with scratch/tmp owned by ``identity``.
+
+    Mode stays 0700 on both tmpfs mounts; only uid/gid ownership is added, so the
+    probe can write its own scratch without a 1777 mount or a read-only-seed
+    workaround.
+    """
+    uid, gid = _require_identity(identity)
+    owner = ",uid=" + str(uid) + ",gid=" + str(gid)
+    return tuple(
+        (part + owner) if part.startswith("/scratch:") or part.startswith("/tmp:")
+        else part
+        for part in _ISOLATION_ARGS
+    )
+
+
 def _require_image(image: object) -> str:
     if not isinstance(image, str) or _IMAGE_RE.fullmatch(image) is None:
         raise ValueError(
@@ -122,8 +154,10 @@ def _name(role: str, nonce: str) -> str:
     return "xpod-service-abi-" + role + "-" + nonce
 
 
-def _create(role: str, image: str, nonce: str, probe: object) -> list[str]:
+def _create(role: str, image: str, nonce: str, probe: object,
+            identity: object) -> list[str]:
     probe_path = _require_probe(probe)
+    uid, gid = _require_identity(identity)
     # All roles use the same finite source-bound handshake. For Inngest the
     # probe owns and waits for the real product child, whose PID is observed.
     role_args = ["--mount", "type=bind,src=" + probe_path + ",dst=/probe.mjs,readonly",
@@ -137,7 +171,9 @@ def _create(role: str, image: str, nonce: str, probe: object) -> list[str]:
         "org.xpod.service-abi-owner=" + nonce,
         "--label",
         "org.xpod.service-abi-role=" + role,
-        *_ISOLATION_ARGS,
+        *isolation_args(identity),
+        "--user",
+        str(uid) + ":" + str(gid),
         *role_args,
     ]
 
@@ -150,6 +186,7 @@ def command(
     nonce: str,
     cid: str | None = None,
     probe: str | None = None,
+    identity: tuple[int, int] | None = None,
 ) -> list[str]:
     """Return the exact Docker argument vector for a role operation.
 
@@ -173,10 +210,14 @@ def command(
     if operation == "create":
         if cid is not None:
             raise ValueError("create does not accept a cid")
-        return _create(role, image, nonce, probe)
+        if identity is None:
+            raise ValueError("create requires the bound host observer identity")
+        return _create(role, image, nonce, probe, identity)
 
     if probe is not None:
         raise ValueError("only create accepts a probe")
+    if identity is not None:
+        raise ValueError("only create accepts an execution identity")
     container_id = _require_cid(cid)
 
     if operation == "inspect":

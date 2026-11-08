@@ -521,7 +521,7 @@
   },
   {
     "path": "qlever/scripts/sdk-service-abi-collector.py",
-    "sha256": "f88109de9c1ada0ccdd7a2abfae33ce3007e71cc657521159616b39453a560b4"
+    "sha256": "02121de319436b1d200524bb2284c42e0c73d70830591341a9a40090ba5ee372"
   },
   {
     "path": "qlever/scripts/sdk-service-abi-declarations.py",
@@ -533,7 +533,7 @@
   },
   {
     "path": "qlever/scripts/sdk-service-abi-host-session.py",
-    "sha256": "cd0885a56db490b0d43dc5df59e0caebb83a0a233c785b94465e4168613c95ed"
+    "sha256": "249612b98383ac8aefbc706ecd47ff8197888773fdd2afa438d62fd48d32180f"
   },
   {
     "path": "qlever/scripts/sdk-service-abi-protocol-replay.py",
@@ -541,7 +541,7 @@
   },
   {
     "path": "qlever/scripts/sdk-service-abi-receiver.py",
-    "sha256": "8ed3f2fee4dc92cc5ea8bdf782f9d2c0b46b176580aba573a35c54470b06e02b"
+    "sha256": "306d21d43ee9a104e20452b7a8eb6b5769926b7590a335a8cac6d4e6eb391260"
   },
   {
     "path": "qlever/scripts/sdk-service-abi-retained-session.py",
@@ -1221,7 +1221,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "10cda448aff1cda4a32aa237f7f0d516293631a0447c39cd110838c3dc5540d2"
+    "sha256": "2b3570b8abdad8ab817d5a04863acb95671c4ceab8a6333351c34d4a5c0dfc4b"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -1709,7 +1709,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/candidate-service-abi-role-replay.ts",
-    "sha256": "36fa07e43d22ceedac60f5aca105633e54e6368db164e8e6ef72c65bf8b04486"
+    "sha256": "cc0e1a0f5eec8190d5cc72a321dc75c970f637e6bd5a866d54feb2fd55e78551"
   },
   {
     "path": "scripts/lib/independent-admission/candidate-service-abi-role-sessions.ts",

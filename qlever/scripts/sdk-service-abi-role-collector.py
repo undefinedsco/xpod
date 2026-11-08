@@ -20,26 +20,39 @@ def read_file(path,maximum,check):
   need(identity(os.fstat(fd))==identity(before)==identity(path.lstat()),'role original changed while read');return b''.join(parts)
  finally:os.close(fd)
 
-def inspect_container(raw,*,role,nonce,cid,config,image,probe,before=False,terminal=False,ownership_only=False):
+def inspect_container(raw,*,role,nonce,cid,config,image,probe,execution_identity=None,before=False,terminal=False,ownership_only=False):
  name='xpod-service-abi-'+role+'-'+nonce
  rows=json.loads(raw);need(type(rows)is list and len(rows)==1,'one actual inspect record required');v=rows[0];c=v.get('Config',{});h=v.get('HostConfig',{});state=v.get('State',{})
  need(v.get('Id')==cid and v.get('Name')=='/'+name and v.get('Image')==config and c.get('Image')==image,'actual role image/config/CID/name differs')
  labels=c.get('Labels',{});need(labels.get('org.xpod.service-abi-owner')==nonce and labels.get('org.xpod.service-abi-role')==role,'actual role ownership differs')
- if ownership_only:return v
+ if ownership_only and execution_identity is None:return v
  need(c.get('Entrypoint')==['/usr/local/bin/bun'] and c.get('Cmd')==['/probe.mjs',role,nonce],'actual source-bound role command differs')
  need(h.get('ReadonlyRootfs')is True and h.get('NetworkMode')=='none' and h.get('CapDrop')==['ALL'] and h.get('Init')is True and h.get('Memory')==512*META and h.get('PidsLimit')==64 and h.get('NanoCpus')==10**9 and h.get('RestartPolicy',{}).get('Name')=='no' and 'no-new-privileges' in h.get('SecurityOpt',[]),'actual role isolation differs')
- need(h.get('Tmpfs')=={'/scratch':'rw,noexec,nosuid,nodev,size=8388608,mode=0700','/tmp':'rw,noexec,nosuid,nodev,size=16777216,mode=0700'},'actual bounded role scratch differs')
+ # Both tmpfs mounts keep mode 0700 and are owned by the ONE bound execution identity;
+ # they are not world-writable and are not replaced by a read-only-seed workaround.
+ # Current API: identity is mandatory except for the ownership-only cleanup projection.
+ need(execution_identity is not None,'bound execution identity required for role inspect')
+ uid,gid=execution_identity;owner=',uid='+str(uid)+',gid='+str(gid)
+ need(h.get('Tmpfs')=={'/scratch':'rw,noexec,nosuid,nodev,size=8388608,mode=0700'+owner,
+                       '/tmp':'rw,noexec,nosuid,nodev,size=16777216,mode=0700'+owner},
+      'actual bounded role scratch differs')
+ need(c.get('User')==str(uid)+':'+str(gid),
+      'actual role execution identity differs from the bound uid/gid')
  mounts=v.get('Mounts',[]);need(len(mounts)==1 and mounts[0].get('Type')=='bind' and mounts[0].get('Source')==str(probe) and mounts[0].get('Destination')=='/probe.mjs' and mounts[0].get('RW')is False,'actual held probe mount differs')
  if before:need(state.get('Status')=='created' and state.get('Running')is False and state.get('Pid')==0,'role must never have started')
  if terminal:need(state.get('Status')=='exited' and state.get('Running')is False and state.get('Pid')==0 and state.get('ExitCode')==0 and state.get('OOMKilled')is False,'actual role zero terminal state required')
  return v
 
 def collect(role,*,image,config,nonce,source,retained,commands,bun_session,
-            host_session,transport,control,read_budget,elf_module,deadline,assert_current):
+            host_session,transport,control,read_budget,elf_module,deadline,assert_current,
+            execution_identity=None):
  need(role in commands.ROLES,'source role required');need(time.monotonic()<deadline<=retained.budget.end,'same absolute role deadline required')
  need(re.fullmatch('sha256:[a-f0-9]{64}',config),'actual config digest required')
  source=Path(source);probe=source/'qlever/scripts/sdk-service-abi-role-probe.mjs'
  need(source.is_absolute() and probe.resolve(strict=True)==probe,'canonical source probe required')
+ # ONE numeric boundary for every role container, supplied by the collector.
+ bound_identity=commands._require_identity(execution_identity) if execution_identity is not None else None
+ need(bound_identity is not None,'bound host observer identity required')
  check=lambda:retained.budget.check(0)
  assert_current();probe_body=read_file(probe,META,check);probe_identity=identity(probe.lstat())
  prefix='abi-role-'+role+'-'+nonce;name='xpod-service-abi-'+role+'-'+nonce
@@ -54,7 +67,7 @@ def collect(role,*,image,config,nonce,source,retained,commands,bun_session,
   check()
   if not cleanup:assert_current()
   argv=commands.command(role,operation,image=image,nonce=nonce,
-     **({'probe':str(probe)} if operation=='create' else {} if operation=='recover' else {'cid':cid}))
+     **({'probe':str(probe),'identity':bound_identity} if operation=='create' else {} if operation=='recover' else {'cid':cid}))
   allocation=cleanup_slots.pop() if cleanup and cleanup_slots else retained.reserve(2*META)
   label=prefix+'-'+str(len(stages))+'-'+operation
   row=control.capture_bounded_control(label,argv,retained,source,transport=transport,end=deadline if cleanup else deadline-5)
@@ -62,7 +75,8 @@ def collect(role,*,image,config,nonce,source,retained,commands,bun_session,
   raw=read_file(retained.out/row['stdout']['path'],META,check)
   need(len(raw)==row['stdout']['bytes'] and hashlib.sha256(raw).hexdigest()==row['stdout']['sha256'],'actual role control bytes changed');return raw
  def inspect(raw,**kwargs):
-  return inspect_container(raw,role=role,nonce=nonce,cid=cid,config=config,image=image,probe=probe,**kwargs)
+  return inspect_container(raw,role=role,nonce=nonce,cid=cid,config=config,image=image,
+     probe=probe,execution_identity=bound_identity,**kwargs)
 
  def retain_raw(name,body):
   check();path=retained.out/prefix/name;path.parent.mkdir(mode=0o700,exist_ok=True)
@@ -97,7 +111,7 @@ def collect(role,*,image,config,nonce,source,retained,commands,bun_session,
   except BaseException as e:
    errors.append(type(e).__name__)
    if primary is None:primary=e
- result=dict(schemaVersion=1,role=role,containerName=name,containerId=cid,ownerNonce=nonce,imageReferenceByDigest=image,configDigest=config,stages=stages,session=session,ownedContainerAbsent=absent,cleanupErrors=errors,sourceProbeSha256=hashlib.sha256(probe_body).hexdigest(),serviceAbiVerified=False)
+ result=dict(schemaVersion=1,role=role,containerName=name,containerId=cid,ownerNonce=nonce,imageReferenceByDigest=image,configDigest=config,executionIdentity=list(bound_identity),stages=stages,session=session,ownedContainerAbsent=absent,cleanupErrors=errors,sourceProbeSha256=hashlib.sha256(probe_body).hexdigest(),serviceAbiVerified=False)
  if primary is not None:result['failureClass']=type(primary).__name__
  raw=(json.dumps(result,sort_keys=True)+'\n').encode();need(len(raw)<=META,'bounded role lifecycle record');ref=retain_raw('lifecycle.original.json',raw);retained.settle(result_reserved,[ref]);result['resultOriginal']=ref
  if primary is not None:raise primary
