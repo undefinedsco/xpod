@@ -24,6 +24,6 @@ test('SDK30 and Notice fork whole originals both survive before the single actua
  // CI211/212 the RC387 runtime-profile appends. The captured parent union therefore
  // grows by 132, never a historical index. Consumer grows by 63 for consumer100
  // through consumer104.
- expect(new Set([...parents.sdk30Consumer,...parents.noticeConsumer ]).size+67).toBe(c.length);
- expect(new Set([...parents.sdk30CI,...parents.noticeCI]).size+140).toBe(ci.length);
+ expect(new Set([...parents.sdk30Consumer,...parents.noticeConsumer ]).size+68).toBe(c.length);
+ expect(new Set([...parents.sdk30CI,...parents.noticeCI]).size+142).toBe(ci.length);
 });

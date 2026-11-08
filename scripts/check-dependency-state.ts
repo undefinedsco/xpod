@@ -300,6 +300,22 @@ function checkPostinstallPatches(): void {
     }
     }
   }
+  if (postinstall.includes('comunica-undici-entry.cjs')) {
+    // Reuse the patch module's OWN discovery + predicate: one scanner, one rule.
+    // The bare Undici specifier makes Bun load its builtin shim, which has no
+    // cacheStores, so an actor left unpatched is a real startup hazard.
+    const { inspectInstalledPackage } = require(path.join(authorityRoot, 'patches/comunica-undici-entry.cjs')) as {
+      inspectInstalledPackage: (repositoryRoot?: string, actorDirectories?: readonly string[]) => Array<{
+        path: string; usesUndici: boolean; bareUndici: boolean; explicitEntry: boolean; valid: boolean;
+      }>;
+    };
+    const actorDirectories = activeApiScope?.postinstallDirectories('@comunica/actor-http-fetch');
+    for (const state of inspectInstalledPackage(root, actorDirectories)) {
+      if (state.bareUndici) {
+        failures.push(`${state.path}: comunica undici entry is unpatched — run: bun run postinstall`);
+      }
+    }
+  }
   if (postinstall.includes('patch-jose.js')) {
     // Traverse installed package boundaries, not source trees or Bun's cache.
     const queue = [path.join(root, 'node_modules')];

@@ -67,7 +67,16 @@ export function deriveApiProducerGraph(input:ApiGraphInput){
  const read=(name:string)=>{if(!safe(name))return fail('unsafe Git path');const row=input.readGitObject(name);if(row.mode!=='100644'&&row.mode!=='100755'||row.bytes.length>4*1024**2)return fail('ordinary bounded Git original required');originals.set(name,{path:name,bytes:row.bytes.length,sha256:hash(row.bytes)});return row.bytes;};
  const {root,lock,workspaces,api,ui}=readApiWorkspaceDeclarations({read,trackedPaths:input.trackedPaths});
  for(const file of Object.values(root.patchedDependencies??{}) as string[])read(file);
- for(const command of (root.scripts?.postinstall??'').split(' && ').filter(Boolean)){const match=/^bun (scripts\/[a-zA-Z0-9._/-]+)$/u.exec(command);if(!match)return fail('unreviewed root postinstall recipe');read(match[1]!);}
+ // Reviewed postinstall hooks live in TWO build-helper namespaces: `scripts/` and the
+ // dependency-patch `patches/` directory (whose .cjs hooks are executed, not shipped to
+ // the runtime image). The command form stays strictly bounded: one plain relative path,
+ // no flags, no shell metacharacters, no escapes, no traversal, and the referenced file
+ // must exist as a bounded ordinary Git original via read().
+ for(const command of (root.scripts?.postinstall??'').split(' && ').filter(Boolean)){
+  const match=/^bun ((?:scripts|patches)\/[a-zA-Z0-9._/-]+)$/u.exec(command);
+  if(!match||match[1]!.includes('..')||match[1]!.includes('\\'))return fail('unreviewed root postinstall recipe');
+  read(match[1]!);
+ }
  const mode=input.workspaceMode??'conservative-all-v1';if(!['conservative-all-v1','api-ui-v1','api-ui-root-minimal-v2'].includes(mode))return fail('workspace recipe mode requires review');
  if(mode==='api-ui-root-minimal-v2'&&(!root.catalogs?.['api-producer']||!api.manifest.devDependencies?.semver))return fail('package-owned API build declarations and catalog required before root-minimal recipe');
  const callWorkspaces=new Set<string>();const callVisit=(name:string)=>{if(callWorkspaces.has(name))return;const row=workspaces.get(name);if(!row)return fail('API/UI declared workspace missing');callWorkspaces.add(name);for(const kind of groups)for(const [dependency,range] of Object.entries(row.manifest[kind]??{}) as [string,string][])if(range.startsWith('workspace:'))callVisit(dependency);};callVisit(api.manifest.name);callVisit(ui.manifest.name);

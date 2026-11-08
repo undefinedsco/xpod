@@ -59,4 +59,25 @@ describe('one reviewed API parent recipe',()=>{
   for(const value of [{sourceKind:'other',retainedByteCeiling:1},{sourceKind:'xpod-controlled-inngest-build-v1',retainedByteCeiling:sourceMaterialBytes+1}])expect(()=>reviewedModulePhasePlan('api','/r','/o','1.2.3','linux-arm64',value,workspace)).toThrow();
   expect(()=>reviewedModulePhasePlan('api','/r','/o','1.2.3','windows-x64',{...scope,retainedByteCeiling:1},workspace)).toThrow();
  });
+ it('rejects an UNREVIEWED or MIXED API source tuple read through the production reader',()=>{
+  // The 0bcd workaround substituted package.json/check-dependency-state.ts so the
+  // positives read a frozen snapshot. API33 is now a legitimate reviewed program tuple,
+  // so the SIX assertions above read the tree DIRECTLY and this seventh case is the
+  // genuine negative: an unreviewed mutation, and a mixed old/new tuple, must both be
+  // refused by production code -- with no filesystem mock and no disk mutation.
+  //
+  // 1) baseline: the actual tree IS the reviewed tuple
+  expect(controlledApiSourceRecipe(read,producer,'linux-arm64').planVersion).toBe('current');
+
+  // 2) UNREVIEWED mutation of one declared original: same producer, different bytes.
+  //    Production refuses the whole recipe rather than silently selecting a tuple it
+  //    has never reviewed.
+  expect(()=>controlledApiSourceRecipe(name=>name==='package.json'
+    ?Buffer.from(JSON.stringify({...JSON.parse(read(name).toString()),name:'xpod-unreviewed'}))
+    :read(name),producer,'linux-arm64')).toThrow('complete source recipe');
+
+  // 3) An unknown extra declared role is refused outright (closed recipe).
+  expect(()=>controlledApiSourceRecipe(name=>name==='package.json'
+    ?Buffer.from('{}'):read(name),producer,'linux-arm64')).toThrow('complete source recipe');
+ });
 });

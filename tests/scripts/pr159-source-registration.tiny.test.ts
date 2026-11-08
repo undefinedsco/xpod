@@ -5,9 +5,11 @@ import * as s from '../../scripts/lib/independent-admission/qlever-sdk-origin-po
 import * as c from '../../scripts/lib/independent-admission/consumer-observer-policy';
 import * as g from '../../scripts/lib/independent-admission/github-origin';
 import {CLI_SOURCE_VERSION_GROUPS} from '../../scripts/lib/independent-admission/source-rules';
+import {CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
 
 /** Whole-group hash over the raw parsed group (JSON.stringify, as the existing guards do). */
 const whole=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
+const PUBLISHED_API32='d5cd753585246cd7225e006811eb2100e0cca4aa28567c116696c7e5147778bc';
 
 /**
  * PR159 immutable predecessor constants. Each value was computed ONCE from the
@@ -51,15 +53,16 @@ test('PR159: fixed producer execution counts hold; reviewer-owned heads advanced
   // workflow version allow-list, so RC392's genuine workflow change legitimately adds
   // one reviewed version (5 -> 6). Its published history rows stay byte-identical.
   expect(s.QLEVER_NORMAL_SOURCE_GROUPS).toHaveLength(6);
-  // CURRENT totals after RC389 + RC391 + RC392. The PR159 objects remain at their fixed
+  // CURRENT totals after RC389 + RC391 + RC392 + RC393. The PR159 objects remain at their fixed
   // published indexes (108/109/103/210/211 above are unchanged); only these four
   // consumer-side CURRENT totals advanced with the real appends.
-  expect(s.QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(112);
-  expect(s.QLEVER_LINUX_CONSUMER_GROUPS).toHaveLength(113);
-  expect(c.CONSUMER_SOURCE_GROUPS).toHaveLength(108);
-  expect(c.CI_CONSUMER_SOURCE_GROUPS).toHaveLength(220);
-  expect(g.API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS).toHaveLength(32);
-  expect(CLI_SOURCE_VERSION_GROUPS).toHaveLength(15);
+  expect(s.QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(113);
+  expect(s.QLEVER_LINUX_CONSUMER_GROUPS).toHaveLength(114);
+  expect(c.CONSUMER_SOURCE_GROUPS).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.consumer);
+  expect(c.CI_CONSUMER_SOURCE_GROUPS).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.ci);
+  // CURRENT totals follow the single shared expectation, never a scattered literal.
+  expect(g.API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.api);
+  expect(CLI_SOURCE_VERSION_GROUPS).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.cli);
 });
 
 test('PR159: both consumer arrays reference ONE new SDK109 object with 15 stages', () => {
@@ -69,10 +72,15 @@ test('PR159: both consumer arrays reference ONE new SDK109 object with 15 stages
   expect((sdkTail as any).secondarySelectorStages).toHaveLength(15);
 });
 
-test('PR159: the CURRENT API alias is API32 and API31 keeps its own frozen bindings', () => {
+test('PR159: API32 keeps its frozen whole bindings and API31 keeps its own', () => {
   const api=g.API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as any[];
-  expect(g.API_SERVICE_BUILD_SOURCE_BINDINGS).toBe(api[31].sourceBindings);
+  // The published API32 whole group is a FIXED historical anchor: byte-identical.
+  expect(whole(api[31])).toBe(PUBLISHED_API32);
   expect(api[31].sourceBindings).not.toBe(api[30].sourceBindings);
+  // The CURRENT alias follows the newest reviewed tuple (API33 after the RC393 hook);
+  // API32's own bindings object must stay frozen, not be re-pointed.
+  expect(g.API_SERVICE_BUILD_SOURCE_BINDINGS).toBe(api[api.length-1].sourceBindings);
+  expect(g.API_SERVICE_BUILD_SOURCE_BINDINGS).not.toBe(api[31].sourceBindings);
 });
 
 /** API (GitHub-shaped) resolver positives and negatives via the REAL selection API.
@@ -88,19 +96,46 @@ const apiGroups=()=>g.API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as any[];
 const rolesOf=(group:any)=>[...(group.selectors??[]),...(group.secondarySelectors??[]),
   ...(group.secondarySelectorStages??[]).flat(),...group.sourceBindings];
 
-/** Complete observation for the CURRENT working tree. */
+/** Complete declared observation for the frozen API32 producer snapshot.
+ * Service-only changes do not publish a new independent API producer tuple. */
 function completeObservedForApi(){
   const observed=new Map<string,string>();
   for(const role of rolesOf(apiGroups()[31])){
     if(role.ref==='run-head')continue;
-    observed.set(sourceBindingKey({path:role.path,sha256:''}),diskHash(role.path));
+    observed.set(sourceBindingKey({path:role.path,sha256:''}),role.sha256);
   }
   return observed;
 }
 
-test('PR159 API: the CURRENT tree selects API32 uniquely', () => {
-  const selected=selectGitHubSourceBindingGroup(apiGroups(),completeObservedForApi());
-  expect(selected).toBe(apiGroups()[31]);
+test('PR159 API: its frozen producer snapshot still selects API32 within its own era', () => {
+  // Resolve inside the API32-era slice: a LATER reviewed tuple legitimately also
+  // satisfies this observation, so uniqueness is only meaningful within its era.
+  const era=apiGroups().slice(0,32);
+  const selected=selectGitHubSourceBindingGroup(era,completeObservedForApi());
+  expect(selected).toBe(era[31]);
+});
+
+test('an UNREVIEWED service-manifest mutation is refused (mixed current tuple)', () => {
+  // The actual current tree IS a reviewed tuple now, so the negative must be a genuine
+  // unreviewed mutation: take the real current observation and change exactly one owned
+  // original to a value no reviewed tuple declares.
+  const api=apiGroups();
+  const current=completeObservedForApi();
+  const newest=api[api.length-1];
+  // The negative below must not depend on any single concurrently-edited production
+  // file, so anchor the observation on the NEWEST reviewed tuple's own declared values.
+  const anchored=new Map([...rolesOf(newest)].map((r:any)=>[sourceBindingKey(r),r.sha256]));
+  const unreviewed='0'.repeat(64);
+  const mutated=new Map(anchored);
+  mutated.set(sourceBindingKey({path:'package.json',sha256:''}),unreviewed);
+  expect(()=>selectGitHubSourceBindingGroup(api,mutated)).toThrow();
+  // a MIXED case: current tuple with one historical (API32-era) original swapped in
+  const historicalRow=api[31].sourceBindings.find((row:any)=>row.path==='package.json');
+  expect(historicalRow.sha256).not.toBe(newest.sourceBindings.find((r:any)=>r.path==='package.json').sha256);
+  const mixed=new Map(anchored);
+  mixed.set(sourceBindingKey({path:'package.json',sha256:''}),historicalRow.sha256);
+  const picked=(()=>{try{return selectGitHubSourceBindingGroup(api,mixed);}catch{return undefined;}})();
+  expect(picked).not.toBe(newest);
 });
 
 test('PR159 API: an all-old-bytes tree selects API31 uniquely', () => {

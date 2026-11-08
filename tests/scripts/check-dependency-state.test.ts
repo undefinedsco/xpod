@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'vitest';
-import { lstatSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -100,6 +100,41 @@ describe('postinstall authentication patch state', () => {
     expect(result.output).toContain('bun run postinstall');
     expect(readFileSync(path.join(browser, 'dist/Session.d.ts'), 'utf8')).toBe(clean);
   });
+});
+
+test('runtime-only verification checks the installed tree against its separate patch authority', () => {
+  mkdirSync(testRoot, { recursive: true });
+  const directory = mkdtempSync(path.join(testRoot, 'undici-runtime-'));
+  fixtures.push(directory);
+  const authority = path.join(directory, 'authority');
+  const installed = path.join(directory, 'installed');
+  mkdirSync(path.join(authority, 'scripts'), { recursive: true });
+  mkdirSync(path.join(authority, 'patches'), { recursive: true });
+  mkdirSync(path.join(authority, 'node_modules'), { recursive: true });
+  copyFileSync(script, path.join(authority, 'scripts/check-dependency-state.ts'));
+  copyFileSync(path.resolve(testDirectory, '../../patches/comunica-undici-entry.cjs'),
+    path.join(authority, 'patches/comunica-undici-entry.cjs'));
+  writeFileSync(path.join(authority, 'package.json'), JSON.stringify({
+    scripts: { postinstall: 'bun patches/comunica-undici-entry.cjs' },
+  }));
+  const actor = path.join(installed, 'node_modules/componentsjs/node_modules/rdf-parse/node_modules/@comunica/actor-http-fetch/lib');
+  mkdirSync(actor, { recursive: true });
+  const target = path.join(actor, 'FetchInitPreprocessor.js');
+  const pristine = 'const cacheStores = require("undici").cacheStores;';
+  writeFileSync(target, pristine);
+  const check = () => spawnSync('bun', ['--no-env-file',
+    path.join(authority, 'scripts/check-dependency-state.ts'), '--dependency-root', installed, '--runtime-only'],
+  { cwd: directory, encoding: 'utf8', timeout: 10_000 });
+  const missing = check();
+  expect(missing.status).toBe(1);
+  expect(missing.stdout + missing.stderr).toContain('comunica undici entry is unpatched');
+  expect(readFileSync(target, 'utf8')).toBe(pristine);
+  const patch = spawnSync('bun', ['-e',
+    'require(' + JSON.stringify(path.join(authority, 'patches/comunica-undici-entry.cjs')) +
+    ').patchInstalledPackage(' + JSON.stringify(installed) + ')'],
+  { encoding: 'utf8', timeout: 10_000 });
+  expect(patch.status).toBe(0);
+  expect(check().status).toBe(0);
 });
 
 const transportFiles = [

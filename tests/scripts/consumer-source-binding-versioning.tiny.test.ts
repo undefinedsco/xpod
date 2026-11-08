@@ -11,13 +11,14 @@ import {
   QLEVER_NORMAL_SOURCE_GROUPS,
   QLEVER_SDK_NORMAL_SOURCE_BINDINGS,
 } from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
-import {completeObserved} from './source-binding-group.fixture';
+import {completeObserved,CURRENT_CANONICAL_SOURCE_ROWS} from './source-binding-group.fixture';
 import {selectGitHubSourceBindingGroup,sourceBindingKey,type GitHubSourceBindingGroup} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import currentCanonical from '../../scripts/lib/independent-admission/consumer-execution-current.json';
 import publishedSdk93 from './fixtures/published-sdk93-source-binding-versioning.json';
 import publishedSdk94 from './fixtures/published-sdk94-source-binding-versioning.json';
 
 const ROOT=path.resolve(import.meta.dir,'../..');
+const CURRENT_SDK_CONSUMER_GROUP_COUNT=113;
 const sha=(value:Buffer|string)=>createHash('sha256').update(value).digest('hex');
 const disk=(name:string)=>sha(readFileSync(path.join(ROOT,name)));
 const whole=(group:unknown)=>sha(JSON.stringify(group));
@@ -141,7 +142,7 @@ test('SDK95 stays the exact published consumer that produced RC373 native',()=>{
 });
 
 test('SDK96 stays the consumed baseline that RC374 published from',()=>{
-  expect(QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(112);
+  expect(QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(CURRENT_SDK_CONSUMER_GROUP_COUNT);
   expect(QLEVER_SDK_CONSUMER_GROUPS[95]).toBe(sdk96);
   expect(whole(sdk96)).toBe(publishedSdk94.published.sdk96GroupSha256);
   expect(whole(sdk96)).toBe(publishedSdk94.sdk96.groupSha256);
@@ -329,7 +330,7 @@ test('SDK106 and SDK107 are FROZEN history and SDK108 is the CURRENT in-place re
   // authoritative 45dbc3af baseline so RC386 can never move it, and SDK107 is the
   // current generation: the ABI fix rebinds an EXISTING stage row, so the stage count
   // must NOT grow (a redundant stage would request an already-owned role).
-  expect(QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(112);
+  expect(QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(CURRENT_SDK_CONSUMER_GROUP_COUNT);
   expect(whole(sdk105)).toBe(SDK105_FROZEN_WHOLE);
   expect(whole(sdk106)).toBe(SDK106_FROZEN_WHOLE);
   expect(QLEVER_SDK_CONSUMER_GROUPS[SDK106_FROZEN_INDEX]).toBe(sdk106);
@@ -500,7 +501,7 @@ test('current canonical has one unique row per path, covers the new collector, a
   // test-scratch declaration `packages/xpod-afs/.npmignore`. RC387 appends the
   // genuinely new runtime-stream path once (532 -> 533). The count moves only with
   // those real additions.
-  expect(currentCanonical).toHaveLength(533);
+  expect(currentCanonical).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
   const paths=currentCanonical.map(value=>value.path);
   expect(new Set(paths).size).toBe(paths.length);
   const rows=new Map(currentCanonical.map(value=>[value.path,value.sha256]));
@@ -529,11 +530,11 @@ const RC387_SDK107_PREDECESSOR_WHOLE =
   '89b6f46b7f768d6781f83745ece4c4abc21f93fa0e4e5dca448ebfdfc2f5b062';
 
 test('RC387 predecessor: SDK107 stays byte-identical to its published aggregate', () => {
-  expect(QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(112);
+  expect(QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(CURRENT_SDK_CONSUMER_GROUP_COUNT);
   const frozen = QLEVER_SDK_CONSUMER_GROUPS[106]!;
   expect(whole(frozen)).toBe(RC387_SDK107_PREDECESSOR_WHOLE);
   // The same object is the Linux predecessor alias, so both axes stay frozen.
-  expect(QLEVER_LINUX_CONSUMER_GROUPS).toHaveLength(113);
+  expect(QLEVER_LINUX_CONSUMER_GROUPS).toHaveLength(CURRENT_SDK_CONSUMER_GROUP_COUNT+1);
   expect(QLEVER_LINUX_CONSUMER_GROUPS[107]).toBe(frozen);
   // SDK108 is the CURRENT tail and must NOT equal the frozen predecessor.
   expect(QLEVER_SDK_CONSUMER_GROUPS[107]).not.toBe(frozen);
