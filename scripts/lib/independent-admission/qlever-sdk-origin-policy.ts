@@ -3131,5 +3131,38 @@ const PR159_SDK109_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK108_GROUP
       :row.path==='bun.lock'?PR159_LOCK_HASH
       :row.path==='qlever/scripts/sdk-service-abi-collector.py'?PR159_COLLECTOR_HASH:row.sha256}))),
 });
-export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP]);
-export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP]);
+/** RC389: the frozen 15-source change rebinds THREE rows that the published
+ * SDK109 group already owns (collector, host-session, receiver). No path, role, stage
+ * or relation is added: the new group clones SDK109 and rebinds those rows in place,
+ * plus the shared role-replay TS row that consumer/CI already own.
+ *
+ * ONE object is created and BOTH consumer arrays reference it, exactly as the
+ * original two arrays shared SDK108_GROUP.
+ */
+const RC389_COLLECTOR_HASH='02121de319436b1d200524bb2284c42e0c73d70830591341a9a40090ba5ee372';
+const RC389_HOST_SESSION_HASH='249612b98383ac8aefbc706ecd47ff8197888773fdd2afa438d62fd48d32180f';
+const RC389_RECEIVER_HASH='306d21d43ee9a104e20452b7a8eb6b5769926b7590a335a8cac6d4e6eb391260';
+const RC389_SDK109_GROUP:GitHubSourceBindingGroup=Object.freeze({...PR159_SDK109_GROUP,
+  secondarySelectorStages:Object.freeze((PR159_SDK109_GROUP.secondarySelectorStages??[]).map(stage=>
+    Object.freeze(stage.map(row=>Object.freeze({...row,
+      sha256:row.path==='qlever/scripts/sdk-service-abi-collector.py'?RC389_COLLECTOR_HASH
+        :row.path==='qlever/scripts/sdk-service-abi-host-session.py'?RC389_HOST_SESSION_HASH
+        :row.path==='qlever/scripts/sdk-service-abi-receiver.py'?RC389_RECEIVER_HASH:row.sha256}))))),
+  // ONE promoted discriminator: the collector row is ALREADY owned by SDK109's
+  // sourceBindings and is one of the changed frozen sources. Promoting it into the
+  // stage-0 secondarySelectors is what lets the resolver separate SDK110 from SDK109,
+  // whose selectors are otherwise identical. No new path, role, stage or source
+  // authority is introduced, and SDK109 itself is untouched.
+  secondarySelectors:Object.freeze([...(PR159_SDK109_GROUP.secondarySelectors??[]),
+    Object.freeze({path:'qlever/scripts/sdk-service-abi-collector.py',sha256:RC389_COLLECTOR_HASH}),
+  ].map(row=>Object.freeze({...row,
+    sha256:row.path==='qlever/scripts/sdk-service-abi-collector.py'?RC389_COLLECTOR_HASH
+      :row.path==='qlever/scripts/sdk-service-abi-host-session.py'?RC389_HOST_SESSION_HASH
+      :row.path==='qlever/scripts/sdk-service-abi-receiver.py'?RC389_RECEIVER_HASH:row.sha256}))),
+  sourceBindings:Object.freeze(PR159_SDK109_GROUP.sourceBindings.map(row=>Object.freeze({...row,
+    sha256:row.path==='qlever/scripts/sdk-service-abi-collector.py'?RC389_COLLECTOR_HASH
+      :row.path==='qlever/scripts/sdk-service-abi-host-session.py'?RC389_HOST_SESSION_HASH
+      :row.path==='qlever/scripts/sdk-service-abi-receiver.py'?RC389_RECEIVER_HASH:row.sha256}))),
+});
+export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP]);
+export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP]);

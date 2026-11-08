@@ -36,6 +36,18 @@ def selected(raw, names, namespace, *, parent=None):
     exec(compile(ast.Module(body=chosen, type_ignores=[]), '<retained-existing-command-source>', 'exec'), namespace)
 
 
+def helper_pair(raw):
+    """True when the retained collector source defines BOTH identity helpers.
+
+    Detected from the actual AST so a source that predates the identity contract keeps
+    working and a half-updated source is refused. Never inferred from a name string.
+    """
+    names = {node.name for node in ast.parse(raw).body if isinstance(node, ast.FunctionDef)}
+    present = {'_require_identity', 'tmpfs_options'} & names
+    need(len(present) in (0, 2), 'retained builder source must define the identity helper pair or neither')
+    return len(present) == 2
+
+
 def replay(sources, record, seed_size, output_root):
     need(set(sources) == {'image', 'binding', 'pack', 'direct', 'collector', 'seed'}, 'exact command source closure')
     need(isinstance(output_root, str) and output_root.startswith('/') and str(PurePosixPath(output_root)) == output_root
@@ -67,14 +79,40 @@ def replay(sources, record, seed_size, output_root):
     direct = dict(common, Path=SnapshotPath, stat=stat)
     selected(sources['direct'], ['RUNTIME', 'command'], direct)
     collector = dict(common)
-    selected(sources['collector'], ['TMPFS_OPTIONS', 'NATIVE_RUNTIME', 'FIXED_BOOTSTRAP', 'command_for'], collector)
+    # The current builder owns a numeric execution identity: it is retained ONCE by the
+    # actual host observer and replayed verbatim. The verifier must never re-derive its
+    # own uid here, because a remote reviewer host differs from the producing host.
+    #
+    # `selected` REQUIRES every requested name to exist, so the pair must be detected in
+    # the ACTUAL AST before selecting it. Requesting the new helpers from a genuinely old
+    # source would otherwise throw before the branch and make old-source support a lie.
+    identity_aware = helper_pair(sources['collector'])
+    collector_names = ['TMPFS_OPTIONS', 'NATIVE_RUNTIME', 'FIXED_BOOTSTRAP', 'command_for']
+    if identity_aware:
+        collector_names.extend(['_require_identity', 'tmpfs_options'])
+    selected(sources['collector'], collector_names, collector)
+    # A new field on an old source is a MIXED pair and must be rejected, not ignored.
+    if identity_aware:
+        need('executionIdentity' in record, 'retained execution identity required by the current builder source')
+        identity = collector['_require_identity'](tuple(record['executionIdentity']))
+        tail = (identity,)
+    else:
+        need('executionIdentity' not in record,
+             'retained execution identity present but the retained builder source has no identity contract')
+        tail = ()
     args = (types.SimpleNamespace(**direct), images)
-    expected = [collector['command_for'](*args, role, record['imageReferenceByDigest'], name, nonce, cid, scratch)
+    # `identity` is the builder's LAST parameter; it is appended, never substituted
+    # for a positional argument such as `role`.
+    expected = [collector['command_for'](*args, role, record['imageReferenceByDigest'], name, nonce, cid, scratch, *tail)
                 for role in ('create', 'inspect', 'execute', 'cleanup-inspect', 'cleanup-remove', 'cleanup-confirm-absent')]
     # The successful path contains a second terminal inspect before cleanup.
     expected.insert(3, expected[1])
     nested = dict(collector, image_commands=images, image=record['imageReferenceByDigest'], config=record['configDigest'],
                   cid=cid, name=name, nonce=nonce, scratch=scratch)
+    if identity_aware:
+        # The nested inspect closure binds the SAME retained identity, so the replayed
+        # HostConfig/Tmpfs expectation is the producer's, not the verifier's.
+        nested['execution_identity'] = identity
     selected(sources['collector'], ['inspect'], nested, parent='collect')
     return expected, nested['inspect'], images.inspect_output_container
 

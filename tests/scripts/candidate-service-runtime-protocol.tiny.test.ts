@@ -18,3 +18,14 @@ for(const mode of ['master','wait','missing-cleanup','clock','same-cid','worker'
  else {const stage=r.stages[mode==='wrong-config'?1:mode==='live-terminal'?2:mode==='rw-seed'?1:mode==='remove'?4:5];if(mode==='remove'||mode==='absent'){const next=put(stage.stdout.path,Buffer.from('not absent\n'));Object.assign(stage.stdout,next);update(stage.receipt,v=>{v.rawOriginals.stdout={...next};});}else{update(stage.stdout,v=>{if(mode==='wrong-config')v.Image='sha256:'+'0'.repeat(64);if(mode==='live-terminal')v.State.Running=true;if(mode==='rw-seed')v.Mounts[0].RW=true;});update(stage.receipt,v=>{v.rawOriginals.stdout={...stage.stdout};});}}
  if(mode!=='master'){const{seedObservation,resultOriginal,...raw}=r;Object.assign(resultOriginal,put(resultOriginal.path,raw));}
  expect(()=>run()).toThrow();});
+
+// RC389: the current replay binds a numeric execution identity from the retained record.
+// These two cases prove a missing or out-of-range tuple cannot be silently defaulted.
+test('re-sealed protocol fixture refuses a missing execution identity',()=>{const{f,a,put,run}=make(),r=a.runtime;
+ delete r.executionIdentity;
+ const{seedObservation,resultOriginal,...raw}=r;Object.assign(resultOriginal,put(resultOriginal.path,raw));
+ expect(()=>run()).toThrow();});
+test('re-sealed protocol fixture refuses an out-of-range execution identity',()=>{const{f,a,put,run}=make(),r=a.runtime;
+ r.executionIdentity=[0xFFFFFFFF,1];
+ const{seedObservation,resultOriginal,...raw}=r;Object.assign(resultOriginal,put(resultOriginal.path,raw));
+ expect(()=>run()).toThrow();});

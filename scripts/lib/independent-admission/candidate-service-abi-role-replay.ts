@@ -14,14 +14,37 @@ def module(key):
  raw=base64.b64decode(r['sources'][key],validate=True);need(len(raw)<=1024**2,'bounded actual source');m=types.ModuleType(key);exec(compile(raw,key,'exec'),m.__dict__);return m
 commands=module('commands');collector=module('collector');record=r['record'];outputs=[base64.b64decode(v,validate=True)for v in r['outputs']]
 role=record['role'];nonce=record['ownerNonce'];cid=record['containerId'];image=record['imageReferenceByDigest'];config=record['configDigest'];stages=record['stages']
+# The bound numeric tuple is produced by the ACTUAL host observer and retained in the
+# record. The verifier must NEVER derive its own euid/egid: remote CI and local differ.
+#
+# Historical contract: a record captured BEFORE the identity field existed carries no
+# tuple, and it must replay against its own historical sources through the ORIGINAL call
+# form. A CURRENT record always carries the tuple and replays through the new form. The
+# fallback is decided by the RECORD, never by introspecting the callable or by
+# substituting the verifier's own uid.
+identity=record.get('executionIdentity')
+if identity is not None:
+ need(isinstance(identity,list) and len(identity)==2,'retained bound execution identity required')
+ need(all(type(v)is int and 0<=v<0xFFFFFFFF for v in identity),'retained identity must be real kernel uid/gid')
+ need(commands._require_identity(tuple(identity))==tuple(identity),'retained identity must satisfy the shared validator')
+ identity=tuple(identity)
+legacy=identity is None
 need(len(stages)==7 and len(outputs)==7,'complete successful role stage universe')
 operations=['create','inspect','wait','inspect','inspect','remove','absent'];need([s['operation']for s in stages]==operations,'source role stage order')
 create=stages[0]['command'];mount=create[create.index('--mount')+1];prefix='type=bind,src=';suffix=',dst=/probe.mjs,readonly';need(mount.startswith(prefix)and mount.endswith(suffix),'actual source probe mount');probe=mount[len(prefix):-len(suffix)]
 for i,operation in enumerate(operations):
- expected=commands.command(role,operation,image=image,nonce=nonce,**({'probe':probe}if operation=='create'else{'cid':cid}))
+ if operation=='create':
+  # Legacy records replay the ORIGINAL create form. A CURRENT source rejects that form
+  # naturally, because its builder now requires the identity: no fallback to the
+  # verifier's uid is possible.
+  expected=commands.command(role,operation,image=image,nonce=nonce,probe=probe) if legacy else commands.command(role,operation,image=image,nonce=nonce,probe=probe,identity=identity)
+ else:
+  expected=commands.command(role,operation,image=image,nonce=nonce,cid=cid)
  need(stages[i]['command']==expected,'source command differs')
 need(outputs[0]==(cid+'\n').encode()and outputs[2]==b'0\n'and outputs[5]==(cid+'\n').encode()and outputs[6]==b'','actual create/wait/remove/absence differs')
-for i in (1,3,4):collector.inspect_container(outputs[i],role=role,nonce=nonce,cid=cid,config=config,image=image,probe=probe,before=i==1,terminal=i!=1)
+for i in (1,3,4):
+ if legacy:collector.inspect_container(outputs[i],role=role,nonce=nonce,cid=cid,config=config,image=image,probe=probe,before=i==1,terminal=i!=1)
+ else:collector.inspect_container(outputs[i],role=role,nonce=nonce,cid=cid,config=config,image=image,probe=probe,execution_identity=identity,before=i==1,terminal=i!=1)
 need(record['containerName']=='xpod-service-abi-'+role+'-'+nonce,'exact source role name')
 need(record['session']['observation']['command']==commands.command(role,'start',image=image,nonce=nonce,cid=cid),'source-owned actual start command differs')
 sys.stdout.write(json.dumps({'roleCommandReplayVerified':True})+'\n')

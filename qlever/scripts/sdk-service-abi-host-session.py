@@ -407,10 +407,77 @@ def observe_process(pid, *, retained, proc_root='/proc',
                 serviceAbiVerified=False)
 
 
-def find_container_pid(container_id, proc_root='/proc'):
-    """Find exactly one live process by actual cgroup CID, never caller JSON."""
+MAX_DIAGNOSTIC_CANDIDATES = 64
+
+
+class MembershipDiagnostics:
+    """Bounded candidate ledger for owned-container PID resolution.
+
+    Only the first ``MAX_DIAGNOSTIC_CANDIDATES`` cgroup-matched candidates are retained;
+    the total matched count stays explicit so a truncated ledger cannot be mistaken for a
+    complete one. Raw cmdline text is never stored: fixed predicates and errno only.
+    """
+
+    def __init__(self, container_id):
+        need(isinstance(container_id, str) and re.fullmatch('[a-f0-9]{64}', container_id),
+             'full actual owned container id required')
+        self.container_id = container_id
+        self.scanned = 0
+        self.candidate_total = 0
+        self.matches = 0
+        self.candidates = []
+
+    def record(self, pid, *, runtime_part, scratch_part, binary_state, binary_errno):
+        self.candidate_total += 1
+        if len(self.candidates) >= MAX_DIAGNOSTIC_CANDIDATES:
+            return
+        self.candidates.append(dict(
+            pid=pid,
+            cmdlineRuntimePart=runtime_part,
+            cmdlineScratchPart=scratch_part,
+            cgroupHasContainerId=True,
+            rootBinaryRegular=binary_state,
+            rootBinaryErrno=binary_errno))
+
+    def as_dict(self):
+        return dict(schemaVersion=1, containerId=self.container_id,
+                    scannedProcEntries=self.scanned,
+                    cgroupCandidateTotal=self.candidate_total,
+                    cgroupCandidatesRetained=len(self.candidates),
+                    truncated=self.candidate_total > len(self.candidates),
+                    matches=self.matches,
+                    observeEuid=os.geteuid() if hasattr(os, 'geteuid') else None,
+                    observeEgid=os.getegid() if hasattr(os, 'getegid') else None,
+                    candidates=list(self.candidates))
+
+
+def _root_binary_state(base):
+    """Return (is_regular, errno) for the container root runtime binary.
+
+    EACCES and ENOENT are distinct outcomes; collapsing them into a boolean would hide
+    the permission case the observer actually needs to report.
+    """
+    path = os.path.join(base, 'root') + '/opt/xpod/qlever/bin/xpod_qlever_local_runtime'
+    try:
+        info = os.stat(path)
+    except OSError as error:
+        return False, error.errno
+    return stat.S_ISREG(info.st_mode), None
+
+
+def find_container_pid(container_id, proc_root='/proc', diagnostics=None):
+    """Find exactly one live process by actual cgroup CID, never caller JSON.
+
+    ``diagnostics`` is an optional :class:`MembershipDiagnostics`. When supplied, every
+    cgroup-matched candidate is recorded with the outcome of each fixed predicate, so a
+    zero/duplicate result is explainable from retained evidence. The selection rule is
+    unchanged: exactly one fully matching live process or the call fails.
+    """
     need(isinstance(container_id, str) and re.fullmatch('[a-f0-9]{64}', container_id),
          'full actual owned container id required')
+    need(diagnostics is None or isinstance(diagnostics, MembershipDiagnostics),
+         'bounded membership diagnostics ledger required')
+    pattern = re.compile(rb'(?<![0-9a-f])' + container_id.encode() + rb'(?![0-9a-f])')
     matches = []
     for name in os.listdir(proc_root):
         if not name.isdigit():
@@ -423,28 +490,57 @@ def find_container_pid(container_id, proc_root='/proc'):
                 cgroup = stream.read(65537)
         except OSError:
             continue
+        if diagnostics is not None:
+            diagnostics.scanned += 1
         if len(cmdline) > 65536 or len(cgroup) > 65536:
             continue
+        # Cgroup membership is decided FIRST so a candidate whose cmdline does not look
+        # like the runtime is still reported instead of vanishing from the ledger.
+        if not pattern.search(cgroup):
+            continue
         parts = cmdline.rstrip(b'\0').split(b'\0')
-        if not any(part == b'/opt/xpod/qlever/bin/xpod_qlever_local_runtime' for part in parts):
-            continue
-        if b'/scratch/abi.sqlite' not in parts:
-            continue
-        if container_id.encode() not in cgroup:
-            continue
-        root = os.path.join(base, 'root')
-        if not os.path.isfile(root + '/opt/xpod/qlever/bin/xpod_qlever_local_runtime'):
+        runtime_part = any(part == b'/opt/xpod/qlever/bin/xpod_qlever_local_runtime'
+                           for part in parts)
+        scratch_part = b'/scratch/abi.sqlite' in parts
+        binary_state, binary_errno = _root_binary_state(base)
+        if diagnostics is not None:
+            diagnostics.record(int(name), runtime_part=runtime_part,
+                               scratch_part=scratch_part, binary_state=binary_state,
+                               binary_errno=binary_errno)
+        if not runtime_part or not scratch_part or not binary_state:
             continue
         matches.append(int(name))
+    if diagnostics is not None:
+        diagnostics.matches = len(matches)
     need(len(matches) == 1, 'exactly one actual live process for the owned container cgroup required')
     return matches[0]
 
 
+class ContainerPidProvider:
+    """Live-PID resolver bound to one actual owned container ID.
+
+    Declares ``accepts_diagnostics`` explicitly so the host session forwards its bounded
+    ledger without introspecting callables.
+    """
+
+    accepts_diagnostics = True
+
+    def __init__(self, container_id, proc_root='/proc'):
+        need(isinstance(container_id, str) and re.fullmatch('[a-f0-9]{64}', container_id),
+             'full actual owned container id required')
+        need(isinstance(proc_root, str) and proc_root.startswith('/'),
+             'absolute proc root required')
+        self.container_id = container_id
+        self.proc_root = proc_root
+
+    def __call__(self, diagnostics=None):
+        return find_container_pid(self.container_id, proc_root=self.proc_root,
+                                  diagnostics=diagnostics)
+
+
 def container_pid_provider(container_id):
     """Return a live-PID resolver bound to one actual owned container ID."""
-    need(isinstance(container_id, str) and re.fullmatch('[a-f0-9]{64}', container_id),
-         'full actual owned container id required')
-    return lambda: find_container_pid(container_id)
+    return ContainerPidProvider(container_id)
 
 
 def role_container_pid_provider(container_id, expected_executable, *, read_budget,
@@ -541,7 +637,30 @@ def observe(command, *, helper, transport, replay, expected_abi, output,
             nonlocal membership_result
             if not child.ready_checked:
                 raise ValueError('actual ready handshake required before membership')
-            pid = membership_pid_provider()
+            container_id = (membership_container.get('containerId')
+                            if isinstance(membership_container, dict) else None)
+            # Explicit capability flag, never callable introspection: only a trusted
+            # provider that declares it receives the bounded ledger.
+            diagnostics = (MembershipDiagnostics(container_id)
+                           if getattr(membership_pid_provider, 'accepts_diagnostics', False)
+                           and isinstance(container_id, str) else None)
+            try:
+                pid = (membership_pid_provider(diagnostics) if diagnostics is not None
+                       else membership_pid_provider())
+            except BaseException as error:
+                # Retain the REAL ledger even when resolution fails, so the zero/duplicate
+                # outcome is explainable from evidence instead of guessed.
+                if diagnostics is not None:
+                    try:
+                        _retain_membership(
+                            membership, 'candidate-rejections.original.json',
+                            json.dumps(dict(diagnostics.as_dict(),
+                                            failureClass=type(error).__name__),
+                                       sort_keys=True).encode(),
+                            64 * 1024, check)
+                    except BaseException:
+                        pass
+                raise
             if type(pid) is not int or pid <= 0:
                 raise ValueError('actual live owned ABI pid required')
             membership_result = membership_module.observe_process(

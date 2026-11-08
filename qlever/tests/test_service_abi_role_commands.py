@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -43,19 +44,28 @@ ISOLATION = (
     "no",
     "--interactive",
     "--tmpfs",
-    "/scratch:rw,noexec,nosuid,nodev,size=8388608,mode=0700",
+    # mode stays 0700; ownership is the ONE bound execution identity, added below.
+    "/scratch:rw,noexec,nosuid,nodev,size=8388608,mode=0700,uid=1000,gid=1000",
     "--tmpfs",
-    "/tmp:rw,noexec,nosuid,nodev,size=16777216,mode=0700",
+    "/tmp:rw,noexec,nosuid,nodev,size=16777216,mode=0700,uid=1000,gid=1000",
+    "--user",
+    "1000:1000",
 )
 
 
 _DEFAULT_PROBE = object()
 
 
-def create_cmd(role, probe=_DEFAULT_PROBE, image=IMAGE, nonce=NONCE):
+# The reviewed numeric execution identity used by these command-shape fixtures.
+IDENTITY = (1000, 1000)
+
+
+def create_cmd(role, probe=_DEFAULT_PROBE, image=IMAGE, nonce=NONCE,
+               identity=IDENTITY):
     if probe is _DEFAULT_PROBE:
         probe = PROBE
-    return commands.command(role, "create", image=image, nonce=nonce, probe=probe)
+    return commands.command(role, "create", image=image, nonce=nonce, probe=probe,
+                            identity=identity)
 
 
 def cid_cmd(role, operation, cid=CID, image=IMAGE, nonce=NONCE):
@@ -454,3 +464,55 @@ class FixedIsolationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExecutionIdentityTest(unittest.TestCase):
+    """The ONE numeric ownership boundary: derived from the real observer, validated as a
+    strict internal tuple, never caller configuration or environment."""
+
+    def test_isolation_args_add_ownership_only(self):
+        args = commands.isolation_args((1001, 1002))
+        self.assertIn("/scratch:rw,noexec,nosuid,nodev,size=8388608,mode=0700,uid=1001,gid=1002", args)
+        self.assertIn("/tmp:rw,noexec,nosuid,nodev,size=16777216,mode=0700,uid=1001,gid=1002", args)
+        # mode stays 0700 everywhere: no 1777 fallback
+        for value in args:
+            if value.startswith(("/scratch:", "/tmp:")):
+                self.assertIn("mode=0700", value)
+                self.assertNotIn("0777", value)
+
+    def test_create_carries_exact_user_and_no_privilege_escalation(self):
+        argv = create_cmd("bun-node-addon", identity=(1001, 1002))
+        index = argv.index("--user")
+        self.assertEqual(argv[index + 1], "1001:1002")
+        for forbidden in ("--privileged", "--cap-add", "--pid", "--security-opt=seccomp=unconfined"):
+            self.assertNotIn(forbidden, argv)
+
+    def test_identity_rejects_wrong_shapes(self):
+        for bad in ((1000,), (1000, 1000, 5), "1000:1000", [1000, 1000],
+                    (True, 1000), (1000, False), (-1, 1000), (1000, 2**32),
+                    ("1000", 1000), (1000.0, 1000)):
+            with self.subTest(identity=bad), self.assertRaises(ValueError):
+                commands.isolation_args(bad)
+
+    def test_uid_zero_is_valid_and_not_forced_or_forbidden(self):
+        self.assertIn("/scratch:rw,noexec,nosuid,nodev,size=8388608,mode=0700,uid=0,gid=0",
+                      commands.isolation_args((0, 0)))
+
+    def test_create_requires_identity_and_non_create_rejects_it(self):
+        with self.assertRaises(ValueError):
+            commands.command("bun-node-addon", "create", image=IMAGE, nonce=NONCE, probe=PROBE)
+        with self.assertRaises(ValueError):
+            commands.command("bun-node-addon", "start", image=IMAGE, nonce=NONCE, cid=CID,
+                             identity=(1000, 1000))
+
+    def test_observer_identity_is_derived_from_the_real_process(self):
+        import importlib.util
+        from pathlib import Path
+        root = Path(__file__).resolve().parents[1]
+        spec = importlib.util.spec_from_file_location(
+            'abi_collector_identity', root / 'scripts/sdk-service-abi-collector.py')
+        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+        uid, gid = module.observer_execution_identity()
+        self.assertIs(type(uid), int)
+        self.assertIs(type(gid), int)
+        self.assertEqual((uid, gid), (os.geteuid(), os.getegid()))
