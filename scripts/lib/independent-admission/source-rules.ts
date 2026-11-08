@@ -63,6 +63,14 @@ export const CLI_SOURCE_VERSION_GROUPS:readonly CliSourceVersionGroup[]=Object.f
   * rebinds only those two rows. Earlier CLI tuples keep their exact bytes. */
  Object.freeze({...CLI_SOURCE_VERSION_BASE[CLI_SOURCE_VERSION_BASE.length-1]!,sourceBindings:Object.freeze((CLI_SOURCE_VERSION_BASE[CLI_SOURCE_VERSION_BASE.length-1]!.sourceBindings??[]).map(row=>Object.freeze({...row,
    sha256:row.path==='package.json'?'f09bc8ffce79f394825231e38eeff615179f99df977dc8b4b1654dd4e740feb4':row.path==='bun.lock'?'6cb041b44fdc2dfe9171e449a69eeeec4617b5ccf754a0312cd194b7b7e3aa7b':row.sha256})))}),
+ /** RC393 CLI16 (APPEND-ONLY): the Bun-startup fix changed package.json only (the
+  * patches/ postinstall hook line). Every other catalog role - producer, copier,
+  * budget, helper, limits, supervisor, workflow, the manifest copier and the lock -
+  * still matches CLI15 byte for byte, so ONLY that row moves. CLI15 and every
+  * earlier CLI tuple keep their exact published bytes. */
+ Object.freeze({...CLI_SOURCE_VERSION_BASE[CLI_SOURCE_VERSION_BASE.length-1]!,sourceBindings:Object.freeze((CLI_SOURCE_VERSION_BASE[CLI_SOURCE_VERSION_BASE.length-1]!.sourceBindings??[]).map(row=>Object.freeze({...row,
+   sha256:row.path==='package.json'?'effb5cbd1c4d9e191b2e4f3052b1c76fed2c172063ba2274d8558fefa6fa282f'
+     :row.path==='bun.lock'?'6cb041b44fdc2dfe9171e449a69eeeec4617b5ccf754a0312cd194b7b7e3aa7b':row.sha256})))}),
 ]);
 
 function reviewedCliSourceGroup(observed:Readonly<Record<keyof typeof CLI_SOURCE_POLICY,string>>,readTracked?:(name:string)=>Buffer):CliSourceVersionGroup|undefined{

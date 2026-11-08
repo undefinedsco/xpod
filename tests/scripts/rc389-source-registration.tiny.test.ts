@@ -75,7 +75,9 @@ test('RC389: only the allowed current axes grew, and the historical five did not
   // RC391 generations), never shrink and never jump by an unbounded amount.
   // dd7 baseline -> current: api/cli never grew; consumer-side axes grew only by the
   // RC159 + RC389 + RC391 appends (consumer/sdkConsumer/linuxConsumer +2, CI +4).
-  if(name==='api'||name==='cli'){expect(delta).toBe(0);continue;}
+  // dd7 baseline -> current: API/CLI each gained exactly ONE reviewed tuple (API33 for
+  // the root postinstall hook, CLI16 for the same package.json change).
+  if(name==='api'||name==='cli'){expect(delta).toBe(1);continue;}
   if(name==='ci'){expect(delta).toBe(8);continue;}
   expect(delta).toBe(4); }
  // Concrete current counts for the four advanced arcs plus the unchanged API/CLI.
@@ -83,8 +85,9 @@ test('RC389: only the allowed current axes grew, and the historical five did not
  expect(families.ci!.length-BASE_COUNTS.ci!).toBe(8);
  expect(families.sdkConsumer!.length-BASE_COUNTS.sdkConsumer!).toBe(4);
  expect(families.linuxConsumer!.length-BASE_COUNTS.linuxConsumer!).toBe(4);
- expect(families.api!.length).toBe(BASE_COUNTS.api);
- expect(families.cli!.length).toBe(BASE_COUNTS.cli);
+ // ONE reviewed current tuple above the dd7 baseline for each (API33 / CLI16).
+ expect(families.api!.length).toBe(BASE_COUNTS.api+1);
+ expect(families.cli!.length).toBe(BASE_COUNTS.cli+1);
 });
 
 test('RC389: the shared fixture counts agree with the real arrays',()=>{
@@ -223,8 +226,8 @@ test('RC391: only the four consumer-side axes grew by exactly one (CI a pair)',(
  expect(families.ci!.length).toBe(222);
  expect(families.sdkConsumer!.length).toBe(113);
  expect(families.linuxConsumer!.length).toBe(114);
- expect(families.api!.length).toBe(32);
- expect(families.cli!.length).toBe(15);
+ expect(families.api!.length).toBe(33);
+ expect(families.cli!.length).toBe(16);
  // the producer axes are the exact HEAD arrays: no growth at all
  for(const name of HISTORICAL) expect(families[name]!.length).toBe(BASE_COUNTS[name]!);
 });

@@ -67,9 +67,15 @@ describe('RC392: the CURRENT tail still binds the live controller bytes', () => 
     expect(whole(tail)).not.toBe(PUBLISHED_56.consumer106);
   });
 
-  test('counts are unchanged by the freeze (append-only, no new axes)', () => {
-    expect(c.CONSUMER_SOURCE_GROUPS.length).toBe(108);
-    expect(c.CI_CONSUMER_SOURCE_GROUPS.length).toBe(220);
+  test('the freeze adds no axis; the published 108/220 prefix stays and current tails follow', () => {
+    // The RC392 freeze itself is append-only: the published 56 prefix (consumer 106 /
+    // CI 216-217) is asserted above by whole hash. These are the CURRENT totals after
+    // the later RC393 appends, so they legitimately advance with the live tail.
+    expect(c.CONSUMER_SOURCE_GROUPS.length).toBe(109);
+    expect(c.CI_CONSUMER_SOURCE_GROUPS.length).toBe(222);
+    // ...and the published prefix is still exactly 108 / 220 groups long.
+    expect(c.CONSUMER_SOURCE_GROUPS.length - 1).toBe(108);
+    expect(c.CI_CONSUMER_SOURCE_GROUPS.length - 2).toBe(220);
   });
 });
 

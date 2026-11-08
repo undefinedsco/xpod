@@ -62,7 +62,8 @@ test('new same-primary CLI source tuple observes its own manifest bytes and pres
  // Every historically published tuple stays byte-identical at its own index; the
  // ORM 0.3.26 joint tuple is a genuine append bound to the ACTUAL manifest bytes.
  const publishedCount=history.hashes.length;
- expect(CLI_SOURCE_VERSION_GROUPS.length).toBe(publishedCount+8);
+ // 8 historical appends above the published history, plus the RC393 CLI16 tuple.
+ expect(CLI_SOURCE_VERSION_GROUPS.length).toBe(publishedCount+9);
  for(let i=0;i<history.hashes.length;i++)expect(createHash('sha256').update(JSON.stringify(CLI_SOURCE_VERSION_GROUPS[i])).digest('hex')).toBe(history.hashes[i]!);
  const orm326=(CLI_SOURCE_VERSION_GROUPS as any[]).at(-1)!;
  for(const binding of orm326.sourceBindings??[])expect(createHash('sha256').update(readFileSync(binding.path)).digest('hex')).toBe(binding.sha256);

@@ -11,7 +11,11 @@ const root=path.resolve(import.meta.dir,'../..'),read=(name:string)=>fs.readFile
 test('Notice API17 closes its executed wrapper/imports and preserves every SDK29 and earlier API/controller whole tree',()=>{
  for(const[name,groups]of Object.entries({api,sdk,consumer,ci})){const prior=before[name as keyof typeof before];for(let i=0;i<prior.length;i++)expect(sha(JSON.stringify(groups[i]))).toBe(prior[i]);}
  expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);for(const row of current)expect(sha(read(row.path))).toBe(row.sha256);
- expect(API_SERVICE_BUILD_SOURCE_BINDINGS).toHaveLength(82);for(const row of API_SERVICE_BUILD_SOURCE_BINDINGS)expect(sha(read(row.path))).toBe(row.sha256);
+ // CURRENT alias follows the newest reviewed tuple (API33 adds exactly ONE owned CJS row);
+ // the published API32 tuple keeps its own 82 rows and its frozen whole hash.
+ expect(API_SERVICE_BUILD_SOURCE_BINDINGS).toHaveLength(83);for(const row of API_SERVICE_BUILD_SOURCE_BINDINGS)expect(sha(read(row.path))).toBe(row.sha256);
+ expect(API_SERVICE_BUILD_SOURCE_BINDINGS).toBe(api[api.length-1].sourceBindings);
+ expect(api[31].sourceBindings).toHaveLength(82);
  for(const role of ['packages/xpod-api/scripts/notice-material.ts','scripts/lib/physical-module-notices.ts','scripts/lib/independent-admission/legal-registry-originals.ts','scripts/lib/registry-legal-original-limits.json','scripts/workspace-package-payload.cjs'])expect(API_SERVICE_BUILD_SOURCE_BINDINGS.some(row=>row.path===role)).toBe(true);
  expect(controlledApiSourceRecipe(read,sha(read('scripts/api-module-producer.py')),'linux-arm64').rows).toBe(API_SERVICE_BUILD_SOURCE_BINDINGS);
  expect(verifiedNoticeSupplementDirectories({trackedPaths:[],readTracked(){throw Error('unused');}},undefined)).toEqual([]);

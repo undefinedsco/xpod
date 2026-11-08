@@ -14,7 +14,9 @@ const sha=(bytes:string|Buffer)=>createHash('sha256').update(bytes).digest('hex'
 test('API18 preserves all SDK31 complete historical groups and binds actual runtime closure',()=>{
  const groups={api,sdk,consumer,ci};
  for(const name of Object.keys(groups) as (keyof typeof groups)[])for(let i=0;i<historical.groups[name].length;i++)expect(sha(JSON.stringify(groups[name][i]))).toBe(historical.groups[name][i]!);
- const root=fileURLToPath(new URL('../../',import.meta.url));expect(current.length).toBe(CURRENT_CANONICAL_SOURCE_ROWS);expect(API_SERVICE_BUILD_SOURCE_BINDINGS.length).toBe(82);
+ const root=fileURLToPath(new URL('../../',import.meta.url));expect(current.length).toBe(CURRENT_CANONICAL_SOURCE_ROWS);// CURRENT alias follows the newest reviewed tuple: API33 adds exactly ONE owned CJS row
+ // (the historical API32 tuple keeps its own 82 rows and frozen whole hash).
+ expect(API_SERVICE_BUILD_SOURCE_BINDINGS.length).toBe(83);
  for(const row of [...current,...API_SERVICE_BUILD_SOURCE_BINDINGS])expect(sha(readFileSync(join(root,row.path)))).toBe(row.sha256);
 });
 // Keep every historical tuple and missing-role assertion in its own bounded test.

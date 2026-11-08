@@ -1283,9 +1283,35 @@ const apiRc159Tuple=Object.freeze({...apiCurrentSharedParserGroup,name:'api-curr
   sourceBindings:Object.freeze((apiCurrentSharedParserGroup.sourceBindings??[]).map(row=>Object.freeze({...row,
     sha256:row.path==='package.json'?apiRc159PackageHash
       :row.path==='bun.lock'?apiRc159LockHash:row.sha256})))});
-export const API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS:readonly (GitHubSourceBindingGroup&{readonly name?:string})[]=Object.freeze([...API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS_BASE,apiRc159Tuple]);
-/** CURRENT API32 sourceBindings; the frozen API31 tuple keeps its own object. */
-export const API_SERVICE_BUILD_SOURCE_BINDINGS=apiRc159Tuple.sourceBindings;
+/** RC393 API33 (APPEND-ONLY): the Bun-startup fix moved exactly two already-owned
+ * originals (package.json gained the patches/ postinstall hook, and the dependency
+ * checker gained the matching inspector) and added the hook file itself. Those are
+ * REAL executed-closure facts: the producer graph reads every postinstall entry, so
+ * the hook is owned here exactly like the four scripts/ hooks already are.
+ *
+ * API32 above keeps its exact published bytes; API33 clones it and rebinds ONLY the
+ * drifted rows, appending the one new owned original. No published tuple is rewritten. */
+const apiRc393PackageHash='effb5cbd1c4d9e191b2e4f3052b1c76fed2c172063ba2274d8558fefa6fa282f';
+const apiRc393DependencyStateHash='012ba511fbb68b441a25821933d53a49a47aa5ad39c64a3b25c5dc58ba4a0950';
+const apiRc393UndiciEntryHash='d3e118347eef031adda164a503b0ba0eb1a709ff228c7c33f94e108b42767158';
+/** The graph fix in this same unpublished API33 closes over its own verifier bytes:
+ * api-producer-graph.ts is an owned sourceBinding, so the tuple must bind the ACTUAL
+ * final file rather than the pre-edit bytes. */
+const apiRc393ProducerGraphHash='03cefdca16320bd190bdfab612f67b9077f51c8c22b6a73d47b5faf71524f84d';
+const API33_REBOUND:Readonly<Record<string,string>>=Object.freeze({
+  'package.json':apiRc393PackageHash,
+  'scripts/check-dependency-state.ts':apiRc393DependencyStateHash,
+  'scripts/lib/api-producer-graph.ts':apiRc393ProducerGraphHash,
+});
+const apiRc393Tuple=Object.freeze({...apiRc159Tuple,name:'api-current-bun-postinstall-hook',
+  secondarySelectors:Object.freeze((apiRc159Tuple.secondarySelectors??[]).map(row=>Object.freeze({...row,
+    sha256:row.path==='package.json'?apiRc393PackageHash:row.sha256}))),
+  sourceBindings:Object.freeze([...(apiRc159Tuple.sourceBindings??[]).map(row=>Object.freeze({...row,
+    sha256:API33_REBOUND[row.path]??row.sha256})),
+    Object.freeze({path:'patches/comunica-undici-entry.cjs',sha256:apiRc393UndiciEntryHash})])});
+export const API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS:readonly (GitHubSourceBindingGroup&{readonly name?:string})[]=Object.freeze([...API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS_BASE,apiRc159Tuple,apiRc393Tuple]);
+/** CURRENT API33 sourceBindings; the frozen API32/API31 tuples keep their own objects. */
+export const API_SERVICE_BUILD_SOURCE_BINDINGS=apiRc393Tuple.sourceBindings;
 
 export const API_WORKSPACE_SOURCE_GROUPS=Object.freeze(API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS.filter(group=>group.sourceBindings.some(row=>row.path==='scripts/lib/api-scoped-dependency-state.ts')));
 

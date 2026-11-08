@@ -32,7 +32,11 @@ describe('API declaration ownership proposal, not installer proof',()=>{
     else expect(live).toBe(historical);
    }
   }
-  expect(after.scripts).toEqual(before.scripts);
+  // ONE reviewed current-contract change: the root postinstall gained the Comunica
+  // Undici entry hook. Every other script value must stay exactly as published.
+  const REVIEWED_POSTINSTALL_SUFFIX=' && bun patches/comunica-undici-entry.cjs';
+  expect(after.scripts.postinstall).toBe(before.scripts.postinstall+REVIEWED_POSTINSTALL_SUFFIX);
+  expect({...after.scripts,postinstall:before.scripts.postinstall}).toEqual(before.scripts);
   // Within resolutions and patchedDependencies, only the ORM version changes:
   // historical entries stay as published everywhere else, and the single
   // drizzle-solid pin moves from the historical 0.3.25 fact to the actual 0.3.26.
