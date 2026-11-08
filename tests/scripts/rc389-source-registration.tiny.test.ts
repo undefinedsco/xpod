@@ -78,11 +78,16 @@ test('RC389: only the allowed current axes grew, and the historical five did not
   // dd7 baseline -> current: API/CLI each gained exactly ONE reviewed tuple (API33 for
   // the root postinstall hook, CLI16 for the same package.json change).
   if(name==='api'||name==='cli'){expect(delta).toBe(1);continue;}
-  if(name==='ci'){expect(delta).toBe(8);continue;}
-  expect(delta).toBe(4); }
+  // sdkConsumer/linuxConsumer are NOT service-consumer append axes for RC394: the
+  // budget row is owned only by the consumer/CI tails, so these stay at their
+  // frozen dd7 delta of 4. Asserting them explicitly prevents the generic
+  // fall-through from silently applying the consumer delta (the earlier bug).
+  if(name==='sdkConsumer'||name==='linuxConsumer'){expect(delta).toBe(4);continue;}
+  if(name==='ci'){expect(delta).toBe(CURRENT_SOURCE_GROUP_COUNTS.ci-BASE_COUNTS.ci!);continue;}
+  expect(delta).toBe(CURRENT_SOURCE_GROUP_COUNTS.consumer-BASE_COUNTS.consumer!); }
  // Concrete current counts for the four advanced arcs plus the unchanged API/CLI.
- expect(families.consumer!.length-BASE_COUNTS.consumer!).toBe(4);
- expect(families.ci!.length-BASE_COUNTS.ci!).toBe(8);
+ expect(families.consumer!.length-BASE_COUNTS.consumer!).toBe(CURRENT_SOURCE_GROUP_COUNTS.consumer-BASE_COUNTS.consumer!);
+ expect(families.ci!.length-BASE_COUNTS.ci!).toBe(CURRENT_SOURCE_GROUP_COUNTS.ci-BASE_COUNTS.ci!);
  expect(families.sdkConsumer!.length-BASE_COUNTS.sdkConsumer!).toBe(4);
  expect(families.linuxConsumer!.length-BASE_COUNTS.linuxConsumer!).toBe(4);
  // ONE reviewed current tuple above the dd7 baseline for each (API33 / CLI16).
@@ -222,12 +227,12 @@ test('RC391: the HEAD202 consumer-side prefixes are byte-identical before the ap
 });
 
 test('RC391: only the four consumer-side axes grew by exactly one (CI a pair)',()=>{
- expect(families.consumer!.length).toBe(109);
- expect(families.ci!.length).toBe(222);
+ expect(families.consumer!.length).toBe(CURRENT_SOURCE_GROUP_COUNTS.consumer);
+ expect(families.ci!.length).toBe(CURRENT_SOURCE_GROUP_COUNTS.ci);
  expect(families.sdkConsumer!.length).toBe(113);
  expect(families.linuxConsumer!.length).toBe(114);
- expect(families.api!.length).toBe(33);
- expect(families.cli!.length).toBe(16);
+ expect(families.api!.length).toBe(CURRENT_SOURCE_GROUP_COUNTS.api);
+ expect(families.cli!.length).toBe(CURRENT_SOURCE_GROUP_COUNTS.cli);
  // the producer axes are the exact HEAD arrays: no growth at all
  for(const name of HISTORICAL) expect(families[name]!.length).toBe(BASE_COUNTS[name]!);
 });

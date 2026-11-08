@@ -12,6 +12,7 @@
 import {test, expect} from 'bun:test';
 import {createHash} from 'node:crypto';
 import * as c from '../../scripts/lib/independent-admission/consumer-observer-policy';
+import {CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
 
 const whole = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const rowsOf = (g: any) => [...(g.selectors ?? []), ...(g.secondarySelectors ?? []),
@@ -31,12 +32,12 @@ const BASE_7A84 = {
 } as const;
 
 test('the whole published consumer prefix equals its 7a84 aggregate', () => {
-  expect(c.CONSUMER_SOURCE_GROUPS.length).toBe(109); // 108 published + 1 appended
+  expect(c.CONSUMER_SOURCE_GROUPS.length).toBe(CURRENT_SOURCE_GROUP_COUNTS.consumer); // 108 published + appended
   expect(whole(c.CONSUMER_SOURCE_GROUPS.slice(0, 108))).toBe(BASE_7A84.consumerPrefix);
 });
 
 test('the whole published CI prefix equals its 7a84 aggregate', () => {
-  expect(c.CI_CONSUMER_SOURCE_GROUPS.length).toBe(222); // 220 published + the appended pair
+  expect(c.CI_CONSUMER_SOURCE_GROUPS.length).toBe(CURRENT_SOURCE_GROUP_COUNTS.ci); // 220 published + appended pairs
   expect(whole(c.CI_CONSUMER_SOURCE_GROUPS.slice(0, 220))).toBe(BASE_7A84.ciPrefix);
 });
 

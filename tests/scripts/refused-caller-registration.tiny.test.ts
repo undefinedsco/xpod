@@ -34,6 +34,10 @@ const blob2406=(file:string)=>blobAt(PUBLISHED_2406,file);
 const digest=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const disk=(file:string)=>readFileSync(path.join(ROOT,file));
 const sha=(file:string)=>createHash('sha256').update(disk(file)).digest('hex');
+/** The controller policy row is the OWNED role that legitimately discriminates
+ * the new current append; it is requested in secondarySelectors AND owned in the
+ * same group's sourceBindings at one identical SHA. */
+const CONTROLLER_POLICY_PATH='scripts/lib/independent-admission/consumer-observer-policy.ts';
 const groups={sdk,consumer,ci,linux,api,cli} as const;
 const publishedCounts=published.published as Record<keyof typeof groups,number>;
 
@@ -82,9 +86,25 @@ test('the appended tuples are exactly two genuine slices each and the deltas are
  expect(linux.slice(1).map(digest)).toEqual(sdk.map(digest));
  // CI is the published CI slice plus one appended pair per new consumer recipe.
  expect(ci.slice(0,172).map(digest)).toEqual((published.groupHashes as Record<string,string[]>).ci!);
- // Each appended slice keeps the same secondary count as its predecessor recipe.
+ // The NEW current slice preserves its predecessor's ENTIRE secondary recipe and
+ // adds exactly ONE further role: the flat controller-policy row that legally
+ // discriminates this append. It is not a rewrite of any historical selector and
+ // it is not a loosened count bound.
  const tail=ci[ci.length-1]!,prior=ci[ci.length-3]!;
- expect(tail.secondarySelectors?.length).toBe(prior.secondarySelectors?.length);
+ const priorSecondary=prior.secondarySelectors??[];
+ const tailSecondary=tail.secondarySelectors??[];
+ expect(tailSecondary.slice(0,priorSecondary.length)).toEqual([...priorSecondary]);
+ expect(tailSecondary.length).toBe(priorSecondary.length+1);
+ const added=tailSecondary.slice(priorSecondary.length);
+ expect(added).toHaveLength(1);
+ expect(added[0]!.path).toBe(CONTROLLER_POLICY_PATH);
+ // The added role is ALREADY OWNED by this same group as an own source original at
+ // the identical SHA: the request and the owned fact agree, which is exactly why
+ // the flat union stays valid.
+ expect(added[0]!.sha256).toBe(sha(CONTROLLER_POLICY_PATH));
+ const ownedController=tail.sourceBindings.filter(row=>row.path===CONTROLLER_POLICY_PATH);
+ expect(ownedController).toHaveLength(1);
+ expect(ownedController[0]!.sha256).toBe(added[0]!.sha256);
 });
 
 test('the published refused-caller tuple binds its actual bytes and registers the new test',()=>{

@@ -126,10 +126,15 @@ export const startCommand: CommandModule<object, StartArgs> = {
       configPath = path.join(PACKAGE_ROOT, 'config/local.json');
     }
 
+    // Both children are allocated against ONE growing reservation set. The finder walks
+    // FORWARD past occupied ports, so a fallback must never be handed a port another child
+    // already took: on a real Cloud-managed Local run the Gateway's loopback topology holds
+    // 5737/5738, CSS fell forward to 5739 and the API - not told about that allocation -
+    // fell forward to 5739 as well, so CSS died with EADDRINUSE behind a live API.
     const requestedCssPort = resolveServicePort(process.env.CSS_PORT, mainPort + 1, new Set([mainPort]));
-    const cssPort = await getFreePortForWildcard(requestedCssPort);
+    const cssPort = await getFreePortForWildcard(requestedCssPort, undefined, new Set([mainPort]));
     const requestedApiPort = resolveServicePort(process.env.API_PORT, cssPort + 1, new Set([mainPort, cssPort]));
-    const apiPort = await getFreePortForWildcard(requestedApiPort);
+    const apiPort = await getFreePortForWildcard(requestedApiPort, undefined, new Set([mainPort, cssPort]));
     // Remote forwarding (managed tunnels, P2P data plane) terminates on this machine, so its
     // origin is a dedicated ingress port instead of the gateway port: the Gateway never treats
     // requests accepted there as local.

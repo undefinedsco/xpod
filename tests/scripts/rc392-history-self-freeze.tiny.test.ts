@@ -14,6 +14,7 @@ import {createHash} from 'node:crypto';
 import * as c from '../../scripts/lib/independent-admission/consumer-observer-policy';
 import {sourceBindingKey, selectGitHubSourceBindingGroup}
   from '../../scripts/lib/independent-admission/github-source-binding-groups';
+import {CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
 
 const whole = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const rowsOf = (g: any) => [...(g.selectors ?? []), ...(g.secondarySelectors ?? []),
@@ -71,11 +72,16 @@ describe('RC392: the CURRENT tail still binds the live controller bytes', () => 
     // The RC392 freeze itself is append-only: the published 56 prefix (consumer 106 /
     // CI 216-217) is asserted above by whole hash. These are the CURRENT totals after
     // the later RC393 appends, so they legitimately advance with the live tail.
-    expect(c.CONSUMER_SOURCE_GROUPS.length).toBe(109);
-    expect(c.CI_CONSUMER_SOURCE_GROUPS.length).toBe(222);
-    // ...and the published prefix is still exactly 108 / 220 groups long.
-    expect(c.CONSUMER_SOURCE_GROUPS.length - 1).toBe(108);
-    expect(c.CI_CONSUMER_SOURCE_GROUPS.length - 2).toBe(220);
+    expect(c.CONSUMER_SOURCE_GROUPS.length).toBe(CURRENT_SOURCE_GROUP_COUNTS.consumer);
+    expect(c.CI_CONSUMER_SOURCE_GROUPS.length).toBe(CURRENT_SOURCE_GROUP_COUNTS.ci);
+    // ...and the published prefix is still exactly 108 / 220 groups long. These are
+    // FIXED published-generation counts, not tail offsets, so later appends cannot
+    // silently re-point them (the earlier length-N form only held while N equalled the
+    // number of post-publication appends).
+    expect(c.CONSUMER_SOURCE_GROUPS.length).toBeGreaterThanOrEqual(108);
+    expect(c.CI_CONSUMER_SOURCE_GROUPS.length).toBeGreaterThanOrEqual(220);
+    expect(whole(c.CONSUMER_SOURCE_GROUPS.slice(0, 108))).toBe('64c2433e373bf1cade88818b526373c834289e6a73adccec830c045cb3f7ed6b');
+    expect(whole(c.CI_CONSUMER_SOURCE_GROUPS.slice(0, 220))).toBe('aa8f2583f4c4404e6a6e81ad47bd5b904745e16af51115495bff3c03d5d310fd');
   });
 });
 

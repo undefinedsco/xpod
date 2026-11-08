@@ -24,13 +24,17 @@ export interface CandidateServiceQualificationBudget {
  * using the existing source-material declaration. No axis receives a new
  * allocation or can replenish either monotonic counter.
  */
+// The producer bounds the complete retained artifact with packedBytes;
+// metadataBytes multiples bound individual bodies.
+const RETAINED_UNIVERSE_BYTES:number=limits.packedBytes;
+
 export function createCandidateServiceQualificationBudget(serviceOriginals?:unknown): CandidateServiceQualificationBudget {
   const deadline = performance.now() + limits.timeoutMs;
   let reserved = 0, read = 0, physical = 0;
   const originalTokens=new WeakMap<object,number>();
   const native=serviceOriginals===undefined?undefined:nativeOriginalsView(serviceOriginals);
   if(serviceOriginals!==undefined&&(!native||!isCandidateServiceImageGitHubOrigin(native.origin)))throw Error('Candidate service qualification budget: genuine service original universe required');
-  if(native){assertCollectedNativeOriginalCustody(serviceOriginals);physical=native.members.reduce((total,row)=>total+row.bytes,0);if(!Number.isSafeInteger(physical)||physical<0||physical>32*limits.metadataBytes)throw Error('Candidate service qualification budget: retained original universe exceeds existing bound');}
+  if(native){assertCollectedNativeOriginalCustody(serviceOriginals);physical=native.members.reduce((total,row)=>total+row.bytes,0);if(!Number.isSafeInteger(physical)||physical<0||physical>RETAINED_UNIVERSE_BYTES)throw Error('Candidate service qualification budget: retained original universe exceeds existing bound');}
   let failure: Error | undefined;
   const fail = (reason: string): never => {
     failure ??= Error('Candidate service qualification budget: ' + reason);
@@ -53,11 +57,11 @@ export function createCandidateServiceQualificationBudget(serviceOriginals?:unkn
     reserveBytes(bytes: number) { reserved = charge(bytes, reserved, 'material reservation'); },
     chargeReadBytes(bytes: number) { read = charge(bytes, read, 'logical read'); },
     remainingReadBytes() { check(); return limits.sourceMaterialBytes - read; },
-    remainingOriginalBytes(){check();if(!native)fail('genuine service original universe required for physical balance');assertCollectedNativeOriginalCustody(serviceOriginals);return 32*limits.metadataBytes-physical;},
+    remainingOriginalBytes(){check();if(!native)fail('genuine service original universe required for physical balance');assertCollectedNativeOriginalCustody(serviceOriginals);return RETAINED_UNIVERSE_BYTES-physical;},
     reserveOriginalMaximum(maximum:number){
       check();if(!native)fail('genuine service original universe required for physical reservation');
       assertCollectedNativeOriginalCustody(serviceOriginals);
-      if(!Number.isSafeInteger(maximum)||maximum<0||maximum>32*limits.metadataBytes-physical)fail('existing shared retained original bound exceeded');
+      if(!Number.isSafeInteger(maximum)||maximum<0||maximum>RETAINED_UNIVERSE_BYTES-physical)fail('existing shared retained original bound exceeded');
       const token=Object.freeze({});physical+=maximum;originalTokens.set(token,maximum);return token;
     },
     settleOriginalReservation(token:object,actual:number,unusedOriginalsAbsent:boolean){
