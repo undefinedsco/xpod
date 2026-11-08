@@ -187,7 +187,12 @@ it('the current consumer/CI tails bind the final policy and canonical bytes',()=
   const role=(g:any,p:string)=>[...g.sourceBindings,...(g.secondarySelectors??[])].filter((r:any)=>r.path===p).map((r:any)=>r.sha256);
   for(const group of tails){
     expect(group.sourceBindings).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS+2);
-    expect(role(group,CONSUMER_POLICY)).toEqual([sha(CONSUMER_POLICY)]);
+    // The controller policy is legitimately owned BOTH as an own source original and
+    // as the flat secondary discriminator promoted in this append, so the same fact
+    // can appear twice at one identical SHA. Compare as a SET while still requiring
+    // the role to be present and correct, and keep exactly one OWNED sourceBinding.
+    expect(new Set(role(group,CONSUMER_POLICY))).toEqual(new Set([sha(CONSUMER_POLICY)]));
+    expect(group.sourceBindings.filter((row:any)=>row.path===CONSUMER_POLICY)).toHaveLength(1);
     expect(role(group,CANONICAL_JSON)).toEqual([sha(CANONICAL_JSON)]);
     expect(role(group,FIXTURE)).toEqual([sha(FIXTURE)]);
     expect(new Set(role(group,SDK_POLICY))).toEqual(new Set([sha(SDK_POLICY)]));

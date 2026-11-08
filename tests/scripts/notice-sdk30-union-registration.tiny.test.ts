@@ -24,6 +24,17 @@ test('SDK30 and Notice fork whole originals both survive before the single actua
  // CI211/212 the RC387 runtime-profile appends. The captured parent union therefore
  // grows by 132, never a historical index. Consumer grows by 63 for consumer100
  // through consumer104.
- expect(new Set([...parents.sdk30Consumer,...parents.noticeConsumer ]).size+68).toBe(c.length);
- expect(new Set([...parents.sdk30CI,...parents.noticeCI]).size+142).toBe(ci.length);
+ // The PUBLISHED parent union is a frozen historical fact, captured from the
+ // genuine SDK30/Notice fork originals: 41 consumer and 80 CI whole groups. This
+ // is an independent constant, so it still catches a lost or rewritten parent
+ // even if the live arrays change.
+ const consumerUnion=new Set([...parents.sdk30Consumer,...parents.noticeConsumer].map(hash));
+ const ciUnion=new Set([...parents.sdk30CI,...parents.noticeCI].map(hash));
+ expect(consumerUnion.size).toBe(41);
+ expect(ciUnion.size).toBe(80);
+ // The single CURRENT totals claim comes from the shared fixture (asserted at the
+ // top too), never a scattered append constant: the next legitimate append moves
+ // the delta without editing this file.
+ expect(c.length).toBe(CURRENT_SOURCE_GROUP_COUNTS.consumer);
+ expect(ci.length).toBe(CURRENT_SOURCE_GROUP_COUNTS.ci);
 });
