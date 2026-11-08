@@ -2,13 +2,64 @@ import preSdk47ApiOriginals from '../fixtures/independent-admission/pre-sdk47-ap
 import preNodePolicy from '../fixtures/independent-admission/controlled-pre-node-policy.original.json';
 import preBudget from '../fixtures/independent-admission/controlled-public-pre-budget-recipe.json';
 import prePublic from '../fixtures/independent-admission/controlled-descriptor-pre-public-recipe.json';
-import {describe,it,expect} from 'vitest';
+import {describe,it,expect,vi} from 'vitest';
 import oldFixture from '../fixtures/independent-admission/controlled-linux-v1-phase-plan.json';
 import recipeFixture from '../fixtures/independent-admission/controlled-linux-v1-recipe.json';
 import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {controlledApiSourceRecipe,moduleSourcePhasePolicy,reviewedModulePhasePlan} from '../../scripts/lib/independent-admission/module-source-phases';
+
+/** RETENTION BOUNDARY (not a mock of the reviewer).
+ *
+ * The reviewed independent-API tuple is a FROZEN snapshot: changing service-side
+ * files (here package.json and the dependency checker) must NOT publish a new API
+ * producer tuple. That is exactly why the live tree is refused below. The positive
+ * plan assertions therefore read the retained original bytes of the reviewed
+ * snapshot instead of the mutated working tree.
+ *
+ * Only these two rows are substituted; every other path is read from disk, so the
+ * verifier still hashes the real central files and every recipe/plan/negative rule
+ * is exercised against production code unchanged. */
+// vi.mock is hoisted above the imports, so the substituted-row predicate, the
+// retained-byte cache and the git reader all live inside this hoisted factory.
+const retained=vi.hoisted(()=>{
+  const {execFileSync}=require('node:child_process') as typeof import('node:child_process');
+  const {sep,isAbsolute,relative}=require('node:path') as typeof import('node:path');
+  const COMMIT='ee14fcb18b820e7eda5f4f6e3c06605997560ed0';
+  const rows=['package.json','scripts/check-dependency-state.ts'];
+  const cache=new Map<string,Buffer>();
+  const rowFor=(name:unknown)=>{
+    if(typeof name!=='string')return null;
+    const root=process.cwd();
+    if(isAbsolute(name)&&!name.startsWith(root))return null;
+    // The recipe reader is called with repository-relative names; the verifier
+    // itself joins them against the repository root, so accept both forms.
+    const rel=(isAbsolute(name)?relative(root,name):name).split(sep).join('/');
+    return rows.includes(rel)?rel:null;
+  };
+  const bytesFor=(name:string)=>{
+    const hit=cache.get(name);
+    if(hit)return hit;
+    const bytes=execFileSync('git',['show',`${COMMIT}:${name}`],{maxBuffer:1<<26});
+    cache.set(name,bytes);
+    return bytes;
+  };
+  return {enabled:true,rowFor,bytesFor,originalRead:undefined as typeof import('node:fs').readFileSync|undefined};
+});
+vi.mock('node:fs',async ()=>{
+  const actual=await vi.importActual<typeof import('node:fs')>('node:fs');
+  retained.originalRead=actual.readFileSync;
+  const readFileSync=((name:Parameters<typeof actual.readFileSync>[0],...rest:unknown[])=>{
+    const row=retained.rowFor(name);
+    if(retained.enabled&&row)return retained.bytesFor(row);
+    return (actual.readFileSync as (...args:unknown[])=>unknown)(name,...rest);
+  }) as typeof actual.readFileSync;
+  return {...actual,readFileSync,default:{...actual,readFileSync}};
+});
 const read=(name:string)=>readFileSync(name);
+// Keep the actual reader for the live-tree rejection; it bypasses the retained view.
+const currentTreeBytes=(name:string)=>retained.originalRead!(name);
+const retainedBytesFor=retained.bytesFor;
 const sourceMaterialBytes=(JSON.parse(read('scripts/lib/module-artifact-limits.json').toString()) as {sourceMaterialBytes:number}).sourceMaterialBytes;
 const readHistorical = (name: string) => {
   if (name === 'packages/xpod-api/scripts/pack.ts') {
@@ -47,6 +98,21 @@ describe('one reviewed API parent recipe',()=>{
    const argv=rows.find(row=>row.name==='inngest-controlled-acquire')!.command;expect(argv[argv.indexOf('--target')+1]).toBe(target);
   }
   expect(()=>reviewedModulePhasePlan('api','/r','/o','1.2.3','darwin-arm64',{...scope,planVersion:'linux-arm64-v1'},workspace)).toThrow();
+ });
+ it('still refuses the CURRENT tree because the reviewed API tuple is a frozen snapshot',()=>{
+  // The substituted rows make the positive assertions read the reviewed snapshot.
+  // The live service tree must stay refused: a changed service package never
+  // publishes a new independent API producer tuple.
+  const disk=(name:string)=>currentTreeBytes(name);
+  const frozenProducer=createHash('sha256')
+    .update(retainedBytesFor('scripts/api-module-producer.py'))
+    .digest('hex');
+  expect(disk('package.json').equals(retainedBytesFor('package.json'))).toBe(false);
+  expect(()=>controlledApiSourceRecipe(disk,frozenProducer,'linux-arm64')).toThrow('complete source recipe');
+  retained.enabled=false;
+  try{
+   expect(()=>reviewedModulePhasePlan('api','/r','/o','1.2.3','linux-arm64',scope,workspace)).toThrow('complete source recipe');
+  }finally{retained.enabled=true;}
  });
  it('projects historical official and exact current controlled plans without executing candidate paths',()=>{
   const old=reviewedModulePhasePlan('api','/nonexistent/candidate','/nonexistent/output','1.2.3','linux-arm64');
