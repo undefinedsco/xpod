@@ -76,7 +76,7 @@ const sdk107=QLEVER_SDK_CONSUMER_GROUPS[106]!;
 const sdk108=QLEVER_SDK_CONSUMER_GROUPS[107]!;
 // RC159 appended SDK109; SDK108 is now FROZEN history and SDK109 is the CURRENT tail.
 const sdk109=QLEVER_SDK_CONSUMER_GROUPS[108]!;
-const sdk110=QLEVER_SDK_CONSUMER_GROUPS[109]!;
+const currentSdkConsumer=QLEVER_SDK_CONSUMER_GROUPS[110]!;
 // Whole-group aggregate of SDK105 as published (git-05cf baseline
 // families.sdkConsumer.aggregates[104]). Frozen history, never re-derived.
 const SDK105_FROZEN_WHOLE='6a2737d18a0b3fd4bee1250a818a80e4f65f2ab8609205a19bff40b92d097106';
@@ -139,7 +139,7 @@ test('SDK95 stays the exact published consumer that produced RC373 native',()=>{
 });
 
 test('SDK96 stays the consumed baseline that RC374 published from',()=>{
-  expect(QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(110);
+  expect(QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(111);
   expect(QLEVER_SDK_CONSUMER_GROUPS[95]).toBe(sdk96);
   expect(whole(sdk96)).toBe(publishedSdk94.published.sdk96GroupSha256);
   expect(whole(sdk96)).toBe(publishedSdk94.sdk96.groupSha256);
@@ -316,8 +316,8 @@ test('SDK103 stays the FROZEN consumer for the RC380 GNU long-name pack repair',
   // SDK103 is FROZEN history, so its bytes are checked against the published
   // aggregate above, not today's disk. SDK104 and SDK105 are likewise frozen; only
   // the CURRENT generation (SDK107) binds live disk.
-  for(const binding of [...sdk110.selectors,...(sdk110.secondarySelectors??[]),
-    ...(sdk110.secondarySelectorStages??[]).flat(),...sdk110.sourceBindings]){
+  for(const binding of [...currentSdkConsumer.selectors,...(currentSdkConsumer.secondarySelectors??[]),
+    ...(currentSdkConsumer.secondarySelectorStages??[]).flat(),...currentSdkConsumer.sourceBindings]){
     expect({path:binding.path,sha256:disk(binding.path)}).toEqual({path:binding.path,sha256:binding.sha256});
   }
 });
@@ -327,7 +327,7 @@ test('SDK106 and SDK107 are FROZEN history and SDK108 is the CURRENT in-place re
   // authoritative 45dbc3af baseline so RC386 can never move it, and SDK107 is the
   // current generation: the ABI fix rebinds an EXISTING stage row, so the stage count
   // must NOT grow (a redundant stage would request an already-owned role).
-  expect(QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(110);
+  expect(QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(111);
   expect(whole(sdk105)).toBe(SDK105_FROZEN_WHOLE);
   expect(whole(sdk106)).toBe(SDK106_FROZEN_WHOLE);
   expect(QLEVER_SDK_CONSUMER_GROUPS[SDK106_FROZEN_INDEX]).toBe(sdk106);
@@ -360,28 +360,28 @@ test('SDK106 and SDK107 are FROZEN history and SDK108 is the CURRENT in-place re
   // rebind proof moves to the NEW current generation SDK110.
   expect(stageRow(sdk108)).toHaveLength(1);
   expect(stageRow(sdk108)[0].sha256).not.toBe(stageRow(sdk107)[0].sha256);
-  expect(stageRow(sdk110)).toHaveLength(1);
-  expect(stageRow(sdk110)[0].sha256).toBe(disk(IMAGES));
-  expect(stageRow(sdk110)[0].sha256).toBe(stageRow(sdk109)[0].sha256);
+  expect(stageRow(currentSdkConsumer)).toHaveLength(1);
+  expect(stageRow(currentSdkConsumer)[0].sha256).toBe(disk(IMAGES));
+  expect(stageRow(currentSdkConsumer)[0].sha256).toBe(stageRow(sdk109)[0].sha256);
   // SDK109 stays byte-frozen: its collector pin is the PRE-RC389 literal.
   expect(sbRow(sdk109,'qlever/scripts/sdk-service-abi-collector.py')[0].sha256)
     .toBe('f88109de9c1ada0ccdd7a2abfae33ce3007e71cc657521159616b39453a560b4');
   // The TS artifact belongs to the consumer/CI axes, never the SDK axis.
-  expect(sbRow(sdk110,ARTIFACT)).toHaveLength(0);
+  expect(sbRow(currentSdkConsumer,ARTIFACT)).toHaveLength(0);
   for(const p of [IMAGES,TAR,STREAM]){
-    expect(sbRow(sdk110,p)).toHaveLength(1);
-    expect(sbRow(sdk110,p)[0].sha256).toBe(disk(p));
+    expect(sbRow(currentSdkConsumer,p)).toHaveLength(1);
+    expect(sbRow(currentSdkConsumer,p)[0].sha256).toBe(disk(p));
   }
   // RC389 rows must track disk in the new current generation.
   for(const p of ['package.json','bun.lock','qlever/scripts/sdk-service-abi-collector.py']){
-    expect(sbRow(sdk110,p)).toHaveLength(1);
-    expect(sbRow(sdk110,p)[0].sha256).toBe(disk(p));
+    expect(sbRow(currentSdkConsumer,p)).toHaveLength(1);
+    expect(sbRow(currentSdkConsumer,p)[0].sha256).toBe(disk(p));
   }
-  expect((sdk110.secondarySelectorStages??[]).length)
+  expect((currentSdkConsumer.secondarySelectorStages??[]).length)
     .toBe((sdk109.secondarySelectorStages??[]).length);
   // Current bindings all match disk; the frozen generation keeps its literal pins.
-  for(const binding of [...sdk110.selectors,...(sdk110.secondarySelectors??[]),
-    ...(sdk110.secondarySelectorStages??[]).flat(),...sdk110.sourceBindings]){
+  for(const binding of [...currentSdkConsumer.selectors,...(currentSdkConsumer.secondarySelectors??[]),
+    ...(currentSdkConsumer.secondarySelectorStages??[]).flat(),...currentSdkConsumer.sourceBindings]){
     expect({path:binding.path,sha256:disk(binding.path)})
       .toEqual({path:binding.path,sha256:binding.sha256});
   }
@@ -527,11 +527,11 @@ const RC387_SDK107_PREDECESSOR_WHOLE =
   '89b6f46b7f768d6781f83745ece4c4abc21f93fa0e4e5dca448ebfdfc2f5b062';
 
 test('RC387 predecessor: SDK107 stays byte-identical to its published aggregate', () => {
-  expect(QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(110);
+  expect(QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(111);
   const frozen = QLEVER_SDK_CONSUMER_GROUPS[106]!;
   expect(whole(frozen)).toBe(RC387_SDK107_PREDECESSOR_WHOLE);
   // The same object is the Linux predecessor alias, so both axes stay frozen.
-  expect(QLEVER_LINUX_CONSUMER_GROUPS).toHaveLength(111);
+  expect(QLEVER_LINUX_CONSUMER_GROUPS).toHaveLength(112);
   expect(QLEVER_LINUX_CONSUMER_GROUPS[107]).toBe(frozen);
   // SDK108 is the CURRENT tail and must NOT equal the frozen predecessor.
   expect(QLEVER_SDK_CONSUMER_GROUPS[107]).not.toBe(frozen);

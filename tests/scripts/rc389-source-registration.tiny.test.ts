@@ -61,16 +61,21 @@ test('RC389: only the allowed current axes grew, and the historical five did not
  for(const name of Object.keys(BASE_COUNTS)){
   const groups=families[name]!;
   const delta=groups.length-BASE_COUNTS[name]!;
+  // The five producer axes are frozen at their published HEAD arrays: ZERO growth.
   if(HISTORICAL.includes(name)){expect(delta).toBe(0);continue;}
   expect(APPENDABLE).toContain(name);
-  if(name==='ci')expect([0,2]).toContain(delta);
-  else expect([0,1]).toContain(delta);
- }
+  // Consumer-side axes grow only by appends since the dd7 baseline (RC159 + RC389 +
+  // RC391 generations), never shrink and never jump by an unbounded amount.
+  // dd7 baseline -> current: api/cli never grew; consumer-side axes grew only by the
+  // RC159 + RC389 + RC391 appends (consumer/sdkConsumer/linuxConsumer +2, CI +4).
+  if(name==='api'||name==='cli'){expect(delta).toBe(0);continue;}
+  if(name==='ci'){expect(delta).toBe(4);continue;}
+  expect(delta).toBe(2); }
  // Concrete current counts for the four advanced arcs plus the unchanged API/CLI.
- expect(families.consumer!.length-BASE_COUNTS.consumer!).toBe(1);
- expect(families.ci!.length-BASE_COUNTS.ci!).toBe(2);
- expect(families.sdkConsumer!.length-BASE_COUNTS.sdkConsumer!).toBe(1);
- expect(families.linuxConsumer!.length-BASE_COUNTS.linuxConsumer!).toBe(1);
+ expect(families.consumer!.length-BASE_COUNTS.consumer!).toBe(2);
+ expect(families.ci!.length-BASE_COUNTS.ci!).toBe(4);
+ expect(families.sdkConsumer!.length-BASE_COUNTS.sdkConsumer!).toBe(2);
+ expect(families.linuxConsumer!.length-BASE_COUNTS.linuxConsumer!).toBe(2);
  expect(families.api!.length).toBe(BASE_COUNTS.api);
  expect(families.cli!.length).toBe(BASE_COUNTS.cli);
 });
@@ -106,8 +111,10 @@ test('RC389: controller bindings are the real CURRENT objects and tag4 is the re
 });
 
 test('RC389: the CURRENT SDK clone adds only the already-owned collector discriminator',()=>{
- const current=families.sdkConsumer!.at(-1) as any;
- const previous=families.sdkConsumer!.at(-2) as any;
+ // RC389's promotion lives at its FIXED published generation, not at the mutable tail.
+ // RC389 shipped as SDK110 (index 109) on top of the SDK109 (index 108) tail.
+ const current=families.sdkConsumer![BASE_COUNTS.sdkConsumer!] as any;
+ const previous=families.sdkConsumer![BASE_COUNTS.sdkConsumer! - 1] as any;
  // 15 stages unchanged; the new secondarySelectors entry is an owned collector binding.
  expect(current.secondarySelectorStages).toHaveLength(15);
  const added=((current.secondarySelectors??[])as any[])
@@ -120,15 +127,21 @@ test('RC389: the CURRENT SDK clone adds only the already-owned collector discrim
  expect(added[0]!.sha256).toBe(disk(added[0]!.path));
 });
 
-test('RC389: current rows bind actual disk bytes and the resolver self-selects',()=>{
- for(const name of APPENDABLE){
+test('RC389: only the NEW CURRENT generation binds live disk and self-selects',()=>{
+ // Post-dd7 groups are history now: their self rows are FROZEN to the bytes they shipped
+ // with, so they are covered by the whole-prefix hash proof above, not by a disk compare.
+ // The live-disk check applies only to the newest appended generation per axis.
+ for(const name of ['consumer','ci','sdkConsumer','linuxConsumer']){
   const groups=families[name]!;
-  for(const grp of groups.slice(BASE_COUNTS[name]!)){
+  const newest=name==='ci'?[groups.length-2,groups.length-1]:[groups.length-1];
+  for(const index of newest){
+   const grp=groups[index]!;
    for(const row of rowsOf(grp)){
     if(row.ref==='run-head')continue;
     expect(row.sha256).toBe(disk(row.path));
    }
-   if(name==='cli')continue;
+   // Exercise the complete production family: frozen history remains in the resolver
+   // and the new generation must be uniquely selected without trimming competitors.
    const observed=new Map(rowsOf(grp).map((row:any)=>[sourceBindingKey(row),row.sha256]));
    expect(selectGitHubSourceBindingGroup(groups,observed)).toBe(grp);
   }
@@ -143,8 +156,10 @@ test('RC389: the OLD API tail is still uniquely selectable (no identical-hash fa
 });
 
 test('RC389: the promoted collector discriminator rejects a mixed predecessor',()=>{
- const current=families.sdkConsumer!.at(-1) as any;
- const previous=families.sdkConsumer!.at(-2) as any;
+ // RC389's promotion lives at its FIXED published generation, not at the mutable tail.
+ // RC389 shipped as SDK110 (index 109) on top of the SDK109 (index 108) tail.
+ const current=families.sdkConsumer![BASE_COUNTS.sdkConsumer!] as any;
+ const previous=families.sdkConsumer![BASE_COUNTS.sdkConsumer! - 1] as any;
  const promoted=(current.secondarySelectors??[]).find((row:any)=>
   !(previous.secondarySelectors??[]).some((old:any)=>old.path===row.path)) as any;
  expect(promoted).toBeTruthy();
@@ -174,4 +189,87 @@ test('RC389: canonical is 533 rows, original order, disk-bound and has no new pa
   expect(Object.keys(row).sort()).toEqual(['path','sha256']);
   expect(row.sha256).toBe(disk(row.path));
  }
+});
+
+/** HEAD202 cutoff: the four consumer-side axes must match git-202's OWN tree exactly
+ *  before the one appended generation. This is the concrete regression for the missed
+ *  freeze: the previous CURRENT tag-5 self rows (`consumer-observer-policy.ts` and
+ *  `consumer-execution-current.json`) must be pinned to their 202 bytes, not follow the
+ *  live files. Producer axes stay at HEAD (five axes must not grow). */
+const HEAD202_COUNTS:Record<string,number>={consumer:106,ci:216,sdkConsumer:110,linuxConsumer:111};
+const HEAD202_WHOLE:Record<string,string>={
+ consumer:'040202ae67f1260801d54a50818e298fff6eb4bace907fbf702365ddd55ed78a',
+ ci:'87db472d06c9028a03e7de5d5fbf2d3a79479627b014079f2d4b22c61ca04b06',
+ sdkConsumer:'a25fe23eed53064a68ae103bca4b9b11a8a8e0617fedad92e6dd4a86511a2fb5',
+ linuxConsumer:'0da62427b6a457cd7828842b5a637fb301fd2cf9638144039ed566b087bfdf1c'};
+
+test('RC391: the HEAD202 consumer-side prefixes are byte-identical before the append',()=>{
+ for(const name of Object.keys(HEAD202_WHOLE)){
+  const groups=families[name]!;
+  expect(hash(groups.slice(0,HEAD202_COUNTS[name]!))).toBe(HEAD202_WHOLE[name]!);
+ }
+});
+
+test('RC391: only the four consumer-side axes grew by exactly one (CI a pair)',()=>{
+ expect(families.consumer!.length).toBe(107);
+ expect(families.ci!.length).toBe(218);
+ expect(families.sdkConsumer!.length).toBe(111);
+ expect(families.linuxConsumer!.length).toBe(112);
+ expect(families.api!.length).toBe(32);
+ expect(families.cli!.length).toBe(15);
+ // the producer axes are the exact HEAD arrays: no growth at all
+ for(const name of HISTORICAL) expect(families[name]!.length).toBe(BASE_COUNTS[name]!);
+});
+
+test('RC391: the appended tails bind the frozen Dockerfile and keep the stage shapes',()=>{
+ for(const name of ['consumer','ci','sdkConsumer','linuxConsumer']){
+  const tail=families[name]!.at(-1) as any;
+  const rows=[...(tail.selectors??[]),...(tail.secondarySelectors??[]),
+    ...(tail.secondarySelectorStages??[]).flat(),...(tail.sourceBindings??[])];
+  const docker=rows.filter((r:any)=>r.path==='Dockerfile');
+  expect(docker.length).toBeGreaterThanOrEqual(1);
+  for(const row of docker) expect(row.sha256).toBe(
+    '9c77e18c1719ddc8b29f9661ca0bf47c04004d541a65df068ddbc3680df2e6e3');
+ }
+ expect((families.sdkConsumer!.at(-1) as any).secondarySelectorStages.length).toBe(15);
+ expect((families.linuxConsumer!.at(-1) as any).secondarySelectorStages.length).toBe(15);
+ expect(families.sdkConsumer!.at(-1)).toBe(families.linuxConsumer!.at(-1));
+});
+
+test('RC391: the Dockerfile stage declaration separates the new shared tail from its predecessor without trimming history',()=>{
+ // The appended SDK111/Linux112 tail differs from SDK110 ONLY by the Dockerfile bytes, so
+ // `sourceBindings` alone cannot discriminate them. The stage declaration makes each
+ // candidate answer for its OWN Dockerfile original before any GET.
+ const family=families.sdkConsumer!;
+ const current=family.at(-1) as any,previous=family.at(-2) as any;
+ const rows=(group:any)=>[...(group.selectors??[]),...(group.secondarySelectors??[]),
+   ...(group.secondarySelectorStages??[]).flat(),...(group.sourceBindings??[])];
+ const observe=(group:any)=>new Map(rows(group).map((row:any)=>[sourceBindingKey(row),row.sha256]));
+
+ // The declaration lives in an EXISTING final stage: no stage is added.
+ expect((current.secondarySelectorStages??[]).length).toBe(15);
+ expect((previous.secondarySelectorStages??[]).length).toBe(15);
+ const staging=(group:any)=>JSON.stringify(group.secondarySelectorStages??[]);
+ expect(staging(current)).not.toBe(staging(previous));
+
+ // Current bytes select the new tail uniquely from the FULL family.
+ expect(selectGitHubSourceBindingGroup(family,observe(current))).toBe(current);
+ // A complete historical observation still resolves to the predecessor.
+ expect(selectGitHubSourceBindingGroup(family,observe(previous))).toBe(previous);
+
+ // Missing the Dockerfile observation cannot qualify the new tail.
+ const missing=observe(current);
+ missing.delete('source:Dockerfile');
+ expect(()=>selectGitHubSourceBindingGroup(family,missing)).toThrow();
+
+ // A contradictory context (current bytes with the OLD Dockerfile) must not qualify the
+ // NEW tail. It legitimately resolves to the historical predecessor instead of throwing,
+ // because that predecessor is a real published recipe: what matters is that the new
+ // generation is never selected from bytes it does not own.
+ const mixed=observe(current);
+ mixed.set('source:Dockerfile',(previous.sourceBindings??[]).find((row:any)=>row.path==='Dockerfile')!.sha256);
+ expect(selectGitHubSourceBindingGroup(family,mixed)).toBe(previous);
+
+ // The shared tail is still ONE object across the SDK and Linux axes.
+ expect(family.at(-1)).toBe(families.linuxConsumer!.at(-1));
 });

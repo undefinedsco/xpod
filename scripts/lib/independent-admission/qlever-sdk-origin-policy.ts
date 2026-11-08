@@ -3142,6 +3142,25 @@ const PR159_SDK109_GROUP:GitHubSourceBindingGroup=Object.freeze({...SDK108_GROUP
 const RC389_COLLECTOR_HASH='02121de319436b1d200524bb2284c42e0c73d70830591341a9a40090ba5ee372';
 const RC389_HOST_SESSION_HASH='249612b98383ac8aefbc706ecd47ff8197888773fdd2afa438d62fd48d32180f';
 const RC389_RECEIVER_HASH='306d21d43ee9a104e20452b7a8eb6b5769926b7590a335a8cac6d4e6eb391260';
+
+/** RC391: the service packaging changed, not the SDK producer. Clone the current shared
+ * consumer tail and repin ONLY the Dockerfile binding; every producer array stays HEAD. */
+const RC391_DOCKERFILE_HASH='9c77e18c1719ddc8b29f9661ca0bf47c04004d541a65df068ddbc3680df2e6e3';
+const rc391Docker=(group:GitHubSourceBindingGroup):GitHubSourceBindingGroup=>Object.freeze({...group,
+  // The appended tail differs from its predecessor ONLY by the Dockerfile bytes, and
+  // `sourceBindings` alone can never distinguish two recipes: both candidates survive the
+  // staged walk and the stale-value guard then rejects the pair. Declaring the SAME
+  // already-owned Dockerfile row inside the EXISTING final stage makes the staged union
+  // request it, so each candidate is filtered against its OWN original (old c8f3be13…,
+  // new 9c77e18c…) and only the new tail survives. No new stage, no new role and no
+  // path/authority is introduced; the stage count stays 15.
+  secondarySelectorStages:Object.freeze((group.secondarySelectorStages??[]).map((stage,index)=>
+    index!==(group.secondarySelectorStages??[]).length-1
+      ?Object.freeze(stage.map(row=>Object.freeze({...row})))
+      :Object.freeze([...stage.map(row=>Object.freeze({...row})),
+        Object.freeze({path:'Dockerfile',sha256:RC391_DOCKERFILE_HASH})]))),
+  sourceBindings:Object.freeze((group.sourceBindings??[]).map(row=>Object.freeze({...row,
+    sha256:row.path==='Dockerfile'?RC391_DOCKERFILE_HASH:row.sha256})))});
 const RC389_SDK109_GROUP:GitHubSourceBindingGroup=Object.freeze({...PR159_SDK109_GROUP,
   secondarySelectorStages:Object.freeze((PR159_SDK109_GROUP.secondarySelectorStages??[]).map(stage=>
     Object.freeze(stage.map(row=>Object.freeze({...row,
@@ -3164,5 +3183,8 @@ const RC389_SDK109_GROUP:GitHubSourceBindingGroup=Object.freeze({...PR159_SDK109
       :row.path==='qlever/scripts/sdk-service-abi-host-session.py'?RC389_HOST_SESSION_HASH
       :row.path==='qlever/scripts/sdk-service-abi-receiver.py'?RC389_RECEIVER_HASH:row.sha256}))),
 });
-export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP]);
-export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP]);
+
+/** SDKconsumer111 / Linuxconsumer112: ONE shared object appended to both lists. */
+const RC391_SDK110_GROUP:GitHubSourceBindingGroup=rc391Docker(RC389_SDK109_GROUP);
+export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP,RC391_SDK110_GROUP]);
+export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP,RC391_SDK110_GROUP]);
