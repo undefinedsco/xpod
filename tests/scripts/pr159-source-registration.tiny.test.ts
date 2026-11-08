@@ -41,19 +41,23 @@ test('PR159: all ten immutable prior tails stay byte-identical to the published 
   expect(whole(c.CI_CONSUMER_SOURCE_GROUPS[211]!)).toBe(PREDECESSOR.ci211);
 });
 
-test('PR159: historical producer axes keep their published counts; only consumer axes grew', () => {
+test('PR159: fixed producer execution counts hold; reviewer-owned heads advanced', () => {
+  // These four are FROZEN producer/execution counts and never move with an append.
   expect(s.QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(93);
   expect(s.QLEVER_LINUX_EXECUTION_GROUPS).toHaveLength(94);
   expect(s.QLEVER_NORMAL_BUILD_GROUPS).toHaveLength(3);
-  expect(s.QLEVER_NORMAL_SOURCE_GROUPS).toHaveLength(5);
   expect(s.QLEVER_SDK_NORMAL_SOURCE_BINDINGS).toHaveLength(23);
-  // Current totals include RC389 + RC391; the PR159 objects remain at their frozen
-  // indexes (108/109/103/210/211 above are unchanged). Only these four CURRENT totals
-  // advanced with the real consumer-side appends.
-  expect(s.QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(111);
-  expect(s.QLEVER_LINUX_CONSUMER_GROUPS).toHaveLength(112);
-  expect(c.CONSUMER_SOURCE_GROUPS).toHaveLength(107);
-  expect(c.CI_CONSUMER_SOURCE_GROUPS).toHaveLength(218);
+  // `normalSource` is NOT a producer execution axis: it is the reviewed candidate
+  // workflow version allow-list, so RC392's genuine workflow change legitimately adds
+  // one reviewed version (5 -> 6). Its published history rows stay byte-identical.
+  expect(s.QLEVER_NORMAL_SOURCE_GROUPS).toHaveLength(6);
+  // CURRENT totals after RC389 + RC391 + RC392. The PR159 objects remain at their fixed
+  // published indexes (108/109/103/210/211 above are unchanged); only these four
+  // consumer-side CURRENT totals advanced with the real appends.
+  expect(s.QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(112);
+  expect(s.QLEVER_LINUX_CONSUMER_GROUPS).toHaveLength(113);
+  expect(c.CONSUMER_SOURCE_GROUPS).toHaveLength(108);
+  expect(c.CI_CONSUMER_SOURCE_GROUPS).toHaveLength(220);
   expect(g.API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS).toHaveLength(32);
   expect(CLI_SOURCE_VERSION_GROUPS).toHaveLength(15);
 });

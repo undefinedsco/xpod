@@ -2964,7 +2964,20 @@ const QLEVER_NORMAL_RC385_VERIFIER_GROUP:GitHubSourceBindingGroup=Object.freeze(
     Object.freeze({...row,sha256:row.path==='scripts/lib/independent-admission/qlever-sdk-normal-build.ts'?QLEVER_NORMAL_VERIFIER_HASH_RC385
       :row.path==='.github/workflows/candidate.yml'?QLEVER_NORMAL_CANDIDATE_WORKFLOW_HASH_RC385:row.sha256}))),
 });
-export const QLEVER_NORMAL_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([QLEVER_NORMAL_PREVIOUS_GROUP,QLEVER_NORMAL_CURRENT_GROUP,QLEVER_NORMAL_DOCKERIGNORE_GROUP,QLEVER_NORMAL_REGISTRY_PRODUCER_GROUP,QLEVER_NORMAL_RC385_VERIFIER_GROUP]);
+const QLEVER_NORMAL_CANDIDATE_WORKFLOW_HASH_RC392='705159d17b66765cfe0a1113425f90ba0b38fa1b26d2af4412bae6ea74ff4f29';
+/** RC392 (APPEND-ONLY, normal group 6). The candidate workflow gains a local image
+ * export and an explicit provenance declaration so the retention step can re-read the
+ * same immutable digest without a second registry egress. Only the candidate workflow
+ * bytes move; every other row of group 5 is preserved exactly, and groups 1..5 stay
+ * byte-identical published history. */
+const QLEVER_NORMAL_RC392_LOAD_GROUP:GitHubSourceBindingGroup=Object.freeze({
+  ...QLEVER_NORMAL_RC385_VERIFIER_GROUP,
+  secondarySelectors:Object.freeze((QLEVER_NORMAL_RC385_VERIFIER_GROUP.secondarySelectors??[]).map(row=>
+    Object.freeze({...row,sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_NORMAL_CANDIDATE_WORKFLOW_HASH_RC392:row.sha256}))),
+  sourceBindings:Object.freeze(QLEVER_NORMAL_RC385_VERIFIER_GROUP.sourceBindings.map(row=>
+    Object.freeze({...row,sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_NORMAL_CANDIDATE_WORKFLOW_HASH_RC392:row.sha256}))),
+});
+export const QLEVER_NORMAL_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([QLEVER_NORMAL_PREVIOUS_GROUP,QLEVER_NORMAL_CURRENT_GROUP,QLEVER_NORMAL_DOCKERIGNORE_GROUP,QLEVER_NORMAL_REGISTRY_PRODUCER_GROUP,QLEVER_NORMAL_RC385_VERIFIER_GROUP,QLEVER_NORMAL_RC392_LOAD_GROUP]);
 
 export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP,SDK78_GROUP,SDK79_GROUP,SDK80_GROUP,SDK81_GROUP,SDK82_GROUP,SDK83_GROUP,SDK84_GROUP,SDK85_GROUP,SDK86_GROUP,SDK87_GROUP,SDK88_GROUP,SDK89_GROUP,SDK90_GROUP,SDK91_GROUP,SDK92_GROUP,SDK93_GROUP]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
@@ -3186,5 +3199,22 @@ const RC389_SDK109_GROUP:GitHubSourceBindingGroup=Object.freeze({...PR159_SDK109
 
 /** SDKconsumer111 / Linuxconsumer112: ONE shared object appended to both lists. */
 const RC391_SDK110_GROUP:GitHubSourceBindingGroup=rc391Docker(RC389_SDK109_GROUP);
-export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP,RC391_SDK110_GROUP]);
-export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP,RC391_SDK110_GROUP]);
+const RC392_CANDIDATE_WORKFLOW_HASH='705159d17b66765cfe0a1113425f90ba0b38fa1b26d2af4412bae6ea74ff4f29';
+/** RC392 (APPEND-ONLY, shared SDK/Linux consumer tail). The candidate workflow now
+ * exports the built image to the local engine as well as the registry, with the
+ * provenance mode spelled out explicitly. Only the workflow bytes and the service
+ * contract's workflow hash move; the Dockerfile, every other row and the 15 stages are
+ * inherited unchanged from the RC391 tail. SDK and Linux keep sharing ONE object. */
+const RC392_SDK111_GROUP:GitHubSourceBindingGroup=Object.freeze({...RC391_SDK110_GROUP,
+  candidateServiceRelationship:RC391_SDK110_GROUP.candidateServiceRelationship
+    ?Object.freeze({...RC391_SDK110_GROUP.candidateServiceRelationship,
+      workflowSha256:RC392_CANDIDATE_WORKFLOW_HASH})
+    :undefined,
+  secondarySelectorStages:Object.freeze((RC391_SDK110_GROUP.secondarySelectorStages??[]).map(stage=>
+    Object.freeze(stage.map(row=>Object.freeze({...row,
+      sha256:row.path==='.github/workflows/candidate.yml'?RC392_CANDIDATE_WORKFLOW_HASH:row.sha256}))))),
+  sourceBindings:Object.freeze(RC391_SDK110_GROUP.sourceBindings.map(row=>
+    Object.freeze({...row,sha256:row.path==='.github/workflows/candidate.yml'?RC392_CANDIDATE_WORKFLOW_HASH:row.sha256}))),
+});
+export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP,RC391_SDK110_GROUP,RC392_SDK111_GROUP]);
+export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP,RC391_SDK110_GROUP,RC392_SDK111_GROUP]);

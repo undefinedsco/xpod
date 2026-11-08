@@ -76,7 +76,9 @@ const sdk107=QLEVER_SDK_CONSUMER_GROUPS[106]!;
 const sdk108=QLEVER_SDK_CONSUMER_GROUPS[107]!;
 // RC159 appended SDK109; SDK108 is now FROZEN history and SDK109 is the CURRENT tail.
 const sdk109=QLEVER_SDK_CONSUMER_GROUPS[108]!;
-const currentSdkConsumer=QLEVER_SDK_CONSUMER_GROUPS[110]!;
+// Live disk checks use the current reviewed tail; named historical generations
+// above keep their fixed published indexes.
+const currentSdkConsumer=QLEVER_SDK_CONSUMER_GROUPS.at(-1)!;
 // Whole-group aggregate of SDK105 as published (git-05cf baseline
 // families.sdkConsumer.aggregates[104]). Frozen history, never re-derived.
 const SDK105_FROZEN_WHOLE='6a2737d18a0b3fd4bee1250a818a80e4f65f2ab8609205a19bff40b92d097106';
@@ -139,7 +141,7 @@ test('SDK95 stays the exact published consumer that produced RC373 native',()=>{
 });
 
 test('SDK96 stays the consumed baseline that RC374 published from',()=>{
-  expect(QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(111);
+  expect(QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(112);
   expect(QLEVER_SDK_CONSUMER_GROUPS[95]).toBe(sdk96);
   expect(whole(sdk96)).toBe(publishedSdk94.published.sdk96GroupSha256);
   expect(whole(sdk96)).toBe(publishedSdk94.sdk96.groupSha256);
@@ -310,7 +312,7 @@ test('SDK103 stays the FROZEN consumer for the RC380 GNU long-name pack repair',
   expect(sdk103.secondarySelectors).toEqual(sdk102.secondarySelectors);
   // Frozen axes must not move: the published normal-source groups stay at their
   // history, and only the appended CURRENT generation (group 5) tracks live bytes.
-  expect(QLEVER_NORMAL_SOURCE_GROUPS).toHaveLength(5);
+  expect(QLEVER_NORMAL_SOURCE_GROUPS).toHaveLength(6);
   expect(whole(QLEVER_SDK_NORMAL_SOURCE_BINDINGS)).toBe(publishedSdk93.published.normalFlatBindingsSha256);
   expect(QLEVER_SDK_NORMAL_SOURCE_BINDINGS).toHaveLength(23);
   // SDK103 is FROZEN history, so its bytes are checked against the published
@@ -327,7 +329,7 @@ test('SDK106 and SDK107 are FROZEN history and SDK108 is the CURRENT in-place re
   // authoritative 45dbc3af baseline so RC386 can never move it, and SDK107 is the
   // current generation: the ABI fix rebinds an EXISTING stage row, so the stage count
   // must NOT grow (a redundant stage would request an already-owned role).
-  expect(QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(111);
+  expect(QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(112);
   expect(whole(sdk105)).toBe(SDK105_FROZEN_WHOLE);
   expect(whole(sdk106)).toBe(SDK106_FROZEN_WHOLE);
   expect(QLEVER_SDK_CONSUMER_GROUPS[SDK106_FROZEN_INDEX]).toBe(sdk106);
@@ -446,7 +448,7 @@ test('SDK96/97/98/99/100/101/102/103 trees select their own tuple; current tree 
 });
 
 test('normal producer keeps the frozen 23-row flat list and all earlier groups',()=>{
-  expect(QLEVER_NORMAL_SOURCE_GROUPS).toHaveLength(5);
+  expect(QLEVER_NORMAL_SOURCE_GROUPS).toHaveLength(6);
   const [old,next,dockerignore,registry,currentNormal]=QLEVER_NORMAL_SOURCE_GROUPS;
   expect(old!.sourceBindings).toBe(QLEVER_SDK_NORMAL_SOURCE_BINDINGS);
   expect(QLEVER_SDK_NORMAL_SOURCE_BINDINGS).toHaveLength(23);
@@ -527,11 +529,11 @@ const RC387_SDK107_PREDECESSOR_WHOLE =
   '89b6f46b7f768d6781f83745ece4c4abc21f93fa0e4e5dca448ebfdfc2f5b062';
 
 test('RC387 predecessor: SDK107 stays byte-identical to its published aggregate', () => {
-  expect(QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(111);
+  expect(QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(112);
   const frozen = QLEVER_SDK_CONSUMER_GROUPS[106]!;
   expect(whole(frozen)).toBe(RC387_SDK107_PREDECESSOR_WHOLE);
   // The same object is the Linux predecessor alias, so both axes stay frozen.
-  expect(QLEVER_LINUX_CONSUMER_GROUPS).toHaveLength(112);
+  expect(QLEVER_LINUX_CONSUMER_GROUPS).toHaveLength(113);
   expect(QLEVER_LINUX_CONSUMER_GROUPS[107]).toBe(frozen);
   // SDK108 is the CURRENT tail and must NOT equal the frozen predecessor.
   expect(QLEVER_SDK_CONSUMER_GROUPS[107]).not.toBe(frozen);

@@ -33,7 +33,13 @@ const BASE_HASH:Record<string,string>={
  cli:'e2bf191fa0a501497ad9c934944405b1b10f1efa4b442e73c690d43c2dd1fe60',
  flat23:'2da25785a276a8e6b37ee85576debe174d1fd66b61b2b0b5a50f0ff91a4880ef'};
 /** The five producer axes that must not grow at all. */
-const HISTORICAL=['sdkExecution','linuxExecution','normalSource','normalBuild','flat23'];
+// Producer axes that must never grow. `normalSource` is deliberately NOT in this list:
+// it is the reviewed-version allow-list for the candidate workflow, so a genuine
+// candidate-workflow change (RC392 load+explicit-provenance) appends exactly one new
+// reviewed version there. That is an append-only reviewed-version addition, not a
+// producer rebind: the execution/normalBuild axes below stay at ZERO growth.
+const HISTORICAL=['sdkExecution','linuxExecution','normalBuild','flat23'];
+const APPEND_ONLY_REVIEWED_HEADS=['normalSource'];
 /** Axes allowed to append one current group (CI one pair). */
 const APPENDABLE=['consumer','ci','sdkConsumer','linuxConsumer','api','cli'];
 
@@ -63,19 +69,20 @@ test('RC389: only the allowed current axes grew, and the historical five did not
   const delta=groups.length-BASE_COUNTS[name]!;
   // The five producer axes are frozen at their published HEAD arrays: ZERO growth.
   if(HISTORICAL.includes(name)){expect(delta).toBe(0);continue;}
+  if(APPEND_ONLY_REVIEWED_HEADS.includes(name)){expect(delta).toBe(1);continue;}
   expect(APPENDABLE).toContain(name);
   // Consumer-side axes grow only by appends since the dd7 baseline (RC159 + RC389 +
   // RC391 generations), never shrink and never jump by an unbounded amount.
   // dd7 baseline -> current: api/cli never grew; consumer-side axes grew only by the
   // RC159 + RC389 + RC391 appends (consumer/sdkConsumer/linuxConsumer +2, CI +4).
   if(name==='api'||name==='cli'){expect(delta).toBe(0);continue;}
-  if(name==='ci'){expect(delta).toBe(4);continue;}
-  expect(delta).toBe(2); }
+  if(name==='ci'){expect(delta).toBe(6);continue;}
+  expect(delta).toBe(3); }
  // Concrete current counts for the four advanced arcs plus the unchanged API/CLI.
- expect(families.consumer!.length-BASE_COUNTS.consumer!).toBe(2);
- expect(families.ci!.length-BASE_COUNTS.ci!).toBe(4);
- expect(families.sdkConsumer!.length-BASE_COUNTS.sdkConsumer!).toBe(2);
- expect(families.linuxConsumer!.length-BASE_COUNTS.linuxConsumer!).toBe(2);
+ expect(families.consumer!.length-BASE_COUNTS.consumer!).toBe(3);
+ expect(families.ci!.length-BASE_COUNTS.ci!).toBe(6);
+ expect(families.sdkConsumer!.length-BASE_COUNTS.sdkConsumer!).toBe(3);
+ expect(families.linuxConsumer!.length-BASE_COUNTS.linuxConsumer!).toBe(3);
  expect(families.api!.length).toBe(BASE_COUNTS.api);
  expect(families.cli!.length).toBe(BASE_COUNTS.cli);
 });
@@ -211,10 +218,10 @@ test('RC391: the HEAD202 consumer-side prefixes are byte-identical before the ap
 });
 
 test('RC391: only the four consumer-side axes grew by exactly one (CI a pair)',()=>{
- expect(families.consumer!.length).toBe(107);
- expect(families.ci!.length).toBe(218);
- expect(families.sdkConsumer!.length).toBe(111);
- expect(families.linuxConsumer!.length).toBe(112);
+ expect(families.consumer!.length).toBe(108);
+ expect(families.ci!.length).toBe(220);
+ expect(families.sdkConsumer!.length).toBe(112);
+ expect(families.linuxConsumer!.length).toBe(113);
  expect(families.api!.length).toBe(32);
  expect(families.cli!.length).toBe(15);
  // the producer axes are the exact HEAD arrays: no growth at all
@@ -241,7 +248,9 @@ test('RC391: the Dockerfile stage declaration separates the new shared tail from
  // `sourceBindings` alone cannot discriminate them. The stage declaration makes each
  // candidate answer for its OWN Dockerfile original before any GET.
  const family=families.sdkConsumer!;
- const current=family.at(-1) as any,previous=family.at(-2) as any;
+ // RC391 shipped as SDK111 (index 110) on top of SDK110 (index 109). Pin those FIXED
+ // published indices so a later append cannot silently re-target this assertion.
+ const current=family[110] as any,previous=family[109] as any;
  const rows=(group:any)=>[...(group.selectors??[]),...(group.secondarySelectors??[]),
    ...(group.secondarySelectorStages??[]).flat(),...(group.sourceBindings??[])];
  const observe=(group:any)=>new Map(rows(group).map((row:any)=>[sourceBindingKey(row),row.sha256]));
@@ -270,6 +279,6 @@ test('RC391: the Dockerfile stage declaration separates the new shared tail from
  mixed.set('source:Dockerfile',(previous.sourceBindings??[]).find((row:any)=>row.path==='Dockerfile')!.sha256);
  expect(selectGitHubSourceBindingGroup(family,mixed)).toBe(previous);
 
- // The shared tail is still ONE object across the SDK and Linux axes.
- expect(family.at(-1)).toBe(families.linuxConsumer!.at(-1));
+ // The SDK111/Linux112 generation is ONE shared object across both axes.
+ expect(family[110]).toBe(families.linuxConsumer![111]);
 });
