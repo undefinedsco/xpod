@@ -402,7 +402,10 @@ export function verifyPrivate17Admission(file: string, expected: {
 
 async function waitForPg17(container: string, database: string): Promise<void> {
   for (let attempt = 0; attempt < 120; attempt += 1) {
-    const ready = spawnSync('docker', ['exec', container, 'pg_isready', '-U', 'postgres', '-d', 'postgres'], {
+    // Official PostgreSQL images bootstrap a Unix-only server and then stop it
+    // before starting the final server. Wait for TCP so initialization queries
+    // cannot race that restart.
+    const ready = spawnSync('docker', ['exec', container, 'pg_isready', '-h', '127.0.0.1', '-U', 'postgres', '-d', 'postgres'], {
       encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: DOCKER_PROBE_TIMEOUT_MS,
     });
     if (ready.status === 0) {

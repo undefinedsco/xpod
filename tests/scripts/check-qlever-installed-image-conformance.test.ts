@@ -260,7 +260,23 @@ elif args[0]=='start':
   if scenario=='network-replaced' and backend=='pg':
    network_id=created[created.index('--network')+1]; network=json.loads((root/network_id).read_text()); (root/network_id).unlink(); create(network['Name'],'network',network['args'],True)
 elif args[0]=='exec':
+ if 'pg_isready' in args:
+  # Official entrypoint protocol: a temporary bootstrap server serves the Unix
+  # socket while listen_addresses='' (no TCP), then is stopped before the final
+  # server. bootstrap-ready: Unix ready immediately, TCP refuses writes until
+  # the final server has failed at least once and only then becomes ready.
+  if scenario=='bootstrap-ready':
+   tcp='-h' in args and '127.0.0.1' in args
+   if not tcp: sys.exit(0)
+   # First real TCP probe fails; every later one is the final server.
+   if not (root/'tcp-probe-failed').exists():
+    (root/'tcp-probe-failed').write_text('1'); sys.exit(2)
+   (root/'final-tcp-ready').write_text('1')
+  sys.exit(0)
  if '-Atc' in args: print(json.dumps({'version':170003,'extensions':['vector','xpod_qlever','xpod_rdf'],'native':{'abiVersion':2 if scenario=='bad-abi' else 1,'ready':True}}))
+ elif 'psql' in args:
+  # Reject SQL writes unless the final TCP server is the one serving them.
+  if scenario=='bootstrap-ready' and not (root/'final-tcp-ready').exists(): sys.exit(2)
 elif args[0]=='rm' or args[:2]==['network','rm']:
  if os.environ['FAKE_CLEANUP_EXIT']!='0': print('cleanup-exit-23',file=sys.stderr); sys.exit(23)
  id=args[-1]; target=root/id
@@ -305,6 +321,7 @@ describe('actual installed helper with fake Docker producers', () => {
     ['primary-failed', 23, 42], ['success', 23, 70], ['primary-failed', 0, 42], ['success', 0, 0],
     ['start-failed', 0, 45], ['foreign', 0, 18], ['bad-abi', 0, 1], ['forged', 0, 1], ['wrong-source', 0, 1],
     ['create-ack-loss', 0, 27], ['network-ack-loss', 0, 28], ['same-name-replaced', 0, 0], ['network-replaced', 0, 0],
+    ['bootstrap-ready', 0, 0],
   ] as const)('%s / cleanup %s returns %s and only cleans created resources', (scenario, cleanupExit, expectedExit) => {
     const { dir, state, artifacts, commandArgs, result, elapsed } =
       runFakeDocker({ scenario, cleanupExit: String(cleanupExit) });
@@ -347,6 +364,22 @@ describe('actual installed helper with fake Docker producers', () => {
       if (scenario === 'start-failed' || scenario === 'create-ack-loss') {
         const pg = calls.find(call => call[0] === 'create' && call.includes('--network-alias'))!;
         expect(calls.some(call => call[0] === 'rm' && call[2] === createHash('sha256').update(pg[2]).digest('hex'))).toBe(true);
+      }
+      if (scenario === 'bootstrap-ready') {
+        const execs = calls.filter(call => call[0] === 'exec');
+        expect(execs.some(call => call.includes('pg_isready') && !call.includes('-h'))).toBe(false);
+        const sql = execs.filter(call => call.includes('psql'));
+        // CREATE DATABASE, extension install and ABI read run exactly once,
+        // and only after the final TCP server exists.
+        expect(sql).toHaveLength(3);
+        expect(sql[0].join(' ')).toContain('CREATE DATABASE');
+        expect(sql[1].join(' ')).toContain('CREATE EXTENSION IF NOT EXISTS vector');
+        expect(sql[2].join(' ')).toContain('native_sparql_capabilities()');
+        expect(sql.filter(call => call.join(' ').includes('CREATE DATABASE'))).toHaveLength(1);
+        expect(readFileSync(path.join(state, 'tcp-probe-failed'), 'utf8')).toBe('1');
+        expect(readFileSync(path.join(state, 'final-tcp-ready'), 'utf8')).toBe('1');
+        // The shared expectedExit===0 assertion below still proves
+        // ownedCleanup === 'verified-absent' and full conformance.
       }
       if (scenario === 'same-name-replaced' || scenario === 'network-replaced') {
         const create = scenario === 'same-name-replaced'
