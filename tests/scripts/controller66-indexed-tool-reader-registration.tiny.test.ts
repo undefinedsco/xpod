@@ -1,0 +1,30 @@
+import {test,expect} from 'bun:test';
+import {readFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
+import before from '../fixtures/independent-admission/pre-indexed-tool-reader-whole-hashes.original.json';
+import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as api,API_SERVICE_BUILD_SOURCE_BINDINGS as actualApi} from '../../scripts/lib/independent-admission/github-origin';
+import {QLEVER_SDK_EXECUTION_GROUPS as sdk,QLEVER_SDK_CONSUMER_GROUPS as consumerSdk} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
+import {CONSUMER_SOURCE_GROUPS as consumer,CI_CONSUMER_SOURCE_GROUPS as ci} from '../../scripts/lib/independent-admission/consumer-observer-policy';
+import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
+import {sourceBindingKey as key,secondaryGitHubSourceBindingSelectors as secondary,selectGitHubSourceBindingGroup as select} from '../../scripts/lib/independent-admission/github-source-binding-groups'
+import {CURRENT_CANONICAL_SOURCE_ROWS,completeObserved,observedSecondaryBindings} from './source-binding-group.fixture';
+const sha=(raw:Buffer|string)=>createHash('sha256').update(raw).digest('hex');
+test('Controller66 preserves all 271 exact Git4858 complete recipes and binds current canonical physical originals',()=>{
+ expect(before.base).toBe('4858f38bcf231d40a4b7623a843656447831bafa');
+ expect(Object.values(before.hashes).reduce((sum,rows)=>sum+rows.length,0)).toBe(271);
+
+ for(const [name,values] of Object.entries({api,sdk,consumer,ci})){const old=before.hashes[name as keyof typeof before.hashes];expect(values.slice(0,old.length).map(row=>sha(JSON.stringify(row)))).toEqual(old);}
+ for(const row of [...current,...actualApi,...consumerSdk.at(-1)!.selectors,...consumerSdk.at(-1)!.sourceBindings])expect(sha(readFileSync(row.path))).toBe(row.sha256);
+ expect(api.at(-1)!.sourceBindings).toBe(actualApi);
+});
+test('Controller66 complete current recipe rejects every absent or mixed mandatory role',()=>{
+ for(const groups of [api,sdk,consumer,ci])for(const group of groups.slice(groups===ci?-2:-1)){
+  // Stage 0 asks for its own roles; assert that surface, then COMPLETE the
+  // whole acquisition (SDK79/80 also need promoted later-stage roles).
+  const primary=new Map(group.selectors.map(row=>[key(row),row.sha256]));
+  for(const role of secondary(groups,primary)){const own=[...group.selectors,...group.sourceBindings,...(group.secondarySelectors??[])].filter(row=>key(row)===key(role));expect(own.length).toBeGreaterThan(0);expect(new Set(own.map(row=>row.sha256)).size).toBe(1);}
+  const tuple=completeObserved(groups,group);
+  expect(select(groups,tuple)).toBe(group);
+  for(const role of observedSecondaryBindings(group,tuple)){const absent=new Map(tuple);absent.delete(key(role));expect(()=>select(groups,absent)).toThrow();const mixed=new Map(tuple);mixed.set(key(role),'f'.repeat(64));expect(()=>select(groups,mixed)).toThrow();}
+ }
+});

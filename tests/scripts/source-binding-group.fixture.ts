@@ -1,0 +1,61 @@
+import {secondaryGitHubSourceBindingSelectors,sourceBindingKey,type GitHubSourceBinding,type GitHubSourceBindingGroup} from '../../scripts/lib/independent-admission/github-source-binding-groups';
+/** Expected LIVE canonical source inventory. Kept independent of the JSON under test.
+ * Published/frozen snapshots retain their own historical counts. */
+// RC383 adds candidate-run-state.ts; RC384 adds packages/xpod-afs/.npmignore;
+// RC385 appends one further consumer/CI pair (consumer102 / CI208).
+//
+// The RC386 canonical ends at 532 rows. Everything appended AFTER that point is
+// listed here ONCE, in canonical order, so no suite keeps its own copy of it.
+export const CURRENT_CANONICAL_SUFFIX = Object.freeze([
+  'qlever/scripts/sdk-service-runtime-stream.py',
+  'patches/comunica-undici-entry.cjs',
+]);
+export const CURRENT_CANONICAL_SOURCE_ROWS = 532 + CURRENT_CANONICAL_SUFFIX.length;
+/** The single explicit CURRENT registration expectation. Historical suites keep
+ * their own frozen prefix/hash fixtures; only genuine current-source checks use
+ * these values. A future append updates this ONE object, never 41 scattered
+ * literals. */
+export const CURRENT_SOURCE_GROUP_COUNTS = Object.freeze({api:33,sdk:93,consumer:115,ci:234,linux:94,cli:16,
+  // CURRENT (moving) SDK/Linux consumer and normal-producer totals. Frozen
+  // producer axes above (sdk 93 / linux 94) never move with an append.
+  sdkConsumer:118,linuxConsumer:119,normal:10,current:CURRENT_CANONICAL_SOURCE_ROWS});
+export const CURRENT_OBSERVER_GROUPS = 64;
+export const CURRENT_HELPER_GROUP_COUNTS = Object.freeze({controller:43,fetch:46,maximum:46});
+
+/** Model the real primary -> requested role -> own mandatory original flow.
+ *
+ * Bounded: it keeps asking the SAME planner for the roles that are still
+ * MISSING and stops when nothing is outstanding. This supports legacy
+ * single-stage recipes and staged recipes alike. Every value written comes from
+ * the selected recipe's OWN mandatory original - a declaration is never treated
+ * as an observation, and a missing role throws instead of being invented. */
+export function completeObserved(groups:readonly GitHubSourceBindingGroup[],group:GitHubSourceBindingGroup):Map<string,string>{
+ const observed=new Map(group.selectors.map(row=>[sourceBindingKey(row),row.sha256]));
+ const declared=new Set(groups.flatMap(g=>[...g.selectors,...(g.secondarySelectors??[]),...(g.secondarySelectorStages??[]).flat(),...g.sourceBindings].map(row=>sourceBindingKey(row)))).size;
+ const maximumRounds=declared+1;
+ for(let round=0;round<maximumRounds;round++){
+  const missing=secondaryGitHubSourceBindingSelectors(groups,observed)
+   .filter((role:GitHubSourceBinding)=>!observed.has(sourceBindingKey(role)));
+  if(!missing.length)break;
+  for(const role of missing){
+   const own=[...group.selectors,...(group.secondarySelectors??[]),...(group.secondarySelectorStages??[]).flat(),...group.sourceBindings]
+    .filter((row:GitHubSourceBinding)=>sourceBindingKey(row)===sourceBindingKey(role));
+   if(!own.length||new Set(own.map((row:GitHubSourceBinding)=>row.sha256)).size!==1)throw Error('Fixture missing consistent own mandatory original');
+   observed.set(sourceBindingKey(role),own[0]!.sha256);
+  }
+ }
+ return observed;
+}
+
+/** Actual acquired secondary originals, including roles promoted by another
+ * surviving recipe. Negative cases can remove every observed role without
+ * assuming that acquisition ends after one stage. */
+export function observedSecondaryBindings(group:GitHubSourceBindingGroup,observed:ReadonlyMap<string,string>):readonly GitHubSourceBinding[]{
+ const primary=new Set(group.selectors.map(sourceBindingKey));
+ const originals=[...group.selectors,...(group.secondarySelectors??[]),...(group.secondarySelectorStages??[]).flat(),...group.sourceBindings];
+ return [...observed.keys()].filter(key=>!primary.has(key)).map(key=>{
+  const own=originals.filter(row=>sourceBindingKey(row)===key);
+  if(!own.length||new Set(own.map(row=>row.sha256)).size!==1||own[0]!.sha256!==observed.get(key))throw Error('Fixture missing consistent observed original');
+  return own[0]!;
+ });
+}

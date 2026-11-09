@@ -1,5 +1,8 @@
+import { createRequire } from 'node:module';
 import { readFile, mkdtemp, mkdir, writeFile, rm, chmod } from 'node:fs/promises';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { parseDocument } from 'yaml';
 import { describe, expect, it } from 'vitest';
@@ -36,6 +39,52 @@ function allRuns(workflow: Workflow): string[] {
 }
 
 describe('release candidate workflow', () => {
+  it('uses revocable platform credentials while keeping external monitoring outside release dependencies', async () => {
+    const workflow = await loadWorkflow();
+    for (const name of ['deploy_and_accept', 'runtime_mode_matrix']) {
+      const job = workflow.jobs[name];
+      const prepare = job.steps.findIndex((step: any) => step.id === 'platform_provider');
+      const cleanup = job.steps.findIndex((step: any) => step.name?.startsWith('Revoke ') && step.name.includes('platform inference credential'));
+      expect(prepare).toBeGreaterThan(-1);
+      expect(cleanup).toBeGreaterThan(prepare);
+      expect(job.steps[prepare].run).toContain('prepare-rc-platform-provider.ts create');
+      expect(job.steps[cleanup].run).toContain('prepare-rc-platform-provider.ts cleanup');
+      expect(job.steps[cleanup].if).toContain('always()');
+      expect(JSON.stringify(job)).not.toContain('secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG');
+      expect(JSON.stringify(job)).not.toContain('secrets.XPOD_AI_PROXY_URL');
+    }
+    for (const name of ['deploy_and_accept', 'runtime_mode_matrix', 'build_desktop_rc', 'finalize_acceptance']) {
+      expect(JSON.stringify(workflow.jobs[name].needs ?? [])).not.toContain('provider-availability');
+    }
+    const stable = parseDocument(await readFile(path.join(repoRoot, '.github/workflows/release.yml'), 'utf8')).toJSON();
+    expect(JSON.stringify(stable.jobs.build_desktop_macos)).not.toContain('secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG');
+    expect(JSON.stringify(stable.jobs.build_desktop_macos)).not.toContain('--key-file');
+    expect(jobRunText(workflow, 'build_desktop_rc')).not.toContain('--key-file');
+    const monitor = parseDocument(await readFile(path.join(repoRoot, '.github/workflows/provider-availability.yml'), 'utf8')).toJSON();
+    const probe = monitor.jobs['provider-availability'].steps.find((step: any) => step.name === 'Probe upstream models and one real Chat completion');
+    expect(probe.env.XPOD_LIVE_PROVIDER_API_KEY_CONFIG)
+      .toBe('${{ secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG }}');
+    expect(monitor.jobs['provider-availability'].needs).toBeUndefined();
+  });
+
+  it('requires the independent same-image mode verifier before final acceptance', async () => {
+    const workflow = await loadWorkflow();
+    expect(workflow.jobs.runtime_mode_matrix.needs).toEqual(['metadata', 'build_image', 'deploy_and_accept']);
+    expect(workflow.jobs.finalize_acceptance.needs).toContain('runtime_mode_matrix');
+    const finalize = JSON.stringify(workflow.jobs.finalize_acceptance);
+    const download = workflow.jobs.finalize_acceptance.steps.find((step: any) => step.name === 'Download exact same-image mode acceptance');
+    expect(download.with).toEqual({
+      'artifact-ids': '${{ needs.runtime_mode_matrix.outputs.artifact-id }}',
+      'merge-multiple': true,
+      path: '${{ runner.temp }}/service-image-modes',
+    });
+    expect(finalize).toContain('${{ needs.runtime_mode_matrix.outputs.attempt }}');
+    expect(finalize).toContain('verify-service-image-modes.cjs');
+    expect(finalize).toContain("'service-image-modes-check.json'");
+    const release = await readFile(path.join(repoRoot, '.github/workflows/release.yml'), 'utf8');
+    expect(release).toContain('--required-check runtime-mode-matrix');
+  });
+
   it('proves diagnostic container absence and removes private files even when cleanup fails', async () => {
     const workflow = await loadWorkflow();
     const steps = workflow.jobs.task_runtime_diagnostic.steps;
@@ -189,7 +238,9 @@ esac
       'publish_qlever_local_runtime',
     ]);
     for (const [ jobName, job ] of Object.entries(workflow.jobs)) {
-      if (jobName === 'task_runtime_diagnostic') {
+      if (jobName === 'observe_service_sdk_source') {
+        expect((job as any).permissions, jobName).toEqual({ contents: 'read', actions: 'read', packages: 'read' });
+      } else if (jobName === 'task_runtime_diagnostic' || jobName === 'runtime_mode_matrix') {
         expect((job as { permissions?: Record<string, string> }).permissions, jobName).toEqual({
           contents: 'read',
           packages: 'read',
@@ -268,10 +319,12 @@ esac
   });
 
   it.each([
-    ['1', '2', '0.4.30-rc.288'],
-    ['2', '2', '0.4.30-rc.288.2'],
-  ])('keeps metadata attempt %s authoritative when version jobs run in attempt %s', async (metadataAttempt, currentAttempt, expectedVersion) => {
+    ['1', '2', '-rc.288'],
+    ['2', '2', '-rc.288.2'],
+  ])('keeps metadata attempt %s authoritative when version jobs run in attempt %s', async (metadataAttempt, currentAttempt, expectedSuffix) => {
     const workflow = await loadWorkflow();
+    const targetVersion = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')).version;
+    const expectedVersion = `${targetVersion}${expectedSuffix}`;
     const parent = path.join(repoRoot, '.test-data', 'candidate-version-retry');
     await mkdir(parent, { recursive: true });
     const directory = await mkdtemp(path.join(parent, 'case-'));
@@ -296,20 +349,29 @@ esac
         ['build_desktop_rc', 'Apply and verify the candidate version'],
       ]) {
         const manifests = path.join(directory, jobName);
+        const runnerTemp = await mkdtemp(path.join(directory, `${jobName}-runner-`));
         await mkdir(path.join(manifests, 'desktop'), { recursive: true });
-        await writeFile(path.join(manifests, 'package.json'), JSON.stringify({ name: '@undefineds.co/xpod', version: '0.4.30' }));
-        await writeFile(path.join(manifests, 'desktop/package.json'), JSON.stringify({ name: '@undefineds.co/xpod-desktop', version: '0.4.30' }));
+        await writeFile(path.join(manifests, 'package.json'), JSON.stringify({ name: '@undefineds.co/xpod', version: targetVersion }));
+        await writeFile(path.join(manifests, 'desktop/package.json'), JSON.stringify({ name: '@undefineds.co/xpod-desktop', version: targetVersion }));
         const step = workflow.jobs[jobName].steps.find((candidate: any) => candidate.name === stepName);
         const run = step.run.replace(/\$\{\{\s*([^}]+)\s*\}\}/g, (_match: string, expression: string) => {
           const value = context[expression.trim()];
           if (!value) throw new Error(`Unresolved workflow input: ${expression}`);
           return value;
         }).replace('node scripts/release-candidate.cjs', 'node "$RELEASE_CANDIDATE_SCRIPT" --repo-root "$MANIFEST_ROOT"');
-        execFileSync('bash', ['-euo', 'pipefail', '-c', run], {
-          cwd: manifests, stdio: 'pipe', env: { ...process.env, REF_NAME: 'staging',
+        const runVersionSync = () => execFileSync('bash', ['-euo', 'pipefail', '-c', run], {
+          cwd: manifests, stdio: 'pipe', env: { ...process.env, RUNNER_TEMP: runnerTemp, GITHUB_WORKSPACE: manifests, REF_NAME: 'staging',
             CANDIDATE_VERSION: metadata.candidate, MANIFEST_ROOT: manifests,
             RELEASE_CANDIDATE_SCRIPT: path.join(repoRoot, 'scripts/release-candidate.cjs') },
         });
+        runVersionSync();
+        if (jobName === 'build_image') {
+          for (const file of ['package.json', 'desktop/package.json']) {
+            expect(JSON.parse(await readFile(path.join(runnerTemp, 'service-source-manifests/before', file), 'utf8')).version).toBe(targetVersion);
+            expect(JSON.parse(await readFile(path.join(runnerTemp, 'service-source-manifests/after', file), 'utf8')).version).toBe(expectedVersion);
+          }
+          expect(runVersionSync).toThrow(/File exists/);
+        }
         for (const file of ['package.json', 'desktop/package.json']) {
           expect(JSON.parse(await readFile(path.join(manifests, file), 'utf8')).version, `${jobName}/${file}`).toBe(expectedVersion);
         }
@@ -322,7 +384,7 @@ esac
     const preflight = workflow.jobs.rc_prerequisites;
     const runText = jobRunText(workflow, 'rc_prerequisites');
 
-    expect(preflight.needs).toBe('metadata');
+    expect(preflight.needs).toEqual(['metadata']);
     expect(preflight.environment).toBe('rc');
     expect(preflight.env.KUBE_CONFIG_DATA).toBe('${{ secrets.KUBE_CONFIG_DATA }}');
     expect(preflight.env.SEALOS_NAMESPACE).toBe('${{ vars.SEALOS_NAMESPACE }}');
@@ -335,6 +397,34 @@ esac
     expect(runText).toContain('api-rc.undefineds.cn');
     expect(runText).toContain('auth can-i create deployments');
     expect(runText).not.toContain('get secret xpod-rc-tls');
+  });
+
+  it('runs SDK lookup/build parallel to the 18 compatibility lanes and joins them at shared-RC deployment', async () => {
+    const workflow = await loadWorkflow();
+    const jobs = workflow.jobs;
+    const ancestors = (name: string, seen = new Set<string>()): Set<string> => {
+      for (const need of [jobs[name]?.needs ?? []].flat()) {
+        if (!seen.has(need)) { seen.add(need); ancestors(need, seen); }
+      }
+      return seen;
+    };
+    // The read-only RC preflight does not wait for compatibility.
+    expect(jobs.rc_prerequisites.needs).toEqual(['metadata']);
+    expect([...ancestors('rc_prerequisites')]).not.toContain('legacy_root_compat');
+    // SDK lookup/build and the image/observer chain cannot depend on the current
+    // 18-lane compatibility result; they may run while it is still in progress.
+    for (const name of ['publish_qlever_runtime_sdk', 'publish_qlever_local_runtime', 'build_image', 'observe_service_sdk_source']) {
+      expect([...ancestors(name)], name).not.toContain('legacy_root_compat');
+    }
+    // The shared-RC mutation entry is the explicit mandatory join: a failed or
+    // skipped 18-lane matrix skips deployment, with no always/failure/continue.
+    expect(jobs.deploy_and_accept.needs).toEqual(['metadata', 'build_image', 'legacy_root_compat']);
+    expect(jobs.deploy_and_accept.if).toBeUndefined();
+    expect(jobs.deploy_and_accept['continue-on-error']).not.toBe(true);
+    expect(jobs.legacy_root_compat.if).toBeUndefined();
+    expect(jobs.legacy_root_compat['continue-on-error']).not.toBe(true);
+    // Final acceptance also retains the compatibility success gate.
+    expect(jobs.finalize_acceptance.needs).toContain('legacy_root_compat');
   });
 
   it('runs the read-only shared-package reuse preflight before artifact jobs and never publishes', async () => {
@@ -437,11 +527,12 @@ esac
 
   it('builds exactly one GHCR image with immutable sha and candidate tags and exposes the canonical digest', async () => {
     const workflow = await loadWorkflow();
+    expect(workflow.jobs.observe_service_sdk_source.needs).toEqual(['metadata', 'build_image', 'publish_qlever_local_runtime', 'publish_qlever_runtime_sdk']);
     const build = workflow.jobs.build_image;
     const runText = jobRunText(workflow, 'build_image');
     const actionStep = build.steps.find((step: any) => step.uses === 'docker/build-push-action@v6');
 
-    expect(build.needs).toEqual([ 'metadata', 'rc_prerequisites', 'publish_qlever_local_runtime' ]);
+    expect(build.needs).toEqual([ 'metadata', 'rc_prerequisites', 'publish_qlever_local_runtime', 'publish_qlever_runtime_sdk' ]);
     expect(build.outputs.digest).toContain('digest');
     expect(actionStep.with.push).toBe(true);
     expect(actionStep.with.tags).toContain('sha-${{ needs.metadata.outputs.sourceSha }}');
@@ -450,13 +541,19 @@ esac
     expect(runText).not.toContain(':latest');
   });
 
-  it('deploys after the image build, uses rc environment secrets, and deploys by digest', async () => {
+  it('deploys only after qualified service observation, uses rc secrets, and deploys by digest', async () => {
     const workflow = await loadWorkflow();
     const deploy = workflow.jobs.deploy_and_accept;
     const runText = jobRunText(workflow, 'deploy_and_accept');
 
     expect(deploy.environment).toBe('rc');
-    expect(deploy.needs).toEqual([ 'metadata', 'build_image' ]);
+    expect(deploy.needs).toEqual([ 'metadata', 'build_image', 'legacy_root_compat' ]);
+    expect(deploy.if).toBeUndefined();
+    const diagnosticObserver = workflow.jobs.observe_service_sdk_source;
+    expect(diagnosticObserver.name).toContain('diagnostic');
+    expect(diagnosticObserver.if).toContain('inputs.service_source_diagnostics == true');
+    expect(diagnosticObserver['continue-on-error']).toBe(true);
+    expect(jobRunText(workflow, 'observe_service_sdk_source')).toContain('--require-qualification');
     expect(deploy.env.KUBE_CONFIG_DATA).toBe('${{ secrets.KUBE_CONFIG_DATA }}');
     expect(deploy.env.APP_ENV_FILE).toBe('${{ secrets.APP_ENV_FILE }}');
     expect(deploy.env.SEALOS_NAMESPACE).toBe('${{ vars.SEALOS_NAMESPACE }}');
@@ -483,16 +580,13 @@ esac
     expect(runText).not.toContain('kubectl -n "$SEALOS_NAMESPACE" set image deployment/xpod-rc');
     expect(runText).not.toContain('kubectl -n "$SEALOS_NAMESPACE" rollout restart deployment/xpod-rc');
     expect(runText).toContain('kubectl rollout status deployment/xpod-rc');
-    expect(runText).toContain("CREATE EXTENSION IF NOT EXISTS vector");
-    expect(runText).toContain("CREATE EXTENSION IF NOT EXISTS xpod_rdf VERSION '0.2.0'");
-    expect(runText).toContain("CREATE EXTENSION IF NOT EXISTS xpod_qlever VERSION '0.4.0'");
     expect(runText).toContain('delete deployment/xpod-rc --cascade=foreground --wait=true --ignore-not-found');
     expect(runText).not.toContain('delete statefulset/xpod-rc-postgres');
     expect(runText).not.toContain('pvc/data-xpod-rc-postgres-0');
     expect(runText).not.toContain('delete pvc -l');
-    expect(runText.indexOf('DROP DATABASE IF EXISTS xpod_rc WITH (FORCE)'))
-      .toBeLessThan(runText.indexOf('kubectl apply -f "$rendered_manifest"'));
-    expect(runText).toContain('CREATE DATABASE xpod_rc OWNER xpod_rc');
+    expect(runText).not.toMatch(/DROP DATABASE|CREATE DATABASE|CREATE EXTENSION|ALTER SCHEMA/);
+    expect(runText.indexOf('scripts/verify-protected-rc-database.sh'))
+      .toBeLessThan(runText.indexOf('create secret generic "$XPOD_RUNTIME_SECRET_NAME"'));
     expect(runText).not.toContain('kubectl rollout status deployment/xpod-inngest');
     expect(runText).toContain('node scripts/update-gateway-rc-configmap.cjs');
     expect(runText).toContain('https://id-rc.undefineds.cn/service/status');
@@ -560,13 +654,17 @@ esac
   });
 
   it.each([
+    ['postgresql://xpod_rc:fixture@xpod-rc-rdf-postgres:5432/xpod_rc', true],
+    ['postgresql://xpod_rc:fixture@xpod-rc-rdf-postgres.ns-iknkxtc8.svc.cluster.local/xpod_rc', true],
+    // The current shared-host credential is ACCEPTED and rebound to the
+    // dedicated service; the shared instance itself is never targeted.
     ['postgresql://xpod_rc:fixture@xpod-rdf-postgres:5432/xpod_rc', true],
-    ['postgresql://xpod_rc:fixture@xpod-rdf-postgres.ns-iknkxtc8.svc.cluster.local/xpod_rc', true],
-    ['postgresql://xpod_rc:fixture@xpod-rdf-postgres:5432/xpod_cn', false],
-    ['postgresql://postgres:fixture@xpod-rdf-postgres:5432/xpod_rc', false],
+    ['postgresql://xpod_rc:fixture@xpod-rc-rdf-postgres:5432/xpod_cn', false],
+    ['postgresql://xpod_rc:fixture@xpod-rc-rdf-postgres:5432/xpod_co', false],
+    ['postgresql://postgres:fixture@xpod-rc-rdf-postgres:5432/xpod_rc', false],
     ['postgresql://xpod_rc:fixture@production-postgres:5432/xpod_rc', false],
-    ['https://xpod_rc:fixture@xpod-rdf-postgres:5432/xpod_rc', false],
-  ])('validates both configured database URLs before resetting the shared RC database (%s)', async (url, allowed) => {
+    ['https://xpod_rc:fixture@xpod-rc-rdf-postgres:5432/xpod_rc', false],
+  ])('derives the RC-only database host before validating APP_ENV_FILE (%s)', async (url, allowed) => {
     const workflow = await loadWorkflow();
     const run = workflow.jobs.deploy_and_accept.steps.find((step: any) => step.name === 'Validate RC runtime secret isolation').run;
     const script = run.match(/<<'NODE'\n([\s\S]*?)\nNODE/)[1];
@@ -578,8 +676,8 @@ esac
     try {
       for (const key of ['CSS_IDENTITY_DB_URL', 'CSS_SPARQL_ENDPOINT']) {
         const entries = {
-          CSS_IDENTITY_DB_URL: 'postgresql://xpod_rc:fixture@xpod-rdf-postgres/xpod_rc',
-          CSS_SPARQL_ENDPOINT: 'postgresql://xpod_rc:fixture@xpod-rdf-postgres/xpod_rc',
+          CSS_IDENTITY_DB_URL: 'postgresql://xpod_rc:fixture@xpod-rc-rdf-postgres/xpod_rc',
+          CSS_SPARQL_ENDPOINT: 'postgresql://xpod_rc:fixture@xpod-rc-rdf-postgres/xpod_rc',
           CSS_REDIS_CLIENT: 'redis://redis:6379/1',
           CSS_MINIO_ENDPOINT: 'https://fixture.r2.cloudflarestorage.com',
           CSS_MINIO_BUCKET_NAME: 'xpod-rc', CSS_MINIO_ACCESS_KEY: 'fixture', CSS_MINIO_SECRET_KEY: 'fixture',
@@ -591,13 +689,15 @@ esac
         const runValidation = () => execFileSync(process.execPath, ['-', envPath, seedPath], {
           env: {...process.env, SEALOS_NAMESPACE: 'ns-iknkxtc8'}, input: script, stdio: 'pipe',
         });
-        if (allowed) expect(runValidation).not.toThrow();
-        else expect(runValidation).toThrow(/must use the isolated xpod_rc database and role/);
+        const failure = (() => { try { runValidation(); return ''; } catch (error: any) {
+          return String(error.stderr ?? error.message);
+        } })();
+        if (allowed) expect(failure, failure).toBe('');
+        else expect(failure).toMatch(/RC database configuration rejected|RC-only PostgreSQL/);
       }
     } finally { await rm(directory, { recursive: true, force: true }); }
-    const reset = workflow.jobs.deploy_and_accept.steps.find((step: any) => step.name === 'Reset the shared RC database').run;
-    expect(reset).toContain('SHOW server_version_num');
-    expect(reset).toContain("SELECT extversion FROM pg_extension WHERE extname = 'vector'");
+    const preflight = workflow.jobs.deploy_and_accept.steps.find((step: any) => step.name === 'Verify RC-only PostgreSQL and bootstrap without touching production').run;
+    expect(preflight).toContain('scripts/verify-protected-rc-database.sh');
   });
 
   it('derives authenticated smoke configuration from the fixed RC seed instead of manual secrets', async () => {
@@ -608,8 +708,8 @@ esac
     expect(deploy.env.XPOD_ACCEPTANCE_REAL_XPOD).toBe('true');
     expect(deploy.env.XPOD_ACCEPTANCE_RUN_VISUAL).toBe('true');
     expect(deploy.env.XPOD_SETTINGS_E2E_BASE_URL).toBe('https://id-rc.undefineds.cn');
-    expect(deploy.env.XPOD_LIVE_PROVIDER_API_KEY_CONFIG).toBe('${{ secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG }}');
-    expect(deploy.env.XPOD_AI_PROXY_URL).toBe('${{ secrets.XPOD_AI_PROXY_URL }}');
+    expect(deploy.env.XPOD_LIVE_PROVIDER_API_KEY_CONFIG).toBeUndefined();
+    expect(deploy.env.XPOD_AI_PROXY_URL).toBeUndefined();
     expect(deploy.env.XPOD_RC_SEED_CONFIG).toBe('${{ secrets.XPOD_RC_SEED_CONFIG }}');
     expect(deploy.env.XPOD_SETTINGS_E2E_ALICE_STATE).toBeUndefined();
     expect(deploy.env.XPOD_SETTINGS_E2E_BOB_STATE).toBeUndefined();
@@ -648,7 +748,9 @@ esac
     const workflow = await loadWorkflow();
     const runText = jobRunText(workflow, 'deploy_and_accept');
 
-    expect(runText).toContain('XPOD_LIVE_PROVIDER_API_KEY_CONFIG secret is required');
+    expect(runText).toContain('scripts/prepare-rc-platform-provider.ts create');
+    expect(runText).toContain('scripts/prepare-rc-platform-provider.ts cleanup');
+    expect(runText).not.toContain('XPOD_LIVE_PROVIDER_API_KEY_CONFIG secret is required');
     expect(runText).toContain('docker run --detach --name "$local_name"');
     expect(runText).toContain('local_name_file="${RUNNER_TEMP}/live-gateway-local-container-name"');
     expect(runText).toContain('printf \'%s\\n\' "$local_name" > "$local_name_file"');
@@ -659,7 +761,7 @@ esac
     expect(runText).toContain('docker port "$local_name" 5737/tcp');
     expect(runText).not.toContain('port-forward deployment/xpod-rc 3000:3000');
     expect(runText).toContain('XPOD_LIVE_PROVIDER_KEY_FILE="$provider_file"');
-    expect(runText).toContain('XPOD_LIVE_GATEWAY_URL="$gateway"');
+    expect(runText).toContain('XPOD_BASE_URL="$gateway"');
     expect(runText).toContain('XPOD_LIVE_CLOUD_IDP="https://id-rc.undefineds.cn/"');
     expect(runText).not.toContain('XPOD_LIVE_EXPECTED_POD_HOST_SUFFIX');
     expect(runText).toContain('bun run ai-connections:accept:live');
@@ -675,6 +777,38 @@ esac
     }
     expect(runText).toContain('live-gateway-checks.json');
     expect(runText).not.toContain('allow-incomplete --chat');
+  });
+
+  it('runs the four deployed RC user-flow facts after seed prep and keeps local LiveGateway separate', async () => {
+    const workflow = await loadWorkflow();
+    const steps = workflow.jobs.deploy_and_accept.steps;
+    const names = steps.map((step: any) => step.name);
+    const rcIndex = names.indexOf('RC user-flow acceptance');
+    const liveIndex = names.indexOf('Live Gateway login and Chat acceptance');
+    expect(rcIndex).toBeGreaterThan(-1);
+    expect(liveIndex).toBeGreaterThan(rcIndex);
+    const rc = steps[rcIndex];
+    expect(rc.run).toContain('bun scripts/accept-rc-user-flows.ts');
+    expect(rc.run).toContain('--base-url "$XPOD_SETTINGS_E2E_BASE_URL"');
+    expect(rc.run).toContain('--seed-config "${RUNNER_TEMP}/xpod-rc-seed.json"');
+    expect(rc.run).toContain('--output-dir "${RUNNER_TEMP}/rc-user-flows"');
+    for (const check of [
+      'rc-pod-sparql',
+      'rc-builtin-models-chat',
+      'rc-matrix-collaboration',
+      'rc-browser-consent',
+    ]) {
+      expect(rc.run).toContain(check);
+    }
+    expect(rc.run).not.toContain('docker run');
+    expect(rc.run).not.toContain('127.0.0.1');
+    expect(rc.run).toContain('env -u XPOD_LIVE_PROVIDER_API_KEY_CONFIG -u XPOD_AI_PROXY_URL');
+    expect(rc.run).not.toContain('XPOD_LIVE_PROVIDER_KEY_FILE');
+    const upload = steps.find((step: any) => step.uses === 'actions/upload-artifact@v4');
+    expect(upload.with.path).toContain('${{ runner.temp }}/checks.json');
+    expect(upload.with.path).toContain('${{ runner.temp }}/rc-user-flows.json');
+    expect(JSON.stringify(workflow.jobs.finalize_acceptance)).toContain('rc-user-flows.json');
+    expect(steps[liveIndex].run).toContain('docker run --detach');
   });
 
   it('uploads diagnostic Task evidence on failure without relaxing the actual acceptance gate', async () => {
@@ -702,7 +836,7 @@ esac
     const workflow = await loadWorkflow();
     const step = workflow.jobs.deploy_and_accept.steps.find((entry: any) => entry.name === 'Project safe Task approval evidence');
     expect(step).toBeDefined();
-    const script = step.run.match(/node - <<'NODE'\n([\s\S]*?)\nNODE/)[1];
+    const script = step.run.match(/bun - <<'BUN'\n([\s\S]*?)\nBUN/)[1];
     const parent = path.join(repoRoot, '.test-data', 'task-evidence-contract');
     await mkdir(parent, { recursive: true });
     const directory = await mkdtemp(path.join(parent, 'case-'));
@@ -710,9 +844,9 @@ esac
       const input = path.join(directory, '.test-data', 'acceptance');
       await mkdir(input, { recursive: true });
       if (contents !== undefined) await writeFile(path.join(input, 'live-gateway-login-chat-local.json'), contents);
-      const output = execFileSync(process.execPath, ['-e', script], {
+      const output = execFileSync('bun', ['-e', script], {
         cwd: directory, encoding: 'utf8',
-        env: { ...process.env, RUNNER_TEMP: directory, GITHUB_SHA: 'a'.repeat(40), GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '2' },
+        env: { ...process.env, GITHUB_WORKSPACE: repoRoot, RUNNER_TEMP: directory, GITHUB_SHA: 'a'.repeat(40), GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '2' },
       });
       const evidence = await readFile(path.join(directory, 'task-approval-evidence.json'), 'utf8').catch(() => undefined);
       return { output, evidence };
@@ -850,6 +984,26 @@ esac
     });
   });
 
+  it('keeps only exact failure enums and rejects unsafe or successful-case diagnostics', async () => {
+    const workflow = await loadWorkflow();
+    const script = workflow.jobs.deploy_and_accept.steps.find((step: any) => step.name === 'Project safe Task approval evidence').run;
+    expect(script).toContain("'src/api/tasks/TaskRunFailureDiagnostic.ts'");
+    expect(script).toContain('projectTaskRunFailureDiagnostic(row.failureDiagnostic');
+    expect(script).not.toContain('const failureCodes');
+    expect(script).not.toContain('const failureStages');
+    const diagnostic = { code: 'TASK_RUNTIME_ERROR', stage: 'start_backend', status: 'failed' };
+    const result = await projectTaskEvidence(JSON.stringify({ taskApproval: { ok: false, cases: [
+      { kind: 'approved', ok: false, failureDiagnostic: { ...diagnostic, body: 'private-secret https://private.example' } },
+      { kind: 'rejected', ok: false, failureDiagnostic: { ...diagnostic, code: 'private-secret' } },
+      { kind: 'stopped', ok: true, failureDiagnostic: diagnostic },
+    ], cleanup: {} } }));
+    const cases = JSON.parse(result.evidence!).cases;
+    expect(cases[0].failureDiagnostic).toEqual(diagnostic);
+    expect(cases[1].failureDiagnostic).toBeUndefined();
+    expect(cases[2].failureDiagnostic).toBeUndefined();
+    expect(result.evidence).not.toContain('private-secret');
+  });
+
   it('omits invalid field types instead of copying arbitrary payloads into evidence', async () => {
     const result = await projectTaskEvidence(JSON.stringify({ taskApproval: {
       ok: 'private payload', failure: false,
@@ -877,7 +1031,8 @@ esac
       step.uses === 'actions/upload-artifact@v4');
     const finalize = workflow.jobs.finalize_acceptance;
     const finalizeText = jobRunText(workflow, 'finalize_acceptance');
-    const finalUpload = finalize.steps.find((step: any) => step.uses === 'actions/upload-artifact@v4');
+    const finalUpload = finalize.steps.find((step: any) =>
+      step.uses === 'actions/upload-artifact@v4' && step.with?.name === 'release-acceptance-${{ github.sha }}');
 
     expect(serviceText).not.toContain('release-acceptance-manifest.cjs create');
     // The desktop job builds the app; it cannot see the service acceptance artifact or the
@@ -893,12 +1048,15 @@ esac
     expect(desktopUpload.with['if-no-files-found']).toBe('error');
 
     expect(serviceUpload.with.name).toBe('release-service-acceptance-${{ github.sha }}');
-    expect(serviceUpload.with.path).toBe('${{ runner.temp }}/checks.json');
+    expect(serviceUpload.with.path).toContain('${{ runner.temp }}/checks.json');
+    expect(serviceUpload.with.path).toContain('${{ runner.temp }}/rc-user-flows.json');
     expect(finalize.needs).toEqual([
       'metadata',
       'build_image',
       'deploy_and_accept',
       'build_desktop_rc',
+      'legacy_root_compat',
+      'runtime_mode_matrix',
     ]);
     expect(finalizeText).toContain('node scripts/release-acceptance-manifest.cjs create');
     for (const check of [
@@ -920,6 +1078,10 @@ esac
       'ai-connections',
       'models',
       'chat',
+      'rc-pod-sparql',
+      'rc-builtin-models-chat',
+      'rc-matrix-collaboration',
+      'rc-browser-consent',
       'qlever-local',
       'desktop',
     ]) {
@@ -948,7 +1110,7 @@ esac
     expect(packageUpload.with.path).toContain('package-consumer-evidence.json');
     expect(finalizeText).not.toContain('npm');
     expect(finalUpload.with.name).toBe('release-acceptance-${{ github.sha }}');
-    expect(finalUpload.with.path).toBe('${{ runner.temp }}/release-acceptance.json');
+    expect(finalUpload.with.path).toBe('${{ runner.temp }}/accepted-release/');
 
     const diagnostics = workflow.jobs.deploy_and_accept.steps.find((step: any) => step.name === 'Dump diagnostics');
     expect(diagnostics.if).toContain('failure()');
@@ -962,7 +1124,7 @@ esac
     expect(diagnostics.run).toContain('docker inspect "$local_name"');
     expect(diagnostics.run).toContain('docker logs "$local_name"');
     expect(workflow.jobs.deploy_and_accept.steps.some((step: any) => step.name === 'Scale RC deployments to zero')).toBe(false);
-    expect(workflow.jobs.cleanup_rc.needs).toEqual(['deploy_and_accept', 'build_desktop_rc', 'finalize_acceptance']);
+    expect(workflow.jobs.cleanup_rc.needs).toEqual(['deploy_and_accept', 'build_desktop_rc', 'runtime_mode_matrix', 'finalize_acceptance']);
     expect(workflow.jobs.cleanup_rc.if).toContain('always()');
     const cleanup = workflow.jobs.cleanup_rc.steps.find((step: any) => step.name === 'Scale RC deployments to zero');
     expect(cleanup.run).toContain('scripts/rc-cleanup-ownership.cjs');
@@ -975,7 +1137,11 @@ esac
     const workflow = await loadWorkflow();
     const text = await readFile(workflowPath, 'utf8');
 
-    expect(text).not.toContain('continue-on-error');
+    expect(text.match(/continue-on-error/g)).toHaveLength(1);
+    expect(workflow.jobs.observe_service_sdk_source['continue-on-error']).toBe(true);
+    for (const [ name, job ] of Object.entries(workflow.jobs)) {
+      if (name !== 'observe_service_sdk_source') expect((job as any)['continue-on-error'], name).not.toBe(true);
+    }
     expect(text).not.toMatch(/:latest\b|value=latest/);
     expect(text).not.toContain('deploy/sealos/cloud');
     expect(text).not.toContain('environment: production');
@@ -1026,5 +1192,380 @@ esac
     // no longer truncated to a single newest tag.
     expect(step.run).not.toMatch(/release list[\s\S]*--limit 1\b/);
     expect(step.run).not.toContain("--jq '.[0].tagName'");
+  });
+});
+
+
+describe('native RC predeployment admission', () => {
+  it.each([
+    { original: 0, unexpected: false, expected: 0 },
+    { original: 42, unexpected: false, expected: 42 },
+    { original: 0, unexpected: true, expected: 70 },
+    { original: 42, unexpected: true, expected: 42 },
+  ])('closes registry files and preserves failure codes: $original/$unexpected', async ({ original, unexpected, expected }) => {
+    const workflow = await loadWorkflow();
+    const step = workflow.jobs.deploy_and_accept.steps.find((entry: any) =>
+      entry.name === 'Preflight immutable native images before any RC mutation');
+    const boundary = step.run.indexOf('kubectl -n "$SEALOS_NAMESPACE" get statefulset');
+    expect(boundary).toBeGreaterThan(0);
+    const parent = path.join(repoRoot, '.test-data/native-registry-cleanup');
+    mkdirSync(parent, { recursive: true, mode: 0o700 });
+    const directory = mkdtempSync(path.join(parent, 'case-'));
+    try {
+      const result = spawnSync('bash', ['-c', `${step.run.slice(0, boundary)}
+printf '{}' > "$docker_config_dir/config.json"
+printf '{}' > "$docker_config_dir/pg-workload.json"
+if [ "$TEST_UNEXPECTED" = 1 ]; then printf 'retain' > "$docker_config_dir/unexpected"; fi
+exit "$TEST_ORIGINAL"
+`], { encoding: 'utf8', env: { ...process.env, RUNNER_TEMP: directory,
+        TEST_UNEXPECTED: unexpected ? '1' : '0', TEST_ORIGINAL: String(original) } });
+      expect(result.signal).toBeNull();
+      expect(result.status).toBe(expected);
+      const remaining = readdirSync(directory);
+      if (unexpected) {
+        expect(remaining).toHaveLength(1);
+        expect(readdirSync(path.join(directory, remaining[0]))).toEqual(['unexpected']);
+        expect(result.stderr).toContain('owned-cleanup-failed');
+      } else {
+        expect(remaining).toEqual([]);
+        expect(result.stderr).not.toContain('owned-cleanup-failed');
+      }
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it('uses one candidate PG for the public full suite before any RC mutation', async () => {
+    const workflow = await loadWorkflow();
+    expect(workflow.env.NATIVE_PG_IMAGE).toMatch(/@sha256:[a-f0-9]{64}$/);
+    expect(workflow.env.PG_REGISTRY_AUTHORITY_IMAGE).not.toBe(workflow.env.NATIVE_PG_IMAGE);
+    const steps = workflow.jobs.deploy_and_accept.steps;
+    const full = steps.findIndex((step: any) => step.name === 'Run full integration against the same PG17 candidate before RC mutation');
+    expect(full).toBeGreaterThan(steps.findIndex((step: any) => step.name === 'Preflight immutable native images before any RC mutation'));
+    expect(full).toBeLessThan(steps.findIndex((step: any) => step.name === 'Create runtime secrets'));
+    expect(steps[full].env.XPOD_FULL_POSTGRES_IMAGE).toBe('${{ env.NATIVE_PG_IMAGE }}');
+    expect(steps[full].run).toBe('bun run test:integration');
+  });
+
+  it('binds service OCI labels and compiles before exact native pair comparison', async () => {
+    const workflow = await loadWorkflow();
+    const build = workflow.jobs.build_image.steps.find((step: any) => step.name === 'Build and push RC image');
+    expect(build.with.labels).toContain('org.opencontainers.image.source=https://github.com/undefinedsco/xpod');
+    expect(build.with.labels).toContain('org.opencontainers.image.revision=${{ needs.metadata.outputs.sourceSha }}');
+    const steps = workflow.jobs.deploy_and_accept.steps;
+    const index = (name: string) => steps.findIndex((step: any) => step.name === name);
+    const compile = index('Compile current source before comparing installed runner bytes');
+    const pair = index('Preflight immutable native images before any RC mutation');
+    const private17 = index('Require independent exact-pair Private17 admission before RC mutation');
+    const namespace = index('Preflight exact PostgreSQL image pull in the assigned namespace');
+    const rotation = index('Create runtime secrets');
+    expect(compile).toBeGreaterThan(-1);
+    expect(pair).toBeGreaterThan(compile);
+    expect(private17).toBeGreaterThan(pair);
+    expect(namespace).toBeGreaterThan(private17);
+    expect(rotation).toBeGreaterThan(namespace);
+    expect(steps[compile].run).toBe('bun run build:ts');
+    expect(steps[pair].run).toContain('--source-sha "$NATIVE_SOURCE_SHA" --runner-sha256 "$runner_sha"');
+    expect(steps[pair].run).toContain('umask 077');
+    expect(steps[pair].run).toContain('trap cleanup_native_registry EXIT');
+    expect(steps[pair].run).toContain('scripts/select-pg-registry-authority.ts');
+    expect(steps[pair].run).toContain('--current-image "$PG_REGISTRY_AUTHORITY_IMAGE"');
+    expect(steps[pair].run).toContain('--target-image "$NATIVE_PG_IMAGE"');
+    expect(steps[pair].run).toContain('get secret "$pg_workload_authority"');
+    expect(steps[pair].run).not.toContain('tcr-creds');
+    expect(steps[pair].run).toContain('--install-registry-config');
+    expect(steps[pair].run).not.toMatch(/docker login|create secret|registry-mirror/);
+    expect(steps[private17].run).toContain('--verify-private17-admission');
+    expect(steps[private17].run).toContain('--admission-sha256');
+    expect(steps[private17].run).not.toContain('--public16-report');
+    expect(steps[private17].run).toContain('RC mutation refused');
+    expect(steps[private17].run).not.toMatch(/checkout|PAT|GITHUB_TOKEN/);
+  });
+
+  it('requires fresh UID/imageID and UID-preconditioned owned Job cleanup', async () => {
+    const workflow = await loadWorkflow();
+    const step = workflow.jobs.deploy_and_accept.steps.find((entry: any) => entry.name === 'Preflight exact PostgreSQL image pull in the assigned namespace');
+    expect(step.run).toContain('kubectl create -f');
+    expect(step.run).not.toContain('kubectl apply');
+    expect(step.run).toContain('job_created=true');
+    expect(step.run).toContain('preconditions:{uid:job.metadata.uid}');
+    // Job deletion must not rely on the API's orphanDependents default; the
+    // Succeeded Pod has to be garbage-collected before the wait-for-delete.
+    expect(step.run).toContain('propagationPolicy:"Background"');
+    expect(step.run).toContain('--validate-pull-job');
+    expect(step.run).toContain('--job-uid "$job_uid"');
+    expect(step.run).toContain('scripts/select-pg-registry-authority.ts');
+    expect(step.run).toContain('--current-image "$PG_REGISTRY_AUTHORITY_IMAGE"');
+    expect(step.run).toContain('--target-image "$NATIVE_PG_IMAGE"');
+    expect(step.run).toContain('--authority-name "$pg_authority"');
+    expect(step.run).toContain('job.spec.template.spec.imagePullSecrets=[{name:process.env.PREFLIGHT_AUTHORITY}]');
+    expect(step.run).not.toContain('tcr-creds');
+    expect(step.run).toContain('if [ "$original_exit" -eq 0 ]; then original_exit=70; fi');
+    expect(step.run).not.toContain('|| true');
+    const run = jobRunText(workflow, 'deploy_and_accept');
+    expect(run).toContain('private17-admission-check.json');
+    expect(run).toContain("nativePair.ownedCleanup !== 'verified-absent'");
+    expect(run).not.toContain('private17.database === nativePair.database');
+    expect(run).toContain("private17.evidenceBoundary !== 'immutable-installed-joint'");
+    expect(run).toContain('private17.publicCases !== 16 || private17.proCases !== 17');
+    expect(run).toContain('!private17.serverIdentifier || !private17.pgContainerId || !private17.baseTableOID');
+  });
+});
+
+
+const fakeNamespaceKubectl = `#!/usr/bin/env python3
+import sys,os,json,pathlib
+args=sys.argv[1:]; root=pathlib.Path(os.environ['FAKE_KUBE_STATE']); mode=os.environ['FAKE_KUBE_MODE']; jobfile=root/'job.json'; podfile=root/'pod.json'
+with (root/'calls.jsonl').open('a') as out: out.write(json.dumps(args)+'\\n')
+if args[0]=='create':
+ job=json.loads(pathlib.Path(args[args.index('-f')+1]).read_text()); job['metadata']['uid']='created-uid'; job['status']={'conditions':[{'type':'Complete','status':'True'}]}
+ if mode=='foreign-create':
+  job['metadata']['uid']='foreign-uid'; job['metadata']['annotations']={'xpod.undefineds.co/preflight-owner':'foreign'}; jobfile.write_text(json.dumps(job)); print('foreign-create-refused',file=sys.stderr); sys.exit(18)
+ jobfile.write_text(json.dumps(job)); pod={'metadata':{'uid':'created-pod-uid','ownerReferences':[{'uid':'created-uid','kind':'Job','controller':True}]},'status':{'phase':'Succeeded','containerStatuses':[{'name':'postgres-preflight','imageID':'docker-pullable://'+job['spec']['template']['spec']['containers'][0]['image'],'state':{'terminated':{'exitCode':0}}}]}}; podfile.write_text(json.dumps(pod))
+ if mode=='ack-loss': print('ack-lost',file=sys.stderr); sys.exit(27)
+ print(json.dumps(job))
+elif 'get' in args:
+ kind=args[args.index('get')+1]
+ if kind=='statefulset': print(json.dumps({'kind':'StatefulSet','metadata':{'name':'xpod-rdf-postgres','namespace':'assigned-rc'},'spec':{'template':{'spec':{'imagePullSecrets':[{'name':'xpod-rdf-ghcr'}],'containers':[{'name':'postgres','image':'ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:635a5eee0ea1461c8cde8425fdf0ca7d0965bc083d8860bb7aa04498c9688986'}]}}}}))
+ if kind=='job':
+  if jobfile.exists():
+   job=json.loads(jobfile.read_text())
+   if mode=='replaced': job['metadata']['uid']='foreign-uid'; jobfile.write_text(json.dumps(job))
+   print(json.dumps(job))
+ elif kind=='pods': print(json.dumps({'items':[json.loads(podfile.read_text())] if podfile.exists() else []}))
+elif 'wait' in args:
+ if '--for=condition=complete' in args and mode=='primary-failed': print('actual-primary-42',file=sys.stderr); sys.exit(42)
+ if '--for=delete' in args and (jobfile.exists() or podfile.exists()): sys.exit(24)
+elif args[0]=='delete' and '--raw' in args:
+ options=json.loads(pathlib.Path(args[args.index('-f')+1]).read_text()); job=json.loads(jobfile.read_text())
+ if mode=='raw-race': job['metadata']['uid']='foreign-uid'; jobfile.write_text(json.dumps(job))
+ if options['preconditions']['uid']!=job['metadata']['uid']: print('PRIVATE_409_BODY',file=sys.stderr); sys.exit(39)
+ if options.get('propagationPolicy')!='Background': print('PRIVATE_FOREGROUND_REQUIRED',file=sys.stderr); sys.exit(41)
+ if os.environ['FAKE_KUBE_CLEANUP_EXIT']!='0': print('PRIVATE_CLEANUP_BODY',file=sys.stderr); sys.exit(23)
+ jobfile.unlink(); podfile.unlink()
+else: print('unsupported-fake-call',file=sys.stderr); sys.exit(80)
+`;
+
+describe('actual namespace preflight shell with fake Kubernetes', () => {
+  it.each([
+    ['success', 0, 0], ['primary-failed', 23, 42], ['success', 23, 70],
+    ['foreign-create', 0, 18], ['replaced', 0, 1], ['raw-race', 0, 70], ['ack-loss', 0, 27],
+  ] as const)('%s / cleanup %s returns %s without deleting foreign Jobs', async (mode, cleanupExit, expectedExit) => {
+    const workflow = await loadWorkflow();
+    const step = workflow.jobs.deploy_and_accept.steps.find((entry: any) => entry.name === 'Preflight exact PostgreSQL image pull in the assigned namespace');
+    const base = path.join(repoRoot, '.test-data/native-namespace-producer-test'); mkdirSync(base, { recursive: true, mode: 0o700 });
+    const dir = mkdtempSync(path.join(base, 'run-')); chmodSync(dir, 0o700);
+    const bin = path.join(dir, 'bin'); const state = path.join(dir, 'state'); const temp = path.join(dir, 'temp');
+    for (const sub of [bin, state, temp]) mkdirSync(sub, { mode: 0o700 });
+    writeFileSync(path.join(bin, 'kubectl'), fakeNamespaceKubectl, { mode: 0o700 });
+    try {
+      const start = Date.now();
+      const result = spawnSync('bash', ['-c', step.run], { cwd: repoRoot, encoding: 'utf8', timeout: 25_000, env: {
+        ...process.env, ...workflow.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, RUNNER_TEMP: temp,
+        SEALOS_NAMESPACE: 'assigned-rc', GITHUB_RUN_ID: '12345', GITHUB_RUN_ATTEMPT: '1',
+        FAKE_KUBE_STATE: state, FAKE_KUBE_MODE: mode, FAKE_KUBE_CLEANUP_EXIT: String(cleanupExit),
+      } });
+      const evidenceDir = process.env.XPOD_NATIVE_TEST_EVIDENCE_DIR;
+      const raw = `${result.stdout}\n${result.stderr}`;
+      if (evidenceDir) {
+        mkdirSync(evidenceDir, { recursive: true, mode: 0o700 });
+        writeFileSync(path.join(evidenceDir, `namespace-${mode}-${cleanupExit}.log`), raw, { mode: 0o600 });
+        writeFileSync(path.join(evidenceDir, `namespace-${mode}-${cleanupExit}.receipt.json`), JSON.stringify({
+          command: ['bash', '-c', step.run], pid: result.pid, actualExit: result.status, signal: result.signal,
+          wallMs: Date.now() - start, closedLogSHA256: createHash('sha256').update(raw).digest('hex'),
+          calls: readFileSync(path.join(state, 'calls.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line)),
+        }, null, 2), { mode: 0o600 });
+      }
+      expect(result.error).toBeUndefined(); expect(result.signal).toBeNull(); expect(result.status).toBe(expectedExit);
+      expect(raw).not.toContain('PRIVATE_409_BODY'); expect(raw).not.toContain('PRIVATE_CLEANUP_BODY');
+      const calls = readFileSync(path.join(state, 'calls.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line) as string[]);
+      const deletes = calls.filter(call => call[0] === 'delete');
+      if (mode === 'success' && cleanupExit === 0) {
+        expect(() => readFileSync(path.join(state, 'job.json'))).toThrow();
+        expect(() => readFileSync(path.join(state, 'pod.json'))).toThrow();
+        expect(JSON.parse(readFileSync(path.join(temp, 'namespace-native-pull-check.json'), 'utf8')).status).toBe('ok');
+      }
+      if (mode === 'ack-loss') {
+        expect(deletes).toHaveLength(1);
+        expect(() => readFileSync(path.join(state, 'job.json'))).toThrow();
+        expect(() => readFileSync(path.join(state, 'pod.json'))).toThrow();
+      }
+      if (mode === 'foreign-create' || mode === 'replaced') {
+        expect(deletes).toHaveLength(0); expect(JSON.parse(readFileSync(path.join(state, 'job.json'), 'utf8')).metadata.uid).toBe('foreign-uid');
+      }
+      if (mode === 'raw-race') {
+        expect(deletes).toHaveLength(1); expect(deletes[0]).toContain('--raw');
+        expect(JSON.parse(readFileSync(path.join(state, 'job.json'), 'utf8')).metadata.uid).toBe('foreign-uid');
+      }
+      if (cleanupExit !== 0 || mode === 'replaced' || mode === 'raw-race') expect(raw).toContain('owned-cleanup-failed');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+
+describe('source-bound private17 Release mutation guard', () => {
+  it.each(['missing-authority', 'missing-build-output'])('closes before runtime rotation when %s', async mode => {
+    const workflow = await loadWorkflow();
+    const gate = workflow.jobs.deploy_and_accept.steps.find((entry: any) => entry.name === 'Require independent exact-pair Private17 admission before RC mutation');
+    const base = path.join(repoRoot, '.test-data/private17-predeploy-guard-test'); mkdirSync(base, { recursive: true, mode: 0o700 });
+    const dir = mkdtempSync(path.join(base, 'run-')); chmodSync(dir, 0o700);
+    try {
+      const result = spawnSync('bash', ['-c', `${gate.run}\nprintf entered > "$RUNNER_TEMP/rotation-entered"`], {
+        cwd: repoRoot, encoding: 'utf8', env: { ...process.env, RUNNER_TEMP: dir,
+          PRIVATE17_ADMISSION_SHA256: mode === 'missing-authority' ? '' : 'a'.repeat(64),
+          NATIVE_SOURCE_SHA: '', NATIVE_SERVICE_IMAGE: '' },
+      });
+      expect(result.status).toBe(1); expect(result.signal).toBeNull();
+      expect(result.stderr).toContain('RC mutation refused');
+      expect(() => readFileSync(path.join(dir, 'rotation-entered'))).toThrow();
+      const evidenceDir = process.env.XPOD_NATIVE_TEST_EVIDENCE_DIR;
+      if (evidenceDir) {
+        const raw = `${result.stdout}\n${result.stderr}`;
+        writeFileSync(path.join(evidenceDir, `private17-${mode}.log`), raw, { mode: 0o600 });
+        writeFileSync(path.join(evidenceDir, `private17-${mode}.receipt.json`), JSON.stringify({
+          pid: result.pid, actualExit: result.status, signal: result.signal,
+          closedLogSHA256: createHash('sha256').update(raw).digest('hex'), rotationEntered: false,
+        }, null, 2), { mode: 0o600 });
+      }
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+
+describe('service-image audit scope change', () => {
+  const require = createRequire(import.meta.url);
+
+  it('keeps the opt-in full-image audit out of both RC joins and validates its safe disclosure', async () => {
+    const workflow = await loadWorkflow();
+    const observer = workflow.jobs.observe_service_sdk_source;
+    const input = workflow.on.workflow_dispatch.inputs.service_source_diagnostics;
+
+    expect(input).toEqual({
+      description: 'Run full service-image source/legal diagnostics; not release qualification',
+      type: 'boolean',
+      required: false,
+      default: false,
+    });
+    expect(observer.name).toBe('Full service-image audit (diagnostic)');
+    expect(observer.if).toBe("${{ github.event_name == 'workflow_dispatch' && inputs.service_source_diagnostics == true }}");
+    expect(observer['continue-on-error']).toBe(true);
+    expect(jobRunText(workflow, 'observe_service_sdk_source')).toContain('--require-qualification');
+    const observerUpload = observer.steps.find((step: any) => step.uses === 'actions/upload-artifact@v4');
+    expect(observerUpload.with['if-no-files-found']).toBe('warn');
+
+    // Exactly these two source-dependency edges are removed: no job may need
+    // the diagnostic observer, while the actual RC deployment and finalization
+    // keep their existing compatibility/product joins.
+    for (const [ name, job ] of Object.entries(workflow.jobs)) {
+      expect([(job as any).needs ?? []].flat(), name).not.toContain('observe_service_sdk_source');
+    }
+    expect(workflow.jobs.deploy_and_accept.needs).toEqual(['metadata', 'build_image', 'legacy_root_compat']);
+    expect(workflow.jobs.finalize_acceptance.needs).toEqual([
+      'metadata',
+      'build_image',
+      'deploy_and_accept',
+      'build_desktop_rc',
+      'legacy_root_compat',
+      'runtime_mode_matrix',
+    ]);
+
+    const { rootCompatLanes } = require('../../scripts/release-gate-evidence.cjs');
+    expect(rootCompatLanes()).toHaveLength(18);
+    expect(workflow.jobs.legacy_root_compat.uses).toBe('./.github/workflows/legacy-root-compat.yml');
+    expect(workflow.jobs.deploy_and_accept.needs).toContain('legacy_root_compat');
+    expect(workflow.jobs.finalize_acceptance.needs).toContain('legacy_root_compat');
+    const releaseText = readFileSync(path.join(repoRoot, '.github/workflows/release.yml'), 'utf8');
+    const requiredChecks = [...releaseText.matchAll(/--required-check\s+(\S+)/g)].map((match) => match[1]);
+    expect(requiredChecks).toHaveLength(29);
+    expect(requiredChecks).toEqual(expect.arrayContaining([
+      'legacy-root-compat', 'runtime-mode-matrix', 'desktop', 'chat', 'rc-builtin-models-chat', 'native-private17',
+    ]));
+
+    const steps = workflow.jobs.finalize_acceptance.steps;
+    const disclose = steps.find((step: any) => step.name === 'Disclose service-image audit scope');
+    expect(disclose.env).toEqual({
+      SCOPE_SOURCE_SHA: '${{ needs.metadata.outputs.sourceSha }}',
+      SCOPE_IMAGE: 'ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}',
+    });
+    expect(disclose.run).toContain('wholeServiceSourceQualificationClaimed');
+    expect(disclose.run).toContain('wholeServiceAbiQualificationClaimed');
+    expect(disclose.run).toContain('wholeServiceLegalQualificationClaimed');
+    expect(disclose.run).not.toMatch(/wholeServiceSourceVerified"\s*:\s*true/);
+    const scopeUpload = steps.find((step: any) => step.with?.name === 'service-image-audit-scope-${{ github.sha }}');
+    expect(scopeUpload.with.path).toBe('${{ runner.temp }}/service-image-audit-scope.json');
+    expect(scopeUpload.with['if-no-files-found']).toBe('error');
+    expect(JSON.stringify(workflow.jobs.finalize_acceptance)).not.toContain("'service-image-audit-scope': 'passed'");
+
+    // Execute the exact disclosure step locally with fixed safe inputs. This
+    // proves the step syntax and the false full-audit-claim fields without any
+    // real deployment or product-pass fabrication.
+    const base = path.join(repoRoot, '.test-data');
+    mkdirSync(base, { recursive: true });
+    const directory = mkdtempSync(path.join(base, 'service-audit-scope-'));
+    try {
+      const summary = path.join(directory, 'summary.md');
+      writeFileSync(summary, '');
+      const sourceSha = 'a'.repeat(40);
+      const image = `ghcr.io/undefinedsco/xpod@sha256:${'b'.repeat(64)}`;
+      execFileSync('bash', [ '-euo', 'pipefail', '-c', disclose.run ], {
+        encoding: 'utf8',
+        env: { ...process.env, RUNNER_TEMP: directory, GITHUB_STEP_SUMMARY: summary,
+          GITHUB_RUN_ID: '424242', GITHUB_RUN_ATTEMPT: '2', SCOPE_SOURCE_SHA: sourceSha, SCOPE_IMAGE: image },
+      });
+      const scope = JSON.parse(readFileSync(path.join(directory, 'service-image-audit-scope.json'), 'utf8'));
+      expect(scope).toEqual({
+        schemaVersion: 1,
+        kind: 'service-image-audit-scope',
+        sourceSha,
+        image,
+        runId: '424242',
+        runAttempt: '2',
+        fullServiceAuditRole: 'opt-in-diagnostic',
+        wholeServiceSourceQualificationClaimed: false,
+        wholeServiceAbiQualificationClaimed: false,
+        wholeServiceLegalQualificationClaimed: false,
+      });
+      expect(JSON.stringify(scope)).not.toMatch(/token|secret|password|api[-_]?key/i);
+      expect(readFileSync(summary, 'utf8')).toContain('not claimed as release qualification');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('public Release transport contract', () => {
+  it('keeps build and qualification needs, read-only identity and no private fixture acquisition', async () => {
+    const workflow = await loadWorkflow(); const job = workflow.jobs.deploy_and_accept;
+    const gate = job.steps.find((entry: any) => entry.name === 'Require independent exact-pair Private17 admission before RC mutation');
+    expect(job.needs).toEqual(['metadata', 'build_image', 'legacy_root_compat']); expect(job.permissions.contents).toBe('read');
+    expect(gate.env.GH_TOKEN).toBe('${{ github.token }}');
+    expect(gate.env.PRIVATE17_ADMISSION_SHA256).toBe('${{ vars.XPOD_PRIVATE17_ADMISSION_SHA256 }}');
+    expect(gate.run).toContain('--acquire-private17-admission'); expect(gate.run).toContain('mktemp -d');
+    expect(gate.run).toContain('trap cleanup_private17_proof EXIT'); expect(gate.run).toContain('private17-admission.json');
+    expect(gate.run).not.toMatch(/private-root|fixture|PAT|checkout|clobber|skip-existing|archive|latest/);
+    expect(gate.run).not.toMatch(/build:ts|docker build|apply-root-version/);
+  });
+  it.each(['missing-release', 'stale-authority'])('refuses rotation and removes owned proof directory for %s', async mode => {
+    const workflow = await loadWorkflow();
+    const gate = workflow.jobs.deploy_and_accept.steps.find((entry: any) => entry.name === 'Require independent exact-pair Private17 admission before RC mutation');
+    const base = path.join(repoRoot, '.test-data/private17-predeploy-guard-test'); mkdirSync(base, { recursive: true, mode: 0o700 });
+    const dir = mkdtempSync(path.join(base, 'release-')); chmodSync(dir, 0o700); const bin = path.join(dir, 'bin'); mkdirSync(bin, { mode: 0o700 });
+    writeFileSync(path.join(bin, 'gh'), `#!/usr/bin/env python3
+import sys
+sys.stdout.write('{"transport":"PRIVATE_SENTINEL"}')
+sys.stderr.write('PRIVATE_DOWNLOAD_ERROR')
+sys.exit(${mode === 'missing-release' ? 27 : 0})
+`, { mode: 0o700 });
+    writeFileSync(path.join(dir, 'native-runner.sha256'), 'd'.repeat(64), { mode: 0o600 });
+    try {
+      const result = spawnSync('bash', ['-c', `${gate.run}\nprintf entered > "$RUNNER_TEMP/rotation-entered"`], {
+        cwd: repoRoot, encoding: 'utf8', timeout: 30_000, env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+          RUNNER_TEMP: dir, PRIVATE17_ADMISSION_SHA256: 'a'.repeat(64), NATIVE_SOURCE_SHA: 'c'.repeat(40),
+          NATIVE_SERVICE_IMAGE: `ghcr.io/undefinedsco/xpod@sha256:${'b'.repeat(64)}` },
+      });
+      expect(result.error).toBeUndefined(); expect(result.signal).toBeNull(); expect(result.status).toBe(mode === 'missing-release' ? 27 : 1);
+      expect(`${result.stdout} ${result.stderr}`).not.toMatch(/PRIVATE_SENTINEL|PRIVATE_DOWNLOAD_ERROR/);
+      expect(() => readFileSync(path.join(dir, 'rotation-entered'))).toThrow();
+      const remaining = await (await import('node:fs/promises')).readdir(dir);
+      expect(remaining.some(name => name.startsWith('private17-proof'))).toBe(false);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

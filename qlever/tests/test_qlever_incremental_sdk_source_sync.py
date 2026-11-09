@@ -318,7 +318,7 @@ class QleverPriorSdkValidationTest(unittest.TestCase):
             "CMAKE_POSITION_INDEPENDENT_CODE:BOOL=ON\n"
             "CHEAPER_COMPILATION:BOOL=ON\n"
             "RANGES_NATIVE:BOOL=OFF\n"
-            "USE_PRECOMPILED_HEADERS:BOOL=OFF\n"
+            "USE_PRECOMPILED_HEADERS:BOOL=ON\n"
             "USE_IO_URING:BOOL=OFF\n"
             "CMAKE_CXX_COMPILER:FILEPATH=/usr/bin/clang++-19\n"
         )
@@ -346,7 +346,7 @@ class QleverPriorSdkValidationTest(unittest.TestCase):
                 "flags": {
                     "CHEAPER_COMPILATION": "ON",
                     "RANGES_NATIVE": "OFF",
-                    "USE_PRECOMPILED_HEADERS": "OFF",
+                    "USE_PRECOMPILED_HEADERS": "ON",
                     "USE_IO_URING": "OFF",
                 },
             },
@@ -429,6 +429,70 @@ class QleverPriorSdkValidationTest(unittest.TestCase):
             result = self.run_validator(qlever_root, source, build, work / "marker.json")
 
             self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_prior_validator_rejects_pch_off_contract_and_accepts_pch_on(self):
+        """SDK84 one-variable experiment: PCH is part of the hashed build contract.
+
+        An old OFF SDK tree must not satisfy the ON identity, so the validator has
+        to refuse it before writing any marker; the SAME tree with ON cache and ON
+        contract (and the matching re-computed identity) must be accepted.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            qlever_root, source, build = self.seed_prior_sdk(work)
+            cache = (build / "CMakeCache.txt").read_text().replace(
+                "USE_PRECOMPILED_HEADERS:BOOL=ON",
+                "USE_PRECOMPILED_HEADERS:BOOL=OFF",
+            )
+            (build / "CMakeCache.txt").write_text(cache)
+            contract = json.loads((build / ".xpod-build-contract.json").read_text())
+            contract["cmake"]["flags"]["USE_PRECOMPILED_HEADERS"] = "OFF"
+            contract_text = json.dumps(contract, sort_keys=True, indent=2) + "\n"
+            (build / ".xpod-build-contract.json").write_text(contract_text)
+            import hashlib as _hashlib
+            (build / ".xpod-toolchain-identity").write_text(
+                _hashlib.sha256(
+                    json.dumps(contract, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest()
+            )
+
+            rejected = self.run_validator(qlever_root, source, build, work / "off-marker.json")
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("prior SDK CMake cache incompatible: USE_PRECOMPILED_HEADERS", rejected.stderr)
+            self.assertFalse((work / "off-marker.json").exists())
+
+            # Restoring the ON cache alone is not enough while the contract still
+            # says OFF: both halves of the identity must agree.
+            (build / "CMakeCache.txt").write_text(
+                cache.replace("USE_PRECOMPILED_HEADERS:BOOL=OFF", "USE_PRECOMPILED_HEADERS:BOOL=ON")
+            )
+            mismatched = self.run_validator(qlever_root, source, build, work / "mismatch-marker.json")
+            self.assertNotEqual(mismatched.returncode, 0)
+            self.assertIn("prior SDK build contract incompatible: USE_PRECOMPILED_HEADERS", mismatched.stderr)
+            self.assertFalse((work / "mismatch-marker.json").exists())
+
+            # Fully aligned ON tree is accepted.
+            contract["cmake"]["flags"]["USE_PRECOMPILED_HEADERS"] = "ON"
+            contract_text = json.dumps(contract, sort_keys=True, indent=2) + "\n"
+            (build / ".xpod-build-contract.json").write_text(contract_text)
+            (build / ".xpod-toolchain-identity").write_text(
+                _hashlib.sha256(
+                    json.dumps(contract, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest()
+            )
+            accepted = self.run_validator(qlever_root, source, build, work / "on-marker.json")
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            self.assertTrue((work / "on-marker.json").exists())
+
+    def test_sdk_recipe_passes_pch_on_argument_matching_contract_flag(self):
+        """The emitted CMake argument and the hashed contract flag must agree."""
+        recipe = (Path(__file__).resolve().parents[1] / "scripts" / "build-qlever-runtime-sdk.sh").read_text()
+        self.assertIn("-DUSE_PRECOMPILED_HEADERS=ON", recipe)
+        self.assertNotIn("-DUSE_PRECOMPILED_HEADERS=OFF", recipe)
+        self.assertIn('"USE_PRECOMPILED_HEADERS": "ON"', recipe)
+        # macOS stays OFF: this experiment is Linux-SDK only.
+        macos = (Path(__file__).resolve().parents[1] / "scripts" / "build-macos-local-runtime.sh").read_text()
+        self.assertIn("-DUSE_PRECOMPILED_HEADERS=OFF", macos)
 
     def test_prior_validator_rejects_translation_units_compiled_by_other_toolchains(self):
         with tempfile.TemporaryDirectory() as tmp:

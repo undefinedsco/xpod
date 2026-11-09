@@ -3,7 +3,8 @@ import * as http from 'node:http';
 import * as path from 'node:path';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { getLoggerFor } from 'global-logger-factory';
-import { getFreePort, PACKAGE_ROOT } from '../../runtime';
+import { getFreePort } from '../../runtime/port-finder';
+import { PACKAGE_ROOT } from '../../runtime/package-root';
 import { getEphemeralLoopbackPort } from '../../runtime/port-finder';
 import { requestViaSocket } from '../../runtime/socket-transport';
 import {

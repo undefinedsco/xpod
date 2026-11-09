@@ -1,0 +1,132 @@
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+# Ordinary normal-build-v1 SDK: plain clone/patch/configure/compile and the
+# actual linked adapter/runtime gates. No ptrace or lease observer is invoked.
+
+ARG XPOD_QLEVER_SDK_BASE_IMAGE=debian:trixie-20260803-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258
+FROM ${XPOD_QLEVER_SDK_BASE_IMAGE} AS build
+
+ARG XPOD_QLEVER_SDK_BASE_IMAGE
+ARG XPOD_QLEVER_BUILD_JOBS=4
+ARG XPOD_QLEVER_SDK_DEADLINE_UNIX
+ARG XPOD_QLEVER_NORMAL_INPUT_HASH
+ENV DEBIAN_FRONTEND=noninteractive \
+    XPOD_QLEVER_SDK_BASE_IMAGE=${XPOD_QLEVER_SDK_BASE_IMAGE} \
+    XPOD_QLEVER_CMAKE_C_COMPILER=clang-19 \
+    XPOD_QLEVER_CMAKE_CXX_COMPILER=clang++-19 \
+    XPOD_QLEVER_SOURCE_DIR=/opt/qlever-sdk/source \
+    XPOD_QLEVER_BUILD_DIR=/opt/qlever-sdk/build
+
+RUN printf '%s' "${XPOD_QLEVER_SDK_BASE_IMAGE}" \
+    | grep -Eq '^.+@sha256:[0-9a-f]{64}$' \
+ || { echo "XPOD_QLEVER_SDK_BASE_IMAGE must be an immutable digest reference" >&2; exit 64; }
+
+RUN sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/debian.sources
+
+RUN apt-get -o Acquire::Retries=5 -o Acquire::AllowInsecureRepositories=false -o Acquire::AllowDowngradeToInsecureRepositories=false update \
+ && apt-get -o APT::Get::AllowUnauthenticated=false install -y --no-install-recommends \
+    ca-certificates \
+    debian-archive-keyring \
+    gpgv \
+    binutils \
+    clang-19 \
+    cmake \
+    git \
+    libboost-container-dev \
+    libboost-iostreams-dev \
+    libboost-program-options-dev \
+    libboost-url-dev \
+    libbz2-dev \
+    libicu-dev \
+    liblzma-dev \
+    libssl-dev \
+    libzstd-dev \
+    lld-19 \
+    make \
+    ninja-build \
+    python3 \
+    python3-dev \
+    zlib1g-dev
+
+COPY .dockerignore /opt/qlever-sdk/profile/.dockerignore
+COPY scripts/lib/module-artifact-limits.json /components/scripts/lib/module-artifact-limits.json
+COPY scripts/lib/independent-admission/normal-sdk-gates.json /components/scripts/lib/independent-admission/normal-sdk-gates.json
+COPY scripts/agentfs-native-ci/supervise.py /components/scripts/agentfs-native-ci/supervise.py
+COPY qlever/qlever.lock.json /components/qlever/qlever.lock.json
+COPY qlever/patches /components/qlever/patches
+COPY qlever/cmake /components/qlever/cmake
+COPY qlever/qlever_adapter /components/qlever/qlever_adapter
+COPY qlever/include /components/qlever/include
+COPY qlever/rdf_protocol /components/qlever/rdf_protocol
+COPY qlever/backend_contract /components/qlever/backend_contract
+COPY qlever/candidate_contract /components/qlever/candidate_contract
+COPY qlever/scripts/*.py qlever/scripts/*.sh /components/qlever/scripts/
+COPY qlever/scripts/native /components/qlever/scripts/native
+COPY qlever/qlever_local_runtime /components/qlever/qlever_local_runtime
+COPY qlever/rdf_sqlite_backend /components/qlever/rdf_sqlite_backend
+COPY docker/qlever-runtime-sdk/Dockerfile.normal /opt/qlever-sdk/profile/Dockerfile
+COPY docker/qlever-local-runtime/Dockerfile /opt/qlever-sdk/profile/runtime.Dockerfile
+
+# One plain build path. The script derives the build contract/toolchain identity
+# from the actual image, but no observer, lease or ptrace supervisor is started.
+RUN bash /components/qlever/scripts/build-qlever-runtime-sdk.sh all \
+ && test -f /opt/qlever-sdk/source/src/libqlever/Qlever.h \
+ && test -f /opt/qlever-sdk/build/.xpod-build-identity \
+ && test -f /opt/qlever-sdk/build/.xpod-build-contract.json \
+ && test -f /opt/qlever-sdk/build/CMakeFiles/qlever-server.dir/link.txt
+
+FROM build AS linked-verification
+
+ARG XPOD_QLEVER_BUILD_JOBS=4
+ARG XPOD_QLEVER_NORMAL_INPUT_HASH
+ENV XPOD_QLEVER_CMAKE_C_COMPILER=clang-19 \
+    XPOD_QLEVER_CMAKE_CXX_COMPILER=clang++-19
+
+COPY qlever/scripts/check-qlever-real-adapter-build.cjs /components/qlever/scripts/check-qlever-real-adapter-build.cjs
+COPY qlever/scripts/check-qlever-real-runtime.cjs /components/qlever/scripts/check-qlever-real-runtime.cjs
+COPY qlever/scripts/check-qlever-upstream-patches.cjs /components/qlever/scripts/check-qlever-upstream-patches.cjs
+
+RUN apt-get -o Acquire::Retries=5 update \
+ && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN node /components/qlever/scripts/check-qlever-real-adapter-build.cjs \
+      --qlever-source /opt/qlever-sdk/source \
+      --qlever-build-dir /opt/qlever-sdk/build \
+      --adapter-build-dir /tmp/xpod-qlever-real-adapter-build \
+      --skip-upstream-configure \
+      --jobs "${XPOD_QLEVER_BUILD_JOBS}" \
+ && node /components/qlever/scripts/check-qlever-real-runtime.cjs \
+      --qlever-source /opt/qlever-sdk/source \
+      --qlever-build-dir /opt/qlever-sdk/build \
+      --adapter-build-dir /tmp/xpod-qlever-real-adapter-build \
+      --runtime-build-dir /tmp/xpod-qlever-real-runtime-build \
+      --skip-prerequisites \
+      --jobs "${XPOD_QLEVER_BUILD_JOBS}"
+
+# The receipt is intentionally written inside the linked-verification stage so
+# the published image carries the gate result that actually ran. The collector
+# copies it back out and binds its bytes/hash in the normal-build proof.
+RUN python3 /components/qlever/scripts/sdk-normal-linked-receipt.py "${XPOD_QLEVER_NORMAL_INPUT_HASH}" /opt/qlever-sdk/build/.xpod-linked-verification.json
+
+FROM build AS runtime
+
+COPY --from=linked-verification /opt/qlever-sdk/build/.xpod-linked-verification.json /opt/qlever-sdk/build/.xpod-linked-verification.json
+COPY --from=linked-verification /components/qlever/scripts/check-qlever-real-adapter-build.cjs /components/qlever/scripts/check-qlever-real-adapter-build.cjs
+COPY --from=linked-verification /components/qlever/scripts/check-qlever-real-runtime.cjs /components/qlever/scripts/check-qlever-real-runtime.cjs
+COPY --from=linked-verification /components/qlever/scripts/check-qlever-upstream-patches.cjs /components/qlever/scripts/check-qlever-upstream-patches.cjs
+
+RUN test -f /opt/qlever-sdk/source/src/libqlever/Qlever.h \
+ && test -f /opt/qlever-sdk/build/.xpod-build-identity \
+ && test -f /opt/qlever-sdk/build/.xpod-build-contract.json \
+ && test -f /opt/qlever-sdk/build/CMakeFiles/qlever-server.dir/link.txt \
+ && test -f /opt/qlever-sdk/build/.xpod-linked-verification.json \
+ && test -d /components/qlever/qlever_adapter \
+ && test -d /components/qlever/rdf_protocol \
+ && test -d /components/qlever/backend_contract \
+ && test -d /components/qlever/candidate_contract \
+ && test ! -e /components/qlever/qlever_pg_extension \
+ && test ! -e /components/pg-rdf-extension \
+ && ! command -v node >/dev/null 2>&1
+
+LABEL org.opencontainers.image.title="Xpod QLever runtime SDK" \
+      org.opencontainers.image.description="Locked QLever runtime libraries and public Xpod physical-backend headers (normal build)"

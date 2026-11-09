@@ -233,6 +233,8 @@ CSS credential 撤销后不得再次成功交换；已签发 token 的失效时�
 | CSS 拒绝资源访问 | 保留权限拒绝含义；不能冒充空模型列表。现状补充：`AGENTS.md` 已记录"`/v1/models` 返回空数组不代表 Chat 可用"，即空列表可能掩盖 Pod 不可达；迁移时一并改为显式错误 |
 | issuer/Pod 暂时不可达 | 返回可重试的上游故障，不提示用户重新创建密钥 |
 
+补充：Cloud 部署内置模型 `linx` / `linx-lite`（见 `docs/ai-connections-product-spec.md` “Deployment Built-in Connection”）仅凭已验证的 Solid 身份即可列出与调用，不依赖 Pod 接口密钥或 Pod 访问；DPoP 浏览器会话因 Pod 访问失败时，`/v1/models` 与 `/api/ai/providers` 仍返回内置项，Pod 侧模型为叠加项。
+
 实施时补齐错误到 HTTP/wire/reason 的兼容映射及测试，区分已有 reason 与新增任务状态；本文不宣称新错误码已实现。
 
 ## 6. 内部 transport 与外部 CSS

@@ -1,8 +1,28 @@
 # 发布流程
 
+本文的 RC、stable tag 和容器 digest 规则约束 Xpod 服务/桌面发行。`xpod` CLI 独立版本、独立构建与按需模块分发遵守 [模块分发规范](module-distribution.md)，不通过发布 CLI 占用共享服务 RC 或触发生产部署。CLI package workflow 分别交付隔离消费者测试归档和正常 workspace pack 的 publication-preparation 原件；两者都不执行公开 npm 发布。公开发布仍需完成既有分发审核，不把构建 artifact 视为已发布模块。
+
 Xpod 发布必须先经过 Release Candidate，再由 stable tag 提升同一个 commit
 和同一个容器 digest。不要用 stable tag 调试发布问题；修复必须继续提交到
 开发分支，通过 PR 普通 merge 合入 `staging` 后，由新的 RC 重新验收。
+
+## 完整旧包兼容门禁
+
+旧包 producer 的 GitHub job 状态可能在依赖作业完成后仍返回 `in_progress`。获取器仅对同一 run、attempt、head 和唯一 job 身份的非终态元数据做有界重取：最多 6 次、间隔 500 ms，共用 30 秒截止时间与 1 MiB 响应预算，响应体读取及取消清理也受同一期限约束。最终须通过下述显式终态或步骤闭包判定，以及原有 artifact 时间和摘要校验，只保存最后成功响应的原始字节；终态失败与身份变化立即拒绝。步骤闭包不能代替实际 18 条兼容通道通过。
+
+`legacy-root-compat.yml` 独立承担完整旧服务包的 18 条兼容通道：Node/Bun 消费者 × Linux/macOS/Windows × Node 22/24/25。每条通道执行原七阶段：frozen install、平台包版本检查、完整 build、pack、包校验、消费者安装、消费者 smoke。独立 CLI 与模块 producer 的成功不能代替这些检查，也不能把失败降为可选项。
+
+PR 和 `main` push 直接触发该工作流；`staging` push 由 `candidate.yml` 调用同一完整矩阵，避免同时再运行一份独立矩阵。RC 仍须保留同次 run 的全部 18 条通道及原始证据。
+
+producer job 的终态判定以**保留的原始 job 记录**为准，而不是只看可能滞后的 API 头。两条路径都保留完整身份与工件校验：头为 `completed`/`success` 时保留原有成功路径；仅当头处于受支持的非终态，且 `conclusion` 与 `completed_at` 均为 null 时，才启用显式闭包证据——必须存在唯一且位于末尾的 `Complete job` 步骤（`success` 且闭合时间有效）、步骤号严格递增的唯一安全整数、所有步骤 `completed` 且结论仅为 `success`/`skipped`、normal producer 的 produce 步骤与工件上传步骤均 `success` 且按 produce -> upload -> closure 因果排序、且所有步骤窗口落在真实 start 与闭合时间之内。任何 `failure`/`cancelled`/`timed_out` 等显式终态失败即使步骤全绿也一律拒绝；部分信息保留原有有界重试，未知状态、重复闭合或跳过关键步骤不得用于闭包判定。闭包来源与闭合时间作为**显式证据**写入 receipt（`producerClosure`），fetched job 本身绝不被改写，原始 metadata 仍逐字节保留 `in_progress` 头；acquirer 与下游 custody 复用同一个共享验证器，不允许以"步骤看起来成功"替代头状态的静默 fallback。
+
+Windows 保留平台默认 shell/PATH。完整 build 产生的 UI 变化由 Vite 与验收器共用 `ui/build-targets.json` 声明输出边界：旧的 tracked 输出删除记录与本次 Rollup/publicDir 产物清单分别验证，保留完整 Git 状态；源码、锁文件和未知静态文件漂移继续阻断。不能通过忽略整个 `static/` 绕过源码检查。
+
+`candidate.yml` 通过 reusable workflow 让完整 18 条矩阵与只读 RC 前置检查并行运行；SDK 解析/构建不等待矩阵结果，共享 RC 的 `deploy_and_accept` 显式依赖矩阵成功后才允许变更。finalize 再校验 exact SHA、同次 RC run 的全部通道及原始日志/pack 摘要，并将 `compat.receipt.json` 和原件一并放入 `release-acceptance-${GITHUB_SHA}` 的 `compat/`。`release.yml` 从同一个 accepted artifact 重验 `legacy-root-compat`，不接受另一轮矩阵或手填通过标记。部分重跑按每条通道的最新实际 attempt 判定，不能退回旧的成功 attempt。
+
+2026-10-15 的 [run 38750639516](https://github.com/undefinedsco/xpod/actions/runs/38750639516) 实际 checkout 为 `0b5aad17fdc2bd17b017d3d2a3119c062689ed90`，事件 head 为 `1ac0526d676e59a240a1bd3f665ea54b275d2fa3`。Node 9/9 成功（包含 Windows 22/24/25），Bun 9/9 失败，verify 阻断。Windows tar listing 和正常 UI 输出误判未再现；原 Bun registry 安装兼容阻塞仍未解决，不能将 wrapper 修复或矩阵拆分视为整体兼容/发布资格通过。具体 GNU tar/PATH 根因仍未由旧失败日志证明。
+
+兼容通道另外保留受限的 `pack.manifests.json` / `install.manifests.json`：从当次 tgz 读取根 manifest 和根包实际声明的 bundle manifests，记录原成员 SHA/字节及 name/version/依赖/bundle 字段；未知 URL 型依赖值只记哈希，不复制凭据。单 manifest 上限 128 KiB，合计及输出上限 1 MiB，采集先有界读取同一 fd 的字节快照，gzip 和平台 tar 均只读该快照（tar 经 stdin，不重新打开路径），防止路径替换/ABA 混绑；再复用平台 tar 的 exact member 模式，兼容其他成员的 GNU/PAX 长名元记录；不抽盘或跟随其他符号链接。压缩输入总计 64 MiB、gzip 展开总计 128 MiB，单次 tar 读 10 秒、每份原件读 30 秒，均仅为诊断预算，不替代 48 MiB 产品门禁。采集失败只记 unavailable 和固定 reason 码，不输出异常正文、不替代原命令退出状态。Bun registry 安装消费原 tgz；npm local smoke 才沿既有规则删除 optionalDependencies，证据分别绑定原包与实际 smoke 包 SHA/字节及 manifest。证据不含完整 tarball，也不证明 resolver 请求来源或提供发布资格。
 
 ## 先合入，再发 RC
 
@@ -50,6 +70,17 @@ Xpod 发布必须先经过 Release Candidate，再由 stable tag 提升同一个
 限制为 `staging`，并对 `staging`/`main` 启用 PR 审查与必需检查；这些服务端设置需另行核对，
 不能仅凭本文或 workflow 文件宣称已配置。
 
+`release.yml` 的 `build_desktop_macos` 仍在 `rc` Environment 中运行，
+因此仅允许 `staging` 的策略会阻止 stable tag 的桌面 job。桌面推理验收使用
+正常账号凭据访问平台模型，不再读取第三方 Provider Key。
+准备提升时，先核对 exact accepted staging SHA、版本和 acceptance，再为这一个
+确定的 stable tag 添加精确 tag policy；保留 staging branch policy，不开放通配符
+或其他开发分支。必须在触发 stable workflow 前完成并读取服务端策略确认，避免
+npm/生产提升已执行后才发现桌面 job 无权进入环境。该发布及其必要重跑结束后，
+核实没有关联活动 job，再删除本次 tag policy 并读取确认。policy 控制 GitHub job
+的环境进入许可，不代表取得共享 RC 所有权；删除 policy 也不是取消任务或回收
+部署的操作，不应假定它对已排队 job 的行为。
+
 首次启用时，由发布负责人选定并审查集成基线，一次性创建长期 `staging` 分支，再通过
 普通 merge 纳入本变更；不要直接将任意开发分支重命名为 staging。2026-10-07 的
 只读核对未发现远端 staging 分支，且 GitHub rc Environment 的 deployment branch
@@ -75,9 +106,9 @@ policy 为空。上线前必须补齐分支与环境策略；创建/推送 stagi
 9. 只在接受的 exact commit 上创建 stable tag，例如 `v0.4.0`。
 10. `.github/workflows/release.yml` 下载 exact commit 对应的 acceptance
    artifact，校验 stable tag、staging 来源、required
-   checks 和 accepted digest 后，才首次发布该版本的 npm 包：先发布到不可见的
+   checks 和 accepted digest 后，才首次发布该版本的 npm 包：先发布到临时
    `stable-staging` tag，并由 Node/Bun 重新安装验证；然后才移动 npm `latest`、把 accepted digest
-   重新标记为 stable/latest 容器 tag，并调用生产部署。
+   重新标记为 stable/latest 容器 tag，并调用生产部署。`stable-staging` 是公开包的 dist-tag，不是私有或不可获取的发布。
 
 macOS QLever 以原生输入、构建 workflow、验收脚本和 Clang 身份缓存已验证的完整 runtime，
 不以 Xpod 提交 SHA 作为缓存键。精确命中后跳过 C++ 编译和构建工具安装，先校验旧产物的
@@ -94,8 +125,8 @@ GitHub 需要配置独立的 GitHub Environment `rc`：
 | Secret | `KUBE_CONFIG_DATA` | base64 编码的 GZ Sealos kubeconfig，server 必须为 `https://gzg.sealos.run:6443` |
 | Secret | `APP_ENV_FILE` | RC runtime env 文件内容 |
 | Secret | `XPOD_RC_SEED_CONFIG` | 固定 RC seed JSON，必须包含 Alice 和 Bob 账号及 Pod 名称 |
-| Secret | `XPOD_LIVE_PROVIDER_API_KEY_CONFIG` | 真实 AI Provider 验收配置，格式同 `scripts/live-provider-api-key.example`；用于证明 `/v1/chat/completions` 真可用 |
-| Secret | `XPOD_AI_PROXY_URL` | 可选，真实 AI Provider 验收需要代理时填写 |
+| Secret | `XPOD_LIVE_PROVIDER_API_KEY_CONFIG` | 可选的第三方上游监测/手动诊断输入，格式同 `scripts/live-provider-api-key.example`；不是 RC 或 stable 发布必填项 |
+| Secret | `XPOD_AI_PROXY_URL` | 可选，仅供显式第三方手动诊断使用，不是发布推理链路配置 |
 | Variable | `SEALOS_NAMESPACE` | 必须为 GZ 固定 namespace `ns-iknkxtc8` |
 | Variable | `XPOD_RUNTIME_SECRET_NAME` | 必填变量，推荐值 `xpod-rc-secret` |
 | Variable | `XPOD_INSTALL_REGISTRY` | 可选，安装烟测 registry 覆盖 |
@@ -103,15 +134,25 @@ GitHub 需要配置独立的 GitHub Environment `rc`：
 RC 公开入口为 `https://id-rc.undefineds.cn`、`https://pods-rc.undefineds.cn`
 和 `https://api-rc.undefineds.cn`。RC 的 `.cn` DNS-only CNAME 统一指向
 Sealos ingress，三个 Ingress 经统一 Nginx Gateway 路由到 RC 服务；TLS Secret
-由 Sealos certificate controller 在 Ingress 创建后签发。overlay 不创建
-physical PostgreSQL、Redis、object storage 或独立 Kubernetes cluster；它复用现有物理基础设施，
-但必须使用独立 logical database or schema、独立 Redis DB 和独立 object bucket。
-`APP_ENV_FILE` 的 `CSS_IDENTITY_DB_URL` 与 `CSS_SPARQL_ENDPOINT` 均指向共享
-`xpod-rdf-postgres` 的独立 `xpod_rc` 库和角色；不再丢弃这些配置或注入临时数据库 URL。
+由 Sealos certificate controller 在 Ingress 创建后签发。overlay 的 kustomization 不包含
+physical PostgreSQL 资源（专用 PG 模板独立渲染，保证 app 只做一次最终 apply），也不创建
+Redis、object storage 或独立 Kubernetes cluster；它复用现有 Redis/R2/Ingress 基础设施，
+但使用独立 nonzero Redis DB、独立 object bucket 和独立 PostgreSQL workload。
+RC 拥有专用 PostgreSQL 17：`statefulset/xpod-rc-rdf-postgres`、同名 Service 和独立 8 GiB PVC，
+由与 pre-K8s 17+6 conformance、exact-image pull 相同的 `NATIVE_PG_IMAGE`（`6a5731d7…`）渲染。
+共享生产实例 `statefulset/xpod-rdf-postgres` 及其 `xpod_cn`/`xpod_co` 数据不由 RC 读取、重置、
+升级或缩容；RC 每轮只 DROP/CREATE 专用实例上的逻辑库 `xpod_rc`。
+`APP_ENV_FILE` 的 `CSS_IDENTITY_DB_URL` 与 `CSS_SPARQL_ENDPOINT` 由集中式 materializer 从当前
+凭据派生专用 `xpod-rc-rdf-postgres` 主机名，保留 role/database/密码与所有其它字段；不需要手工
+改 GitHub secret，也没有新的配置别名或回退。直接调用严格校验器时，共享生产主机和
+production role/database 仍被拒绝。
 
 推荐的 RC Kubernetes 资源拓扑：
 
 - runtime Secret：`xpod-rc-secret`
+- RC-only PostgreSQL StatefulSet：`xpod-rc-rdf-postgres`（含 Service 与独立 PVC）
+- bootstrap Job：`xpod-rc-postgres-bootstrap-<run>-<attempt>`（每轮唯一、按 nonce+UID 回收）
+- administrator Secret：`xpod-rc-postgres-bootstrap`（与 PVC 绑定、保留，见 admin 文档）
 - Xpod Deployment：`xpod-rc`
 - shared Inngest Deployment：`xpod-inngest`（只复用，不由 RC overlay 创建或缩容）
 - RC-only Inngest Deployment：`xpod-rc-inngest`（若存在，仅在确认本轮 RC 所有权后回收）
@@ -160,7 +201,9 @@ Electron/preload 与自带 Local runtime，Cloud card 身份、两份权威 Loca
 路由，实际 Consent 绑定证明（显式选择，或观察到的 singleton/no-chooser 呈现形态加已认证且与
 目标完全一致的 exact 运行态 binding；两条路径都必须另有实际批准提交与 callback/PKCE 证据）
 与回调、两轮完整资源授权、Account Key/配置、collection 写入确认、
-Models/Quota/单发 Chat、跨 Pod 拒绝与清理。缺任一证据不得写入 `desktop:passed`。
+Models/Quota 能力响应/单发 Chat、跨 Pod 拒绝与清理。通用接口明确返回 `unsupported`
+属于额度能力响应，不等于已验证上游余额；观察到的额度状态保存在私有操作证据。
+鉴权失败、接口错误和不支持的其它状态仍然失败。缺任一产品证据不得写入 `desktop:passed`。
 详见[桌面权限验收契约](testing/desktop-permission-acceptance.md)。这项并不声明 Pod、Network、
 Status 所有管理操作、所有订阅 provider 或原安装 App 已验；不得用普通 Chromium 截图补足。
 失败时的公开归因现在同时覆盖浏览器批准阶段（`oidc-approval` + 操作 token）与 mounted 权限
@@ -186,6 +229,30 @@ Task adapter 使用已验证 runtime 根目录下的 ESM 文件 URL 加载，普
 切换 WebID 必须清理旧会话、Pod 绑定和关联凭据，同时将切换导航意图保留到新登录事务创建前；
 账号预检期间重新挂载不得退化成普通登录并复用旧身份，取消切换则必须消费该意图。
 
+### 平台推理与第三方上游监测
+
+发布必须实测平台 `linx`、`linx-lite` 的模型列表及真实推理。Cloud 的内置列表是部署声明，
+不依赖腾讯或其它第三方的 `/models`，也不依赖用户 Pod 或个人 Key；实际 Chat 仍必须取得
+并校验真实响应，平台推理不可用继续阻断发布。SPARQL、Matrix、认证、Pod 读写、权限隔离、
+Tasks 审批和桌面完整操作继续作为硬门禁，不因第三方欠费而整段跳过。
+
+`prepare-rc-platform-provider.ts` 使用本轮 Alice seed 的正常 Account 接口签发临时
+client credential，实际确认平台模型列表后写入私密接口配置；各验收 job 结束时正常撤销。
+Local 和 Standalone 通过现有 `custom/openai-compatible` 流程写入凭据、真实发现模型、
+保存选择并调用同一 RC 的平台推理。OpenAI 专用适配器的官方端点限制保持不变。
+三模式矩阵在当前 RC 就绪后运行；隔离 Cloud 使用自己的部署内置连接访问同一 RC，
+并验证只读内置 Provider 配置、真实 Models/Chat，不能将它记成用户 Provider 写入证明。
+所有模式仍须通过原有运行、身份、Pod、Gateway 和推理检查。
+
+桌面使用它本来创建的验收账号及权威 WebID 签发临时平台凭据，在 `finally` 中撤销。
+RC 桌面访问 RC；stable 桌面在生产 co 部署后访问生产 co，不依赖已经回收的 RC。
+Provider 配置、鉴权、路由和错误处理的确定性回归继续执行。
+
+第三方 `/models`、限流和账户额度由独立的 `provider-availability.yml` 监测：相关适配代码
+合入 staging 时运行，也可在 staging 上手动触发。监测真实发现模型并调用一次 Chat，失败
+保留 HTTP 状态和脱敏报告，使监测自己的 run 失败；candidate/release 不依赖该 run。
+凭据缺失只报告未配置，不得声称上游通过。该工作流不操作共享 RC，也不提供产品验收凭证。
+
 这些值必须由 RC seed 自动生成，不能作为 GitHub secret/variable 手工维护：
 
 - 不要配置 `XPOD_SETTINGS_E2E_ALICE_STATE`
@@ -200,11 +267,15 @@ Do not reuse the production `APP_ENV_FILE`。RC `APP_ENV_FILE` 必须提供
 - `XPOD_INNGEST_EVENT_KEY`
 - `XPOD_INNGEST_SIGNING_KEY`
 
-候选 workflow 在任何集群请求前校验 GZ server/namespace。Identity/RDF DSN 必须
-使用 `xpod-rdf-postgres` 上的 `xpod_rc` 专用角色和同名数据库，且凭据一致；禁止
-URL query/fragment 或冲突的数据库覆盖。每轮重建这个 RC 数据库并安装
-`vector → xpod_rdf → xpod_qlever`，不重建共享实例、不触碰 `xpod_cn`/`xpod_co`。
-此操作会销毁上一轮 RC 数据；上线前必须确认共享 RC 独占权和数据处理边界。
+候选 workflow 在任何集群请求前校验 GZ server/namespace。当前 `APP_ENV_FILE`
+可以是旧的共享 host 凭据；集中式 materializer 只在内存/临时文件中把两个 DSN 的主机名
+改写到专用 `xpod-rc-rdf-postgres`，保留 `xpod_rc` 角色/同名数据库、scheme、端口和
+percent-encoded 密码，其它字段逐字节不变，随后才跑严格校验器。禁止 URL query/fragment、
+冲突的数据库覆盖或生产 role/database。每轮在专用实例上重建逻辑库并安装
+`vector → xpod_rdf → xpod_qlever`；共享实例和 `xpod_cn`/`xpod_co` 既不重建也不触碰。
+此操作只销毁上一轮 RC 数据；重置前必须通过 fail-closed quiescence（`deployment/xpod-rc`
+`spec.replicas=0`、observed replicas 全 0、无 running/pending/unknown/terminating pod），
+candidate 绝不主动缩容活动候选，跨轮独占权由 ROOT 协调。
 `CSS_REDIS_CLIENT` 必须显式指向
 独立 Redis DB，格式上应类似 `CSS_REDIS_CLIENT=.../<nonzero>`；候选 workflow
 会拒绝缺少 DB index、使用 Redis DB 0 或包含 production marker 的 Redis URL。
@@ -370,11 +441,14 @@ stable promotion 校验以下内容：
 - artifact 的 source SHA、source branch、target version、candidate version
   和 endpoint 与当前 tag 匹配；
 - image digest 是 `sha256:<64-lowercase-hex>`；
-- required checks 全部通过，包括 `image`、`service-status`、`oidc`、
-  `dashboard`、`protected-route`、
-  `deployed-digest`、`direct-pod`、`public-service`、`secret-isolation`、
-  `authenticated-pod`、`pod-read-write`、`gateway-key`、`ai-connections`、
-  `models`、`chat`、`task-approval`、`qlever-local`、`package-consumers` 和 `desktop`。
+- required checks 全部 29 项通过：`image`、`service-status`、`oidc`、
+  `dashboard`、`protected-route`、`deployed-digest`、`direct-pod`、
+  `public-service`、`secret-isolation`、`authenticated-pod`、`pod-read-write`、
+  `gateway-key`、`ai-connections`、`models`、`chat`、`rc-pod-sparql`、
+  `rc-builtin-models-chat`、`rc-matrix-collaboration`、`rc-browser-consent`、`task-approval`、
+  `native-sparql`、`native-public16`、`native-private17`、
+  `native-namespace-pull`、`qlever-local`、`package-consumers`、
+  `legacy-root-compat`、`runtime-mode-matrix` 和 `desktop`。
 
 `deployed-digest` 证明 RC Deployment 运行的是 accepted digest，
 `direct-pod` 证明 ready Pod 的 imageID 包含同一个 digest。stable tag 只做
@@ -393,15 +467,18 @@ deployment、replicaset、pod、service、describe 和当前/previous logs，不
 - RC `APP_ENV_FILE` 复用了生产 domain、database、bucket、Redis DB 0 或凭据；
 - logical database or schema、nonzero Redis DB index、object bucket 权限未创建；
 - `XPOD_RC_SEED_CONFIG` 缺失、不是 seed account 数组，或没有 Alice/Bob 账号；
-- seed Alice/Bob 无法完成浏览器 OIDC 登录，或一次性 provider canary 验收失败。
+- seed Alice/Bob 无法完成浏览器 OIDC 登录，或平台推理及真实产品 canary 验收失败。
 
 修复方式是将修复普通 merge 到 staging，让 candidate workflow 产生新的
 RC。不要删除 stable tag 重新试，也不要把失败 digest 手工推进生产。
 
 candidate workflow 的 `cleanup_rc` 在服务、桌面和最终验收全部结束后执行 cleanup，确认本轮 RC 所有权并核对本轮
 seed Secret 的部署绑定后将 `deployment/xpod-rc` 和存在的 `xpod-rc-inngest`
-scale-to-zero；共享 `statefulset/xpod-rdf-postgres` 与 `deployment/xpod-inngest` 保持运行。
-下一次 RC workflow 会重新 apply overlay、写入 Secret、设置 digest 并等待 rollout。
+scale-to-zero；共享 `statefulset/xpod-rdf-postgres`、`deployment/xpod-inngest` 以及 RC 自己的
+`statefulset/xpod-rc-rdf-postgres`/PVC/administrator Secret 都保持运行。本轮 bootstrap Job
+只在本轮 nonce 注解与 live UID 都匹配时以 `DeleteOptions.preconditions.uid` 删除，foreign 或
+被替换的同名 Job 一律保留，观察/删除/wait 失败不被吞掉。下一次 RC workflow 会重新 apply
+overlay、写入 Secret、派生专用 DB host、设置 digest 并等待 rollout。
 手动恢复 RC 时可在同一 namespace 将 Xpod Deployment scale 到 1，然后重新
 运行 candidate workflow 做完整验收。
 
@@ -496,18 +573,58 @@ GHA 缓存（scope `qlever-runtime-sdk`）和"复用已有 SDK 镜像"两条增�
 `release/*`（或 `workflow_dispatch`）上跑，所以新建 release 分支的第一次仍然是
 冷编译（实测 37.5 分钟）。
 
-因此 SDK 侧靠的是**按构建输入复用**，而不是预热缓存：
+因此 SDK 侧靠的是**按完整构建输入复用**，而不是预热缓存或裸 tag：
 
-- SDK 镜像除了不可变的 `sha-<commit>`，还会打一个按 QLever 构建输入命名的别名
-  `qlever-inputs-<hash12>`（hash 取自该 commit 的 `qlever/` 与
-  `docker/qlever-runtime-sdk/` 两棵树）；
-- 同一批输入已经构建过时，新的 RC 直接复用该镜像（0 构建分钟）；输入变了才全量
-  编译。这个别名是**追加式**的：已存在的名字不会被覆盖，digest 不一致只记进
-  summary；
-- 复用路径同样要过镜像 smoke（与新建路径相同的 `docker run` 检查），
-  `resolve-runtime-sdk-build.sh` 里 `reuse_identical_inputs=false` 可强制重建。
+- 普通 SDK 构建走 `normal-build-v1`：完整 canonical 输入身份是 64 hex
+  `qlever-inputs-<hash64>`，覆盖 profile/target、`qlever/` 与
+  `docker/qlever-runtime-sdk/` 树、`Dockerfile.normal`、`.dockerignore`、
+  `scripts/lib/module-artifact-limits.json`、local-runtime Dockerfile、锁文件、
+  patch/dependency 与编译器/构建 recipe 字节；12-hex 别名不再是复用权威；
+- 复用必须同时命中**保留的 GitHub proof artifact** 中的同一 64-hex 输入身份、
+  不可变 OCI digest/manifest/config、SDK 自身 source/run head/run 坐标，以及实际
+  linked adapter/runtime 与 smoke gate 收据。proof artifact 与 main artifact 必须
+  来自同一受信 candidate workflow run 的实际 producer job；复用前会选择一次并下载
+  main artifact，逐字节核对 `materials.json`/`normal-build-proof.json` 成员、index
+  的 image/source/input/master tuple 与保留 OCI manifest/config。自洽 index 或同名
+  文件本身不是权威；只有 tag、只有 digest 或来源不明的 artifact 都不构成复用证据。
+  **没有候选**（`found=false`）才进入普通冷构建；候选存在但 malformed、摘要/OCI/
+  source/proof 校验失败或选择器认证失败时，在构建前显式 fail closed，绝不消费该
+  候选或静默回退重建；
+- 输入变化（源码、patch、依赖、工具链、Dockerfile、context 文件）会使 64-hex
+  身份变化并强制重建；显式 `prior_runtime_sdk_digest` 走真实的
+  `Dockerfile.normal.incremental`，prior digest、实际 recipe 文件与全部 COPY/
+  build-control 输入都进入同一身份，增量构建后重新生成 linked adapter/runtime
+  收据；`reuse_identical_inputs=false` 仍可强制重建；
+- 显式 `runtime_sdk_tag` 不能只凭 tag 存在复用：service-trixie 必须同时提供同一
+  64-hex 输入身份、同一 SDK source 与同一 OCI digest 的 verified normal
+  selection/main artifact tuple；缺失或不匹配会在构建前 fail closed（module
+  既有 profile 契约不变）；
+- SDK 的 build source SHA 与当前 app consumer SHA 分开绑定：复用旧 SDK 不要求
+  旧 SDK revision 等于仅 app 变化的新提交，app master 记录 SDK 自己的
+  source/run/head 与当前 app 关系；当前候选的 18 条兼容与 29 项检查与 SDK 解析
+  **并行**，其中 18 条兼容是共享 RC 部署的显式前置、29 项检查在部署验收阶段运行，
+  不能反过来作为 SDK 解析/构建前置。
 
-即：只要这一版没有改 `qlever/**` 或 SDK Dockerfile，RC 就不会再花那 36–39 分钟。
+**`normal-build-v1` 明确保留与移除的证明**：保留精确 source SHA、profile/target、
+完整 64-hex 输入身份、patch/dependency/toolchain recipe 字节、不可变 OCI
+digest/manifest/config、GitHub artifact/run origin、app/SDK artifact/master/image
+cross-seal、linked adapter/runtime 与既有功能门禁。移除（且明确不声称）逐 syscall
+source-read 清单、generated-input causality、toolchain execution trace/lifetime
+lease、kernel-enforced read-only 证明。该模型不能证明旧 readonly observer 的
+syscall/generation/lifetime 属性，也不把普通构建功能性通过表述为这些属性通过。
+`SDK1..92` 与 `observer1..64` 历史 tuple 保持字节冻结；observer 仅保留为显式
+`workflow_dispatch` 诊断路径，不再是普通 candidate SDK 发布的前置。
+
+普通 SDK 的 local runtime 验收使用 `normal-runtime-v1`，不再调用要求旧
+`profile/inputs.json`、ptrace 或 lifetime lease 的收集器。验收保留同一
+source/run/target、SDK 输入身份与不可变镜像、runtime 镜像/config、完整运行文件
+清单，以及真实执行并等待结束的功能测试原始输出；SOURCE、ABI、LEGAL 和候选
+产品检查仍须分别通过。该模型只提供声明的构建输入范围，不声称逐输出的 syscall
+读取或生成因果。异步 runtime 的测试必须逐条等待查询结果，全部返回后才能发送
+shutdown；提前关闭会取消仍在排队的查询。失败时保留独立诊断附件，并撤销未完成的
+master，诊断附件不能作为发布通过的证据。
+
+服务镜像的逐文件 SOURCE/LEGAL/ABI 推导审计与上述 SDK/原生验证分开：仅在手动运行 candidate 时显式勾选 `service_source_diagnostics` 执行，结果作为独立诊断保留，不再作为共享 RC 部署或最终验收的前置。诊断失败仍记录失败，不授予 `wholeServiceSourceVerified`、`serviceAbiVerified` 或 `legalCoverageVerified`。最终验收单独披露这一范围；既有 SDK/原生验证、18 路兼容、不可变源码和镜像绑定，以及全部 29 项真实产品检查仍须通过。原生兼容测试不等价于完整镜像 ABI 推导审计。
 
 **并行度按机器实测决定，不再手写**：
 
@@ -564,3 +681,26 @@ bun run test:integration
 ### 本地安装包前置门禁
 
 桌面版本发布前，必须先构建候选 DMG/ZIP，实际安装 DMG，使用安装后的应用完成本地 full 验收；通过后才继续发布。开发启动、仅解压 ZIP、单元或隔离集成测试不能替代安装后的完整登录、Consent、会话复用与业务链路验收。安装隔离、产物一致性和清理规则见 [桌面权限验收](testing/desktop-permission-acceptance.md)。
+
+## RC 专用 PostgreSQL 与受保护边界
+
+RC 使用专用 `statefulset/xpod-rc-rdf-postgres`（独立 PVC、Service 与 administrator Secret），
+共享生产 `xpod-rdf-postgres` 及其数据永不重置、升级或删除。任何 RC 变更前必须先通过
+17 semantic + 6 wire 的 installed-image conformance、同 PG17 full integration、Private17
+admission 和 namespace pull preflight；然后 fail-closed quiescence 通过才允许 bootstrap Job
+DROP/CREATE 专用实例上的逻辑库 `xpod_rc`。bootstrap Job 名为
+`xpod-rc-postgres-bootstrap-<run>-<attempt>`，只在 ownership 注解与 live UID 同时匹配时用
+`DeleteOptions.preconditions.uid` 删除；清理同样保留 RC StatefulSet、PVC 和 administrator Secret。
+bootstrap 创建非超级用户 `xpod_rc`（`NOSUPERUSER NOCREATEROLE NOCREATEDB`）并在每轮
+`ALTER ROLE` 后用该密码真实认证。两个扩展不提供任何 GRANT，故 bootstrap 在安装扩展后只对
+schema `xpod_rdf` 授予应用所需的最小 `USAGE`/表 DML/sequence 权限及同 schema 的 default
+privileges，grantee 仅 `xpod_rc`：没有 `PUBLIC`、`GRANT ALL`、superuser/createrole/createdb、
+ownership 转移或 `REASSIGN OWNED`。controller 的 parser 错误只报配置键，不携带原始 URL、
+密码、`error.input`/`cause` 或 decoder 文本；合法 percent-encoded 凭据逐字节保留。
+administrator 凭据与 PVC 一起保留，撤销必须按 `deploy/sealos/rc/RC-POSTGRES-ADMIN.md`
+同时删除 StatefulSet、PVC 和两个 Secret；部分撤销不能收回旧密码。既有 production
+backup/full-restore 证明不等于 RC 产品验收，工具或夹具通过也不能替代真实部署回执。详见
+[受保护部署边界](testing/protected-rc-deployment.md)。
+
+
+兼容 Bun 通道另存受限 `registry.metadata.json`：从 `createRegistry.publishedMetadata()` 读取真实 PUT 后已经解析、移除 `_attachments` 的记录，保留 exact version 的 name/version/运行依赖/bundle 字段及 dist integrity/shasum，URL 只保哈希。记录哈希来自该解析对象的 JSON 序列化，**不是原始 HTTP body 哈希**；原 wire bytes 未保留。它与原 tgz SHA/字节、`install.manifests.json` 的原件及 selectedInput 绑定，比较字段缺失或变化但不修补 registry 供给。安装失败仍保留这份诊断，未成功发布记录、绑定不符或超过 1 MiB 时记固定 unavailable；不提供安装成功、resolver 父边或发布资格证明。

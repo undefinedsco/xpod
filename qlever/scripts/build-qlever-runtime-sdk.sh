@@ -1,11 +1,61 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+mode=${1:-all}
+[[ $# -le 1 && "$mode" =~ ^(all|prepare-only|source-only|configure-prepared|build-prepared)$ ]] || { echo 'unsupported private SDK phase' >&2; exit 64; }
 component_root=${XPOD_RDF_COMPONENT_ROOT:-/components}
 qlever_root="$component_root/qlever"
 source_dir=${XPOD_QLEVER_SOURCE_DIR:-/opt/qlever-sdk/source}
 build_dir=${XPOD_QLEVER_BUILD_DIR:-/opt/qlever-sdk/build}
 jobs=${XPOD_QLEVER_BUILD_JOBS:-4}
+initialize_metadata() {
+  if ! metadata=$(python3 -B - "$qlever_root/scripts/qlever_compiler_profile.py" <<'PY'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location('xpod_qlever_compiler_profile', sys.argv[1])
+if spec is None or spec.loader is None:
+    raise SystemExit('compiler/profile import failed')
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+compiler = module.compiler_spec()
+archive = module.archive_command()
+fields = [compiler['profile'], compiler['c'], compiler['cxx'], compiler['linker_program'],
+          archive['create'], archive['append'], archive['finish']]
+for field in fields:
+    if '\x1f' in field or '\n' in field or '\r' in field:
+        raise SystemExit('compiler/profile metadata framing refused')
+sys.stdout.write('\x1f'.join(fields) + '\x1f__END__')
+PY
+  ); then
+    echo 'compiler/profile metadata failed' >&2
+    return 1
+  fi
+  case $metadata in
+    *$'\n'*|*$'\r'*)
+      echo 'compiler/profile metadata framing refused' >&2
+      return 1
+      ;;
+  esac
+  IFS=$'\x1f' read -r prepared_profile c_compiler cxx_compiler declared_linker archive_create archive_append archive_finish metadata_end <<<"$metadata"
+  if [[ "$metadata_end" != '__END__' ||
+        -z "$prepared_profile" || -z "$c_compiler" || -z "$cxx_compiler" ||
+        -z "$declared_linker" || -z "$archive_create" || -z "$archive_append" ]]; then
+    echo 'compiler/profile metadata framing refused' >&2
+    return 1
+  fi
+}
+if [[ "$mode" != all ]]; then
+  initialize_metadata
+  python3 - "$prepared_profile" <<'PROFILE'
+import json,os,sys
+identity=json.loads(os.environ['XPOD_QLEVER_SDK_IDENTITY'])
+if identity.get('sdkProfile')!=sys.argv[1]:raise RuntimeError('Prepared identity/compiler profile differs')
+PROFILE
+  if [[ "$mode" == source-only && "$prepared_profile" == service-trixie ]]; then
+    python3 "$qlever_root/scripts/sdk-service-profile-materials.py"
+  fi
+fi
 incremental_sdk=${XPOD_QLEVER_INCREMENTAL_SDK:-0}
 prior_validation_marker=${XPOD_QLEVER_PRIOR_VALIDATION_MARKER:-}
 
@@ -20,7 +70,11 @@ toolchain_identity_file="$build_dir/.xpod-toolchain-identity"
 build_contract_file="$build_dir/.xpod-build-contract.json"
 build_contract_pending="$build_dir/.xpod-build-contract.json.pending"
 
-build_contract=$(python3 - "$source_dir" "$build_dir" <<'PY'
+if [[ "$mode" == all ]]; then
+  initialize_metadata
+fi
+
+build_contract=$(python3 - "$source_dir" "$build_dir" "$qlever_root/scripts" <<'PY'
 import json
 import os
 import subprocess
@@ -28,6 +82,8 @@ import sys
 from pathlib import Path
 
 source_dir, build_dir = sys.argv[1:3]
+sys.path.insert(0, sys.argv[3])
+from qlever_compiler_profile import archive_command, compiler_versions
 os_release = Path(os.environ.get("XPOD_QLEVER_OS_RELEASE_FILE", "/etc/os-release"))
 pretty_name = ""
 for line in os_release.read_text().splitlines():
@@ -37,30 +93,46 @@ for line in os_release.read_text().splitlines():
 if not pretty_name:
     raise SystemExit("missing PRETTY_NAME in os-release")
 
-def version(command):
-    return subprocess.check_output(command, text=True).splitlines()[0]
-
 payload = {
     "schemaVersion": 1,
     "component": "qlever-runtime-sdk",
     "base": {
         "osReleasePrettyName": pretty_name,
     },
-    "toolchain": {
-        "clang": version(["clang-19", "--version"]),
-        "clangxx": version(["clang++-19", "--version"]),
-        "cmake": version(["cmake", "--version"]),
-    },
+    "toolchain": compiler_versions(),
     "cmake": {
         "source": source_dir,
         "build": build_dir,
         "buildType": "Release",
         "positionIndependentCode": "ON",
+        # The generator is part of the internal build identity. Without it an
+        # old Unix-Makefiles tree satisfies every existing marker and the new
+        # code would silently reuse a Makefiles build instead of reconfiguring
+        # with Ninja. Declared here (NOT user config) so the identity changes.
+        "generator": "Ninja",
+        # Indexed archive create/append shape. Declared in the identity so a
+        # tree configured with the old two-pass `qc`+ranlib form cannot be
+        # silently reused: the toolchain identity changes and the script
+        # reconfigures instead.
+        "archive": archive_command(),
         "flags": {
             "CHEAPER_COMPILATION": "ON",
             "RANGES_NATIVE": "OFF",
-            "USE_PRECOMPILED_HEADERS": "OFF",
+            # SDK84 PCH experiment: precompiled headers are upstream-supported
+            # and cover the real engine targets (parser/engine/sparqlExpressions/
+            # index/util/mediaTypes/http/rdfTypes/rdfEscaping. The executable keeps
+            # PIE without reusing the library PCH. These cache header parsing; they neither
+            # merge translation units nor change the configured target set. The
+            # flag stays part of this hashed contract, so an OFF cache identity
+            # can never satisfy an ON build.
+            "USE_PRECOMPILED_HEADERS": "ON",
             "USE_IO_URING": "OFF",
+            # Production-only SDK profile. Upstream defaults remain ON, so an
+            # ordinary developer configure is unchanged; the SDK explicitly
+            # excludes the unused upstream benchmark/test subdirectories while
+            # still building the complete qlever-server runtime + adapter.
+            "XPOD_SDK_BUILD_BENCHMARKS": "OFF",
+            "XPOD_SDK_BUILD_TESTS": "OFF",
         },
     },
 }
@@ -69,7 +141,39 @@ PY
 )
 toolchain_identity=$(printf '%s' "$build_contract" | python3 -c 'import hashlib, json, sys; print(hashlib.sha256(json.dumps(json.load(sys.stdin), sort_keys=True, separators=(",", ":")).encode()).hexdigest())')
 
+compile_and_commit() {
+  cmake --build "$build_dir" --target qlever-server -- -j"$jobs"
+  printf '%s\n' "$build_contract" >"$build_contract_pending"
+  mv "$source_manifest_pending" "$source_manifest_file"
+  mv "$build_contract_pending" "$build_contract_file"
+  printf '%s' "$build_identity" >"$build_identity_file"
+  printf '%s' "$toolchain_identity" >"$toolchain_identity_file"
+}
+# Derive the generator's link command before any consumer needs link.txt.
+# Ninja never writes one, so the derivation must run in every mode that later
+# tests or reads CMakeFiles/qlever-server.dir/link.txt.
+derive_link_command() {
+  python3 - "$build_dir" "$qlever_root/scripts" "$XPOD_QLEVER_SDK_DEADLINE_UNIX" <<'DERIVE'
+import importlib.util, sys
+build, scripts, deadline = sys.argv[1], sys.argv[2], sys.argv[3]
+spec = importlib.util.spec_from_file_location('sdk_generation_materials', scripts + '/sdk-generation-materials.py')
+generation = importlib.util.module_from_spec(spec); spec.loader.exec_module(generation)
+spec = importlib.util.spec_from_file_location('sdk_execution_budget', scripts + '/sdk-execution-budget.py')
+budgets = importlib.util.module_from_spec(spec); spec.loader.exec_module(budgets)
+generation.derive_link_command(build, budgets.ExecutionBudget(deadline),
+                               materials=build + '/link-command-materials', cwd=build)
+DERIVE
+}
+if [[ "$mode" == build-prepared ]]; then
+  python3 "$qlever_root/scripts/sdk-prepared-inputs.py" verify "$qlever_root" "$build_dir" "$build_identity" "$toolchain_identity"
+  compile_and_commit
+  derive_link_command
+  test -f "$build_dir/CMakeFiles/qlever-server.dir/link.txt"
+  exit 0
+fi
 mkdir -p "$build_dir"
+runtime_overlay_inputs_changed=0
+if [[ "$mode" != configure-prepared ]]; then
 if [[ "$incremental_sdk" == "1" ]]; then
   patched_source_dir=$(mktemp -d)
   cleanup_patched_source() {
@@ -106,7 +210,12 @@ else
 fi
 
 overlay_manifest_file="$build_dir/.xpod-overlay-manifest"
-overlay_manifest_current=$(mktemp)
+# Keep the CURRENT manifest under the retained build root. The observer may still
+# hold a read lease on it after the read below, and unlinking a leased inode moves
+# its identity. Prior-generation cleanup happens before this write, so no lease of
+# this generation can exist yet.
+overlay_manifest_current="$build_dir/.xpod-overlay-manifest.current"
+rm -f "$overlay_manifest_current"
 python3 "$qlever_root/scripts/runtime-overlay-manifest.py" \
   --qlever-root "$qlever_root" >"$overlay_manifest_current"
 overlay_source_sha=$(sha256sum "$overlay_manifest_current" | cut -d' ' -f1)
@@ -127,33 +236,108 @@ if [[ $(cat "$overlay_identity_file" 2>/dev/null || true) != "$overlay_source_sh
   cp "$overlay_manifest_current" "$overlay_manifest_file"
   printf '%s' "$overlay_source_sha" >"$overlay_identity_file"
 fi
-rm -f "$overlay_manifest_current"
+# The current manifest is deliberately retained under the build root: the observer
+# may still hold its read lease for the rest of the window.
+# This marker binds the prepared source/overlay inputs; configure does not rerun
+# clone/reset/sync/touch after the source and components become read-only.
+printf '%s\n%s\n' "$build_identity" "$toolchain_identity" >"$build_dir/.xpod-source-prepared"
+fi
+if [[ "$mode" == source-only ]]; then exit 0; fi
+if [[ "$mode" == configure-prepared ]]; then
+  expected_prepared=$(printf '%s\n%s' "$build_identity" "$toolchain_identity")
+  [[ $(cat "$build_dir/.xpod-source-prepared") == "$expected_prepared" ]] || { echo 'prepared source/toolchain binding differs' >&2; exit 1; }
+fi
 
 adapter_flags="-DXPOD_QLEVER_ADAPTER_ENABLE_QLEVER=1 -I$qlever_root/qlever_adapter/src -I$qlever_root/qlever_adapter/include -I$qlever_root/rdf_protocol/include"
-if [[ ! -f "$build_identity_file" ]] ||
+if [[ "$mode" == prepare-only || "$mode" == configure-prepared ]] || [[ ! -f "$build_identity_file" ]] ||
    [[ $(cat "$build_identity_file") != "$build_identity" ]] ||
    [[ ! -f "$toolchain_identity_file" ]] ||
    [[ $(cat "$toolchain_identity_file") != "$toolchain_identity" ]]; then
-  CC=clang-19 CXX=clang++-19 cmake \
+  # The CMake File API reply only exists if the query files are present BEFORE
+  # CMake generates the build system, so write them first (empty stateless form).
+  python3 - "$build_dir" "$qlever_root/scripts" <<'QUERY'
+import sys
+build, scripts = sys.argv[1], sys.argv[2]
+sys.path.insert(0, scripts)
+import importlib.util
+spec = importlib.util.spec_from_file_location('sdk_cmake_file_api', scripts + '/cmake_file_api.py')
+cmake_file_api = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cmake_file_api)
+cmake_file_api.write_queries(build)
+QUERY
+  # RETAINED COMPILER-IDENTIFICATION INTERMEDIATES.
+  # The traced configure observer holds a real kernel read lease for the whole
+  # phase on every regular file a compiler child reads. Both levers below keep the
+  # intermediates those children produce INSIDE the observed window, so no inode
+  # is unlinked while it is still leased (that would move its ctime and the lease
+  # guard would correctly reject it).
+  #
+  #   1. `-save-temps=obj` on the compiler-IDENTIFICATION test build only: the
+  #      driver keeps a stable source-derived object instead of a random temporary
+  #      it would otherwise unlink after linking. Delivered through
+  #      CMAKE_<LANG>_COMPILER_ID_TEST_FLAGS_FIRST, which CMake consults BEFORE its
+  #      empty/global fallbacks (COMPILER_ID_FLAGS is rebuilt from
+  #      CMAKE_<LANG>_FLAGS, so setting that would be overwritten).
+  #   2. `--debug-trycompile` retains the try_compile working directories (the ABI /
+  #      compiler-check probes) instead of deleting their inputs before the phase
+  #      ends. This is a BROADER retention lever than the ID probe: it covers every
+  #      try_compile in configure, not just compiler identification.
+  #
+  # All compiler-ID, ABI, native and generation checks remain fully OBSERVED and
+  # unchanged; nothing is skipped, pre-set or cached. `-save-temps` is deliberately
+  # NOT enabled globally: retaining every QLever C++ intermediate would balloon the
+  # build for no custody benefit.
+  cmake_command=(cmake \
+    --debug-trycompile \
+    -G Ninja \
     -S "$source_dir" \
     -B "$build_dir" \
+    -DCMAKE_C_COMPILER_ID_TEST_FLAGS_FIRST="-save-temps=obj" \
+    -DCMAKE_CXX_COMPILER_ID_TEST_FLAGS_FIRST="-save-temps=obj" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
     -DCMAKE_CXX_COMPILER_LAUNCHER= \
     -DCHEAPER_COMPILATION=ON \
     -DRANGES_NATIVE=OFF \
-    -DUSE_PRECOMPILED_HEADERS=OFF \
+    -DUSE_PRECOMPILED_HEADERS=ON \
     -DUSE_IO_URING=OFF \
-    -DCMAKE_CXX_FLAGS="$adapter_flags"
-  cmake --build "$build_dir" --target qlever-server -- -j"$jobs"
-  printf '%s\n' "$build_contract" >"$build_contract_pending"
-  mv "$source_manifest_pending" "$source_manifest_file"
-  mv "$build_contract_pending" "$build_contract_file"
-  printf '%s' "$build_identity" >"$build_identity_file"
-  printf '%s' "$toolchain_identity" >"$toolchain_identity_file"
+    -DXPOD_SDK_BUILD_BENCHMARKS=OFF \
+    -DXPOD_SDK_BUILD_TESTS=OFF \
+    -DCMAKE_CXX_FLAGS="$adapter_flags" \
+    -DCMAKE_C_ARCHIVE_CREATE="$archive_create" \
+    -DCMAKE_C_ARCHIVE_APPEND="$archive_append" \
+    -DCMAKE_C_ARCHIVE_FINISH="$archive_finish" \
+    -DCMAKE_CXX_ARCHIVE_CREATE="$archive_create" \
+    -DCMAKE_CXX_ARCHIVE_APPEND="$archive_append" \
+    -DCMAKE_CXX_ARCHIVE_FINISH="$archive_finish")
+  if [[ "$mode" == configure-prepared && "$prepared_profile" == service-trixie ]]; then
+    linker_path=$(command -v "$declared_linker")
+    [[ "$linker_path" == /* && -x "$linker_path" ]] || { echo 'actual declared service linker absent' >&2; exit 64; }
+    cmake_command+=(-DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=$linker_path" -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=$linker_path")
+  fi
+  if [[ "$mode" == configure-prepared ]]; then
+    test -f /opt/qlever-sdk/dependencies/sources.cmake
+    cmake_command+=(-C /opt/qlever-sdk/dependencies/sources.cmake)
+  fi
+  if [[ ( "$mode" == prepare-only || "$mode" == configure-prepared ) && -n ${XPOD_QLEVER_UPSTREAM_MATERIALS_DIR:-} ]]; then
+    generation_materials="${XPOD_QLEVER_UPSTREAM_MATERIALS_DIR%/upstream-source}/generation"
+    CC="$c_compiler" CXX="$cxx_compiler" python3 "$qlever_root/scripts/sdk-generation-materials.py" configure \
+      "$generation_materials" "$source_dir" "$build_dir" -- "${cmake_command[@]}"
+  else
+    CC="$c_compiler" CXX="$cxx_compiler" "${cmake_command[@]}"
+  fi
+  if [[ "$mode" == prepare-only || "$mode" == configure-prepared ]]; then
+    python3 "$qlever_root/scripts/sdk-prepared-inputs.py" record "$qlever_root" "$build_dir" "$build_identity" "$toolchain_identity"
+    exit 0
+  fi
+  compile_and_commit
 elif [[ "$runtime_overlay_inputs_changed" == "1" ]]; then
   cmake --build "$build_dir" --target qlever-server -- -j"$jobs"
 fi
+
+# A reused build tree still needs the derived link command for the generator
+# that actually configured it (idempotent; Unix Makefiles is a no-op).
+derive_link_command
 
 test -f "$build_dir/CMakeFiles/qlever-server.dir/link.txt"

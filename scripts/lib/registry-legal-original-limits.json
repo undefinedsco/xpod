@@ -1,0 +1,10 @@
+{
+  "groupAttempts": 16,
+  "groupPackedBytes": 67108864,
+  "groupExpandedBytes": 134217728,
+  "groupTimeoutMs": 120000,
+  "requestTimeoutMs": 30000,
+  "packagePackedBytes": 8388608,
+  "packageExpandedBytes": 33554432,
+  "metadataBytes": 262144
+}

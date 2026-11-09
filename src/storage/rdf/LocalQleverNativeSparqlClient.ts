@@ -9,25 +9,8 @@ import type {
   RdfNativeSparqlVectorQueryOptions,
 } from './types';
 
-export type LocalQleverRuntimeErrorCode =
-  | 'qlever_runtime_unavailable'
-  | 'qlever_runtime_protocol_error'
-  | 'qlever_runtime_closed'
-  | 'qlever_request_timeout'
-  | 'qlever_request_aborted'
-  | 'qlever_remote_error';
-
-export class LocalQleverRuntimeError extends Error {
-  public readonly code: LocalQleverRuntimeErrorCode | string;
-  public override readonly cause?: unknown;
-
-  public constructor(code: LocalQleverRuntimeErrorCode | string, message: string, cause?: unknown) {
-    super(message);
-    this.name = 'LocalQleverRuntimeError';
-    this.code = code;
-    this.cause = cause;
-  }
-}
+import { LocalQleverRuntimeError } from './NativeSparqlRuntimeError';
+export { LocalQleverRuntimeError, type LocalQleverRuntimeErrorCode } from './NativeSparqlRuntimeError';
 
 export interface LocalQleverNativeSparqlClientOptions {
   command?: string;
@@ -117,6 +100,9 @@ export class LocalQleverNativeSparqlClient {
   private ready = false;
   private closed = false;
   private failedProcessCleanup?: Promise<void>;
+  private failedChild?: ChildProcessWithoutNullStreams;
+  private closePromise?: Promise<void>;
+  private cleanupFailed = false;
 
   public constructor(options: LocalQleverNativeSparqlClientOptions = {}) {
     this.options = {
@@ -148,6 +134,10 @@ export class LocalQleverNativeSparqlClient {
       return this.startPromise;
     }
 
+    if (this.failedProcessCleanup) {
+      return this.awaitFailedProcessCleanup().then(() => this.start());
+    }
+
     this.stderrTail = '';
     this.startPromise = new Promise<void>((resolve, reject) => {
       let child: ChildProcessWithoutNullStreams;
@@ -165,6 +155,8 @@ export class LocalQleverNativeSparqlClient {
         return;
       }
 
+      // Subscribe before any exit: exit alone does not imply drained stdio.
+      waitForChildClose(child);
       this.child = child;
       this.reader = createInterface({ input: child.stdout });
       const timeout = setTimeout(() => {
@@ -269,37 +261,53 @@ export class LocalQleverNativeSparqlClient {
     });
   }
 
-  public async close(): Promise<void> {
-    if (this.closed) {
-      return;
-    }
+  public close(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
     this.closed = true;
+    // Publish the flight before shutdown writes can synchronously trigger
+    // process callbacks or another close caller.
+    const closing = Promise.resolve().then(() => this.closeOwnedProcess());
+    this.closePromise = closing;
+    void closing.catch(() => {
+      // A failed closure remains observable, and a later close can retry it.
+      if (this.closePromise === closing) this.closePromise = undefined;
+    });
+    return closing;
+  }
+
+  private async closeOwnedProcess(): Promise<void> {
     const child = this.child;
     if (!child) {
+      if (this.failedChild && this.cleanupFailed) {
+        const failedChild = this.failedChild;
+        this.trackProcessCleanup(terminateChild(failedChild, waitForChildClose(failedChild)));
+      }
       await this.awaitFailedProcessCleanup();
       return;
     }
+    let shutdownFailure: unknown;
     try {
       this.writeMessage(child, { type: 'shutdown' });
       child.stdin.end();
-    } catch {
-      // Closing is best-effort; failProcess below owns deterministic cleanup.
+    } catch (error) {
+      shutdownFailure = error;
+      // Reap first, then surface a failed normal shutdown.
     }
     const closed = waitForChildClose(child);
     this.failProcess(child, new LocalQleverRuntimeError(
       'qlever_runtime_closed',
       'Local QLever runtime client closed',
     ), false);
-    if (await waitForCloseOrTimeout(closed, GRACEFUL_SHUTDOWN_TIMEOUT_MS)) {
-      return;
+    const escalated = !await waitForCloseOrTimeout(closed, GRACEFUL_SHUTDOWN_TIMEOUT_MS);
+    if (escalated) this.trackProcessCleanup(terminateChild(child, closed));
+    await this.awaitFailedProcessCleanup();
+    if (shutdownFailure || escalated || child.exitCode !== 0 || child.signalCode !== null) {
+      throw new LocalQleverRuntimeError(
+        'qlever_runtime_shutdown_failed',
+        `Local QLever normal shutdown failed${escalated ? ' (required termination)' : ''}: code ${String(child.exitCode)}, signal ${String(child.signalCode)}`,
+        shutdownFailure,
+      );
     }
-    if (child.exitCode === null && child.signalCode === null) {
-      child.kill('SIGTERM');
-    }
-    if (await waitForCloseOrTimeout(closed, FORCED_SHUTDOWN_TIMEOUT_MS)) {
-      return;
-    }
-    await forceCloseChild(child, closed);
   }
 
   private async waitForStart(signal?: AbortSignal): Promise<void> {
@@ -409,8 +417,9 @@ export class LocalQleverNativeSparqlClient {
       return;
     }
     this.child = undefined;
-    const closed = reapChild(child);
-    this.failedProcessCleanup = terminate ? terminateChild(child, closed) : closed;
+    this.failedChild = child;
+    const closed = waitForChildClose(child);
+    this.trackProcessCleanup(terminate ? terminateChild(child, closed) : closed);
     this.ready = false;
     this.startPromise = undefined;
     this.reader?.close();
@@ -427,7 +436,15 @@ export class LocalQleverNativeSparqlClient {
       this.cleanupPending(pending);
       pending.reject(error);
     }
-    void this.failedProcessCleanup;
+
+  }
+
+  private trackProcessCleanup(cleanup: Promise<void>): void {
+    this.cleanupFailed = false;
+    this.failedProcessCleanup = cleanup;
+    void cleanup.catch(() => {
+      if (this.failedProcessCleanup === cleanup) this.cleanupFailed = true;
+    });
   }
 
   private async awaitFailedProcessCleanup(): Promise<void> {
@@ -435,12 +452,11 @@ export class LocalQleverNativeSparqlClient {
     if (!failedProcessCleanup) {
       return;
     }
-    try {
-      await failedProcessCleanup;
-    } finally {
-      if (this.failedProcessCleanup === failedProcessCleanup) {
-        this.failedProcessCleanup = undefined;
-      }
+    await failedProcessCleanup;
+    if (this.failedProcessCleanup === failedProcessCleanup) {
+      this.failedProcessCleanup = undefined;
+      this.failedChild = undefined;
+      this.cleanupFailed = false;
     }
   }
 
@@ -495,12 +511,6 @@ export class LocalQleverNativeSparqlClient {
   }
 }
 
-function reapChild(child: ChildProcessWithoutNullStreams): Promise<void> {
-  const closed = waitForChildClose(child);
-  closed.then(undefined, () => undefined);
-  return closed;
-}
-
 async function terminateChild(
   child: ChildProcessWithoutNullStreams,
   closed: Promise<void>,
@@ -524,16 +534,21 @@ async function forceCloseChild(
   if (await waitForCloseOrTimeout(closed, FORCED_SHUTDOWN_TIMEOUT_MS)) {
     return;
   }
-  child.stdin.destroy();
-  child.stdout.destroy();
-  child.stderr.destroy();
+  throw new LocalQleverRuntimeError(
+    'qlever_runtime_close_timeout',
+    'Local QLever runtime did not close after SIGKILL; process ownership is retained',
+  );
 }
 
+const childClosures = new WeakMap<ChildProcessWithoutNullStreams, Promise<void>>();
+
 function waitForChildClose(child: ChildProcessWithoutNullStreams): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null) {
-    return Promise.resolve();
+  let closed = childClosures.get(child);
+  if (!closed) {
+    closed = new Promise((resolve) => child.once('close', () => resolve()));
+    childClosures.set(child, closed);
   }
-  return new Promise((resolve) => child.once('close', () => resolve()));
+  return closed;
 }
 
 async function waitForCloseOrTimeout(closed: Promise<void>, timeoutMs: number): Promise<boolean> {

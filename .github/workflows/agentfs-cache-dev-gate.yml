@@ -1,0 +1,81 @@
+name: AgentFS cache development gate
+
+# Dedicated controlled DEVELOPMENT gate for the clean-body cache candidate.
+# NOT a release path. It runs the ORIGINAL complete `bun run test:integration`
+# twice through the existing scripts/agentfs-native-ci/supervise.py API (real
+# Popen wait, exit/signal, continuous disk floor, closed raw SHA, process-group
+# absence, unique lowercase project/run-id, full tracked + physical source
+# snapshots), plus the canonical Mac+Linux serial source-bound native
+# acceptance via workflow_call. No split suites, no live-HTTP substitution.
+on:
+  push:
+    branches: ['codex/agentfs-cache-dev-gate']
+  workflow_dispatch:
+    inputs:
+      native:
+        description: Build native helpers; false requires verified two-platform reuse pins
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: agentfs-cache-dev-gate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  whole-integration:
+    name: two supervised original wholes
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify explicit native reuse before whole runs
+        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.native }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/agentfs-native-ci/accept.py --reuse-native
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.21.1
+
+      - run: bun install --frozen-lockfile
+
+      - name: Build workspace packages
+        run: bun run build:packages
+
+      - name: Build runtime artifacts
+        run: bun run build:ts && bun run build:components
+
+      - name: Type check tests
+        run: bun run typecheck:test
+
+      - name: Type check standalone Xpod CLI
+        run: bun x tsc --noEmit -p packages/xpod-cli/tsconfig.json
+
+      - name: Two supervised original whole integrations
+        run: python3 scripts/agentfs-native-ci/whole_ci_gate.py
+
+      - name: Upload whole gate evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: agentfs-cache-dev-whole-${{ github.sha }}-${{ github.run_attempt }}
+          path: .test-data/whole-ci
+          if-no-files-found: warn
+          retention-days: 14
+
+  native-source-bound:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.native }}
+    name: native source-bound (macos + linux, serial)
+    uses: ./.github/workflows/agentfs-native-acceptance.yml

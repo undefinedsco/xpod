@@ -77,7 +77,7 @@ import {
   resolveEdgeNodeCertificateCapabilityBridgeId,
 } from '../../edge/EdgeNodeCertificateCapabilityBridge';
 import * as path from 'node:path';
-import { PACKAGE_ROOT } from '../../runtime';
+import { PACKAGE_ROOT } from '../../runtime/package-root';
 import { registerServiceInfoRoute } from '../handlers/ServiceInfoHandler';
 
 /**
@@ -241,6 +241,7 @@ function registerSharedRoutes(
     customModelsService: providerCustomModelsService,
     aiClientConfiguration: aiClientConfigurationService?.capability(),
     aiConnectionInvocationKeyIssuer,
+    deploymentBuiltin: container.resolve('deploymentBuiltinConnection', { allowUnregistered: true }) ?? undefined,
   });
   registerAiClientConfigurationRoutes(server, {
     service: aiClientConfigurationService,

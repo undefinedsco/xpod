@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "bunVersion": "1.4.2",
+  "prefixSha256": "3e894e682e09c0212315cf6e24be4b47f7157330888eb9de90c13823ff9d2dd6",
+  "prefixBytes": 2129,
+  "provenance": {
+    "derivation": "Actual build-tools CJS prefix equals stored client profile after removing unused __commonJS declaration; remaining bytes unchanged."
+  },
+  "file": {
+    "sourcePath": "generated-prefix.js",
+    "object": "objects/3e894e682e09c0212315cf6e24be4b47f7157330888eb9de90c13823ff9d2dd6.txt",
+    "sha256": "3e894e682e09c0212315cf6e24be4b47f7157330888eb9de90c13823ff9d2dd6"
+  }
+}

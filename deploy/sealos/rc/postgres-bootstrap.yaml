@@ -1,0 +1,139 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: xpod-rc-postgres-bootstrap
+  labels:
+    app: xpod-rc-rdf-postgres
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: xpod-rc-rdf-postgres
+    spec:
+      restartPolicy: Never
+      imagePullSecrets:
+        - name: xpod-rc-pull-authority
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: bootstrap
+          image: ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres:replace-me
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PGHOST
+              value: xpod-rc-rdf-postgres
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: xpod-rc-postgres-bootstrap
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: xpod-rc-postgres-bootstrap
+                  key: password
+            - name: PGDATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: xpod-rc-postgres-bootstrap
+                  key: database
+            # Application role password. Read from the already-validated
+            # APP_ENV_FILE by the runner, never from argv or a file argument.
+            - name: XPOD_RC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: xpod-rc-postgres-app
+                  key: password
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              : "${XPOD_RC_PASSWORD:?app role password is required}"
+              for attempt in $(seq 1 60); do
+                pg_isready -h xpod-rc-rdf-postgres -q && break
+                sleep 2
+              done
+              pg_isready -h xpod-rc-rdf-postgres -q
+
+              # Fully quoted heredoc: the shell performs NO expansion here, so
+              # no password text can ever become SQL. The role password is read
+              # from the environment by psql itself (\\getenv) and bound with
+              # :'rc_password', which psql renders as a properly escaped SQL
+              # literal (quotes, backslashes and newlines included).
+              psql --no-psqlrc -X -q -v ON_ERROR_STOP=1 -h xpod-rc-rdf-postgres <<'SQL'
+              \getenv rc_password XPOD_RC_PASSWORD
+              DO $$
+              BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'xpod_rc') THEN
+                  CREATE ROLE xpod_rc LOGIN;
+                END IF;
+              END
+              $$;
+              ALTER ROLE xpod_rc WITH LOGIN NOSUPERUSER NOCREATEROLE NOCREATEDB
+                PASSWORD :'rc_password';
+              SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+                WHERE datname = 'xpod_rc' AND pid <> pg_backend_pid();
+              DROP DATABASE IF EXISTS xpod_rc WITH (FORCE);
+              CREATE DATABASE xpod_rc OWNER xpod_rc;
+              SQL
+
+              psql --no-psqlrc -X -q -v ON_ERROR_STOP=1 -h xpod-rc-rdf-postgres -d xpod_rc <<'SQL'
+              CREATE EXTENSION IF NOT EXISTS vector;
+              CREATE EXTENSION IF NOT EXISTS xpod_rdf;
+              CREATE EXTENSION IF NOT EXISTS xpod_qlever;
+              DO $$
+              BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'xpod_rdf' AND extversion = '0.2.0') THEN
+                  RAISE EXCEPTION 'xpod_rdf extension version mismatch';
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'xpod_qlever' AND extversion = '0.4.0') THEN
+                  RAISE EXCEPTION 'xpod_qlever extension version mismatch';
+                END IF;
+              END
+              $$;
+
+              -- Application-role privileges.
+              --
+              -- Neither extension ships any GRANT: pg-rdf-extension creates
+              -- `xpod_rdf` with the installing (admin) role as owner and adds no
+              -- ACL, and the qlever SQL likewise installs as the extension
+              -- installer. PostgreSQL gives a custom schema no default PUBLIC
+              -- USAGE, so a non-superuser app role cannot even resolve
+              -- xpod_rdf.version(). These grants are the minimum the public
+              -- PostgresRdfEngine needs, verified against the real image:
+              -- schema USAGE to resolve objects, table DML for the statistics
+              -- tables the extension functions write, and sequence usage for
+              -- their serial columns.
+              --
+              -- Deliberately NOT granted: SUPERUSER, CREATEROLE, CREATEDB, any
+              -- PUBLIC grant, ownership transfer, REASSIGN, or anything on the
+              -- shared production instance. No superuser fallback exists.
+              GRANT USAGE ON SCHEMA xpod_rdf TO xpod_rc;
+              GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA xpod_rdf TO xpod_rc;
+              GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA xpod_rdf TO xpod_rc;
+              -- Keep future extension tables/sequences usable without a new
+              -- bootstrap run; scoped to this schema only.
+              ALTER DEFAULT PRIVILEGES IN SCHEMA xpod_rdf
+                GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO xpod_rc;
+              ALTER DEFAULT PRIVILEGES IN SCHEMA xpod_rdf
+                GRANT USAGE, SELECT ON SEQUENCES TO xpod_rc;
+              SQL
+
+              # D4: prove the database-side password equals the app Secret on
+              # every bootstrap run, before the app can start. Uses the same
+              # environment value; nothing is echoed.
+              PGPASSWORD="$XPOD_RC_PASSWORD" psql --no-psqlrc -X -q -v ON_ERROR_STOP=1 \
+                -h xpod-rc-rdf-postgres -U xpod_rc -d xpod_rc \
+                -c "DO \$\$ BEGIN IF current_user <> 'xpod_rc' THEN RAISE EXCEPTION 'role mismatch'; END IF; END \$\$;"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL

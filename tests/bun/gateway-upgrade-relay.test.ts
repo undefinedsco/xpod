@@ -107,10 +107,12 @@ async function startEchoUpstream(options: { socketPath?: string; push?: PushPlan
 }
 
 /** Raw TCP upstream that answers the handshake with a plain HTTP rejection. */
-async function startRejectingUpstream(status: number, body: string): Promise<{ port: number }> {
+async function startRejectingUpstream(status: number, body: string): Promise<{ port: number; requests: string[] }> {
+  const requests: string[] = [];
   const port = await getFreePort(48300, '127.0.0.1');
   const server = net.createServer((socket) => {
-    socket.once('data', () => {
+    socket.once('data', (request) => {
+      requests.push(request.toString('latin1'));
       socket.write(
         `HTTP/1.1 ${status} Unauthorized\r\n`
         + 'Content-Type: application/json\r\n'
@@ -125,7 +127,7 @@ async function startRejectingUpstream(status: number, body: string): Promise<{ p
     server.listen(port, '127.0.0.1', (error?: Error) => (error ? reject(error) : resolve()));
   });
   cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
-  return { port };
+  return { port, requests };
 }
 
 interface ProxyHandle {
@@ -210,12 +212,17 @@ describe('gateway upgrade relay on Bun', () => {
     expect(upstream.closes).toEqual([ 1000 ]);
   });
 
-  test('relays an upstream rejection with its real status and body', async() => {
+  for (const route of [
+    { target: 'api', path: '/v1/notifications/ws', name: 'relays an upstream rejection with its real status and body' },
+    { target: 'css', path: '/.notifications/WebSocketChannel2023/rejected', name: 'relays a CSS upstream rejection with its real status and body' },
+  ] as const) test(route.name, async() => {
     const body = JSON.stringify({ error: 'no-ticket' });
     const upstream = await startRejectingUpstream(401, body);
-    const { port } = await startProxy({ css: `http://127.0.0.1:${upstream.port}` });
+    const { port } = await startProxy({ [route.target]: `http://127.0.0.1:${upstream.port}` });
 
-    const response = await rawUpgradeRequest(port, '/v1/notifications/ws');
+    const response = await rawUpgradeRequest(port, route.path);
+    expect(upstream.requests).toHaveLength(1);
+    expect(upstream.requests[0].startsWith(`GET ${route.path} HTTP/1.1\r\n`)).toBe(true);
     expect(response).toContain('401 Unauthorized');
     expect(response).toContain('no-ticket');
   });

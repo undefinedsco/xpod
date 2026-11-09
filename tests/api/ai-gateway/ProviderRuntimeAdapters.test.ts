@@ -319,6 +319,43 @@ describe('Provider runtime adapters', () => {
     expect(fixture.captured[0].headers.get('Authorization')).toBe('Bearer fixture-provider-token');
   });
 
+  it('fails an OpenAI Responses response.failed frame opaquely while keeping ordinary text intact', async () => {
+    const secret = 'sk-responses-SENTINEL';
+    const fixture = fetchFixture(new Response(jsonSse([
+      { type: 'response.created', response: { id: 'resp_failed' } },
+      { type: 'response.output_text.delta', delta: 'partial-answer' },
+      {
+        type: 'response.failed',
+        response: {
+          status: 'failed',
+          error: { type: 'invalid_request_error', code: 'invalid_api_key', message: `Incorrect API key: ${secret}` },
+        },
+      },
+      '[DONE]',
+    ]), { status: 200 }));
+    const adapter = new OpenAiRuntimeAdapter({ transport: new ProviderHttpTransport({ fetch: fixture.fetch }) });
+
+    const seen: GatewayEvent[] = [];
+    const failure = await (async () => {
+      try {
+        for await (const event of adapter.execute({
+          request: baseRequest({ model: 'gpt-5' }),
+          apiKey: secret,
+        })) seen.push(event);
+        return undefined;
+      } catch (error) {
+        return error as Error;
+      }
+    })();
+    expect(seen).toEqual([
+      { type: 'response.started', id: 'resp_failed' },
+      { type: 'text.delta', text: 'partial-answer' },
+    ]);
+    expect(failure).toBeInstanceOf(GatewayProtocolError);
+    expect(failure?.message).not.toContain(secret);
+    expect(`${failure?.stack ?? ''}`).not.toContain(secret);
+  });
+
   it('streams OpenAI Responses events without buffering and preserves tools, reasoning, usage and image input', async () => {
     const fixture = fetchFixture(new Response(jsonSse([
       { type: 'response.created', response: { id: 'resp_openai' } },

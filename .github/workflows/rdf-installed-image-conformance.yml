@@ -106,6 +106,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=xpod-server-rdf-installed-conformance
           build-args: |
             XPOD_QLEVER_LOCAL_RUNTIME_IMAGE=${{ inputs.qlever-local-runtime-image }}
+            XPOD_SOURCE_SHA=${{ github.sha }}
 
       - name: Resolve runner-local immutable Xpod image
         id: local-image

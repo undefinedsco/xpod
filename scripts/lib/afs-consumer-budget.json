@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "kind": "fixed-afs-consumer-budget",
+  "runtimeCount": 2,
+  "ordinaryCommandsPerRuntime": 8,
+  "ordinaryCommandSeconds": 30,
+  "toolVersionCommands": 7,
+  "mountedHarnessSeconds": 3600,
+  "mountedOwnedCloseSeconds": 45,
+  "mountedSerializationSeconds": 15,
+  "commandOwnedCloseSeconds": 70,
+  "captureStages": 5,
+  "captureStageSeconds": 900,
+  "cycleCleanupSeconds": 60,
+  "safeExportSeconds": 180,
+  "hostSetupSeconds": 600,
+  "hostFinalizationSeconds": 60,
+  "uploadWindowSeconds": 600,
+  "registryReadbackSeconds": 180,
+  "registrySingleflightSeconds": 30,
+  "harnessCommands": [
+    {
+      "label": "verifier-harness-checkout",
+      "timeoutSeconds": 60
+    },
+    {
+      "label": "verifier-harness-install",
+      "timeoutSeconds": 600
+    },
+    {
+      "label": "verifier-harness-build-tools",
+      "timeoutSeconds": 300
+    },
+    {
+      "label": "verifier-harness-client",
+      "timeoutSeconds": 300
+    },
+    {
+      "label": "verifier-harness-patch-check",
+      "timeoutSeconds": 60
+    },
+    {
+      "label": "verifier-harness-remove",
+      "timeoutSeconds": 60
+    }
+  ],
+  "normalInstallSeconds": 180,
+  "sourceObservationCommands": 6,
+  "sourceObservationCommandSeconds": 15,
+  "officialRuntimeObservationSeconds": 30
+}

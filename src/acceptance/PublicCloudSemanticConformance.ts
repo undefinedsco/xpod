@@ -18,6 +18,7 @@ import {
   buildSemanticReport,
   connectionStringWithSearchPath,
   exactQuadPattern,
+  assertSemanticDefaultDataset,
   makeAccessScope,
   quoteIdentifier,
   runCaseWithEngine,
@@ -191,6 +192,21 @@ async function queryPublicRdfQueryEngine(
   testCase: SemanticFixtureCase,
   timeoutMs: number | undefined,
 ): Promise<RdfNativeSparqlResult> {
+  // PUBLIC AUTHORITY GAP (documented, not papered over): `RdfQuerySparqlEngine`
+  // exposes `timeoutMs` only — it cannot accept a dataset switch, and the public
+  // authority always reads the endpoint scope. A case that DECLARES a physical
+  // dataset therefore cannot be honoured here. We fail closed with explicit
+  // evidence instead of silently ignoring the declaration and claiming parity.
+  const declared = assertSemanticDefaultDataset(
+    testCase.defaultDataset,
+    `${testCase.id}: public authority`,
+  );
+  if (declared !== undefined && declared !== 'scopedUnion') {
+    throw new Error(
+      `${testCase.id}: public RDF query authority cannot represent defaultDataset='${declared}'; ` +
+      'RdfQuerySparqlEngine exposes timeoutMs only and always reads the endpoint scope',
+    );
+  }
   const sparql = new RdfQuerySparqlEngine(engine);
   const accessScope = makeAccessScope(testCase) as RdfAccessScope;
   if (testCase.acceptMediaType === 'application/n-triples') {

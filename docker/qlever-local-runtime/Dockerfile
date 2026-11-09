@@ -2,7 +2,7 @@
 
 ARG XPOD_QLEVER_PRIOR_SDK_IMAGE
 ARG XPOD_QLEVER_RUNTIME_BASE_IMAGE=debian:trixie-20260803-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258
-FROM ${XPOD_QLEVER_PRIOR_SDK_IMAGE} AS build
+FROM ${XPOD_QLEVER_PRIOR_SDK_IMAGE} AS build-inputs
 
 ARG XPOD_QLEVER_PRIOR_SDK_IMAGE
 ARG XPOD_QLEVER_BUILD_JOBS=4
@@ -18,10 +18,23 @@ RUN printf '%s' "${XPOD_QLEVER_PRIOR_SDK_IMAGE}" \
     | grep -Eq '^.+@sha256:[0-9a-f]{64}$' \
  || { echo "XPOD_QLEVER_PRIOR_SDK_IMAGE must be an immutable digest reference" >&2; exit 64; }
 
-RUN apt-get -o Acquire::Retries=5 update \
- && apt-get install -y --no-install-recommends libsqlite3-dev \
- && rm -rf /var/lib/apt/lists/*
+# Preserve the signed package/source indexes in this build-only parent. The
+# independent focused replay retains the actually used apt delta originals;
+# no package/source index or compiler evidence is copied into the runtime.
+RUN printf '%s\n' \
+      'Acquire::IndexTargets::deb::Packages::KeepCompressedAs "xz";' \
+      'Acquire::IndexTargets::deb-src::Sources::KeepCompressedAs "xz";' \
+      > /etc/apt/apt.conf.d/99-native-original-index-codec \
+ && apt-get -o Acquire::Retries=5 \
+      -o Acquire::AllowInsecureRepositories=false \
+      -o Acquire::AllowDowngradeToInsecureRepositories=false update \
+ && apt-get -o APT::Get::AllowUnauthenticated=false install -y --no-install-recommends libsqlite3-dev
 
+# The only real notice/license text shipped with the QLever workspace is the
+# repository's authoritative ancestor LICENSE. It is COPYed explicitly (instead
+# of assuming qlever/LICENSE, which does not exist) so the fixed build program
+# and the observed replay derive the SAME member from the SAME root.
+COPY LICENSE /workspace/xpod/LICENSE
 COPY qlever/cmake /workspace/xpod/qlever/cmake
 COPY qlever/include /workspace/xpod/qlever/include
 COPY qlever/qlever.lock.json /workspace/xpod/qlever/qlever.lock.json
@@ -31,6 +44,8 @@ COPY qlever/qlever_local_runtime /workspace/xpod/qlever/qlever_local_runtime
 COPY qlever/rdf_protocol /workspace/xpod/qlever/rdf_protocol
 COPY qlever/rdf_sqlite_backend /workspace/xpod/qlever/rdf_sqlite_backend
 COPY qlever/scripts /workspace/xpod/qlever/scripts
+
+FROM build-inputs AS build
 
 RUN bash /workspace/xpod/qlever/scripts/run-focused-native-build.sh \
  && test -f /opt/xpod/qlever/manifest.json \

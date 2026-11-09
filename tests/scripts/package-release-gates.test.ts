@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 
 const repoRoot = process.cwd();
 const testRoot = path.join(repoRoot, '.test-data', 'package-release-gates');
@@ -153,8 +154,9 @@ describe('package release gates', () => {
 
     expect(buildUi).toBeGreaterThan(-1);
     expect(buildUi).toBeLessThan(unitTests);
-    expect(workflow).toContain('package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke" --package-only');
-    expect(workflow).toContain('package-consumer-smoke.cjs "${{ runner.temp }}/xpod-package-smoke-bun" --package-only');
+    const { rootCompatCommands } = createRequire(import.meta.url)('../../scripts/release-gate-evidence.cjs');
+    expect(rootCompatCommands('node', '/consumer').at(-1)).toEqual(['node', 'scripts/package-consumer-smoke.cjs', '/consumer', '--package-only']);
+    expect(rootCompatCommands('bun', '/consumer').at(-1)).toEqual(['bun', 'scripts/package-consumer-smoke.cjs', '/consumer', '--package-only']);
   });
 
   it('installs a real Chromium before unit tests that launch it', () => {

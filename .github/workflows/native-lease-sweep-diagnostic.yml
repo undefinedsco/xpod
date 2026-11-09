@@ -1,0 +1,99 @@
+# DIAGNOSTIC_NOT_QUALIFICATION
+#
+# Measures the canonical native lease sweep on a real GitHub runner inside the
+# pinned service-trixie base image. Read-only, no secrets, no RC/registry/K8s,
+# no SDK build. Never weakens F_GETLEASE/fstat, the six identity fields,
+# first-error ordering, or any budget.
+name: native-lease-sweep-diagnostic
+on:
+  pull_request:
+    paths:
+      - 'scripts/diagnostics/native-lease-sweep.py'
+      - 'qlever/scripts/native/**'
+      - '.github/workflows/native-lease-sweep-diagnostic.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: native-lease-sweep-diagnostic-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  measure:
+    name: measure (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    env:
+      DIAG_NAME: native-lease-sweep-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
+    steps:
+      - name: Checkout (read-only, no persisted credentials)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Measure inside the pinned service-trixie base
+        env:
+          DIAG_PLATFORM: ${{ matrix.platform }}
+          DIAG_ARCH: ${{ matrix.arch }}
+          DIAG_SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          mkdir -p .test-data/diag
+          IMAGE='debian:trixie-20260803-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258'
+          # Copy the receipt out FIRST, then remove ONLY our own container. The
+          # original command status is preserved so a failure stays a failure.
+          finish() {
+            status=$?
+            if docker ps -a --format '{{.Names}}' | grep -qx "$DIAG_NAME"; then
+              docker cp "$DIAG_NAME:/work/qlever/scripts/native/build.receipt.json" \
+                .test-data/diag/build.receipt.json >/dev/null 2>&1 || true
+              docker rm -f "$DIAG_NAME" >/dev/null 2>&1 || true
+            fi
+            exit $status
+          }
+          trap finish EXIT INT TERM
+          if ! docker run --name "$DIAG_NAME" -d \
+            --platform "$DIAG_PLATFORM" \
+            --cpus 4 --memory 2g --memory-swap 2g \
+            --pids-limit 512 --ulimit nofile=8192:8192 \
+            -v "$PWD":/src:ro -v "$PWD/.test-data/diag":/out \
+            -w /src "$IMAGE" sleep 900 >/dev/null; then
+            printf '{"stage":"container_start","failureReason":"container_start_failed","DIAGNOSTIC_NOT_QUALIFICATION":true}\n' \
+              > .test-data/diag/report.json
+            exit 1
+          fi
+          if ! docker exec "$DIAG_NAME" sh -eu -c '
+            timeout 90 apt-get update -qq
+            timeout 90 apt-get install -y -qq --no-install-recommends python3
+          '; then
+            # Bootstrap failure: write a fixed, non-secret stage report so the
+            # artifact step still uploads real evidence.
+            printf '{"stage":"bootstrap","failureReason":"python_bootstrap_failed","DIAGNOSTIC_NOT_QUALIFICATION":true}\n' \
+              > .test-data/diag/report.json
+            exit 1
+          fi
+          docker exec "$DIAG_NAME" sh -eu -c '
+            exec python3 /src/scripts/diagnostics/native-lease-sweep.py \
+              --source-root /src --work-root /work \
+              --report /out/report.json \
+              --git-sha "$1" --platform-arch "$2" \
+              --rows 75,590 --trials 5 --iterations 500 --provision
+          ' _ "$DIAG_SHA" "$DIAG_ARCH"
+      - name: Upload bounded diagnostic report and receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-lease-sweep-${{ matrix.arch }}
+          path: |
+            .test-data/diag/report.json
+            .test-data/diag/build.receipt.json
+          if-no-files-found: error
+          retention-days: 7

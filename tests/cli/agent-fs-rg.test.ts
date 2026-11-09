@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startFixtureServer, type FixtureServer } from '../helpers/agent-directory/fixtureServer';
-import { resolveNativeBinary } from '../../src/cli/agent-fs/native';
+import { resolveNativeBinary } from '../../packages/xpod-afs/src/agent-fs/native';
 
 const TEST_DATA_ROOT = path.resolve('.test-data/agent-directory-workers');
 const ENTRY = path.resolve('src/cli/index.ts');

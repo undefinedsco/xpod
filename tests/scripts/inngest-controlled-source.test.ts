@@ -1,0 +1,30 @@
+/** Private-getter protocol tests only; no real source capability issuance. */
+import {beforeEach,describe,expect,it,vi} from 'vitest';
+import {createHash} from 'node:crypto';
+vi.mock('../../scripts/lib/independent-admission/module-source-admission',()=>({moduleNativeBuildOriginals:vi.fn()}));
+vi.mock('../../packages/xpod-api/scripts/inngest-controlled-build-policy.json',()=>({default:{sourceKind:'xpod-controlled-inngest-build-v1',targetDescriptors:{'linux-arm64':{platform:'linux',arch:'arm64',tools:{}},'linux-x64':{platform:'linux',arch:'x64',tools:{}},'darwin-arm64':{platform:'darwin',arch:'arm64',tools:{}},'darwin-x64':{platform:'darwin',arch:'x64',tools:{}}},sourceCommit:'0d75b0b305010b5e90a627703e9d1df4464b1e39',source:{file:'source.tgz',bytes:3,sha256:'a'.repeat(64),url:'https://fixture.invalid/source'},tools:{pnpm:{file:'pnpm.tgz',maximumBytes:1024,integrity:'pending',url:'https://fixture.invalid/pnpm'}}}}));
+import policy from '../../packages/xpod-api/scripts/inngest-controlled-build-policy.json';
+import contract from '../../packages/xpod-api/scripts/inngest-controlled-materials-contract.json';
+import {moduleNativeBuildOriginals} from '../../scripts/lib/independent-admission/module-source-admission';
+import {inspectControlledInngestSource} from '../../scripts/lib/independent-admission/inngest-controlled-source';
+const getter=vi.mocked(moduleNativeBuildOriginals);const h=(b:Buffer)=>createHash('sha256').update(b).digest('hex');
+function fixture(target='linux-arm64'){
+ const files=new Map<string,Buffer>();const ref=(path:string,b:Buffer)=>{files.set(path,b);return {path,bytes:b.length,sha256:h(b)};};
+ const metadata=(path:string,value:unknown)=>ref(path,Buffer.from(JSON.stringify(value)));
+ const pnpm=Buffer.from('fixture pnpm original');policy.tools.pnpm.integrity='sha512-'+createHash('sha512').update(pnpm).digest('base64');const pnpmRef=ref('originals/pnpm.tgz',pnpm);
+ const source={path:'originals/source.tgz',bytes:3,sha256:'a'.repeat(64)};
+ const httpSource=metadata('source.tgz.http.original.json',{url:policy.source.url,status:200,bytes:source.bytes,sha256:source.sha256}),httpPnpm=metadata('pnpm.tgz.http.original.json',{url:policy.tools.pnpm.url,status:200,bytes:pnpmRef.bytes,sha256:pnpmRef.sha256});
+ const prep=metadata('preparation.original.json',{sourceKind:policy.sourceKind,sourceCommit:policy.sourceCommit,target,originals:[source,pnpmRef],acquisitionOriginals:[httpSource,httpPnpm]});
+ const group={archives:[{path:'archive',bytes:1,sha256:'b'.repeat(64)}],inventories:[{path:'inventory',bytes:1,sha256:'b'.repeat(64)}]};const originals={source:group,dependencies:group,toolchain:group};
+ const inputs=metadata('inputs.original.json',{sourceKind:policy.sourceKind,target,originals});
+ const collection=metadata(contract.collection,{schemaVersion:1,sourceKind:policy.sourceKind,target,sourceCommit:policy.sourceCommit,sourceArchive:source,binary:{path:'products/inngest',bytes:64,sha256:'b'.repeat(64)},license:{path:'source/LICENSE.md',bytes:10,sha256:'c'.repeat(64)},preparation:prep,inputs,originals});
+ const materials={},artifact={};const view={sourceKind:'xpod-controlled-inngest-build-v1' as const,target,sourceSha:'d'.repeat(40),productIdentity:{sourceSha:'d'.repeat(40),package:'@undefineds.co/xpod-api-'+target,version:'1',target,archiveSha256:'e'.repeat(64),archiveBytes:1,integrity:'sha512-fixture'},collection:{...collection,path:contract.sidecarPrefix+collection.path},phaseRows:contract.phaseLabels.map(phase=>({phase,receipt:collection,raw:collection})),readOriginal:(path:string)=>Buffer.from(files.get(path)!),readOriginalRange:(path:string,offset:number,length:number)=>Buffer.from(files.get(path)!.subarray(offset,offset+length)),assertCurrent:vi.fn(),assertProduct:vi.fn()};
+ getter.mockImplementation((m,a)=>{if(m!==materials||a!==artifact)throw new Error('private handles');return view;});return {materials,artifact,view,files};
+}
+beforeEach(()=>{getter.mockReset();});
+describe('controlled source private consumer',()=>{
+ it('joins four exact protocol target/package identities while keeping full source false',()=>{for(const target of Object.keys(policy.targetDescriptors)){const f=fixture(target),result=inspectControlledInngestSource({...f,remainingMilliseconds:1000});expect(result.facts.target).toBe(target);expect(result.facts.fullNativeSourceClosureVerified).toBe(false);f.view.productIdentity.package='@undefineds.co/xpod-api';expect(()=>inspectControlledInngestSource({...f,remainingMilliseconds:1000})).toThrow();}});
+ it('joins exact controlled materials without upgrading whole toolchain/ABI',()=>{const f=fixture();const result=inspectControlledInngestSource({...f,remainingMilliseconds:1000});expect(result.facts.inngestControlledSourceInputOutputMaterialsVerified).toBe(true);expect(result.facts.fullNativeSourceClosureVerified).toBe(false);expect(result.facts.toolchainSourceClosureVerified).toBe(false);expect(result.facts.fullRuntimeAbiVerified).toBe(false);result.assertCurrent();expect(()=>inspectControlledInngestSource({materials:JSON.parse(JSON.stringify(f.materials)),artifact:f.artifact,remainingMilliseconds:1000})).toThrow();});
+ it('rejects wrong product/source, phase ordering, changed original SRI and expired budget',()=>{const f=fixture();f.view.productIdentity.sourceSha='0'.repeat(40);expect(()=>inspectControlledInngestSource({...f,remainingMilliseconds:1000})).toThrow();f.view.productIdentity.sourceSha=f.view.sourceSha;f.view.phaseRows.reverse();expect(()=>inspectControlledInngestSource({...f,remainingMilliseconds:1000})).toThrow();f.view.phaseRows.reverse();f.files.set('originals/pnpm.tgz',Buffer.from('modified pnpm content'));expect(()=>inspectControlledInngestSource({...f,remainingMilliseconds:1000})).toThrow();expect(()=>inspectControlledInngestSource({...f,remainingMilliseconds:0})).toThrow();});
+ it('requires the same live private view at later validation',()=>{const f=fixture();const result=inspectControlledInngestSource({...f,remainingMilliseconds:1000});getter.mockReturnValue({...f.view});expect(()=>result.assertCurrent()).toThrow();});
+});

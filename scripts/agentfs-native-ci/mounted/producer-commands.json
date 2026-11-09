@@ -1,0 +1,9 @@
+{
+  "commands": [
+    "bun run --filter @undefineds.co/xpod-cli build:tools",
+    "bun run --filter @undefineds.co/xpod-client build",
+    "bun run --filter @undefineds.co/xpod-cli build",
+    "bun scripts/build-afs-from-producer.ts --mode module --cli-package packages/xpod-cli",
+    "bun build module-admission.ts --target=node --format=esm"
+  ]
+}

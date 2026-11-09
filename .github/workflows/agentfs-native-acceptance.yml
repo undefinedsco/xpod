@@ -1,0 +1,141 @@
+name: AgentFS native source-bound acceptance
+
+on:
+  push:
+    branches: ['codex/afs-module-integration-20261010']
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agentfs-native-acceptance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runner: macos-14
+          - target: darwin-x64
+            runner: macos-15-intel
+    name: native (${{ matrix.target }})
+    timeout-minutes: 90
+    runs-on: ${{ matrix.runner }}
+    env:
+      NATIVE_TARGET: ${{ matrix.target }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.21.1
+      # ARM retains its admitted setup-node path; Intel uses independently
+      # pinned official archive bytes, never the ARM download or binary.
+      - name: Pin the official Intel Node asset
+        if: matrix.target == 'darwin-x64'
+        run: |
+          set -euo pipefail
+          node_archive="$RUNNER_TEMP/node-v22.21.1-darwin-x64.tar.gz"
+          curl -fsSL 'https://nodejs.org/dist/v22.21.1/node-v22.21.1-darwin-x64.tar.gz' -o "$node_archive"
+          printf '%s  %s\n' '8e3dc89614debe66c2a6ad2313a1adb06eb37db6cd6c40d7de6f7d987f7d1afd' "$node_archive" | shasum -a 256 -c -
+          tar -xzf "$node_archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/node-v22.21.1-darwin-x64/bin" >> "$GITHUB_PATH"
+      - name: Lightweight supervisor regression
+        run: python3 tests/scripts/agentfs_native_ci_test.py -v
+      - name: Official export, offline rebuild, package and extracted install gate
+        run: python3 scripts/agentfs-native-ci/accept.py
+      - name: Retain closed gate evidence and new archive only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: agentfs-native-${{ env.NATIVE_TARGET }}-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/agentfs-native-acceptance/evidence/*.receipt.json
+            ${{ runner.temp }}/agentfs-native-acceptance/evidence/*.raw.log
+            ${{ runner.temp }}/agentfs-native-acceptance/evidence/runtime-admission.metadata.json
+            ${{ runner.temp }}/agentfs-native-acceptance/evidence/native-build.log
+            ${{ runner.temp }}/agentfs-native-acceptance/evidence/native-test.log
+            ${{ runner.temp }}/agentfs-native-acceptance/evidence/native-receipt.json
+            ${{ runner.temp }}/agentfs-native-acceptance/evidence/source-kit.json
+            ${{ runner.temp }}/agentfs-native-acceptance/evidence/final.json
+            ${{ runner.temp }}/agentfs-native-acceptance/evidence/xpod-cli-*.tar.gz
+
+  # Linux producers start after both Mac producers; each target has independent evidence.
+  # The Ubuntu ARM runner only hosts Docker; the pinned Bookworm image performs
+  # the actual Linux export/rebuild/test/package/install/admission so the helper
+  # targets glibc 2.36 + OpenSSL 3, not the runner's glibc 2.39.
+  native-linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+            docker-platform: linux/arm64
+            docker-arch: arm64
+          - target: linux-x64
+            runner: ubuntu-24.04
+            docker-platform: linux/amd64
+            docker-arch: amd64
+    name: native (${{ matrix.target }}, bookworm)
+    needs: native-macos
+    timeout-minutes: 90
+    runs-on: ${{ matrix.runner }}
+    env:
+      NATIVE_TARGET: ${{ matrix.target }}
+      BOOKWORM_IMAGE: rust@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Pull and prove the pinned Bookworm manifest by registry digest
+        run: |
+          set -euo pipefail
+          docker pull --platform "${{ matrix.docker-platform }}" "$BOOKWORM_IMAGE"
+          test "$(docker image inspect --format '{{.Architecture}}' "$BOOKWORM_IMAGE")" = "${{ matrix.docker-arch }}"
+          docker image inspect --format 'identity={{.Id}} repoDigests={{.RepoDigests}} os={{.Os}} arch={{.Architecture}}' "$BOOKWORM_IMAGE"
+          docker run --rm --init --platform "${{ matrix.docker-platform }}" "$BOOKWORM_IMAGE" sh -c '. /etc/os-release && printf "%s %s " "$ID" "$VERSION_CODENAME"; getconf GNU_LIBC_VERSION'
+      - name: Build, test, package and Node/noBun admit inside Bookworm
+        run: |
+          set -euo pipefail
+          docker run --rm --init --platform "${{ matrix.docker-platform }}" \
+            -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
+            -v "$RUNNER_TEMP:$RUNNER_TEMP" \
+            -w "$GITHUB_WORKSPACE" \
+            -e RUNNER_TEMP="$RUNNER_TEMP" \
+            -e GITHUB_SHA="$GITHUB_SHA" \
+            -e NATIVE_TARGET="$NATIVE_TARGET" \
+            -e AGENTFS_BOOKWORM_IMAGE="$BOOKWORM_IMAGE" \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            "$BOOKWORM_IMAGE" \
+            bash "$GITHUB_WORKSPACE/scripts/agentfs-native-ci/bookworm-entry.sh"
+      - name: Restore host ownership of container-written evidence
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/agentfs-native-acceptance" || true
+      - name: Retain closed gate evidence and new archive only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: agentfs-native-${{ env.NATIVE_TARGET }}-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/agentfs-native-acceptance/evidence/*.receipt.json
+            ${{ runner.temp }}/agentfs-native-acceptance/evidence/*.raw.log
+            ${{ runner.temp }}/agentfs-native-acceptance/evidence/runtime-admission.metadata.json
+            ${{ runner.temp }}/agentfs-native-acceptance/evidence/native-build.log
+            ${{ runner.temp }}/agentfs-native-acceptance/evidence/native-test.log
+            ${{ runner.temp }}/agentfs-native-acceptance/evidence/native-receipt.json
+            ${{ runner.temp }}/agentfs-native-acceptance/evidence/source-kit.json
+            ${{ runner.temp }}/agentfs-native-acceptance/evidence/final.json
+            ${{ runner.temp }}/agentfs-native-acceptance/evidence/xpod-cli-*.tar.gz

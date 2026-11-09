@@ -8,6 +8,7 @@ import { nativeGitEnvironment, runSourceCommand, verifyNativeSources } from '../
 import { verifySourceFiles } from '../src/source-materials';
 import { assertNativeTarget, bunCompileTarget } from '../src/native-target';
 import { sha256File } from '../src/manifest';
+import { generateNativeNotices } from './collect-native-notices';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 let out = path.join(root, '.test-data/rebuild-native');
@@ -35,6 +36,7 @@ if (verifyOnly) {
   // rustup's intended compiler. Missing toolchains fail without installation.
   const cargo = runSourceCommand('rustup', ['which', '--toolchain', kit.toolchain, 'cargo'], root).trim();
   const rustc = runSourceCommand('rustup', ['which', '--toolchain', kit.toolchain, 'rustc'], root).trim();
+  const compilerParallelism = 2;
   const compiler = { toolchain: kit.toolchain, cargoSha256: sha256File(cargo), rustcSha256: sha256File(rustc), rustcVersion: runSourceCommand(rustc, ['-vV'], root).trim() };
   mkdirSync(out, { recursive: true });
   const stage = mkdtempSync(path.join(tmpdir(), 'xpod-native-source-rebuild-'));
@@ -44,6 +46,7 @@ if (verifyOnly) {
   }
   Object.assign(env, {
     CARGO_HOME: path.join(stage, 'cargo-home'), CARGO_TARGET_DIR: path.join(out, 'target'),
+    CARGO_BUILD_JOBS: String(compilerParallelism),
     RUSTC: rustc, RUSTUP_TOOLCHAIN: kit.toolchain, GIT_CEILING_DIRECTORIES: stage,
   });
   const run = (action: 'build' | 'test'): void => {
@@ -51,6 +54,7 @@ if (verifyOnly) {
     writeFileSync(path.join(out, `${action}.log`), result.stdout + '\n' + result.stderr);
     if (result.status !== 0) { throw new Error(`Native ${action} failed; see ${path.join(out, `${action}.log`)}`); }
   };
+  let nativeNotices: ReturnType<typeof generateNativeNotices>;
   try {
     for (const file of kit.files) {
       const destination = path.join(stage, file.path); mkdirSync(path.dirname(destination), { recursive: true });
@@ -59,6 +63,8 @@ if (verifyOnly) {
     }
     run('build');
     if (test) { run('test'); }
+    nativeNotices = generateNativeNotices({ target, workspace: path.join(stage, 'helper'), cargo, rustc, env, compiler,
+      sourceKitSHA256: sourceKitSha256, destination: path.join(out, 'native-notices') });
     verifySourceFiles(stage, kit.files);
   } finally { rmSync(stage, { recursive: true, force: true }); }
   const compiled = path.join(out, 'target/release/agentfs-pod');
@@ -66,7 +72,7 @@ if (verifyOnly) {
   const helper = path.join(out, 'agentfs-pod'); cpSync(compiled, helper);
   const receipt = {
     schemaVersion: 1, target, engine: kit.engine, sourceKitSha256, helperSha256: sha256File(helper),
-    compiler, buildArguments: ['build', '--release', '--frozen'], testsPassed: test,
+    compiler, nativeNotices, compilerParallelism, buildArguments: ['build', '--release', '--frozen'], testsPassed: test,
     registryPackages: kit.registryPackages, sourceFiles: kit.files.length,
     isolatedCargoHome: true, stagedVerifiedFilesOnly: true,
     scope: 'Native helper rebuild only; toolchain/system dependencies external; not Bun/JSC or whole-artifact release clearance',

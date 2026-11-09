@@ -1,13 +1,14 @@
 'use strict';
 
 // Keep bootstrap generation testable without executing the package build.
-function createSingleBinaryEntry(manifestSha, compressedManifest) {
+function createSingleBinaryEntry(manifestSha, compressedManifest, stagedSpecifiers = {}) {
   return [
     'import crypto from \'node:crypto\';',
     'import fs from \'node:fs\';',
     'import os from \'node:os\';',
     'import path from \'node:path\';',
     'import zlib from \'node:zlib\';',
+    'import Module from \'node:module\';',
     'import { pathToFileURL } from \'node:url\';',
     '',
     `const ARCHIVE_SHA256 = '${manifestSha}';`,
@@ -64,6 +65,21 @@ function createSingleBinaryEntry(manifestSha, compressedManifest) {
     '  const cacheRoot = resolveCacheRoot();',
     '  const cacheDir = path.join(cacheRoot, ARCHIVE_SHA256.slice(0, 16));',
     '  ensureExtracted(cacheDir);',
+    `  const stagedSpecifiers: Record<string, string> = ${JSON.stringify(stagedSpecifiers)};`,
+    // Compiled CJS dependencies use Module.require, which does not pass through
+    // Bun's runtime plugin resolver. Both hosts resolve to the same physical
+    // package files, preserving their ordinary module cache and class identity.
+    '  const originalRequire = Module.prototype.require;',
+    '  Module.prototype.require = function(specifier: string) {',
+    '    const relative = Object.hasOwn(stagedSpecifiers, specifier) ? stagedSpecifiers[specifier] : undefined;',
+    '    return originalRequire.call(this, relative ? path.join(cacheDir, relative) : specifier);',
+    '  };',
+    '  Bun.plugin({ name: \'canonical-staged-public-packages\', setup(build) {',
+    '    build.onResolve({ filter: /^[^./]/ }, args => {',
+    '      const relative = Object.hasOwn(stagedSpecifiers, args.path) ? stagedSpecifiers[args.path] : undefined;',
+    '      if (relative) return { path: path.join(cacheDir, relative) };',
+    '    });',
+    '  } });',
     '  const entryPath = path.join(cacheDir, \'dist\', \'__cli__.cjs\');',
     '  const argv0 = process.argv[0] ?? process.execPath;',
     '  const childEntrypointAtArgv1 = process.argv[1]?.startsWith(\'__internal-\') === true;',

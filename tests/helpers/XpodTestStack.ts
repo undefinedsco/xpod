@@ -1,10 +1,16 @@
 import path from 'path';
 import { randomUUID } from 'node:crypto';
+import { isIP } from 'node:net';
 import { getFreePortForWildcard } from '../../src/runtime/port-finder';
 import { startXpodRuntime, type XpodRuntimeHandle, type XpodRuntimeOptions } from '../../src/runtime/XpodRuntime';
 import { resolveTestRuntimeTransport } from './runtimeTransport';
 import { isPortConflict, withRuntimeStartLock } from './testRuntime';
 import { FAKE_QLEVER_LOCAL_RUNTIME_COMMAND } from './qleverRuntime';
+
+/** Derive test environment from this attempt's locked, immutable listener plan. */
+export type TestPortPlanEnvFactory = (
+  plan: Readonly<Pick<XpodRuntimeOptions, 'bindHost' | 'baseUrl' | 'gatewayPort' | 'cssPort' | 'apiPort'>>,
+) => NonNullable<XpodRuntimeOptions['env']>;
 
 export class XpodTestStack {
   public port = 0;
@@ -14,6 +20,9 @@ export class XpodTestStack {
   public socketPath?: string;
   private runtime: XpodRuntimeHandle | null = null;
   private runtimeGatewayAdminProxyAuthSecret?: string;
+
+  /** Unit fixtures can isolate startup coordination; real stacks keep the shared default. */
+  constructor(private readonly startLockDir?: string) {}
 
   /**
    * Test-only access to the ephemeral gateway secret generated for this
@@ -28,7 +37,10 @@ export class XpodTestStack {
     return this.runtimeGatewayAdminProxyAuthSecret;
   }
 
-  async start(mode = 'local', options: Partial<XpodRuntimeOptions> = {}): Promise<void> {
+  /** Derived environment overrides the same keys in options.env, once per plan.
+   * The factory cannot replace ports or disable the explicit-port retry policy.
+   */
+  async start(mode = 'local', options: Partial<XpodRuntimeOptions> = {}, envForPortPlan?: TestPortPlanEnvFactory): Promise<void> {
     const transport = resolveTestRuntimeTransport(options.transport);
     const runtimeRoot = options.runtimeRoot
       ?? path.resolve('.test-data', 'xpod-test-stack', randomUUID());
@@ -48,16 +60,27 @@ export class XpodTestStack {
       for (let attempt = 1; ; attempt += 1) {
         const portOptions = transport === 'port' ? await this.resolvePortOptions(options) : {};
         try {
-          await this.startOnce(mode, options, transport, runtimeRoot, rootFilePath, portOptions);
+          const attemptOptions = envForPortPlan
+            ? { ...options, env: { ...options.env, ...envForPortPlan(Object.freeze({ ...portOptions })) } }
+            : options;
+          await this.startOnce(mode, attemptOptions, transport, runtimeRoot, rootFilePath, portOptions);
           return;
         } catch (error) {
           if (attempt >= attempts || !isPortConflict(error)) {
             throw error;
           }
+          const failure = error && typeof error === 'object' ? error as NodeJS.ErrnoException & { address?: unknown; port?: unknown } : undefined;
+          console.warn('[XpodTestStack] port-conflict retry', JSON.stringify({
+            attempt, maxAttempts: attempts,
+            code: failure?.code === 'EADDRINUSE' ? failure.code : null,
+            syscall: failure?.syscall === 'listen' ? failure.syscall : null,
+            address: typeof failure?.address === 'string' && isIP(failure.address) ? failure.address : null,
+            port: typeof failure?.port === 'number' && Number.isInteger(failure.port) && failure.port > 0 && failure.port <= 65535 ? failure.port : null,
+          }));
           await this.stop().catch(() => undefined);
         }
       }
-    });
+    }, this.startLockDir);
   }
 
   private async startOnce(

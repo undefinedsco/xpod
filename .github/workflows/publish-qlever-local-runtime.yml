@@ -3,12 +3,28 @@ name: Publish QLever local runtime image
 on:
   workflow_dispatch:
     inputs:
+      sdk_profile:
+        description: Declared SDK and runtime ABI profile
+        type: string
+        default: service-trixie
+      target:
+        description: Native Linux target; the default preserves the existing service image
+        type: string
+        default: linux-x64
       prior_sdk_image:
         description: Immutable QLever runtime SDK image reference
         required: true
         type: string
   workflow_call:
     inputs:
+      sdk_profile:
+        description: Declared SDK and runtime ABI profile
+        type: string
+        default: service-trixie
+      target:
+        description: Native Linux target; the default preserves the existing service image
+        type: string
+        default: linux-x64
       prior_sdk_image:
         description: Immutable QLever runtime SDK image reference
         required: true
@@ -20,25 +36,43 @@ on:
       digest:
         description: Published OCI manifest digest
         value: ${{ jobs.publish.outputs.digest }}
+      native_runtime_artifact_id:
+        value: ${{ jobs.publish.outputs.native_runtime_artifact_id }}
+      native_runtime_artifact_digest:
+        value: ${{ jobs.publish.outputs.native_runtime_artifact_digest }}
+      native_runtime_master_bytes:
+        value: ${{ jobs.publish.outputs.native_runtime_master_bytes }}
+      native_runtime_master_sha256:
+        value: ${{ jobs.publish.outputs.native_runtime_master_sha256 }}
 
 permissions:
   contents: read
   packages: write
 
 concurrency:
-  group: qlever-local-runtime-${{ github.sha }}
+  group: qlever-local-runtime-${{ inputs.sdk_profile || 'service-trixie' }}-${{ inputs.target || 'linux-x64' }}-${{ github.sha }}
   cancel-in-progress: false
 
-env:
-  IMAGE: ghcr.io/${{ github.repository_owner }}/xpod-qlever-local-runtime
-
 jobs:
+  resolve_target:
+    uses: ./.github/workflows/resolve-qlever-native-target.yml
+    with:
+      target: ${{ inputs.target || 'linux-x64' }}
+      platform: linux
+      sdk_profile: ${{ inputs.sdk_profile }}
   publish:
-    runs-on: ubuntu-24.04
+    needs: resolve_target
+    env:
+      IMAGE: ghcr.io/${{ github.repository_owner }}/xpod-qlever-local-runtime${{ needs.resolve_target.outputs.repository_profile_suffix }}${{ needs.resolve_target.outputs.repository_suffix }}
+    runs-on: ${{ needs.resolve_target.outputs.runner }}
     timeout-minutes: 120
     outputs:
       image: ${{ steps.publish.outputs.image }}
       digest: ${{ steps.publish.outputs.digest }}
+      native_runtime_artifact_id: ${{ steps.native_originals_upload.outputs.artifact-id }}
+      native_runtime_artifact_digest: ${{ steps.native_originals_upload.outputs.artifact-digest }}
+      native_runtime_master_bytes: ${{ steps.native_originals.outputs.master_bytes }}
+      native_runtime_master_sha256: ${{ steps.native_originals.outputs.master_sha256 }}
     steps:
       - name: Validate immutable inputs
         shell: bash
@@ -46,6 +80,7 @@ jobs:
           PRIOR_SDK_IMAGE: ${{ inputs.prior_sdk_image }}
         run: |
           set -euo pipefail
+          echo "XPOD_NATIVE_JOB_DEADLINE=$(python3 -c 'import time; print(time.monotonic() + 120 * 60)')" >> "${GITHUB_ENV}"
           [[ "${GITHUB_SHA}" =~ ^[a-f0-9]{40}$ ]]
           [[ "${PRIOR_SDK_IMAGE}" =~ ^[^[:space:]]+@sha256:[a-f0-9]{64}$ ]] \
             || { echo 'prior_sdk_image must be an immutable @sha256 image reference' >&2; exit 64; }
@@ -56,16 +91,50 @@ jobs:
       - name: Resolve the QLever build inputs identity
         id: inputs
         shell: bash
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+          SDK_PROFILE: ${{ needs.resolve_target.outputs.sdk_profile }}
+          SDK_TARGET: ${{ needs.resolve_target.outputs.target }}
+          SDK_PROFILE_IDENTITY: ${{ needs.resolve_target.outputs.sdk_profile_identity }}
+          NORMAL_DOCKERFILE: docker/qlever-runtime-sdk/Dockerfile.normal
         run: |
           set -euo pipefail
-          inputs_hash="$({ git rev-parse "${GITHUB_SHA}:qlever"; git rev-parse "${GITHUB_SHA}:docker/qlever-local-runtime"; } | sha256sum | cut -c1-12)"
-          echo "tag=qlever-inputs-${inputs_hash}" >> "${GITHUB_OUTPUT}"
-          echo "QLever local runtime inputs: qlever-inputs-${inputs_hash}" >> "${GITHUB_STEP_SUMMARY}"
+          if [[ "${SDK_PROFILE}" == service-trixie ]]; then
+            # The ordinary SDK is identified by its full canonical 64-hex input
+            # identity. Recompute that same identity here rather than inventing a
+            # short local alias: the shared resolver only accepts the verified
+            # normal-build-v1 identity, and the local runtime Dockerfile is one of
+            # its declared inputs.
+            python3 qlever/scripts/sdk-normal-build-proof.py identity \
+              --source . --source-commit "${SOURCE_COMMIT}" \
+              --profile "${SDK_PROFILE}" --target "${SDK_TARGET}" \
+              --profile-identity "${SDK_PROFILE_IDENTITY}" \
+              --dockerfile "${NORMAL_DOCKERFILE}" \
+              --out "${RUNNER_TEMP}/qlever-normal-input.json"
+            input_hash="$(python3 -c 'import json,os;print(json.load(open(os.environ["RUNNER_TEMP"]+"/qlever-normal-input.json"))["inputHash"])')"
+            tag="qlever-inputs-${input_hash}"
+            # The retention step consumes the SAME canonical identity this step
+            # derived from the immutable source. It is not caller input, not a
+            # second alias and not a place to guess the SDK build run.
+            echo "input_hash=${input_hash}" >> "${GITHUB_OUTPUT}"
+          else
+            # module-bookworm-gcc12 keeps its original 12-hex local alias and its
+            # separate module recipe; that profile never opts into normal reuse.
+            inputs_hash="$({ printf '%s\n' "${SDK_PROFILE}:${SDK_TARGET}:${SDK_PROFILE_IDENTITY}"; git rev-parse "${SOURCE_COMMIT}:qlever"; git rev-parse "${SOURCE_COMMIT}:docker/qlever-local-runtime"; } | sha256sum | cut -c1-12)"
+            tag="qlever-inputs-${inputs_hash}"
+            echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          fi
+          echo "QLever local runtime inputs: ${tag}" >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.4.2
+
+      - name: Verify the actual native producer host
+        env:
+          EXPECTED_ARCH: ${{ needs.resolve_target.outputs.arch }}
+        run: bun -e 'if(process.platform!=="linux" || process.arch!==process.env.EXPECTED_ARCH) throw Error("Native producer host/target mismatch")'
 
       - name: Install and patch product-gate dependencies
         run: |
@@ -93,9 +162,10 @@ jobs:
         shell: bash
         env:
           RUNTIME_IMAGE: ${{ env.IMAGE }}
-          RUNTIME_DOCKERFILE: ./docker/qlever-local-runtime/Dockerfile
+          RUNTIME_DOCKERFILE: ${{ needs.resolve_target.outputs.runtime_dockerfile }}
           QELEVER_INPUTS_TAG: ${{ steps.inputs.outputs.tag }}
-          REUSE_IDENTICAL_INPUTS: 'true'
+          REUSE_IDENTICAL_INPUTS: ${{ needs.resolve_target.outputs.sdk_profile == 'service-trixie' && 'true' || 'false' }}
+          SDK_PROFILE: ${{ needs.resolve_target.outputs.sdk_profile }}
         run: bash qlever/scripts/resolve-runtime-sdk-build.sh
 
       - name: Build the exact local runtime image
@@ -106,7 +176,7 @@ jobs:
           context: .
           file: ${{ steps.resolve.outputs.dockerfile }}
           target: runtime
-          platforms: linux/amd64
+          platforms: ${{ needs.resolve_target.outputs.docker_platform }}
           load: true
           push: false
           tags: |
@@ -115,8 +185,8 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-          cache-from: type=gha,scope=qlever-local-runtime
-          cache-to: type=gha,mode=max,scope=qlever-local-runtime
+          cache-from: type=gha,scope=qlever-local-runtime-${{ needs.resolve_target.outputs.sdk_profile }}-${{ needs.resolve_target.outputs.target }}
+          cache-to: type=gha,mode=max,scope=qlever-local-runtime-${{ needs.resolve_target.outputs.sdk_profile }}-${{ needs.resolve_target.outputs.target }}
           build-args: |
             XPOD_QLEVER_BUILD_JOBS=2
             XPOD_QLEVER_PRIOR_SDK_IMAGE=${{ inputs.prior_sdk_image }}
@@ -239,7 +309,7 @@ jobs:
           context: .
           file: ${{ steps.resolve.outputs.dockerfile }}
           target: runtime
-          platforms: linux/amd64
+          platforms: ${{ needs.resolve_target.outputs.docker_platform }}
           push: true
           tags: |
             ${{ env.IMAGE }}:sha-${{ github.sha }}
@@ -279,6 +349,63 @@ jobs:
           [[ "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]] || exit 1
           echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
           echo "image=${IMAGE}@${digest}" >> "${GITHUB_OUTPUT}"
+
+      - name: Retain focused native runtime originals
+        id: native_originals
+        if: needs.resolve_target.outputs.sdk_profile == 'service-trixie'
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          PRIOR_SDK_IMAGE: ${{ inputs.prior_sdk_image }}
+          RUNTIME_IMAGE: ${{ steps.publish.outputs.image }}
+          SDK_INPUT_HASH: ${{ steps.inputs.outputs.input_hash }}
+          RUNTIME_TARGET: ${{ needs.resolve_target.outputs.target }}
+        run: |
+          set -euo pipefail
+          python3 scripts/collect-normal-local-runtime-originals.py \
+            --source-sha "${SOURCE_SHA}" \
+            --sdk-image "${PRIOR_SDK_IMAGE}" \
+            --runtime-image "${RUNTIME_IMAGE}" \
+            --sdk-input-hash "${SDK_INPUT_HASH}" \
+            --target "${RUNTIME_TARGET}" \
+            --run-id "${GITHUB_RUN_ID}" --run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --job publish \
+            --out "${RUNNER_TEMP}/candidate-service-native-runtime" \
+            --maximum-bytes 134217728 \
+            --deadline-monotonic "${XPOD_NATIVE_JOB_DEADLINE}"
+          python3 - <<'PY_NATIVE_MASTER'
+          import hashlib, os
+          from pathlib import Path
+          master = Path(os.environ['RUNNER_TEMP']) / 'candidate-service-native-runtime/materials.json'
+          size = master.stat().st_size
+          assert 0 < size <= 4194304 and not master.is_symlink()
+          raw = master.read_bytes()
+          assert len(raw) == size
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'master_bytes={size}\nmaster_sha256={hashlib.sha256(raw).hexdigest()}\n')
+          PY_NATIVE_MASTER
+
+      - name: Upload focused native runtime originals
+        id: native_originals_upload
+        if: needs.resolve_target.outputs.sdk_profile == 'service-trixie'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: candidate-service-native-runtime-${{ needs.resolve_target.outputs.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/candidate-service-native-runtime/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload failed native runtime diagnostics
+        if: failure() && steps.native_originals.outcome == 'failure'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: candidate-native-runtime-diagnostics-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          include-hidden-files: true
+          path: |
+            ${{ runner.temp }}/candidate-service-native-runtime/
+            ${{ github.workspace }}/.test-data/service-qualification/native-runtime/normal-*/
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Record the deployable image
         shell: bash

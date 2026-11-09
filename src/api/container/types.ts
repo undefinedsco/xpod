@@ -5,6 +5,7 @@ import type { PodBaseUrlResolver } from '../ai-gateway/pod/PodBaseUrlResolver';
  * 定义容器中注册的所有服务接口
  */
 
+import type { DeploymentBuiltinConnection } from '../ai-gateway/builtin/DeploymentBuiltinConnection';
 import type { ApiServer } from '../ApiServer';
 import type { AuthMiddleware } from '../middleware/AuthMiddleware';
 import type { Authenticator } from '../auth/Authenticator';
@@ -290,10 +291,14 @@ export interface ApiContainerCradle {
   providerCustomModelsService?: ProviderCustomModelsService;
   gatewayProviderRegistry: GatewayProviderRegistry;
   gatewayCredentialStore: GatewayCredentialStore;
+  platformGatewayConfiguration?: import('../ai-gateway/credentials/PlatformGatewayCredentialStore').PlatformGatewayConfiguration;
   gatewayRuntimeRegistry: ProviderRuntimeRegistry;
   providerHttpTransport: ProviderHttpTransport;
+  platformHttpTransport: ProviderHttpTransport;
   gatewaySessionAffinityStore: SessionAffinityStore;
   aiGatewayService?: AiGatewayService;
+  /** Cloud only: deployment-owned `linx` / `linx-lite` connection (null when DEFAULT_API_* is unset). */
+  deploymentBuiltinConnection?: DeploymentBuiltinConnection | null;
 
   // 业务服务
   chatService: VercelChatService;

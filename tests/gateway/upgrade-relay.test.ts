@@ -171,7 +171,7 @@ describe('gateway upgrade relay (http-proxy path)', () => {
 
   it('relays an upstream rejection with its real status and body', async() => {
     const upstream = await startEchoUpstream({ reject: { status: 401, body: JSON.stringify({ error: 'no-ticket' }) } });
-    const { port } = await startGateway({ css: `http://127.0.0.1:${upstream.port}` });
+    const { port } = await startGateway({ api: `http://127.0.0.1:${upstream.port}` });
 
     const raw = await rawUpgradeRequest(port, '/v1/notifications/ws');
     expect(raw).toContain('401 Unauthorized');

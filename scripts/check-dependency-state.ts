@@ -22,8 +22,19 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import type {ApiDependencyScope} from './lib/api-scoped-dependency-state';
+let activeApiScope:ApiDependencyScope|undefined;
 
-const root = process.cwd();
+const argumentRoot = process.argv.indexOf('--dependency-root');
+if (argumentRoot >= 0 && (!process.argv[argumentRoot + 1] || process.argv[argumentRoot + 1].startsWith('--'))) {
+  throw new Error('--dependency-root requires a directory');
+}
+const root = argumentRoot >= 0 ? path.resolve(process.argv[argumentRoot + 1]) : process.cwd();
+const runtimeOnly = process.argv.includes('--runtime-only');
+// The installed artifact is checked against this checkout's canonical patch
+// declarations, without copying build tools or patch authorities into it.
+const authorityRoot = runtimeOnly ? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..') : root;
 const repairRequested = process.argv.includes('--repair');
 const failures: string[] = [];
 
@@ -184,11 +195,13 @@ function packageNameFromDependencyKey(key: string): string {
 }
 
 function checkPatchedDependencies(): void {
-  const patched = readJson(path.join(root, 'package.json')).patchedDependencies ?? {};
+  const patched = readJson(path.join(authorityRoot, 'package.json')).patchedDependencies ?? {};
   for (const [key, patchPath] of Object.entries<string>(patched)) {
     const name = packageNameFromDependencyKey(key);
-    const directory = path.join(root, 'node_modules', name);
-    const patchFile = path.join(root, patchPath);
+    const pinnedVersion = key.slice(key.lastIndexOf('@') + 1);
+    const directories=activeApiScope?activeApiScope.patchedDirectories(name,pinnedVersion):[path.join(root,'node_modules',name)];
+    for(const directory of directories){
+    const patchFile = path.join(authorityRoot, patchPath);
     if (!existsSync(directory)) {
       failures.push(`${name} is not installed — run: bun install`);
       continue;
@@ -198,7 +211,6 @@ function checkPatchedDependencies(): void {
       continue;
     }
     const installedVersion = readJson(path.join(directory, 'package.json')).version as string;
-    const pinnedVersion = key.slice(key.lastIndexOf('@') + 1);
     if (installedVersion !== pinnedVersion) {
       failures.push(`${name}: installed ${installedVersion} but the patch targets ${pinnedVersion}`
         + ' — align package.json and patchedDependencies, then run: bun install');
@@ -212,13 +224,14 @@ function checkPatchedDependencies(): void {
       + (repairRequested
         ? ' — cannot safely repair without pristine package bytes; reinstall with: bun install'
         : ' — reinstall with: bun install'));
+    }
   }
 }
 
 // Bun's patchedDependencies and repository postinstall patches are separate.
 // A --ignore-scripts reinstall restores registry bytes for the latter.
 function checkPostinstallPatches(): void {
-  const postinstall = readJson(path.join(root, 'package.json')).scripts?.postinstall ?? '';
+  const postinstall = readJson(path.join(authorityRoot, 'package.json')).scripts?.postinstall ?? '';
   const browser = '@inrupt/solid-client-authn-browser';
   // Check both pinned 3.1.1 branches in context. A remaining occurrence in the
   // other branch must not hide a lost custom authenticated transport.
@@ -266,19 +279,40 @@ function checkPostinstallPatches(): void {
   ];
   for (const check of checks) {
     if (!postinstall.includes(check.script)) continue;
-    const directory = path.join(root, 'node_modules', check.name);
+    const directories=activeApiScope?activeApiScope.postinstallDirectories(check.name):[path.join(root,'node_modules',check.name)];
+    for(const directory of directories){
     const manifest = path.join(directory, 'package.json');
     if (!existsSync(manifest) || readJson(manifest).version !== '3.1.1') {
       failures.push(`${check.name}: postinstall patch requires installed version 3.1.1 — run: bun install`);
       continue;
     }
     for (const [file, snippets] of check.files) {
+      // Runtime packages may omit upstream source, but every emitted JS and
+      // declaration target still uses the same canonical patch predicates.
+      if (runtimeOnly && file.startsWith('src/')) continue;
       const target = path.join(directory, file);
       const content = existsSync(target) ? readFileSync(target, 'utf8') : '';
       const normalized = content.replace(/\s+/gu, ' ');
       if (snippets.some((snippet) => !normalized.includes(snippet)) ||
           (snippets.includes('XPOD_INRUPT_RESOURCE_DPOP_ATH') && content.split('XPOD_INRUPT_RESOURCE_DPOP_ATH').length !== 2)) {
         failures.push(`${check.name}/${file}: ${check.script} missing or incomplete — run: bun run postinstall`);
+      }
+    }
+    }
+  }
+  if (postinstall.includes('comunica-undici-entry.cjs')) {
+    // Reuse the patch module's OWN discovery + predicate: one scanner, one rule.
+    // The bare Undici specifier makes Bun load its builtin shim, which has no
+    // cacheStores, so an actor left unpatched is a real startup hazard.
+    const { inspectInstalledPackage } = require(path.join(authorityRoot, 'patches/comunica-undici-entry.cjs')) as {
+      inspectInstalledPackage: (repositoryRoot?: string, actorDirectories?: readonly string[]) => Array<{
+        path: string; usesUndici: boolean; bareUndici: boolean; explicitEntry: boolean; valid: boolean;
+      }>;
+    };
+    const actorDirectories = activeApiScope?.postinstallDirectories('@comunica/actor-http-fetch');
+    for (const state of inspectInstalledPackage(root, actorDirectories)) {
+      if (state.bareUndici) {
+        failures.push(`${state.path}: comunica undici entry is unpatched — run: bun run postinstall`);
       }
     }
   }
@@ -305,6 +339,7 @@ function checkPostinstallPatches(): void {
 }
 
 function workspacePackages(): Array<{ name: string; directory: string }> {
+  if(activeApiScope)return [...activeApiScope.workspacePackages];
   const packagesDir = path.join(root, 'packages');
   if (!existsSync(packagesDir)) {
     return [];
@@ -326,7 +361,7 @@ function exportedFiles(packageJson: any): string[] {
     return Object.values(value).flatMap(collect);
   };
   return [...collect(packageJson.exports), ...(typeof packageJson.main === 'string' ? [packageJson.main] : [])]
-    .filter((file) => file.endsWith('.js') || file.endsWith('.mjs'));
+    .filter((file) => file.endsWith('.js') || file.endsWith('.mjs') || Boolean(activeApiScope) && file.endsWith('.cjs'));
 }
 
 function missingWorkspaceBuilds(): string[] {
@@ -344,6 +379,7 @@ function ensureWorkspaceBuilds(): void {
   if (missing.length === 0) {
     return;
   }
+  if(activeApiScope){failures.push('required API workspace build output missing: '+missing.join(', ')+'; scoped checker never rebuilds');return;}
   console.log(`[deps] workspace build output missing for ${missing.join(', ')}; rebuilding packages`);
   try {
     execFileSync('bun', ['run', 'build:packages'], { cwd: root, stdio: 'inherit' });
@@ -367,17 +403,14 @@ const time = <T>(label: string, run: () => T): T => {
   return result;
 };
 
-time('patches', () => checkPatchedDependencies());
-time('postinstall', () => checkPostinstallPatches());
-time('workspace', () => ensureWorkspaceBuilds());
-
-if (failures.length > 0) {
-  console.error('\n[deps] dependency state is not usable:');
-  for (const failure of failures) {
-    console.error(`  - ${failure}`);
-  }
-  console.error('');
-  process.exit(1);
+export function inspectDependencyState(scope?:ApiDependencyScope):Readonly<{ok:boolean;failures:readonly string[]}>{
+  if(scope&&(runtimeOnly||repairRequested))throw Error('Scoped API state cannot use runtime-only or repair');
+  failures.length=0;activeApiScope=scope;
+  try{time('patches', () => checkPatchedDependencies());time('postinstall', () => checkPostinstallPatches());if(!runtimeOnly)time('workspace', () => ensureWorkspaceBuilds());return Object.freeze({ok:failures.length===0,failures:Object.freeze([...failures])});}
+  finally{activeApiScope=undefined;}
 }
-
-console.log('[deps] patched dependencies and workspace builds are consistent');
+export function reportDependencyState(result:Readonly<{ok:boolean;failures:readonly string[]}>):void {
+ if(!result.ok){console.error('\n[deps] dependency state is not usable:');for(const failure of result.failures)console.error('  - '+failure);console.error('');process.exitCode=1;return;}
+ console.log(runtimeOnly?'[deps] installed runtime patches are consistent':'[deps] patched dependencies and workspace builds are consistent');
+}
+if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))reportDependencyState(inspectDependencyState());

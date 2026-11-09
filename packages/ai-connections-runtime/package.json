@@ -1,0 +1,82 @@
+{
+  "name": "@undefineds.co/ai-connections-runtime",
+  "version": "0.1.5",
+  "private": false,
+  "type": "module",
+  "license": "MIT",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    "./client": {
+      "types": "./dist/contract/ai-connections-client.d.ts",
+      "import": "./dist/contract/ai-connections-client.js"
+    },
+    "./provider-catalog": {
+      "types": "./dist/contract/provider-catalog.d.ts",
+      "import": "./dist/contract/provider-catalog.js",
+      "require": "./dist/contract/provider-catalog.cjs"
+    },
+    "./client-config": {
+      "types": "./dist/contract/client-config/index.d.ts",
+      "import": "./dist/contract/client-config/index.js",
+      "require": "./dist/contract/client-config/index.cjs"
+    },
+    "./endpoint-urls": {
+      "types": "./dist/contract/endpoint-urls.d.ts",
+      "import": "./dist/contract/endpoint-urls.js"
+    },
+    "./credential-storage": {
+      "types": "./dist/contract/credential-storage.d.ts",
+      "import": "./dist/contract/credential-storage.js"
+    },
+    "./service-access-resources": {
+      "types": "./dist/service-access-resources.d.ts",
+      "import": "./dist/service-access-resources.js",
+      "require": "./dist/service-access-resources.cjs"
+    },
+    ".": {
+      "types": "./dist/contract/index.d.ts",
+      "import": "./dist/contract/index.js"
+    }
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json && bun ../../scripts/fix-dist-js-imports.mjs dist && bun build src/contract/client-config/index.ts --target=node --format=cjs --metafile=dist/client-config-inputs.json --outfile=dist/contract/client-config/index.cjs && bun build src/contract/provider-catalog.ts --target=node --format=cjs --metafile=dist/provider-catalog-inputs.json --outfile=dist/contract/provider-catalog.cjs && bun build src/service-access-resources.ts --target=node --format=cjs --external @undefineds.co/models --metafile=dist/service-access-resources-inputs.json --outfile=dist/service-access-resources.cjs && bun ../../scripts/workspace-runtime-materials.cjs . '[{\"name\":\"client-config\",\"payload\":\"dist/contract/client-config/index.cjs\",\"metafile\":\"dist/client-config-inputs.json\"},{\"name\":\"provider-catalog\",\"payload\":\"dist/contract/provider-catalog.cjs\",\"metafile\":\"dist/provider-catalog-inputs.json\"},{\"name\":\"service-access-resources\",\"payload\":\"dist/service-access-resources.cjs\",\"metafile\":\"dist/service-access-resources-inputs.json\"}]'",
+    "test": "vitest run --config ../../vitest.packages.config.mts"
+  },
+  "dependencies": {
+    "@undefineds.co/models": "0.2.63",
+    "@undefineds.co/extension-host-contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3",
+    "@types/node": "^22",
+    "vitest": "^4.1.8",
+    "@undefineds.co/xpod-cli": "workspace:*"
+  },
+  "typesVersions": {
+    "*": {
+      "client": [
+        "dist/contract/ai-connections-client.d.ts"
+      ],
+      "provider-catalog": [
+        "dist/contract/provider-catalog.d.ts"
+      ],
+      "client-config": [
+        "dist/contract/client-config/index.d.ts"
+      ],
+      "endpoint-urls": [
+        "dist/contract/endpoint-urls.d.ts"
+      ],
+      "credential-storage": [
+        "dist/contract/credential-storage.d.ts"
+      ],
+      "service-access-resources": [
+        "dist/service-access-resources.d.ts"
+      ]
+    }
+  }
+}

@@ -39,6 +39,7 @@ import { AiGatewayService } from '../ai-gateway/AiGatewayService';
 import type { GatewayCredentialRenewalRequest } from '../ai-gateway/AiGatewayService';
 import type { GatewayDeployment } from '../ai-gateway/auth/InvocationTokenCodec';
 import { PlaintextCredentialVault } from '../ai-gateway/credentials/PlaintextCredentialVault';
+import { PlatformGatewayCredentialStore, platformGatewayConfiguration, registerPlatformGatewayProvider } from '../ai-gateway/credentials/PlatformGatewayCredentialStore';
 import { createAiCredentialSecretDecoder } from '../ai-gateway/credentials/AiCredentialSecretDecoder';
 import type { CredentialVault } from '../ai-gateway/credentials/CredentialVault';
 import {
@@ -63,6 +64,10 @@ import { createProviderModelDiscoveryAdapters } from '../ai-gateway/models/Provi
 import { PodModelSelectionRepository } from '../ai-gateway/models/PodModelSelectionRepository';
 import { ProviderModelSelectionService } from '../ai-gateway/models/ProviderModelSelectionService';
 import { ModelRouter } from '../ai-gateway/routing/ModelRouter';
+import {
+  DeploymentBuiltinConnection,
+  resolveDeploymentBuiltinConfig,
+} from '../ai-gateway/builtin/DeploymentBuiltinConnection';
 import {
   CloudGatewayModelsClient,
   resolveCloudModelsGatewayOrigin,
@@ -99,7 +104,7 @@ import { RdfSearchReconciliationRepository } from '../../search/RdfSearchReconci
 import { RdfSearchReconciliationWorker } from '../service/RdfSearchReconciliationWorker';
 import { ApiServer } from '../ApiServer';
 import { ChatKitService, PodChatKitStore, VercelAiProvider } from '../chatkit';
-import { PodMatrixStore } from '../matrix';
+import { createMatrixStorageVerifier, PodMatrixStore, SqlMatrixRoomDirectory } from '../matrix';
 import { ClientReconcilerCoordinator, ServerGroupReconcilerService } from '../reconciler';
 import { InngestRunExecutionBackend } from '../runs/InngestRunExecutionBackend';
 import { PiAgentRuntimeDriver } from '../runs/PiAgentRuntimeDriver';
@@ -364,10 +369,13 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    gatewayProviderRegistry: asFunction(({ config }: ApiContainerCradle) => {
+    platformGatewayConfiguration: asFunction(() => platformGatewayConfiguration()).singleton(),
+
+    gatewayProviderRegistry: asFunction(({ config, platformGatewayConfiguration }: ApiContainerCradle) => {
       const registry = createDefaultGatewayProviderRegistry({
         products: providerProductsForDeployment(config.edition),
       });
+      if (platformGatewayConfiguration) registerPlatformGatewayProvider(registry, platformGatewayConfiguration);
       const openAiBaseUrl = config.aiGatewayProviderBaseUrls?.openai;
       if (openAiBaseUrl) {
         registry.register({
@@ -386,9 +394,12 @@ export function registerCommonServices(
     providerHttpTransport: asFunction(({ config }: ApiContainerCradle) => new ProviderHttpTransport({
       // The hermetic acceptance stack may allow only its own exact loopback origin.
       allowedPrivateOrigins: process.env.XPOD_ACCEPTANCE_PROVIDER_ORIGIN
-        ? [process.env.XPOD_ACCEPTANCE_PROVIDER_ORIGIN]
-        : [],
+        ? [process.env.XPOD_ACCEPTANCE_PROVIDER_ORIGIN] : [],
       systemProxy: config.edition === 'local' ? discoverSystemProviderProxy() : undefined,
+    })).singleton(),
+
+    platformHttpTransport: asFunction(({ platformGatewayConfiguration }: ApiContainerCradle) => new ProviderHttpTransport({
+      allowedPrivateOrigins: platformGatewayConfiguration ? [new URL(platformGatewayConfiguration.baseUrl).origin] : [],
     })).singleton(),
 
     gatewayCredentialStore: asFunction((cradle: ApiContainerCradle) => {
@@ -401,7 +412,7 @@ export function registerCommonServices(
       // store for a usable session. Delegated lazily to the composed Connect service so the
       // container keeps no construction-time cycle, and the hook stays absent for stores that
       // cannot renew.
-      return Object.assign(store, {
+      const personal = Object.assign(store, {
         renewCredential: (input: GatewayCredentialRenewalRequest) =>
           cradle.providerConnectService.renewCredential({
             webId: input.webId,
@@ -413,6 +424,11 @@ export function registerCommonServices(
             auth: input.auth,
           }),
       });
+      return cradle.platformGatewayConfiguration ? new PlatformGatewayCredentialStore({
+        personal,
+        config: cradle.platformGatewayConfiguration,
+        transport: cradle.platformHttpTransport,
+      }) : personal;
     }).singleton(),
 
     podModelSelectionRepository: asFunction((cradle: ApiContainerCradle) => {
@@ -445,10 +461,11 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    gatewayRuntimeRegistry: asFunction(({ config, gatewayProviderRegistry, providerHttpTransport }: ApiContainerCradle) => {
+    gatewayRuntimeRegistry: asFunction(({ config, gatewayProviderRegistry, providerHttpTransport, platformHttpTransport }: ApiContainerCradle) => {
       return new ProviderRuntimeRegistry({
         registry: gatewayProviderRegistry,
         transport: providerHttpTransport,
+        deploymentTransport: platformHttpTransport,
         // A user-owned endpoint is a Local capability; Cloud uses the catalog's.
         allowCredentialBaseUrl: config.edition === 'local',
       });
@@ -468,6 +485,11 @@ export function registerCommonServices(
       return new InMemorySessionAffinityStore({ secret });
     }).singleton(),
 
+    deploymentBuiltinConnection: asFunction(({ config }: ApiContainerCradle) => {
+      const builtin = resolveDeploymentBuiltinConfig(config.edition);
+      return builtin ? new DeploymentBuiltinConnection(builtin) : null;
+    }).singleton(),
+
     aiGatewayService: asFunction((cradle: ApiContainerCradle) => {
       const { config } = cradle;
       const gatewayProviderRegistry = cradle.gatewayProviderRegistry;
@@ -480,6 +502,8 @@ export function registerCommonServices(
         affinityStore: gatewaySessionAffinityStore,
         credentials: gatewayCredentialStore.listCredentials.bind(gatewayCredentialStore),
         embeddingModelPolicy: cradle.embeddingModelPolicy,
+        defaultProvider: cradle.platformGatewayConfiguration?.provider,
+        defaultModel: cradle.platformGatewayConfiguration?.defaultModel,
       });
       const cloudGatewayOrigin = resolveCloudModelsGatewayOrigin({
         edition: config.edition,
@@ -497,6 +521,7 @@ export function registerCommonServices(
         cloudModels: cloudGatewayOrigin
           ? new CloudGatewayModelsClient({ cloudGatewayOrigin })
           : undefined,
+        builtin: cradle.deploymentBuiltinConnection ?? undefined,
         usageRecorder: async ({ webId, apiKeyId, totalTokens }) => {
           const pod = await cradle.podLookupRepo?.findByWebId(webId);
           if (!pod) {
@@ -717,11 +742,16 @@ export function registerCommonServices(
       });
     }).singleton(),
 
-    matrixStore: asFunction(({ db, ownerPodAccess, serverGroupReconcilerService }: ApiContainerCradle) => {
+    matrixStore: asFunction(({ db, ownerPodAccess, podLookupRepo, serverGroupReconcilerService }: ApiContainerCradle) => {
       return new PodMatrixStore({
         serverGroupReconcilerService,
         podAccess: ownerPodAccess,
         journal: new SqlMatrixEventJournal(db),
+        // Reference directory shares the identity DB so it survives restarts.
+        // Verification uses persisted Pod ownership, never a caller-supplied address.
+        directory: new SqlMatrixRoomDirectory(db,
+          podLookupRepo ? createMatrixStorageVerifier(podLookupRepo) : undefined),
+        ...(podLookupRepo ? { verifyStorage: createMatrixStorageVerifier(podLookupRepo) } : {}),
         serverName: (() => {
           try {
             return new URL(process.env.CSS_BASE_URL ?? '').host || undefined;

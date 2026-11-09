@@ -4,9 +4,10 @@ const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
+const { inspectTarballBuffer, sha512Integrity } = require('./workspace-package-payload.cjs');
 const { packWorkspacePackages } = require('./workspace-package-pack.cjs');
 
-const PACKAGES = ['solid-sdk', 'shared-ui', 'pod-collections', 'extension-sdk', 'ai-connections', 'pod-settings', 'tasks'];
+const PACKAGES = ['solid-sdk', 'shared-ui', 'pod-collections', 'extension-host-contracts', 'extension-sdk', 'ai-connections-runtime', 'ai-connections', 'pod-settings', 'tasks'];
 function run(command, args, cwd, options = {}) {
   return execFileSync(command, args, { cwd, ...options, encoding: 'utf8', stdio: ['ignore', 'inherit', 'inherit'] });
 }
@@ -104,40 +105,56 @@ module.exports = { PACKAGES, exportEntries, verifyInstalled, verifyRuntimeImport
 // exact files in a clean Bun consumer, and only after every consumption/export/
 // type/CSS check passes copies the still-present tarballs and writes evidence.
 // Default `--local` callers pass no options and keep the previous behaviour.
-function emitWorkspaceConsumerEvidence(tarballs, options) {
+function captureWorkspaceSourceState(root) {
+  try {
+    const git = (args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    const commit = git(['rev-parse', 'HEAD']);
+    const status = git(['status', '--porcelain', '--untracked-files=all']);
+    return { commit, clean: status.length === 0, statusSHA256: crypto.createHash('sha256').update(status).digest('hex') };
+  } catch {
+    return null;
+  }
+}
+
+function emitWorkspaceConsumerEvidence(tarballs, options, sourceBefore = null, sourceAfter = null) {
+  if (options.evidencePath && !/^[0-9a-f]{40}$/.test(String(options.sourceSha ?? ''))) {
+    throw new Error('workspace consumer evidence requires a 40-hex source SHA');
+  }
+  const retained = new Map();
   const packages = Object.entries(tarballs).map(([ packageName, tarballPath ]) => {
     const bytes = fs.readFileSync(tarballPath);
-    return {
-      packageName,
-      name: path.basename(tarballPath),
+    const { manifest } = inspectTarballBuffer(bytes);
+    if (manifest.name !== packageName || typeof manifest.version !== 'string'
+      || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(manifest.version)) {
+      throw new Error(`Workspace archive identity mismatch: ${packageName}`);
+    }
+    const name = path.basename(tarballPath);
+    if (retained.has(name)) throw new Error(`Duplicate workspace archive filename: ${name}`);
+    retained.set(name, bytes);
+    return { packageName, version: manifest.version, name,
       sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
-      size: bytes.length,
-    };
+      integrity: sha512Integrity(bytes), size: bytes.length };
   }).sort((left, right) => left.packageName.localeCompare(right.packageName));
-
+  const bound = Boolean(sourceBefore && sourceAfter && sourceBefore.clean && sourceAfter.clean
+    && sourceBefore.commit === options.sourceSha && sourceAfter.commit === options.sourceSha
+    && JSON.stringify(sourceBefore) === JSON.stringify(sourceAfter));
+  const sourceAuthority = { status: bound ? 'bound' : 'blocked',
+    reason: bound ? null : 'clean-matching-source-before-and-after-consumption-required',
+    before: sourceBefore, after: sourceAfter,
+    scope: 'Checkout state surrounding normal pack and consumer; does not attest prior build execution or release admission.' };
   if (options.archiveDir) {
     const destination = path.resolve(options.archiveDir);
     fs.mkdirSync(destination, { recursive: true });
-    for (const entry of packages) {
-      fs.copyFileSync(tarballs[entry.packageName], path.join(destination, entry.name));
-    }
+    for (const [name, bytes] of retained) fs.writeFileSync(path.join(destination, name), bytes);
   }
-
   if (options.evidencePath) {
-    if (!/^[0-9a-f]{40}$/.test(String(options.sourceSha ?? ''))) {
-      throw new Error('workspace consumer evidence requires a 40-hex source SHA');
-    }
     const evidencePath = path.resolve(options.evidencePath);
     fs.mkdirSync(path.dirname(evidencePath), { recursive: true });
     fs.writeFileSync(evidencePath, `${JSON.stringify({
-      schemaVersion: 1,
-      kind: 'workspace-consumer-acceptance',
-      ok: true,
-      sourceSha: options.sourceSha,
-      packages,
+      schemaVersion: 1, kind: 'workspace-consumer-acceptance', ok: bound, consumerPassed: true,
+      sourceSha: options.sourceSha, sourceAuthority, releaseQualified: false, packages,
     }, null, 2)}\n`);
   }
-
   return packages;
 }
 
@@ -145,15 +162,17 @@ function consumeLocal(root = path.resolve(__dirname, '..'), options = {}) {
   const parent = path.join(root, '.test-data', 'workspace-package-consumer');
   fs.mkdirSync(parent, { recursive: true });
   const directory = fs.mkdtempSync(path.join(parent, 'pack-'));
+  const sourceBefore = captureWorkspaceSourceState(root);
   try {
     const tarballs = packWorkspacePackages(root, PACKAGES, directory);
     // Throws before evidence if any consumer/export/type/CSS check fails.
     consume(root, { tarballs });
-    return emitWorkspaceConsumerEvidence(tarballs, options);
+    return emitWorkspaceConsumerEvidence(tarballs, options, sourceBefore, captureWorkspaceSourceState(root));
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
 }
+module.exports.captureWorkspaceSourceState = captureWorkspaceSourceState;
 module.exports.consumeLocal = consumeLocal;
 module.exports.emitWorkspaceConsumerEvidence = emitWorkspaceConsumerEvidence;
 

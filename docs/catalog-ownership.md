@@ -121,3 +121,11 @@
 
 - 建模规则（Pod/RDF schema、URI 字段、日期分桶、exact id 操作）以 `@undefineds.co/models` 为权威，Xpod 只实现 adapter —— 见 `AGENTS.md`。
 - 共享包通过 `workspace:*` 在仓库内解析；对外发布由 `scripts/publish-package.cjs` 单包发布，并把 `workspace:*` 改写成发布时的版本号。发布顺序：被依赖的包先发。
+
+## 2026-10-11 安装粒度修正
+
+此前“一个包、两层”以及 core 合回 applet 的决定解决了内容归属，但公开子路径不能隔离 package dependencies：服务安装纯契约仍会安装 React、lucide 和 shared-ui。本次按用户要求真实拆分为 `@undefineds.co/ai-connections-runtime` 与原 applet 包。
+
+runtime 仍是 AI connections 能力模块，拥有 contract 与 service-access-resources 的唯一实体实现和 provider/offering catalog；不是 models schema，也不是泛化 core。models 继续拥有 schema。原 ai-connections 的公开 client/provider-catalog/client-config/endpoint-urls/service-access-resources 路径保持薄转发，app UI、controller、图标和展示文案保持原包。宿主类型仅引用 UI-free extension-host-contracts/ai，不复制类型或反向依赖 UI SDK。
+
+守卫扫描 runtime 全部契约源码并检查无 UI 安装依赖、原路径是薄转发；不再以“必须一个包同时包含两层”固定旧安装边界。历史数据与统计保留为迁移前记录。外部消费者应保持旧 API 路径或直接依赖 runtime；外部类型入口保持 canonical 转发。发布须同时验证纯 runtime 与旧 applet 的干净安装、类型和公开 CJS/ESM consumer，不以 workspace 构建成功代替。

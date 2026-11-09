@@ -6,7 +6,7 @@
 
 Matrix 是共享 Pod 聊天模型的 Client–Server 兼容入口。当前提供消息同步、显式 Agent 授权、可领取的执行任务、结果回写及受控交接；执行器负责模型、工具和工作区的实际执行。服务不会因为房间没人在线而自行启动 LLM。
 
-这是同一已注册 Pod 内的协作能力。共享 Pod 的参与者可以使用不同身份，但邀请不会自动分发到其他 Pod，也不会创建 Solid ACL。当前没有 federation、E2EE、Matrix 原生账号登录、完整 power levels、任务 DAG、模型预算策略或自动结果验收。
+房间数据始终在房间自己的 Pod 中；邀请可以登记指向另一已登记 Pod 的引用，使受邀者在自己的默认 sync 中发现该房间。引用只是发现与路由索引，不创建 Solid ACL、不复制消息正文，也不替代房间 Pod 中的 membership。当前没有 Matrix federation、E2EE、Matrix 原生账号登录、完整 power levels、任务 DAG、模型预算策略或自动结果验收。
 
 | 边界 | 当前职责与实现 |
 | --- | --- |
@@ -16,6 +16,7 @@ Matrix 是共享 Pod 聊天模型的 Client–Server 兼容入口。当前提供
 | 领取与租约 | `WakeAgentQueue` 提供内存或 Redis 实现；运行时与 Reconciler 共用同一队列 |
 | 执行接口 | `AgentWakeRuntimeService` 提供 claim、renew、complete、fail；不包含 LLM 或工具执行器 |
 | 操作日志 | `SqlMatrixEventJournal` 保存事务回执、事件引用与序号，不保存消息正文 |
+| 房间引用目录 | `SqlMatrixRoomDirectory` 保存已验证 storage 根、受邀完整 WebID、源房间/事件引用；不保存正文或权威 membership |
 | 共享 schema | `@undefineds.co/models` 拥有 Chat、Thread、Message、Delivery、Run、RunStep 及资源布局；Xpod 只做 adapter |
 
 后续可将 Store 内的执行后端拆成独立实现以减小职责，但不得复制共享 schema、另建消息事实或将模型/provider 策略塞入 Wake。
@@ -86,7 +87,9 @@ claim 的恢复、队列领取、输入校验与 Run 写入不是跨存储事务
 
 SQL journal 给可见事件登记稳定序号。`v2_<sequence>` 游标表达 **journal 注册顺序**，不表达墙钟时间或 Pod 跨资源提交顺序。晚到但时间戳较旧的原生消息仍取得新序号。每轮读取固定高水位，分页只推进到实际交付的位置；相同毫秒事件和超过默认 50 条的积压不会因时间游标被跳过。
 
-`sync` 区分 join、invite、leave；当前 `limit` 是加入房间 timeline 的全局页预算，范围 1–1000。history 支持前后分页；长轮询 timeout 最多 30 秒，客户端取消可中止等待。游标应由客户端原样保存，并限定在同一 Pod 使用；当前格式不绑定设备或 Pod 指纹。
+`sync` 区分 join、invite、leave；当前 `limit` 是加入房间 timeline 的跨 Pod 全局页预算，范围 1–1000。history 支持前后分页；长轮询 timeout 最多 30 秒，客户端取消可中止等待。
+
+跨 Pod 同步使用 `v3.<base64url>` 游标：`local` 是所选 Pod 的 journal 序号，`invites` 是引用目录序号，`rooms` 是按规范 storage 根分开的 journal 序号。三者来源不同、互不比较。每个房间的游标只推进到本轮实际交付的最后一条事件；积压按房间保留并在下一轮继续。`v2_<sequence>` 仍按原 Pod 范围读取，升级客户端无需清空游标；旧时间游标继续返回 `M_UNKNOWN_POS`。
 
 原生 Pod 消息在读取时登记到 journal。这里没有 Pod 变更订阅器，也没有对任意外部应用自动授予执行权。消息和 state 的权威数据仍在 Pod，SQL 的引用索引不能替代 Pod 备份。
 
@@ -142,6 +145,7 @@ Redis 入队、领取、续租和确认使用 Lua 原子操作；使用 Redis �
 | 门禁 | 必须证明的行为 | 证据边界 |
 | --- | --- | --- |
 | 身份与权限回归 | 同源不同 WebID 分离；已登记 Pod 选择；未加入、未授权目标、伪造 receipt 与撤销后的任务被拒绝 | 单元/隔离回归须通过；独立执行身份还需真实 ACL 验收 |
+| 跨 Pod 邀请发现 | 受邀者默认 sync 发现已登记引用；`storage_binding` 仅在验证后出现；无关调用者不可见；stale 引用不授予访问 | 引用目录与路由回归须通过；真实 ACL 与跨实例投递需独立验收 |
 | 顺序与事务回归 | 积压不丢、同时间戳双向分页、晚到原生消息、事务并发与内容冲突 | SQL journal 包含真实 SQLite 验证；不能据此宣称 PostgreSQL 通过 |
 | 队列回归 | 原子入队、同 lane 串行、超时接替、旧 token 拒绝、最多 3 次、失败持久化 | 内存测试不替代 Redis 实例测试 |
 | 协作闭环 | Message→Delivery→Run→结果→显式交接；队列重建不重做终态任务 | 确定性执行器覆盖基础设施，不覆盖模型质量 |

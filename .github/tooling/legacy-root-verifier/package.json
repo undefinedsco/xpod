@@ -1,0 +1,9 @@
+{
+  "name": "xpod-legacy-root-verifier-tooling",
+  "private": true,
+  "version": "0.0.0",
+  "packageManager": "bun@1.4.2",
+  "dependencies": {
+    "semver": "7.8.5"
+  }
+}

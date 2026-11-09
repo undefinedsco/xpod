@@ -1,5 +1,14 @@
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { describe, expect, it } from 'vitest';
-import { acceptLiveDirectory, type LiveDirectoryOptions } from '../../scripts/accept-live-agent-directory';
+import {
+  AcceptanceArgumentError,
+  acceptLiveDirectory,
+  assertStoredLoginTarget,
+  resolveAcceptanceTarget,
+  startLiveDirectoryObservationRelay,
+  type LiveDirectoryOptions,
+} from '../../scripts/accept-live-agent-directory';
 
 const gateway = 'https://gateway.example/';
 const podRoot = 'https://alice.example/storage/';
@@ -76,7 +85,7 @@ function transport(options: { invalidApi?: boolean; headDenied?: boolean; lostUp
     return new Response(current.body, { headers: { ETag: version() } });
   };
   const config: LiveDirectoryOptions = {
-    gateway, podRoot, write: true, discover: request,
+    baseUrl: gateway, podRoot, write: true, discover: request,
     authenticate: async () => ({ webId: 'https://alice.example/profile/card#me', request }),
   };
   return { config, calls, store };
@@ -172,5 +181,136 @@ describe('live directory acceptance boundaries (injected transport, not live evi
     const directoryDeletes = fixture.calls.filter((call) => call.method === 'DELETE' && call.url.endsWith('/'));
     expect(directoryDeletes).toHaveLength(1);
     expect(directoryDeletes[0].headers.get('if-match')).toBe('"v1"');
+  });
+
+  it('reports the target as baseUrl rather than a gateway field', async () => {
+    const fixture = transport();
+    const result = await acceptLiveDirectory({ ...fixture.config, write: false });
+    expect(result.target).toMatchObject({ baseUrl: gateway, podRoot });
+    expect(JSON.stringify(result)).not.toContain('"gateway"');
+  });
+});
+
+describe('acceptance target resolution (arguments and environment only)', () => {
+  const local = 'http://127.0.0.1:3000/';
+  const remote = 'https://node.example/';
+  const localPod = 'http://127.0.0.1:3000/alice/';
+  const remotePod = 'https://node.example/alice/';
+
+  function argumentError(argv: readonly string[], env: NodeJS.ProcessEnv): AcceptanceArgumentError {
+    try {
+      resolveAcceptanceTarget(argv, env);
+    } catch (error) {
+      if (error instanceof AcceptanceArgumentError) return error;
+      throw error;
+    }
+    throw new Error('expected AcceptanceArgumentError');
+  }
+
+  it('accepts explicit local and remote --base_url targets', () => {
+    expect(resolveAcceptanceTarget(
+      [ '--base_url', local, '--pod-root', localPod ], {},
+    )).toEqual({ baseUrl: local, podRoot: localPod, write: false, report: undefined, help: false });
+    expect(resolveAcceptanceTarget(
+      [ '--base_url', remote, '--pod-root', remotePod, '--write' ], {},
+    )).toMatchObject({ baseUrl: remote, podRoot: remotePod, write: true });
+  });
+
+  it('uses XPOD_BASE_URL only when --base_url is absent and lets the flag win', () => {
+    expect(resolveAcceptanceTarget([ '--pod-root', remotePod ], { XPOD_BASE_URL: remote }))
+      .toMatchObject({ baseUrl: remote });
+    expect(resolveAcceptanceTarget(
+      [ '--base_url', local, '--pod-root', localPod ], { XPOD_BASE_URL: remote },
+    )).toMatchObject({ baseUrl: local });
+  });
+
+  it('never falls back to CSS_BASE_URL and prefers the remote XPOD_BASE_URL', () => {
+    expect(resolveAcceptanceTarget(
+      [ '--pod-root', remotePod ], { CSS_BASE_URL: local, XPOD_BASE_URL: remote },
+    )).toMatchObject({ baseUrl: remote });
+    expect(argumentError([ '--pod-root', localPod ], { CSS_BASE_URL: local }).code).toBe('invalid_target_url');
+  });
+
+  it('never reads the removed XPOD_LIVE_GATEWAY_URL', () => {
+    expect(argumentError([ '--pod-root', remotePod ], { XPOD_LIVE_GATEWAY_URL: remote }).code)
+      .toBe('invalid_target_url');
+  });
+
+  it('rejects the removed --gateway flag explicitly instead of ignoring it', () => {
+    for (const argv of [
+      [ '--gateway', remote, '--pod-root', remotePod ],
+      [ '--gateway=' + remote, '--pod-root', remotePod ],
+    ]) {
+      expect(argumentError(argv, { XPOD_BASE_URL: local }).code).toBe('removed_argument_gateway');
+    }
+  });
+
+  it('accepts only the exact underscore --base_url switch', () => {
+    expect(argumentError([ '--base-url', remote, '--pod-root', remotePod ], {}).code).toBe('invalid_arguments');
+  });
+
+  it('binds the stored login to the canonical target before authenticated Pod requests', () => {
+    expect(() => assertStoredLoginTarget('https://node.example', remote)).not.toThrow();
+    expect(() => assertStoredLoginTarget(remote, remote)).not.toThrow();
+    try {
+      assertStoredLoginTarget('https://other.example/', remote);
+      expect.unreachable('a mismatched stored login must be rejected');
+    } catch (error) {
+      expect((error as { code?: string }).code).toBe('stored_login_base_url_mismatch');
+    }
+  });
+});
+
+
+describe('acceptance observation relay draft (real loopback streams, no live GZ evidence)', () => {
+  it('streams once, records consumed body bytes and leaves credentials and body out of observations', async () => {
+    const received: string[] = [];
+    const upstream = createServer((request, response) => {
+      received.push(request.url!);
+      response.writeHead(200, { etag: '"v1"' });
+      if (request.method === 'HEAD') response.end();
+      else { response.write('PRIVATE_BODY_'); response.end('CONTENT'); }
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    const proxyOrigin = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`;
+    const relay = await startLiveDirectoryObservationRelay(proxyOrigin, 'https://actual.example/alice/');
+    try {
+      const response = await fetch(`${relay.origin}/alice/file`, { headers: {
+        range: 'bytes=0-19', 'if-match': '"v1"', authorization: 'SECRET_AUTH', dpop: 'SECRET_DPOP',
+        'x-xpod-agentfs-capability': 'SECRET_CAPABILITY',
+      } });
+      expect(await response.text()).toBe('PRIVATE_BODY_CONTENT');
+      expect((await fetch(`${relay.origin}/alice/file`, { method: 'HEAD' })).status).toBe(200);
+      const query = new URL(`${relay.origin}/-/agent-directory/list`);
+      query.searchParams.set('root', `${relay.origin}/alice/`);
+      expect((await fetch(query)).status).toBe(200);
+      await relay.close();
+      expect(relay.records[0]).toMatchObject({ method: 'GET', status: 200, range: 'bytes=0-19', ifMatch: '"v1"', etag: '"v1"', consumedBodyBytes: 20, streamClosed: true });
+      expect(relay.records[1]).toMatchObject({ method: 'HEAD', consumedBodyBytes: 0, streamClosed: true });
+      expect(new URL(received[2], proxyOrigin).searchParams.get('root')).toBe(`${proxyOrigin}/alice/`);
+      expect(JSON.stringify(relay.records)).not.toMatch(/SECRET|PRIVATE_BODY|CONTENT/u);
+    } finally {
+      await relay.close();
+      if (upstream.listening) await new Promise<void>((resolve, reject) => upstream.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it('refuses foreign URL targets and mutations before forwarding and bounds owned close', async () => {
+    let calls = 0;
+    const upstream = createServer((_request, response) => { calls += 1; response.end(); });
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    const proxyOrigin = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`;
+    const relay = await startLiveDirectoryObservationRelay(proxyOrigin, 'https://actual.example/alice/');
+    try {
+      for (const target of [ 'https://foreign.example/alice/', `${proxyOrigin}/alice/`, `${relay.origin}/bob/` ]) {
+        const query = new URL(`${relay.origin}/-/agent-directory/list`); query.searchParams.set('root', target);
+        expect((await fetch(query)).status).toBe(403);
+      }
+      expect((await fetch(`${relay.origin}/alice/file`, { method: 'PUT', body: 'PRIVATE_BODY' })).status).toBe(403);
+      expect(calls).toBe(0); expect(relay.records).toEqual([]);
+    } finally {
+      await relay.close();
+      await new Promise<void>((resolve, reject) => upstream.close((error) => error ? reject(error) : resolve()));
+    }
   });
 });

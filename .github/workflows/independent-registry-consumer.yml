@@ -1,0 +1,132 @@
+name: Independent matching-host registry consumer
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        type: string
+        required: true
+      producer_selectors:
+        type: string
+        required: true
+      module:
+        type: string
+        required: true
+      target:
+        type: string
+        required: true
+      mode:
+        type: string
+        default: prepare
+        required: false
+    outputs:
+      artifact_id:
+        value: ${{ jobs.consume.outputs.artifact_id }}
+      artifact_digest:
+        value: ${{ jobs.consume.outputs.artifact_digest }}
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      runner: ${{ steps.resolve.outputs.runner }}
+      artifact_name: ${{ steps.resolve.outputs.artifact_name }}
+      afs_job_minutes: ${{ steps.budget.outputs.afs_job_minutes }}
+      afs_command_minutes: ${{ steps.budget.outputs.afs_command_minutes }}
+      afs_setup_minutes: ${{ steps.budget.outputs.afs_setup_minutes }}
+      afs_upload_minutes: ${{ steps.budget.outputs.afs_upload_minutes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Install reviewed resolver dependencies
+        timeout-minutes: 10
+        run: bun install --frozen-lockfile
+      - id: resolve
+        name: Resolve fixed registry consumer host and artifact
+        env:
+          INDEPENDENT_PUBLICATION_PHASE: registry-consumer-resolve
+          INDEPENDENT_PUBLICATION_INPUT: ${{ inputs.producer_selectors }}
+          REGISTRY_CONSUMER_MODULE: ${{ inputs.module }}
+          REGISTRY_CONSUMER_TARGET: ${{ inputs.target }}
+        run: bun scripts/run-independent-publication.ts
+      - id: budget
+        name: Project the fixed AFS host windows
+        env:
+          CONSUMER_BUDGET_MODULE: ${{ inputs.module }}
+          CONSUMER_BUDGET_STAGE: postpublish
+          CONSUMER_BUDGET_FLOW: matching-host
+        run: bun scripts/lib/consumer-workflow-budget.cjs
+
+  consume:
+    needs: resolve
+    if: ${{ inputs.mode == 'publish' && github.ref == 'refs/heads/staging' }}
+    name: registry-consumer-${{ inputs.module }}-${{ inputs.target }}
+    runs-on: ${{ needs.resolve.outputs.runner }}
+    timeout-minutes: ${{ inputs.module == 'afs' && fromJSON(needs.resolve.outputs.afs_job_minutes) || 45 }}
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+    steps:
+      - name: Start the bounded AFS setup clock
+        if: ${{ inputs.module == 'afs' }}
+        run: node -e 'require("node:fs").appendFileSync(process.env.GITHUB_ENV,"AFS_WORKFLOW_SETUP_STARTED_NS="+process.hrtime.bigint()+"\n")'
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.21.1
+      - name: Install the reviewed consumer toolchain
+        timeout-minutes: ${{ inputs.module == 'afs' && fromJSON(needs.resolve.outputs.afs_setup_minutes) || 10 }}
+        run: bun install --frozen-lockfile
+      - name: Require the actual AFS setup to fit its host envelope
+        if: ${{ inputs.module == 'afs' }}
+        env:
+          CONSUMER_BUDGET_MODULE: ${{ inputs.module }}
+          CONSUMER_BUDGET_STAGE: postpublish
+          CONSUMER_BUDGET_CHECK_SETUP: 'true'
+        run: node scripts/lib/consumer-workflow-budget.cjs
+      - name: Run fixed registry-installed product consumer
+        timeout-minutes: ${{ inputs.module == 'afs' && fromJSON(needs.resolve.outputs.afs_command_minutes) || 27 }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INDEPENDENT_PUBLICATION_PHASE: registry-consumer
+          INDEPENDENT_PUBLICATION_INPUT: ${{ inputs.producer_selectors }}
+          REGISTRY_CONSUMER_MODULE: ${{ inputs.module }}
+          REGISTRY_CONSUMER_TARGET: ${{ inputs.target }}
+        run: bun scripts/run-independent-publication.ts
+      - id: upload
+        name: Upload registry consumer originals
+        timeout-minutes: ${{ inputs.module == 'afs' && fromJSON(needs.resolve.outputs.afs_upload_minutes) || 5 }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.resolve.outputs.artifact_name }}
+          path: .test-data/independent-registry-consumer/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload registry consumer failure diagnostics
+        if: ${{ failure() && (inputs.module != 'afs' || steps.upload.outcome != 'failure') }}
+        timeout-minutes: ${{ inputs.module == 'afs' && fromJSON(needs.resolve.outputs.afs_upload_minutes) || 5 }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: xpod-registry-consumer-diagnostics-${{ inputs.module }}-${{ inputs.target }}-${{ inputs.source_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .test-data/independent-registry-consumer/
+            .test-data/independent-registry-consumer-producer/
+          if-no-files-found: warn
+          retention-days: 30

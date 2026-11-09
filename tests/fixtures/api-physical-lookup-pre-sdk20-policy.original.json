@@ -1,0 +1,2576 @@
+{
+  "consumer": [
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "abb2f08b7785f3e31434d3bc6f7d0e179fba9f7d7e87e863473abe4960925c2d",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "b0f9b7e6619f76c973152afcf741e0184ebb09a4a3a339c9938705cd09475dbd",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [],
+      "sourceBindingsSha256": "82610869af5953cad77bc2815d52421bcc59b7ad43bcc4ff70310f5c90a86436"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "0080c9b59b0db1bff4bbe0fc4da96133e85fff02ebd8bd14abdf28584c362434"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "d41d3988923761f85eb14b7c59a43fd4447fd679ebd7f16e3636611b631e1d30"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "207b828f703f0c2c9ef30b53dd91ecdba448e74b6f6284b7227bc2799f72f786"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "199fb474df3a52cc88bb9b9ab01b80d1ce6c4c9e6142ef1f927f8baf573ed92d"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "badeedbc865238d836420687305d9a84e1ef0572c66e819a626289a01b916ce5"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "81b9d05ab6194b4d5f3b54d9d1f1b2b7045f01b0c4f307d972b07459d2eb5a59"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "b62d90e1f1ee868413273bb8d4583c3649563146f8857b1bf608a5d787f0b500"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "148bbf620c493f436d2346b709b24fc8274afbb3a3dabc0737a204d494ac1906"
+        }
+      ],
+      "sourceBindingsSha256": "e523c922f7daf41377b2ad303c92a667400a95278add5f72e81c8e1257538820"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "0080c9b59b0db1bff4bbe0fc4da96133e85fff02ebd8bd14abdf28584c362434"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "d41d3988923761f85eb14b7c59a43fd4447fd679ebd7f16e3636611b631e1d30"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "207b828f703f0c2c9ef30b53dd91ecdba448e74b6f6284b7227bc2799f72f786"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "199fb474df3a52cc88bb9b9ab01b80d1ce6c4c9e6142ef1f927f8baf573ed92d"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "218495ec3a0298d155d20e8dbb327ce628d67a3e288ffe1ff57cacc85158b847"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "81b9d05ab6194b4d5f3b54d9d1f1b2b7045f01b0c4f307d972b07459d2eb5a59"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "b62d90e1f1ee868413273bb8d4583c3649563146f8857b1bf608a5d787f0b500"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "148bbf620c493f436d2346b709b24fc8274afbb3a3dabc0737a204d494ac1906"
+        }
+      ],
+      "sourceBindingsSha256": "0690fda169c9222572b16993dad408e43990947eee7b136f19bbe22fa84f67f6"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "0080c9b59b0db1bff4bbe0fc4da96133e85fff02ebd8bd14abdf28584c362434"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "d41d3988923761f85eb14b7c59a43fd4447fd679ebd7f16e3636611b631e1d30"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "207b828f703f0c2c9ef30b53dd91ecdba448e74b6f6284b7227bc2799f72f786"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "199fb474df3a52cc88bb9b9ab01b80d1ce6c4c9e6142ef1f927f8baf573ed92d"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "218495ec3a0298d155d20e8dbb327ce628d67a3e288ffe1ff57cacc85158b847"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "81b9d05ab6194b4d5f3b54d9d1f1b2b7045f01b0c4f307d972b07459d2eb5a59"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "b62d90e1f1ee868413273bb8d4583c3649563146f8857b1bf608a5d787f0b500"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "722e5d696aa09cde81482f65923c4ebc4b2298dda8ccd31decaf296707f7b179"
+        }
+      ],
+      "sourceBindingsSha256": "7444182d71d0a50330126560e9688d894c759ccf3ba99323611cbad4cffce259"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "0080c9b59b0db1bff4bbe0fc4da96133e85fff02ebd8bd14abdf28584c362434"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "d41d3988923761f85eb14b7c59a43fd4447fd679ebd7f16e3636611b631e1d30"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "207b828f703f0c2c9ef30b53dd91ecdba448e74b6f6284b7227bc2799f72f786"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "199fb474df3a52cc88bb9b9ab01b80d1ce6c4c9e6142ef1f927f8baf573ed92d"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "218495ec3a0298d155d20e8dbb327ce628d67a3e288ffe1ff57cacc85158b847"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "81b9d05ab6194b4d5f3b54d9d1f1b2b7045f01b0c4f307d972b07459d2eb5a59"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "5a1f74aebb5a7c46e57ff15d6ecace01389746b2e2cd27cfb245a50f75a4011b"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "d86bd4f6e2e3372f7731c2667fb0bfc795ae8c2ab198d3d41f6cd86f05d27238"
+        }
+      ],
+      "sourceBindingsSha256": "0edee50c27cccf607148f77f4244e8ad8a950cfbbc616701deaf5d5cd4c4e2b2"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "0080c9b59b0db1bff4bbe0fc4da96133e85fff02ebd8bd14abdf28584c362434"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "d41d3988923761f85eb14b7c59a43fd4447fd679ebd7f16e3636611b631e1d30"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "207b828f703f0c2c9ef30b53dd91ecdba448e74b6f6284b7227bc2799f72f786"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "199fb474df3a52cc88bb9b9ab01b80d1ce6c4c9e6142ef1f927f8baf573ed92d"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "218495ec3a0298d155d20e8dbb327ce628d67a3e288ffe1ff57cacc85158b847"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "c166b068eb6e726d0763a4ee86cf1ecba6331501d6cd01a3c1e4a40517f97e99"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "5a1f74aebb5a7c46e57ff15d6ecace01389746b2e2cd27cfb245a50f75a4011b"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "d86bd4f6e2e3372f7731c2667fb0bfc795ae8c2ab198d3d41f6cd86f05d27238"
+        }
+      ],
+      "sourceBindingsSha256": "ab123bfb5eb2ad7d0a3f8c75dd5aae72b5860dfb4bdd70ccf97d379eb6d2b68c"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "0080c9b59b0db1bff4bbe0fc4da96133e85fff02ebd8bd14abdf28584c362434"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "d41d3988923761f85eb14b7c59a43fd4447fd679ebd7f16e3636611b631e1d30"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "207b828f703f0c2c9ef30b53dd91ecdba448e74b6f6284b7227bc2799f72f786"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "199fb474df3a52cc88bb9b9ab01b80d1ce6c4c9e6142ef1f927f8baf573ed92d"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "65cb6f06343adb9612283e4b24c5931bacb2db370c3b3cb65427ea7b46e650a8"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "f849e3e11d6a210498ada3d3420885d8c60df8f2e9034bcadc97db829ffbacdb"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "5a1f74aebb5a7c46e57ff15d6ecace01389746b2e2cd27cfb245a50f75a4011b"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "d86bd4f6e2e3372f7731c2667fb0bfc795ae8c2ab198d3d41f6cd86f05d27238"
+        }
+      ],
+      "sourceBindingsSha256": "64add96bd81200a92c7055690104e7342a6888f1ace008448ab62fdb6b17a2c8"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "6e6d692fc61a3cba8f71a7eeb2c088b7b27cd762406190c3781c7a20bb9e08df"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "87cfaf4e12092fb0e67eaba18985efadcc501a6c2112798fae217608f475048c"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "41bbf5387ab913625aa29663c0f2758b3b783de28f48c201d375369a7268c750"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "e96742e42dffe81814613c33468c256d03144ac82872a5537df8fa53d69e1550"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "141fb5054db8d6bac3a146c73edfc38aeb6317252b00481295e8a2dea0c7a113"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "e9e6c9eb32137a9bbb5fad26aa49093d0c410f9ca783d3891300e3ed67f85549"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "62b1564069f3a73a2d69d203dbb4906451a6a970f2563b67127a77527d3afee7"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "b8a533727abef24c1b40d36ec67b631c4251c001b77448377ea19afe65956bfc"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "047bd0a846b49482998d654b395e42c71a8ccfadf9b557bf54db9484676d6786"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "f849e3e11d6a210498ada3d3420885d8c60df8f2e9034bcadc97db829ffbacdb"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "842409559034a709b6340c4358fdb9bb0a82204fa5fb5d096e6627c0496c61f0"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "f58e72eaef54e05bbd18cc7171ba6d6a58b9691cf9eda2af2808611bd20da02c"
+        }
+      ],
+      "sourceBindingsSha256": "5dc6ca3fff1cd2d86a6cc52ed0782a8e431af354e78ec388abc88185009811b1"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "141fb5054db8d6bac3a146c73edfc38aeb6317252b00481295e8a2dea0c7a113"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "e9e6c9eb32137a9bbb5fad26aa49093d0c410f9ca783d3891300e3ed67f85549"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "62b1564069f3a73a2d69d203dbb4906451a6a970f2563b67127a77527d3afee7"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "b8a533727abef24c1b40d36ec67b631c4251c001b77448377ea19afe65956bfc"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "047bd0a846b49482998d654b395e42c71a8ccfadf9b557bf54db9484676d6786"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "f849e3e11d6a210498ada3d3420885d8c60df8f2e9034bcadc97db829ffbacdb"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "5a1f74aebb5a7c46e57ff15d6ecace01389746b2e2cd27cfb245a50f75a4011b"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "d86bd4f6e2e3372f7731c2667fb0bfc795ae8c2ab198d3d41f6cd86f05d27238"
+        }
+      ],
+      "sourceBindingsSha256": "50c4b92494d57780e7baf0dd866803060ae2f19a094ee47c3bde7efceaa3e865"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "0080c9b59b0db1bff4bbe0fc4da96133e85fff02ebd8bd14abdf28584c362434"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "e9e6c9eb32137a9bbb5fad26aa49093d0c410f9ca783d3891300e3ed67f85549"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "62b1564069f3a73a2d69d203dbb4906451a6a970f2563b67127a77527d3afee7"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "b8a533727abef24c1b40d36ec67b631c4251c001b77448377ea19afe65956bfc"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "65cb6f06343adb9612283e4b24c5931bacb2db370c3b3cb65427ea7b46e650a8"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "f849e3e11d6a210498ada3d3420885d8c60df8f2e9034bcadc97db829ffbacdb"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "5a1f74aebb5a7c46e57ff15d6ecace01389746b2e2cd27cfb245a50f75a4011b"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "d86bd4f6e2e3372f7731c2667fb0bfc795ae8c2ab198d3d41f6cd86f05d27238"
+        }
+      ],
+      "sourceBindingsSha256": "4efa4ce2268b66ae845ed836571fe766f78ca49891ad5a2ba98cdbb6c4f6c903"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "0080c9b59b0db1bff4bbe0fc4da96133e85fff02ebd8bd14abdf28584c362434"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "0260bb9efd2746b13c5951ad5a0e910ba5f488c4899eacba02ec39942cdeed84"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "62b1564069f3a73a2d69d203dbb4906451a6a970f2563b67127a77527d3afee7"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "7e04a4b21585bdeb977299a10154443722a59d0be6f356cbffccb35d54e9fb73"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "65cb6f06343adb9612283e4b24c5931bacb2db370c3b3cb65427ea7b46e650a8"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "f849e3e11d6a210498ada3d3420885d8c60df8f2e9034bcadc97db829ffbacdb"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "5a1f74aebb5a7c46e57ff15d6ecace01389746b2e2cd27cfb245a50f75a4011b"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "d86bd4f6e2e3372f7731c2667fb0bfc795ae8c2ab198d3d41f6cd86f05d27238"
+        }
+      ],
+      "sourceBindingsSha256": "c17a3b13a6b0f7c5a3dfe5488bf230f01fdf85a592afc1ec037ac7982ecda599"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "0080c9b59b0db1bff4bbe0fc4da96133e85fff02ebd8bd14abdf28584c362434"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "0260bb9efd2746b13c5951ad5a0e910ba5f488c4899eacba02ec39942cdeed84"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "dde9d23355ebfc9e6270dd528ae67411a9260952a69f17b720cfe0e677b5265e"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "7e04a4b21585bdeb977299a10154443722a59d0be6f356cbffccb35d54e9fb73"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "65cb6f06343adb9612283e4b24c5931bacb2db370c3b3cb65427ea7b46e650a8"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "f849e3e11d6a210498ada3d3420885d8c60df8f2e9034bcadc97db829ffbacdb"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "5a1f74aebb5a7c46e57ff15d6ecace01389746b2e2cd27cfb245a50f75a4011b"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "d86bd4f6e2e3372f7731c2667fb0bfc795ae8c2ab198d3d41f6cd86f05d27238"
+        }
+      ],
+      "sourceBindingsSha256": "19fb6276c864d2dea9392a1189e14f27a7a240883b2baad3b877db98b5c59334"
+    }
+  ],
+  "ci": [
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication.yml",
+          "sha256": "5b830f4a3375a7f886f19b5617db5694b7cdcab23d21d82661d01899300e9e07",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "0080c9b59b0db1bff4bbe0fc4da96133e85fff02ebd8bd14abdf28584c362434"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "d41d3988923761f85eb14b7c59a43fd4447fd679ebd7f16e3636611b631e1d30"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "207b828f703f0c2c9ef30b53dd91ecdba448e74b6f6284b7227bc2799f72f786"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "199fb474df3a52cc88bb9b9ab01b80d1ce6c4c9e6142ef1f927f8baf573ed92d"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "badeedbc865238d836420687305d9a84e1ef0572c66e819a626289a01b916ce5"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "81b9d05ab6194b4d5f3b54d9d1f1b2b7045f01b0c4f307d972b07459d2eb5a59"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "b62d90e1f1ee868413273bb8d4583c3649563146f8857b1bf608a5d787f0b500"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "148bbf620c493f436d2346b709b24fc8274afbb3a3dabc0737a204d494ac1906"
+        }
+      ],
+      "sourceBindingsSha256": "e523c922f7daf41377b2ad303c92a667400a95278add5f72e81c8e1257538820"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication.yml",
+          "sha256": "5b830f4a3375a7f886f19b5617db5694b7cdcab23d21d82661d01899300e9e07",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "0080c9b59b0db1bff4bbe0fc4da96133e85fff02ebd8bd14abdf28584c362434"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "d41d3988923761f85eb14b7c59a43fd4447fd679ebd7f16e3636611b631e1d30"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "207b828f703f0c2c9ef30b53dd91ecdba448e74b6f6284b7227bc2799f72f786"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "199fb474df3a52cc88bb9b9ab01b80d1ce6c4c9e6142ef1f927f8baf573ed92d"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "218495ec3a0298d155d20e8dbb327ce628d67a3e288ffe1ff57cacc85158b847"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "81b9d05ab6194b4d5f3b54d9d1f1b2b7045f01b0c4f307d972b07459d2eb5a59"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "b62d90e1f1ee868413273bb8d4583c3649563146f8857b1bf608a5d787f0b500"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "148bbf620c493f436d2346b709b24fc8274afbb3a3dabc0737a204d494ac1906"
+        }
+      ],
+      "sourceBindingsSha256": "0690fda169c9222572b16993dad408e43990947eee7b136f19bbe22fa84f67f6"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication.yml",
+          "sha256": "5b830f4a3375a7f886f19b5617db5694b7cdcab23d21d82661d01899300e9e07",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "0080c9b59b0db1bff4bbe0fc4da96133e85fff02ebd8bd14abdf28584c362434"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "d41d3988923761f85eb14b7c59a43fd4447fd679ebd7f16e3636611b631e1d30"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "207b828f703f0c2c9ef30b53dd91ecdba448e74b6f6284b7227bc2799f72f786"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "199fb474df3a52cc88bb9b9ab01b80d1ce6c4c9e6142ef1f927f8baf573ed92d"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "218495ec3a0298d155d20e8dbb327ce628d67a3e288ffe1ff57cacc85158b847"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "81b9d05ab6194b4d5f3b54d9d1f1b2b7045f01b0c4f307d972b07459d2eb5a59"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "b62d90e1f1ee868413273bb8d4583c3649563146f8857b1bf608a5d787f0b500"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "722e5d696aa09cde81482f65923c4ebc4b2298dda8ccd31decaf296707f7b179"
+        }
+      ],
+      "sourceBindingsSha256": "7444182d71d0a50330126560e9688d894c759ccf3ba99323611cbad4cffce259"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication.yml",
+          "sha256": "5b830f4a3375a7f886f19b5617db5694b7cdcab23d21d82661d01899300e9e07",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "0080c9b59b0db1bff4bbe0fc4da96133e85fff02ebd8bd14abdf28584c362434"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "d41d3988923761f85eb14b7c59a43fd4447fd679ebd7f16e3636611b631e1d30"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "207b828f703f0c2c9ef30b53dd91ecdba448e74b6f6284b7227bc2799f72f786"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "199fb474df3a52cc88bb9b9ab01b80d1ce6c4c9e6142ef1f927f8baf573ed92d"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "218495ec3a0298d155d20e8dbb327ce628d67a3e288ffe1ff57cacc85158b847"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "81b9d05ab6194b4d5f3b54d9d1f1b2b7045f01b0c4f307d972b07459d2eb5a59"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "5a1f74aebb5a7c46e57ff15d6ecace01389746b2e2cd27cfb245a50f75a4011b"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "d86bd4f6e2e3372f7731c2667fb0bfc795ae8c2ab198d3d41f6cd86f05d27238"
+        }
+      ],
+      "sourceBindingsSha256": "0edee50c27cccf607148f77f4244e8ad8a950cfbbc616701deaf5d5cd4c4e2b2"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication.yml",
+          "sha256": "5b830f4a3375a7f886f19b5617db5694b7cdcab23d21d82661d01899300e9e07",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "0080c9b59b0db1bff4bbe0fc4da96133e85fff02ebd8bd14abdf28584c362434"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "d41d3988923761f85eb14b7c59a43fd4447fd679ebd7f16e3636611b631e1d30"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "207b828f703f0c2c9ef30b53dd91ecdba448e74b6f6284b7227bc2799f72f786"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "199fb474df3a52cc88bb9b9ab01b80d1ce6c4c9e6142ef1f927f8baf573ed92d"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "218495ec3a0298d155d20e8dbb327ce628d67a3e288ffe1ff57cacc85158b847"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "c166b068eb6e726d0763a4ee86cf1ecba6331501d6cd01a3c1e4a40517f97e99"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "5a1f74aebb5a7c46e57ff15d6ecace01389746b2e2cd27cfb245a50f75a4011b"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "d86bd4f6e2e3372f7731c2667fb0bfc795ae8c2ab198d3d41f6cd86f05d27238"
+        }
+      ],
+      "sourceBindingsSha256": "ab123bfb5eb2ad7d0a3f8c75dd5aae72b5860dfb4bdd70ccf97d379eb6d2b68c"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication.yml",
+          "sha256": "5b830f4a3375a7f886f19b5617db5694b7cdcab23d21d82661d01899300e9e07",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "0080c9b59b0db1bff4bbe0fc4da96133e85fff02ebd8bd14abdf28584c362434"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "d41d3988923761f85eb14b7c59a43fd4447fd679ebd7f16e3636611b631e1d30"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "207b828f703f0c2c9ef30b53dd91ecdba448e74b6f6284b7227bc2799f72f786"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "199fb474df3a52cc88bb9b9ab01b80d1ce6c4c9e6142ef1f927f8baf573ed92d"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "65cb6f06343adb9612283e4b24c5931bacb2db370c3b3cb65427ea7b46e650a8"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "f849e3e11d6a210498ada3d3420885d8c60df8f2e9034bcadc97db829ffbacdb"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "5a1f74aebb5a7c46e57ff15d6ecace01389746b2e2cd27cfb245a50f75a4011b"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "d86bd4f6e2e3372f7731c2667fb0bfc795ae8c2ab198d3d41f6cd86f05d27238"
+        }
+      ],
+      "sourceBindingsSha256": "64add96bd81200a92c7055690104e7342a6888f1ace008448ab62fdb6b17a2c8"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication.yml",
+          "sha256": "5b830f4a3375a7f886f19b5617db5694b7cdcab23d21d82661d01899300e9e07",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "6e6d692fc61a3cba8f71a7eeb2c088b7b27cd762406190c3781c7a20bb9e08df"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "87cfaf4e12092fb0e67eaba18985efadcc501a6c2112798fae217608f475048c"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "41bbf5387ab913625aa29663c0f2758b3b783de28f48c201d375369a7268c750"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "e96742e42dffe81814613c33468c256d03144ac82872a5537df8fa53d69e1550"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "141fb5054db8d6bac3a146c73edfc38aeb6317252b00481295e8a2dea0c7a113"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "e9e6c9eb32137a9bbb5fad26aa49093d0c410f9ca783d3891300e3ed67f85549"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "62b1564069f3a73a2d69d203dbb4906451a6a970f2563b67127a77527d3afee7"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "b8a533727abef24c1b40d36ec67b631c4251c001b77448377ea19afe65956bfc"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "047bd0a846b49482998d654b395e42c71a8ccfadf9b557bf54db9484676d6786"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "f849e3e11d6a210498ada3d3420885d8c60df8f2e9034bcadc97db829ffbacdb"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "842409559034a709b6340c4358fdb9bb0a82204fa5fb5d096e6627c0496c61f0"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "f58e72eaef54e05bbd18cc7171ba6d6a58b9691cf9eda2af2808611bd20da02c"
+        }
+      ],
+      "sourceBindingsSha256": "5dc6ca3fff1cd2d86a6cc52ed0782a8e431af354e78ec388abc88185009811b1"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication.yml",
+          "sha256": "5b830f4a3375a7f886f19b5617db5694b7cdcab23d21d82661d01899300e9e07",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "141fb5054db8d6bac3a146c73edfc38aeb6317252b00481295e8a2dea0c7a113"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "e9e6c9eb32137a9bbb5fad26aa49093d0c410f9ca783d3891300e3ed67f85549"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "62b1564069f3a73a2d69d203dbb4906451a6a970f2563b67127a77527d3afee7"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "b8a533727abef24c1b40d36ec67b631c4251c001b77448377ea19afe65956bfc"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "047bd0a846b49482998d654b395e42c71a8ccfadf9b557bf54db9484676d6786"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "f849e3e11d6a210498ada3d3420885d8c60df8f2e9034bcadc97db829ffbacdb"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "5a1f74aebb5a7c46e57ff15d6ecace01389746b2e2cd27cfb245a50f75a4011b"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "d86bd4f6e2e3372f7731c2667fb0bfc795ae8c2ab198d3d41f6cd86f05d27238"
+        }
+      ],
+      "sourceBindingsSha256": "50c4b92494d57780e7baf0dd866803060ae2f19a094ee47c3bde7efceaa3e865"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication.yml",
+          "sha256": "5b830f4a3375a7f886f19b5617db5694b7cdcab23d21d82661d01899300e9e07",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "0080c9b59b0db1bff4bbe0fc4da96133e85fff02ebd8bd14abdf28584c362434"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "e9e6c9eb32137a9bbb5fad26aa49093d0c410f9ca783d3891300e3ed67f85549"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "62b1564069f3a73a2d69d203dbb4906451a6a970f2563b67127a77527d3afee7"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "b8a533727abef24c1b40d36ec67b631c4251c001b77448377ea19afe65956bfc"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "65cb6f06343adb9612283e4b24c5931bacb2db370c3b3cb65427ea7b46e650a8"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "f849e3e11d6a210498ada3d3420885d8c60df8f2e9034bcadc97db829ffbacdb"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "5a1f74aebb5a7c46e57ff15d6ecace01389746b2e2cd27cfb245a50f75a4011b"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "d86bd4f6e2e3372f7731c2667fb0bfc795ae8c2ab198d3d41f6cd86f05d27238"
+        }
+      ],
+      "sourceBindingsSha256": "4efa4ce2268b66ae845ed836571fe766f78ca49891ad5a2ba98cdbb6c4f6c903"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication.yml",
+          "sha256": "5b830f4a3375a7f886f19b5617db5694b7cdcab23d21d82661d01899300e9e07",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "0080c9b59b0db1bff4bbe0fc4da96133e85fff02ebd8bd14abdf28584c362434"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "0260bb9efd2746b13c5951ad5a0e910ba5f488c4899eacba02ec39942cdeed84"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "62b1564069f3a73a2d69d203dbb4906451a6a970f2563b67127a77527d3afee7"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "7e04a4b21585bdeb977299a10154443722a59d0be6f356cbffccb35d54e9fb73"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "65cb6f06343adb9612283e4b24c5931bacb2db370c3b3cb65427ea7b46e650a8"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "f849e3e11d6a210498ada3d3420885d8c60df8f2e9034bcadc97db829ffbacdb"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "5a1f74aebb5a7c46e57ff15d6ecace01389746b2e2cd27cfb245a50f75a4011b"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "d86bd4f6e2e3372f7731c2667fb0bfc795ae8c2ab198d3d41f6cd86f05d27238"
+        }
+      ],
+      "sourceBindingsSha256": "c17a3b13a6b0f7c5a3dfe5488bf230f01fdf85a592afc1ec037ac7982ecda599"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication.yml",
+          "sha256": "5b830f4a3375a7f886f19b5617db5694b7cdcab23d21d82661d01899300e9e07",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "0080c9b59b0db1bff4bbe0fc4da96133e85fff02ebd8bd14abdf28584c362434"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "0260bb9efd2746b13c5951ad5a0e910ba5f488c4899eacba02ec39942cdeed84"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "dde9d23355ebfc9e6270dd528ae67411a9260952a69f17b720cfe0e677b5265e"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "7e04a4b21585bdeb977299a10154443722a59d0be6f356cbffccb35d54e9fb73"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "65cb6f06343adb9612283e4b24c5931bacb2db370c3b3cb65427ea7b46e650a8"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "f849e3e11d6a210498ada3d3420885d8c60df8f2e9034bcadc97db829ffbacdb"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "5a1f74aebb5a7c46e57ff15d6ecace01389746b2e2cd27cfb245a50f75a4011b"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "d86bd4f6e2e3372f7731c2667fb0bfc795ae8c2ab198d3d41f6cd86f05d27238"
+        }
+      ],
+      "sourceBindingsSha256": "19fb6276c864d2dea9392a1189e14f27a7a240883b2baad3b877db98b5c59334"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication.yml",
+          "sha256": "d72284b8dc5b91669f0b41a8dafca787b6e1581a495d891cead38a07d9ab0852",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "0080c9b59b0db1bff4bbe0fc4da96133e85fff02ebd8bd14abdf28584c362434"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "d41d3988923761f85eb14b7c59a43fd4447fd679ebd7f16e3636611b631e1d30"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "207b828f703f0c2c9ef30b53dd91ecdba448e74b6f6284b7227bc2799f72f786"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "199fb474df3a52cc88bb9b9ab01b80d1ce6c4c9e6142ef1f927f8baf573ed92d"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "badeedbc865238d836420687305d9a84e1ef0572c66e819a626289a01b916ce5"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "81b9d05ab6194b4d5f3b54d9d1f1b2b7045f01b0c4f307d972b07459d2eb5a59"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "b62d90e1f1ee868413273bb8d4583c3649563146f8857b1bf608a5d787f0b500"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "148bbf620c493f436d2346b709b24fc8274afbb3a3dabc0737a204d494ac1906"
+        }
+      ],
+      "sourceBindingsSha256": "e523c922f7daf41377b2ad303c92a667400a95278add5f72e81c8e1257538820"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication.yml",
+          "sha256": "d72284b8dc5b91669f0b41a8dafca787b6e1581a495d891cead38a07d9ab0852",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "0080c9b59b0db1bff4bbe0fc4da96133e85fff02ebd8bd14abdf28584c362434"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "d41d3988923761f85eb14b7c59a43fd4447fd679ebd7f16e3636611b631e1d30"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "207b828f703f0c2c9ef30b53dd91ecdba448e74b6f6284b7227bc2799f72f786"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "199fb474df3a52cc88bb9b9ab01b80d1ce6c4c9e6142ef1f927f8baf573ed92d"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "218495ec3a0298d155d20e8dbb327ce628d67a3e288ffe1ff57cacc85158b847"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "81b9d05ab6194b4d5f3b54d9d1f1b2b7045f01b0c4f307d972b07459d2eb5a59"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "b62d90e1f1ee868413273bb8d4583c3649563146f8857b1bf608a5d787f0b500"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "148bbf620c493f436d2346b709b24fc8274afbb3a3dabc0737a204d494ac1906"
+        }
+      ],
+      "sourceBindingsSha256": "0690fda169c9222572b16993dad408e43990947eee7b136f19bbe22fa84f67f6"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication.yml",
+          "sha256": "d72284b8dc5b91669f0b41a8dafca787b6e1581a495d891cead38a07d9ab0852",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "0080c9b59b0db1bff4bbe0fc4da96133e85fff02ebd8bd14abdf28584c362434"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "d41d3988923761f85eb14b7c59a43fd4447fd679ebd7f16e3636611b631e1d30"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "207b828f703f0c2c9ef30b53dd91ecdba448e74b6f6284b7227bc2799f72f786"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "199fb474df3a52cc88bb9b9ab01b80d1ce6c4c9e6142ef1f927f8baf573ed92d"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "218495ec3a0298d155d20e8dbb327ce628d67a3e288ffe1ff57cacc85158b847"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "81b9d05ab6194b4d5f3b54d9d1f1b2b7045f01b0c4f307d972b07459d2eb5a59"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "b62d90e1f1ee868413273bb8d4583c3649563146f8857b1bf608a5d787f0b500"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "722e5d696aa09cde81482f65923c4ebc4b2298dda8ccd31decaf296707f7b179"
+        }
+      ],
+      "sourceBindingsSha256": "7444182d71d0a50330126560e9688d894c759ccf3ba99323611cbad4cffce259"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication.yml",
+          "sha256": "d72284b8dc5b91669f0b41a8dafca787b6e1581a495d891cead38a07d9ab0852",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "0080c9b59b0db1bff4bbe0fc4da96133e85fff02ebd8bd14abdf28584c362434"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "d41d3988923761f85eb14b7c59a43fd4447fd679ebd7f16e3636611b631e1d30"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "207b828f703f0c2c9ef30b53dd91ecdba448e74b6f6284b7227bc2799f72f786"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "199fb474df3a52cc88bb9b9ab01b80d1ce6c4c9e6142ef1f927f8baf573ed92d"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "218495ec3a0298d155d20e8dbb327ce628d67a3e288ffe1ff57cacc85158b847"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "81b9d05ab6194b4d5f3b54d9d1f1b2b7045f01b0c4f307d972b07459d2eb5a59"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "5a1f74aebb5a7c46e57ff15d6ecace01389746b2e2cd27cfb245a50f75a4011b"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "d86bd4f6e2e3372f7731c2667fb0bfc795ae8c2ab198d3d41f6cd86f05d27238"
+        }
+      ],
+      "sourceBindingsSha256": "0edee50c27cccf607148f77f4244e8ad8a950cfbbc616701deaf5d5cd4c4e2b2"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication.yml",
+          "sha256": "d72284b8dc5b91669f0b41a8dafca787b6e1581a495d891cead38a07d9ab0852",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "0080c9b59b0db1bff4bbe0fc4da96133e85fff02ebd8bd14abdf28584c362434"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "d41d3988923761f85eb14b7c59a43fd4447fd679ebd7f16e3636611b631e1d30"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "207b828f703f0c2c9ef30b53dd91ecdba448e74b6f6284b7227bc2799f72f786"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "199fb474df3a52cc88bb9b9ab01b80d1ce6c4c9e6142ef1f927f8baf573ed92d"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "218495ec3a0298d155d20e8dbb327ce628d67a3e288ffe1ff57cacc85158b847"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "c166b068eb6e726d0763a4ee86cf1ecba6331501d6cd01a3c1e4a40517f97e99"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "5a1f74aebb5a7c46e57ff15d6ecace01389746b2e2cd27cfb245a50f75a4011b"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "d86bd4f6e2e3372f7731c2667fb0bfc795ae8c2ab198d3d41f6cd86f05d27238"
+        }
+      ],
+      "sourceBindingsSha256": "ab123bfb5eb2ad7d0a3f8c75dd5aae72b5860dfb4bdd70ccf97d379eb6d2b68c"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication.yml",
+          "sha256": "d72284b8dc5b91669f0b41a8dafca787b6e1581a495d891cead38a07d9ab0852",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "0080c9b59b0db1bff4bbe0fc4da96133e85fff02ebd8bd14abdf28584c362434"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "d41d3988923761f85eb14b7c59a43fd4447fd679ebd7f16e3636611b631e1d30"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "207b828f703f0c2c9ef30b53dd91ecdba448e74b6f6284b7227bc2799f72f786"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "199fb474df3a52cc88bb9b9ab01b80d1ce6c4c9e6142ef1f927f8baf573ed92d"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "65cb6f06343adb9612283e4b24c5931bacb2db370c3b3cb65427ea7b46e650a8"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "f849e3e11d6a210498ada3d3420885d8c60df8f2e9034bcadc97db829ffbacdb"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "5a1f74aebb5a7c46e57ff15d6ecace01389746b2e2cd27cfb245a50f75a4011b"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "d86bd4f6e2e3372f7731c2667fb0bfc795ae8c2ab198d3d41f6cd86f05d27238"
+        }
+      ],
+      "sourceBindingsSha256": "64add96bd81200a92c7055690104e7342a6888f1ace008448ab62fdb6b17a2c8"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication.yml",
+          "sha256": "d72284b8dc5b91669f0b41a8dafca787b6e1581a495d891cead38a07d9ab0852",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "6e6d692fc61a3cba8f71a7eeb2c088b7b27cd762406190c3781c7a20bb9e08df"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "87cfaf4e12092fb0e67eaba18985efadcc501a6c2112798fae217608f475048c"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "41bbf5387ab913625aa29663c0f2758b3b783de28f48c201d375369a7268c750"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "e96742e42dffe81814613c33468c256d03144ac82872a5537df8fa53d69e1550"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "141fb5054db8d6bac3a146c73edfc38aeb6317252b00481295e8a2dea0c7a113"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "e9e6c9eb32137a9bbb5fad26aa49093d0c410f9ca783d3891300e3ed67f85549"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "62b1564069f3a73a2d69d203dbb4906451a6a970f2563b67127a77527d3afee7"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "b8a533727abef24c1b40d36ec67b631c4251c001b77448377ea19afe65956bfc"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "047bd0a846b49482998d654b395e42c71a8ccfadf9b557bf54db9484676d6786"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "f849e3e11d6a210498ada3d3420885d8c60df8f2e9034bcadc97db829ffbacdb"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "842409559034a709b6340c4358fdb9bb0a82204fa5fb5d096e6627c0496c61f0"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "f58e72eaef54e05bbd18cc7171ba6d6a58b9691cf9eda2af2808611bd20da02c"
+        }
+      ],
+      "sourceBindingsSha256": "5dc6ca3fff1cd2d86a6cc52ed0782a8e431af354e78ec388abc88185009811b1"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication.yml",
+          "sha256": "d72284b8dc5b91669f0b41a8dafca787b6e1581a495d891cead38a07d9ab0852",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "141fb5054db8d6bac3a146c73edfc38aeb6317252b00481295e8a2dea0c7a113"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "e9e6c9eb32137a9bbb5fad26aa49093d0c410f9ca783d3891300e3ed67f85549"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "62b1564069f3a73a2d69d203dbb4906451a6a970f2563b67127a77527d3afee7"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "b8a533727abef24c1b40d36ec67b631c4251c001b77448377ea19afe65956bfc"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "047bd0a846b49482998d654b395e42c71a8ccfadf9b557bf54db9484676d6786"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "f849e3e11d6a210498ada3d3420885d8c60df8f2e9034bcadc97db829ffbacdb"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "5a1f74aebb5a7c46e57ff15d6ecace01389746b2e2cd27cfb245a50f75a4011b"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "d86bd4f6e2e3372f7731c2667fb0bfc795ae8c2ab198d3d41f6cd86f05d27238"
+        }
+      ],
+      "sourceBindingsSha256": "50c4b92494d57780e7baf0dd866803060ae2f19a094ee47c3bde7efceaa3e865"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication.yml",
+          "sha256": "d72284b8dc5b91669f0b41a8dafca787b6e1581a495d891cead38a07d9ab0852",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "0080c9b59b0db1bff4bbe0fc4da96133e85fff02ebd8bd14abdf28584c362434"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "e9e6c9eb32137a9bbb5fad26aa49093d0c410f9ca783d3891300e3ed67f85549"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "62b1564069f3a73a2d69d203dbb4906451a6a970f2563b67127a77527d3afee7"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "b8a533727abef24c1b40d36ec67b631c4251c001b77448377ea19afe65956bfc"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "65cb6f06343adb9612283e4b24c5931bacb2db370c3b3cb65427ea7b46e650a8"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "f849e3e11d6a210498ada3d3420885d8c60df8f2e9034bcadc97db829ffbacdb"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "5a1f74aebb5a7c46e57ff15d6ecace01389746b2e2cd27cfb245a50f75a4011b"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "d86bd4f6e2e3372f7731c2667fb0bfc795ae8c2ab198d3d41f6cd86f05d27238"
+        }
+      ],
+      "sourceBindingsSha256": "4efa4ce2268b66ae845ed836571fe766f78ca49891ad5a2ba98cdbb6c4f6c903"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication.yml",
+          "sha256": "d72284b8dc5b91669f0b41a8dafca787b6e1581a495d891cead38a07d9ab0852",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "0080c9b59b0db1bff4bbe0fc4da96133e85fff02ebd8bd14abdf28584c362434"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "0260bb9efd2746b13c5951ad5a0e910ba5f488c4899eacba02ec39942cdeed84"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "62b1564069f3a73a2d69d203dbb4906451a6a970f2563b67127a77527d3afee7"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "7e04a4b21585bdeb977299a10154443722a59d0be6f356cbffccb35d54e9fb73"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "65cb6f06343adb9612283e4b24c5931bacb2db370c3b3cb65427ea7b46e650a8"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "f849e3e11d6a210498ada3d3420885d8c60df8f2e9034bcadc97db829ffbacdb"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "5a1f74aebb5a7c46e57ff15d6ecace01389746b2e2cd27cfb245a50f75a4011b"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "d86bd4f6e2e3372f7731c2667fb0bfc795ae8c2ab198d3d41f6cd86f05d27238"
+        }
+      ],
+      "sourceBindingsSha256": "c17a3b13a6b0f7c5a3dfe5488bf230f01fdf85a592afc1ec037ac7982ecda599"
+    },
+    {
+      "selectors": [
+        {
+          "path": ".github/workflows/independent-publication.yml",
+          "sha256": "d72284b8dc5b91669f0b41a8dafca787b6e1581a495d891cead38a07d9ab0852",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-publication-wave.yml",
+          "sha256": "d0663ca80b76dd9c9f3dcdba7a0ed472965a23cd87f0080a5a944e76123eff4b",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-archive-consumer.yml",
+          "sha256": "7162065092c1e1377e4a504da9b8138c8a6abe492566154107de2835d3bf8ec5",
+          "ref": "run-head"
+        },
+        {
+          "path": ".github/workflows/independent-registry-consumer.yml",
+          "sha256": "e0884282db86fd2463e4c95db1ae0498d21480e3c3f05545ee34289e8448f236",
+          "ref": "run-head"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "package.json",
+          "sha256": "9b6916d878ab959bc4825382df29c0ca279e2d88e7bfc19cb61552e857f6a3f2"
+        },
+        {
+          "path": "bun.lock",
+          "sha256": "8e191efdefc855b72cea0f8cbc3e3ad2f5c3f47c4466553f7d23bd04fccc3d0d"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        },
+        {
+          "path": "scripts/prepare-package-manifest.cjs",
+          "sha256": "47c24e7547f03493161baea3abdf7686db7c21a791d4871535e66d0a3dac2a02"
+        },
+        {
+          "path": ".github/tooling/legacy-root-verifier/prepare.cjs",
+          "sha256": "0080c9b59b0db1bff4bbe0fc4da96133e85fff02ebd8bd14abdf28584c362434"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/build-tools-package.ts",
+          "sha256": "0260bb9efd2746b13c5951ad5a0e910ba5f488c4899eacba02ec39942cdeed84"
+        },
+        {
+          "path": "packages/xpod-cli/src/build-tools.ts",
+          "sha256": "dde9d23355ebfc9e6270dd528ae67411a9260952a69f17b720cfe0e677b5265e"
+        },
+        {
+          "path": "packages/xpod-cli/scripts/public-build-tools.ts",
+          "sha256": "7e04a4b21585bdeb977299a10154443722a59d0be6f356cbffccb35d54e9fb73"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-generation.ts",
+          "sha256": "65cb6f06343adb9612283e4b24c5931bacb2db370c3b3cb65427ea7b46e650a8"
+        },
+        {
+          "path": "scripts/lib/independent-admission/qlever-sdk-source.ts",
+          "sha256": "f849e3e11d6a210498ada3d3420885d8c60df8f2e9034bcadc97db829ffbacdb"
+        },
+        {
+          "path": "scripts/lib/independent-admission/module-source-phases.ts",
+          "sha256": "5a1f74aebb5a7c46e57ff15d6ecace01389746b2e2cd27cfb245a50f75a4011b"
+        },
+        {
+          "path": "scripts/lib/independent-admission/github-origin.ts",
+          "sha256": "d86bd4f6e2e3372f7731c2667fb0bfc795ae8c2ab198d3d41f6cd86f05d27238"
+        }
+      ],
+      "sourceBindingsSha256": "19fb6276c864d2dea9392a1189e14f27a7a240883b2baad3b877db98b5c59334"
+    }
+  ],
+  "api": [
+    {
+      "selectors": [
+        {
+          "path": "scripts/api-module-producer.py",
+          "sha256": "8cfb86a4fa5de62e2938e51e459ae9c5c3bbe95cf0aaad88d59de9a9b900e920"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "packages/xpod-api/scripts/inngest-controlled-build-policy.json",
+          "sha256": "03fe62750b08a55b763c028367e3eb6d25d17128088191cf4edf3c76c0d507d6"
+        },
+        {
+          "path": "scripts/lib/inngest-controlled-build.py",
+          "sha256": "a8746e8bed74dec2a6726a36e5aed623173d6666dfed925b2d8848fa3358aec2"
+        },
+        {
+          "path": "scripts/lib/module-source-materials.py",
+          "sha256": "c28f194ca9767f2aeddd9cff6f633dac2280ae9c4e5d716d3273706afce81850"
+        }
+      ],
+      "sourceBindingsSha256": "db416f1a51f194724f6c3574e70224649d6c80ff53f713c5aa29a46aa884c049"
+    },
+    {
+      "selectors": [
+        {
+          "path": "scripts/api-module-producer.py",
+          "sha256": "8cfb86a4fa5de62e2938e51e459ae9c5c3bbe95cf0aaad88d59de9a9b900e920"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "packages/xpod-api/scripts/inngest-controlled-build-policy.json",
+          "sha256": "fab9a0628c0e6424f7a99bf2ca249c53b9ed2a1498d94d8d90ce226e01a7e284"
+        },
+        {
+          "path": "scripts/lib/inngest-controlled-build.py",
+          "sha256": "6f82f617c67e70d75b2023993df3846b2caccef34c4a937cd58299cb7bcec99e"
+        },
+        {
+          "path": "scripts/lib/module-source-materials.py",
+          "sha256": "07dbfc5531b7b3b812fe6f532141c964255b90f46ed30a05c86f6e42ef2e0ee5"
+        }
+      ],
+      "sourceBindingsSha256": "d7efcf824d57d3ceabc7a0e4b9f397fb7b6c7e58b532b14b916eaba0aefa31b3"
+    },
+    {
+      "selectors": [
+        {
+          "path": "scripts/api-module-producer.py",
+          "sha256": "68ecfb5c66dd0f1882ef707e86a4c74df7d0406bb9bb68eb011bb20872ef23bf"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "packages/xpod-api/scripts/inngest-controlled-build-policy.json",
+          "sha256": "fab9a0628c0e6424f7a99bf2ca249c53b9ed2a1498d94d8d90ce226e01a7e284"
+        },
+        {
+          "path": "scripts/lib/inngest-controlled-build.py",
+          "sha256": "44995b48418f3b0af1bdd3608c8b3c1307ad3cbc4c927d03a92fbf37b5a60404"
+        },
+        {
+          "path": "scripts/lib/module-source-materials.py",
+          "sha256": "1871c59b9f0bfb4c0ce824123ce9cdc5f472aba11245b5e0eb45c62c4fca42e2"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "41bbf5387ab913625aa29663c0f2758b3b783de28f48c201d375369a7268c750"
+        }
+      ],
+      "sourceBindingsSha256": "54eb61db49e587e84a2058085e44583e25cbad44bea8ab3fb8405256da6541b4"
+    },
+    {
+      "selectors": [
+        {
+          "path": "scripts/api-module-producer.py",
+          "sha256": "68ecfb5c66dd0f1882ef707e86a4c74df7d0406bb9bb68eb011bb20872ef23bf"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "packages/xpod-api/scripts/inngest-controlled-build-policy.json",
+          "sha256": "fab9a0628c0e6424f7a99bf2ca249c53b9ed2a1498d94d8d90ce226e01a7e284"
+        },
+        {
+          "path": "scripts/lib/inngest-controlled-build.py",
+          "sha256": "44995b48418f3b0af1bdd3608c8b3c1307ad3cbc4c927d03a92fbf37b5a60404"
+        },
+        {
+          "path": "scripts/lib/module-source-materials.py",
+          "sha256": "1871c59b9f0bfb4c0ce824123ce9cdc5f472aba11245b5e0eb45c62c4fca42e2"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        }
+      ],
+      "sourceBindingsSha256": "38b739d16780e1921790e2adad415f699c961f6ace4b14fa6f9aa6e56f0b6ac4"
+    },
+    {
+      "selectors": [
+        {
+          "path": "scripts/api-module-producer.py",
+          "sha256": "0169bfbf726dce149e5a0fa995fd06bbe618236f1829d0575ccb0bafeea8b450"
+        }
+      ],
+      "secondarySelectors": [
+        {
+          "path": "packages/xpod-api/scripts/inngest-controlled-build-policy.json",
+          "sha256": "fab9a0628c0e6424f7a99bf2ca249c53b9ed2a1498d94d8d90ce226e01a7e284"
+        },
+        {
+          "path": "scripts/lib/inngest-controlled-build.py",
+          "sha256": "44995b48418f3b0af1bdd3608c8b3c1307ad3cbc4c927d03a92fbf37b5a60404"
+        },
+        {
+          "path": "scripts/lib/module-source-materials.py",
+          "sha256": "1871c59b9f0bfb4c0ce824123ce9cdc5f472aba11245b5e0eb45c62c4fca42e2"
+        },
+        {
+          "path": "scripts/lib/physical-module-stage.ts",
+          "sha256": "d9dc03f66ca040637a6d1d2d3a405252cdd6ba71d69aad95361a53f7d94c200f"
+        }
+      ],
+      "sourceBindingsSha256": "abe8eb27013ab5af3352bcd6287ab3bd83878190922a6b9de2af6712af65c4cc"
+    }
+  ]
+}

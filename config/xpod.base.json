@@ -21,6 +21,7 @@
       "versionPutETagHandler": "StoragePutOperationHandler:_eTagHandler",
       "sparqlMutationStore": "SubgraphSparqlHttpHandler:_mutationStore",
       "headResponseMetadataWriter": "HeadSafeResponseWriter:_metadataWriter",
+      "ownedWebSocketHandler": "FinalizingWebSocketServerConfigurator:_handler",
       "deletionPodStore": "PodDeletionLifecycleService:_options_podStore",
       "deletionAccountStorage": "PodDeletionLifecycleService:_options_accountStorage",
       "deletionData": "PodDeletionLifecycleService:_options_dataDeletion",
@@ -61,6 +62,25 @@
     "./notifications.json"
   ],
   "@graph": [
+    {
+      "comment": "Finalize CSS-owned upgraded connections alongside the HTTP listener before storage cleanup.",
+      "@type": "Override",
+      "overrideInstance": { "@id": "urn:solid-server:default:WebSocketServerConfigurator" },
+      "overrideParameters": {
+        "@type": "FinalizingWebSocketServerConfigurator",
+        "ownedWebSocketHandler": { "@id": "urn:solid-server:default:WebSocketHandler" }
+      }
+    },
+    {
+      "@id": "urn:solid-server:default:Finalizer",
+      "@type": "ParallelHandler",
+      "handlers": [
+        {
+          "@type": "FinalizableHandler",
+          "finalizable": { "@id": "urn:solid-server:default:WebSocketServerConfigurator" }
+        }
+      ]
+    },
     {
       "comment": "Preserve CSS response headers and status while suppressing generated HEAD error bodies before the Bun HTTP writer.",
       "@type": "Override",

@@ -106,7 +106,10 @@ describe('release lifecycle documentation', () => {
     expect(text).toContain('| Variable | `SEALOS_NAMESPACE` | 必须为 GZ 固定 namespace `ns-iknkxtc8` |');
     expect(text).toContain('| Variable | `XPOD_RUNTIME_SECRET_NAME` | 必填变量，推荐值 `xpod-rc-secret` |');
     expect(text).toContain('| Secret | `XPOD_RC_SEED_CONFIG` | 固定 RC seed JSON，必须包含 Alice 和 Bob 账号及 Pod 名称 |');
-    expect(text).toContain('| Secret | `XPOD_LIVE_PROVIDER_API_KEY_CONFIG` | 真实 AI Provider 验收配置，格式同 `scripts/live-provider-api-key.example`；用于证明 `/v1/chat/completions` 真可用 |');
+    expect(text).toContain('| Secret | `XPOD_LIVE_PROVIDER_API_KEY_CONFIG` | 可选的第三方上游监测/手动诊断输入');
+    expect(text).toContain('不是 RC 或 stable 发布必填项');
+    expect(text).toContain('required checks 全部 29 项通过');
+    expect(text).toContain('candidate/release 不依赖该 run');
     expect(text).not.toContain('| Variable | `SEALOS_NAMESPACE` | 默认 `xpod-rc` |');
     expect(text).not.toContain('| Variable | `XPOD_RUNTIME_SECRET_NAME` | 默认 `xpod-rc-secret` |');
     expect(text).not.toContain('默认在 namespace `xpod-rc`');
