@@ -2989,7 +2989,19 @@ const QLEVER_NORMAL_RC396_SCOPE_GROUP:GitHubSourceBindingGroup=Object.freeze({..
   sourceBindings:Object.freeze(QLEVER_NORMAL_RC392_LOAD_GROUP.sourceBindings.map(row=>
     Object.freeze({...row,sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_RC396_CANDIDATE_WORKFLOW_HASH:row.sha256}))),
 });
-export const QLEVER_NORMAL_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([QLEVER_NORMAL_PREVIOUS_GROUP,QLEVER_NORMAL_CURRENT_GROUP,QLEVER_NORMAL_DOCKERIGNORE_GROUP,QLEVER_NORMAL_REGISTRY_PRODUCER_GROUP,QLEVER_NORMAL_RC385_VERIFIER_GROUP,QLEVER_NORMAL_RC392_LOAD_GROUP,QLEVER_NORMAL_RC396_SCOPE_GROUP]);
+/* RC397_RETRY_SOURCE_REGISTRATION: append-only normal producer variant for the RC397 candidate workflow
+ * (bounded Electron install retry). Group 7 stays byte-exact published history; the new
+ * group clones it and rebinds ONLY the candidate-workflow row it already owns. The full
+ * workflow is an SDK RECIPE_FILE, so the SDK input identity legitimately moves; this
+ * APP-only edit adds no SDK source/recipe change and no proof axis. */
+const QLEVER_RC397_CANDIDATE_WORKFLOW_HASH='70b14a6afc3da3f8f074c5fb4e2bc2d097639b8a33efce57469c45adef1b1d87';
+const QLEVER_NORMAL_RC397_RETRY_GROUP:GitHubSourceBindingGroup=Object.freeze({...QLEVER_NORMAL_RC396_SCOPE_GROUP,
+  secondarySelectors:Object.freeze((QLEVER_NORMAL_RC396_SCOPE_GROUP.secondarySelectors??[]).map(row=>
+    Object.freeze({...row,sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_RC397_CANDIDATE_WORKFLOW_HASH:row.sha256}))),
+  sourceBindings:Object.freeze(QLEVER_NORMAL_RC396_SCOPE_GROUP.sourceBindings.map(row=>
+    Object.freeze({...row,sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_RC397_CANDIDATE_WORKFLOW_HASH:row.sha256}))),
+});
+export const QLEVER_NORMAL_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([QLEVER_NORMAL_PREVIOUS_GROUP,QLEVER_NORMAL_CURRENT_GROUP,QLEVER_NORMAL_DOCKERIGNORE_GROUP,QLEVER_NORMAL_REGISTRY_PRODUCER_GROUP,QLEVER_NORMAL_RC385_VERIFIER_GROUP,QLEVER_NORMAL_RC392_LOAD_GROUP,QLEVER_NORMAL_RC396_SCOPE_GROUP,QLEVER_NORMAL_RC397_RETRY_GROUP]);
 
 export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP,SDK78_GROUP,SDK79_GROUP,SDK80_GROUP,SDK81_GROUP,SDK82_GROUP,SDK83_GROUP,SDK84_GROUP,SDK85_GROUP,SDK86_GROUP,SDK87_GROUP,SDK88_GROUP,SDK89_GROUP,SDK90_GROUP,SDK91_GROUP,SDK92_GROUP,SDK93_GROUP]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
@@ -3277,5 +3289,20 @@ const RC396_SDK114_GROUP:GitHubSourceBindingGroup=Object.freeze({...RC395_SDK113
   sourceBindings:Object.freeze(RC395_SDK113_GROUP.sourceBindings.map(row=>
     Object.freeze({...row,sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_RC396_CANDIDATE_WORKFLOW_HASH:row.sha256}))),
 });
-export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP,RC391_SDK110_GROUP,RC392_SDK111_GROUP,RC393_SDK112_GROUP,RC395_SDK113_GROUP,RC396_SDK114_GROUP]);
-export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP,RC391_SDK110_GROUP,RC392_SDK111_GROUP,RC393_SDK112_GROUP,RC395_SDK113_GROUP,RC396_SDK114_GROUP]);
+/* RC397_RETRY_SOURCE_REGISTRATION: one shared SDK/Linux consumer variant for the same candidate-workflow
+ * bytes. SDK115/Linux116 remain byte-exact. The candidate role is already an owned
+ * stage-1 entry + sourceBinding, so it is rebound in place; the candidate relationship
+ * follows. 15 stages and every other row are inherited unchanged. */
+const RC397_SDK115_GROUP:GitHubSourceBindingGroup=Object.freeze({...RC396_SDK114_GROUP,
+  candidateServiceRelationship:RC396_SDK114_GROUP.candidateServiceRelationship
+    ?Object.freeze({...RC396_SDK114_GROUP.candidateServiceRelationship,
+      workflowSha256:QLEVER_RC397_CANDIDATE_WORKFLOW_HASH})
+    :undefined,
+  secondarySelectorStages:Object.freeze((RC396_SDK114_GROUP.secondarySelectorStages??[]).map(stage=>
+    Object.freeze(stage.map(row=>Object.freeze({...row,
+      sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_RC397_CANDIDATE_WORKFLOW_HASH:row.sha256}))))),
+  sourceBindings:Object.freeze(RC396_SDK114_GROUP.sourceBindings.map(row=>
+    Object.freeze({...row,sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_RC397_CANDIDATE_WORKFLOW_HASH:row.sha256}))),
+});
+export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP,RC391_SDK110_GROUP,RC392_SDK111_GROUP,RC393_SDK112_GROUP,RC395_SDK113_GROUP,RC396_SDK114_GROUP,RC397_SDK115_GROUP]);
+export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP,RC391_SDK110_GROUP,RC392_SDK111_GROUP,RC393_SDK112_GROUP,RC395_SDK113_GROUP,RC396_SDK114_GROUP,RC397_SDK115_GROUP]);

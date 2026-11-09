@@ -12,6 +12,7 @@ const root = path.resolve(__dirname, '../..');
 const sha = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 
 test('staged public resolver binds physical wildcard members and rejects missing exports', () => {
+  fs.mkdirSync(path.join(root, '.test-data'), { recursive: true });
   const dir = fs.mkdtempSync(path.join(root, '.test-data/staged-public-resolver-'));
   try {
     fs.writeFileSync(path.join(dir, 'package.json'), '{}');
