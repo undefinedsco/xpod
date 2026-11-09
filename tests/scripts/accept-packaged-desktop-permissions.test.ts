@@ -358,3 +358,61 @@ it('does not start a renderer request when the caller has already cancelled it',
   )).rejects.toBe(reason);
   expect(evaluateHandle).not.toHaveBeenCalled();
 });
+
+it('makes --key-file optional without inventing an empty external provider file', async () => {
+  const { parsePackagedPermissionArguments } = await import('../../scripts/accept-packaged-desktop-permissions');
+  const base = ['--archive', 'archive.zip', '--version', '0.4.31', '--source-sha', 'a'.repeat(40),
+    '--issuer', 'https://id.undefineds.co', '--private-directory', '/private', '--evidence', '/evidence.json'];
+  expect(parsePackagedPermissionArguments(base)).toMatchObject({ archive: 'archive.zip' });
+  expect(parsePackagedPermissionArguments(base)).not.toHaveProperty('keyFile');
+  expect(parsePackagedPermissionArguments([...base, '--key-file', '/external.env']))
+    .toMatchObject({ keyFile: '/external.env' });
+  expect(() => parsePackagedPermissionArguments(['--archive', 'archive.zip'])).toThrow('Missing packaged runner argument');
+});
+
+it('defers default platform issuance until the authoritative binding WebID and cleans up exactly once', async () => {
+  const { configureDefaultPlatformProvider } = await import('../../scripts/accept-packaged-desktop-permissions');
+  const calls: Array<{ webId: string; baseUrl: string }> = [];
+  const revoke = vi.fn(async () => undefined);
+  const issue = vi.fn(async (input: { webId: string; baseUrl: string }) => {
+    calls.push({ webId: input.webId, baseUrl: input.baseUrl });
+    return { provider: { id: 'custom' as const, offeringId: 'openai-compatible' as const,
+      apiKey: 'sk-process-only', baseUrl: 'https://id.undefineds.co/v1', expected: ['linx-lite'], source: 'file' as const }, revoke };
+  });
+  const options = { baseUrl: 'https://id.undefineds.co/', authorization: 'CSS-Account-Token fixture',
+    controls: { account: { clientCredentials: 'https://id.undefineds.co/.account/client-credentials' } },
+    webId: 'https://id.undefineds.co/alice/profile/card#me', issue };
+  const handle = await configureDefaultPlatformProvider(options);
+  expect(handle.provider).toMatchObject({ id: 'custom', offeringId: 'openai-compatible', expected: ['linx-lite'] });
+  expect(calls).toEqual([{ webId: options.webId, baseUrl: options.baseUrl }]);
+  await handle.revoke();
+  expect(revoke).toHaveBeenCalledTimes(1);
+});
+
+it('rejects a default platform descriptor with a foreign origin or wrong kind and revokes it', async () => {
+  const { configureDefaultPlatformProvider } = await import('../../scripts/accept-packaged-desktop-permissions');
+  for (const provider of [
+    { id: 'custom' as const, offeringId: 'openai-compatible' as const, apiKey: 'sk-process-only',
+      baseUrl: 'https://evil.example/v1', expected: ['linx-lite'], source: 'file' as const },
+    { id: 'openai' as const, offeringId: 'api-platform' as const, apiKey: 'sk-process-only',
+      baseUrl: 'https://id.undefineds.co/v1', expected: ['linx-lite'], source: 'file' as const },
+  ]) {
+    const revoke = vi.fn(async () => undefined);
+    const issue = vi.fn(async () => ({ provider, revoke }));
+    await expect(configureDefaultPlatformProvider({ baseUrl: 'https://id.undefineds.co/',
+      authorization: 'CSS-Account-Token fixture',
+      controls: { account: { clientCredentials: 'https://id.undefineds.co/.account/client-credentials' } },
+      webId: 'https://id.undefineds.co/alice/profile/card#me',
+      // The negative fixture deliberately violates the helper's typed return contract.
+      issue: issue as unknown as NonNullable<Parameters<typeof configureDefaultPlatformProvider>[0]['issue']>,
+    })).rejects.toBeInstanceOf(Error);
+    expect(revoke).toHaveBeenCalledTimes(1);
+  }
+  const revoke = vi.fn(async () => undefined);
+  await expect(configureDefaultPlatformProvider({ baseUrl: 'https://id.undefineds.co/',
+    authorization: 'CSS-Account-Token fixture',
+    controls: { account: { clientCredentials: 'https://id.undefineds.co/.account/client-credentials' } },
+    webId: 'https://foreign.example/card#me', issue: vi.fn(async () => ({ provider: {} as never, revoke })) }))
+    .rejects.toThrow('authoritative');
+  expect(revoke).not.toHaveBeenCalled();
+});

@@ -361,3 +361,102 @@ it('restores the fixture Pi projection before revoking its key so another WebID 
     expect(present).toBe(false);
   } finally { await rm(home, { recursive: true, force: true }); }
 });
+
+function mountedProviderPhase(options: {
+  quotaStatus?: 'available' | 'unsupported' | 'error';
+  models?: Array<{ id: string; provider: string; credentialId?: string; availability?: string }>;
+  model?: string;
+}) {
+  const webId = 'https://id.example/card#me';
+  const id = credentialResource.buildId({ id: 'owned' });
+  const credential = { id, provider: 'custom' };
+  const model = options.model ?? 'linx-lite';
+  let present = false;
+  const client = {
+    webId,
+    createApiKeyCredential: vi.fn(async () => { present = true; return credential; }),
+    deleteProviderCredential: vi.fn(async () => { present = false; }),
+    listProviders: vi.fn(async () => [{ id: 'custom', credentials: present ? [credential] : [] }]),
+    discoverModels: vi.fn(async () => ({ provider: 'custom', credential: id,
+      models: [{ id: model }, { id: 'linx' }] })),
+    saveModelSelection: vi.fn(async () => undefined),
+    listGatewayModels: vi.fn(async () => options.models
+      ?? [{ id: model, provider: 'custom', credentialId: id, availability: 'available' }]),
+    quota: vi.fn(async () => {
+      if (options.quotaStatus === 'error') throw new Error('quota transport failed');
+      return { status: options.quotaStatus ?? 'available' };
+    }),
+  };
+  const mounted = { host: { solid: { session: { getSnapshot: () => ({ status: 'authenticated', webId }) },
+    pod: { status: 'ready', current: { webId } } } },
+  controller: { client, credentialsCollection: { isReady: () => true, pendingKeys: new Set(), conflicts: [] },
+    get credentialRows() { return present ? [{ id: 'owned' }] : []; } } };
+  const phase = { handle: { evaluate: async (fn: (v: typeof mounted, arg: unknown) => unknown, arg: unknown) => fn(mounted, arg) } } as unknown as MountedPodPermissionPhase;
+  return { phase, client, model, id };
+}
+
+it.each(['available', 'unsupported'] as const)('records quota capability %s without claiming capacity for unsupported', async quotaStatus => {
+  const { phase, model, id } = mountedProviderPhase({ quotaStatus });
+  const result = await createConfirmedMountedProvider(phase, {
+    provider: 'custom', credential: { apiKey: 'private-fixture', offeringId: 'openai-compatible' },
+    expectedModels: [model],
+  });
+  try {
+    expect(result).toMatchObject({ credentialId: id, model, quotaStatus, quotaObserved: quotaStatus === 'available' });
+  } finally { await result.remove(); }
+});
+
+it('keeps a real quota error a hard failure even though unsupported is accepted', async () => {
+  const { phase } = mountedProviderPhase({ quotaStatus: 'error' });
+  const failure = await createConfirmedMountedProvider(phase, {
+    provider: 'custom', credential: { apiKey: 'private-fixture' }, expectedModels: ['linx-lite'],
+  }).catch(error => error);
+  expect(failure).toBeInstanceOf(Error);
+  expect(String((failure as { cause?: { cause?: { message?: string } } }).cause?.cause?.message
+    ?? (failure as { cause?: { message?: string } }).cause?.message)).toContain('quota');
+});
+
+it('publishes the selected model among built-in Gateway rows', async () => {
+  const { phase, model, id } = mountedProviderPhase({ models: [
+    { id: 'linx-lite', provider: 'custom', credentialId: credentialResource.buildId({ id: 'owned' }), availability: 'available' },
+    { id: 'builtin-model', provider: 'openai', availability: 'available' },
+  ] });
+  const result = await createConfirmedMountedProvider(phase, { provider: 'custom',
+    credential: { apiKey: 'private-fixture' }, expectedModels: ['linx-lite'] });
+  try { expect(result.model).toBe(model); } finally { await result.remove(); }
+});
+
+it.each([
+  ['wrong binding', { id: 'linx-lite', provider: 'custom', credentialId: 'foreign', availability: 'available' }],
+  ['unavailable', { id: 'linx-lite', provider: 'custom', availability: 'unavailable' }],
+  ['wrong model', { id: 'someone-else', provider: 'custom', availability: 'available' }],
+])('rejects a selected Gateway row with %s', (_label, row) => {
+  const input = { provider: 'custom', credentialId: 'new', model: 'linx-lite', webId: 'https://id.example/card#me' };
+  const result = { credential: { id: 'new', provider: 'custom' }, credentialCount: 1, providerId: 'custom', webId: input.webId,
+    discovery: { provider: 'custom', credential: 'new', models: [{ id: 'linx-lite' }] },
+    models: [row] };
+  expect(() => assertMountedModelBinding(input, result)).toThrow('binding');
+});
+
+it('accepts an extra built-in row when the exact selected binding is present', () => {
+  const input = { provider: 'custom', credentialId: 'new', model: 'linx-lite', webId: 'https://id.example/card#me' };
+  assertMountedModelBinding(input, { credential: { id: 'new', provider: 'custom' }, credentialCount: 1,
+    providerId: 'custom', webId: input.webId, discovery: { provider: 'custom', credential: 'new', models: [{ id: 'linx-lite' }] },
+    models: [{ id: 'linx-lite', provider: 'custom', credentialId: 'new', availability: 'available' },
+      { id: 'builtin', provider: 'openai', availability: 'available' }] });
+});
+
+it('accepts held Solid model reuse when the selected model is present among other rows', async () => {
+  const { acceptHeldSolidCredential } = await import('../../scripts/helpers/packaged-desktop-operations');
+  const fetch = vi.fn(async () => new Response(JSON.stringify({ data: [
+    { id: 'selected' }, { id: 'other' },
+  ] })));
+  vi.stubGlobal('window', { location: { origin: 'http://127.0.0.1:41234' } });
+  vi.stubGlobal('fetch', fetch);
+  const page = { evaluate: async (fn: Function, input: unknown) => fn(input) } as unknown as Page;
+  try {
+    await expect(acceptHeldSolidCredential(page, { gateway: 'http://127.0.0.1:41234/',
+      podUrl: 'https://pod.example/a/', key: 'sk-owned-held', model: 'selected' })).resolves.toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  } finally { vi.unstubAllGlobals(); }
+});

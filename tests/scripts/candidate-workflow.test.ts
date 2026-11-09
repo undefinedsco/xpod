@@ -39,9 +39,37 @@ function allRuns(workflow: Workflow): string[] {
 }
 
 describe('release candidate workflow', () => {
+  it('uses revocable platform credentials while keeping external monitoring outside release dependencies', async () => {
+    const workflow = await loadWorkflow();
+    for (const name of ['deploy_and_accept', 'runtime_mode_matrix']) {
+      const job = workflow.jobs[name];
+      const prepare = job.steps.findIndex((step: any) => step.id === 'platform_provider');
+      const cleanup = job.steps.findIndex((step: any) => step.name?.startsWith('Revoke ') && step.name.includes('platform inference credential'));
+      expect(prepare).toBeGreaterThan(-1);
+      expect(cleanup).toBeGreaterThan(prepare);
+      expect(job.steps[prepare].run).toContain('prepare-rc-platform-provider.ts create');
+      expect(job.steps[cleanup].run).toContain('prepare-rc-platform-provider.ts cleanup');
+      expect(job.steps[cleanup].if).toContain('always()');
+      expect(JSON.stringify(job)).not.toContain('secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG');
+      expect(JSON.stringify(job)).not.toContain('secrets.XPOD_AI_PROXY_URL');
+    }
+    for (const name of ['deploy_and_accept', 'runtime_mode_matrix', 'build_desktop_rc', 'finalize_acceptance']) {
+      expect(JSON.stringify(workflow.jobs[name].needs ?? [])).not.toContain('provider-availability');
+    }
+    const stable = parseDocument(await readFile(path.join(repoRoot, '.github/workflows/release.yml'), 'utf8')).toJSON();
+    expect(JSON.stringify(stable.jobs.build_desktop_macos)).not.toContain('secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG');
+    expect(JSON.stringify(stable.jobs.build_desktop_macos)).not.toContain('--key-file');
+    expect(jobRunText(workflow, 'build_desktop_rc')).not.toContain('--key-file');
+    const monitor = parseDocument(await readFile(path.join(repoRoot, '.github/workflows/provider-availability.yml'), 'utf8')).toJSON();
+    const probe = monitor.jobs['provider-availability'].steps.find((step: any) => step.name === 'Probe upstream models and one real Chat completion');
+    expect(probe.env.XPOD_LIVE_PROVIDER_API_KEY_CONFIG)
+      .toBe('${{ secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG }}');
+    expect(monitor.jobs['provider-availability'].needs).toBeUndefined();
+  });
+
   it('requires the independent same-image mode verifier before final acceptance', async () => {
     const workflow = await loadWorkflow();
-    expect(workflow.jobs.runtime_mode_matrix.needs).toEqual(['metadata', 'build_image']);
+    expect(workflow.jobs.runtime_mode_matrix.needs).toEqual(['metadata', 'build_image', 'deploy_and_accept']);
     expect(workflow.jobs.finalize_acceptance.needs).toContain('runtime_mode_matrix');
     const finalize = JSON.stringify(workflow.jobs.finalize_acceptance);
     const download = workflow.jobs.finalize_acceptance.steps.find((step: any) => step.name === 'Download exact same-image mode acceptance');
@@ -680,8 +708,8 @@ esac
     expect(deploy.env.XPOD_ACCEPTANCE_REAL_XPOD).toBe('true');
     expect(deploy.env.XPOD_ACCEPTANCE_RUN_VISUAL).toBe('true');
     expect(deploy.env.XPOD_SETTINGS_E2E_BASE_URL).toBe('https://id-rc.undefineds.cn');
-    expect(deploy.env.XPOD_LIVE_PROVIDER_API_KEY_CONFIG).toBe('${{ secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG }}');
-    expect(deploy.env.XPOD_AI_PROXY_URL).toBe('${{ secrets.XPOD_AI_PROXY_URL }}');
+    expect(deploy.env.XPOD_LIVE_PROVIDER_API_KEY_CONFIG).toBeUndefined();
+    expect(deploy.env.XPOD_AI_PROXY_URL).toBeUndefined();
     expect(deploy.env.XPOD_RC_SEED_CONFIG).toBe('${{ secrets.XPOD_RC_SEED_CONFIG }}');
     expect(deploy.env.XPOD_SETTINGS_E2E_ALICE_STATE).toBeUndefined();
     expect(deploy.env.XPOD_SETTINGS_E2E_BOB_STATE).toBeUndefined();
@@ -720,7 +748,9 @@ esac
     const workflow = await loadWorkflow();
     const runText = jobRunText(workflow, 'deploy_and_accept');
 
-    expect(runText).toContain('XPOD_LIVE_PROVIDER_API_KEY_CONFIG secret is required');
+    expect(runText).toContain('scripts/prepare-rc-platform-provider.ts create');
+    expect(runText).toContain('scripts/prepare-rc-platform-provider.ts cleanup');
+    expect(runText).not.toContain('XPOD_LIVE_PROVIDER_API_KEY_CONFIG secret is required');
     expect(runText).toContain('docker run --detach --name "$local_name"');
     expect(runText).toContain('local_name_file="${RUNNER_TEMP}/live-gateway-local-container-name"');
     expect(runText).toContain('printf \'%s\\n\' "$local_name" > "$local_name_file"');
@@ -1094,7 +1124,7 @@ esac
     expect(diagnostics.run).toContain('docker inspect "$local_name"');
     expect(diagnostics.run).toContain('docker logs "$local_name"');
     expect(workflow.jobs.deploy_and_accept.steps.some((step: any) => step.name === 'Scale RC deployments to zero')).toBe(false);
-    expect(workflow.jobs.cleanup_rc.needs).toEqual(['deploy_and_accept', 'build_desktop_rc', 'finalize_acceptance']);
+    expect(workflow.jobs.cleanup_rc.needs).toEqual(['deploy_and_accept', 'build_desktop_rc', 'runtime_mode_matrix', 'finalize_acceptance']);
     expect(workflow.jobs.cleanup_rc.if).toContain('always()');
     const cleanup = workflow.jobs.cleanup_rc.steps.find((step: any) => step.name === 'Scale RC deployments to zero');
     expect(cleanup.run).toContain('scripts/rc-cleanup-ownership.cjs');

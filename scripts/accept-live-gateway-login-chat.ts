@@ -27,6 +27,7 @@ import { createSolidLocalRouteFetch, discoverSolidLocalRoute } from '../packages
 import { createXpodAiConnectionsClient } from '../ui/src/api/ai-connections';
 import { createXpodAiConnectionsPodStore } from '../ui/src/extensions/XpodAiConnectionsPodStore';
 import { withRequestPodAuthorization } from '../ui/src/auth/session-request-credential';
+import { DEPLOYMENT_BUILTIN_CONNECTION_ID, DEPLOYMENT_BUILTIN_MODEL_IDS } from '../src/api/ai-gateway/builtin/DeploymentBuiltinConnection';
 import { ProvisionCodeCodec } from '../src/provision/ProvisionCodeCodec';
 import {
   discoverOidcIssuerFromWebId,
@@ -158,6 +159,8 @@ type ProviderChoice = {
   offeringId: string;
   apiKey: string;
   expected: string[];
+  /** Explicitly declared expected models are a requirement, not a hint. */
+  expectedSource?: 'default' | 'declared';
   baseUrl?: string;
   source: 'file' | 'env';
 };
@@ -181,6 +184,7 @@ function providerSpec(id: string, apiKey: string, source: ProviderChoice['source
         apiKey: key,
         expected: ['deepseek-v4-flash', 'deepseek-chat', 'deepseek-v4-pro'],
         source,
+        expectedSource: 'default',
       };
     case 'kimi':
     case 'moonshot':
@@ -190,6 +194,7 @@ function providerSpec(id: string, apiKey: string, source: ProviderChoice['source
         apiKey: key,
         expected: ['kimi-for-coding', 'kimi-k2.5', 'kimi-for-coding-highspeed'],
         source,
+        expectedSource: 'default',
       };
     case 'openai':
       return {
@@ -198,6 +203,7 @@ function providerSpec(id: string, apiKey: string, source: ProviderChoice['source
         apiKey: key,
         expected: ['gpt-4.1-mini', 'gpt-4o-mini', 'gpt-4.1'],
         source,
+        expectedSource: 'default',
       };
     case 'google':
     case 'gemini':
@@ -209,6 +215,7 @@ function providerSpec(id: string, apiKey: string, source: ProviderChoice['source
         expected: ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-flash-latest'],
         baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/',
         source,
+        expectedSource: 'default',
       };
     default:
       return undefined;
@@ -248,7 +255,75 @@ export function parseKeyFile(contents: string): ProviderChoice | undefined {
     ...spec,
     ...(configuredBaseUrl?.trim() ? { baseUrl: configuredBaseUrl.trim() } : {}),
     ...(configuredModels?.length ? { expected: configuredModels } : {}),
+    expectedSource: configuredModels?.length ? 'declared' : 'default',
   };
+}
+
+/** Select only the discovered models the caller declared. Legacy named-key defaults keep the
+ * existing first-three fallback; an explicit `expectedModels=` declaration never silently falls
+ * back, because that would turn "linx-lite is required" into an unrelated model passing. */
+export function selectDiscoveredModels<T extends { id: string }>(
+  provider: Pick<ProviderChoice, 'id' | 'expected' | 'expectedSource'>,
+  discovered: readonly T[],
+): T[] {
+  const selected = discovered.filter((model) => provider.expected.includes(model.id));
+  if (provider.expectedSource === 'declared') {
+    const missing = provider.expected.filter((id) => !selected.some((model) => model.id === id));
+    if (missing.length > 0) {
+      throw new Error(`${provider.id} discovery is missing declared model(s): ${missing.join(', ')}`);
+    }
+    return selected;
+  }
+  return selected.length > 0 ? selected : discovered.slice(0, 3);
+}
+
+/** The platform-builtin flag is a cloud-only test-harness input. Any other mode or a non-`1`
+ * value fails closed, so an inherited/local environment can never claim the builtin lane. */
+export function requirePlatformBuiltinMode(flag: string | undefined, mode: string): boolean {
+  if (flag === undefined || flag.trim() === '') return false;
+  if (flag !== '1') throw new Error('XPOD_LIVE_PLATFORM_BUILTIN must be exactly 1 when set');
+  if (mode !== 'cloud') throw new Error('XPOD_LIVE_PLATFORM_BUILTIN is only supported for cloud mode');
+  return true;
+}
+
+/**
+ * Verify the actual authenticated `/api/ai/providers` projection of the deployment-owned
+ * connection. The builtin row is read-only and serves the two static deployment models; no
+ * user-owned provider credential exists in cloud mode and none is asserted.
+ */
+export function requireReadOnlyPlatformBuiltin(payload: unknown): { id: string; models: string[] } {
+  const wrapped = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? (payload as { data?: unknown; providers?: unknown })
+    : undefined;
+  const rows = Array.isArray(payload)
+    ? payload
+    : Array.isArray(wrapped?.data)
+      ? wrapped.data
+      : Array.isArray(wrapped?.providers)
+        ? wrapped.providers
+        : undefined;
+  if (!rows) throw new Error('Builtin provider listing is not a provider array');
+  const builtins = rows.filter((row) => row !== null && typeof row === 'object'
+    && (row as { builtin?: unknown }).builtin === true);
+  if (builtins.length !== 1) throw new Error('Expected exactly one deployment-owned builtin provider');
+  const row = builtins[0] as Record<string, unknown>;
+  if (row.id !== DEPLOYMENT_BUILTIN_CONNECTION_ID || row.readOnly !== true || row.status !== 'available') {
+    throw new Error('Deployment-owned builtin provider is not the expected read-only available connection');
+  }
+  const selected = Array.isArray(row.selectedModels) ? row.selectedModels : [];
+  if (selected.length !== DEPLOYMENT_BUILTIN_MODEL_IDS.length) {
+    throw new Error('Deployment-owned builtin provider does not serve exactly the static model list');
+  }
+  for (const id of DEPLOYMENT_BUILTIN_MODEL_IDS) {
+    const matches = selected.filter((model) => model !== null && typeof model === 'object'
+      && (model as { id?: unknown }).id === id);
+    if (matches.length !== 1) throw new Error(`Deployment-owned builtin model ${id} is missing or duplicated`);
+    const model = matches[0] as Record<string, unknown>;
+    if (model.provider !== DEPLOYMENT_BUILTIN_CONNECTION_ID || model.availability === 'unavailable') {
+      throw new Error(`Deployment-owned builtin model ${id} has a different provider or unavailable status`);
+    }
+  }
+  return { id: DEPLOYMENT_BUILTIN_CONNECTION_ID, models: [...DEPLOYMENT_BUILTIN_MODEL_IDS] };
 }
 
 function providerFromFile(): { spec?: ProviderChoice; present: boolean; empty: boolean } {
@@ -716,13 +791,16 @@ export async function createCloudClientCredentials(options: {
   controls: AccountControls;
   webId: string;
   name: string;
+  /** Injected transport for prep/acceptance harnesses; defaults to global fetch. */
+  fetchImpl?: typeof fetch;
 }): Promise<{ id: string; secret: string; resource: string }> {
   const clientCredentialsUrl = requiredAccountControl(
     options.controls.account?.clientCredentials,
     options.baseUrl,
     'controls.account.clientCredentials',
   );
-  const response = await fetch(clientCredentialsUrl, {
+  const request = options.fetchImpl ?? fetch;
+  const response = await request(clientCredentialsUrl, {
     method: 'POST',
     headers: {
       ...accountTokenHeaders(options.authorization),
@@ -843,6 +921,13 @@ export async function probePodReadWrite(input: {
 }
 
 async function main(): Promise<void> {
+  const platformBuiltin = (() => {
+    try {
+      return requirePlatformBuiltinMode(process.env.XPOD_LIVE_PLATFORM_BUILTIN, MODE);
+    } catch (error) {
+      return fail('aiConnections', error instanceof Error ? error.message : 'Invalid platform builtin flag');
+    }
+  })();
   report.stage = 'runtime';
   // checkServer() probes this origin's discovery endpoint and swallows transport
   // errors, returning false. A false here means either transport failure or a
@@ -1127,6 +1212,48 @@ async function main(): Promise<void> {
   });
   report.stage = 'aiConnections';
 
+  if (platformBuiltin) {
+    // The owned Cloud container serves its deployment builtin; the actual inference path is
+    // Cloud container -> real public RC builtin -> platform upstream. No Pod provider CRUD is
+    // performed or claimed in this mode.
+    const response = await fetch(new URL('/api/ai/providers', BASE_URL), {
+      headers: {
+        accept: 'application/json',
+        authorization: `Bearer ${gatewayKey}`,
+        'X-Xpod-Pod-Url': account.podUrl,
+      },
+      redirect: 'error',
+      signal: AbortSignal.timeout(20_000),
+    });
+    const listing = await response.text();
+    if (response.status !== 200) {
+      fail('aiConnections', `Authenticated builtin provider listing expected HTTP 200, got ${response.status}`);
+    }
+    let payload: unknown;
+    try {
+      payload = JSON.parse(listing) as unknown;
+    } catch {
+      fail('aiConnections', 'Authenticated builtin provider listing returned non-JSON');
+    }
+    let builtin: { id: string; models: string[] };
+    try {
+      builtin = requireReadOnlyPlatformBuiltin(payload);
+    } catch (error) {
+      fail('aiConnections', error instanceof Error ? error.message : 'Builtin provider projection failed');
+    }
+    report.provider = builtin.id;
+    report.offeringId = 'deployment-builtin';
+    report.modelIds = [...builtin.models];
+    layer('aiConnections', true,
+      `deployment-owned read-only builtin provider ${builtin.id} serves selected models ${builtin.models.join(', ')}; user provider CRUD is not exercised in cloud mode`);
+    if (TASK_APPROVAL_ENABLED) {
+      fail('taskApproval', 'Task approval requires a Pod-owned credential and is not supported for the deployment builtin');
+    }
+    await projectModelsAndChat(gatewayKey, ['linx-lite'], 'linx-lite');
+    writeEvidence();
+    return;
+  }
+
   const fileState = providerFromFile();
   if (fileState.present && !fileState.spec) {
     fail('aiConnections', `Provider key file is present but invalid: ${PROVIDER_KEY_FILE}`);
@@ -1198,8 +1325,12 @@ async function main(): Promise<void> {
     ...(proxy ? { proxyUrl: proxy } : {}),
   });
   const discoveredIds = discovery.models.map((model: { id: string }) => model.id);
-  const selected = discovery.models.filter((model: { id: string }) => provider.expected.includes(model.id));
-  const toSave = selected.length > 0 ? selected : discovery.models.slice(0, 3);
+  let toSave: typeof discovery.models;
+  try {
+    toSave = selectDiscoveredModels(provider, discovery.models);
+  } catch (error) {
+    fail('aiConnections', error instanceof Error ? error.message : 'Declared model selection failed');
+  }
   if (toSave.length === 0) {
     fail('aiConnections', `${provider.id} discovery returned no models`);
   }
@@ -1384,7 +1515,7 @@ async function verifyGatewayKeyLifecycle(
   }
 }
 
-async function projectModelsAndChat(gatewayKey: string, selectedIds: string[]): Promise<void> {
+async function projectModelsAndChat(gatewayKey: string, selectedIds: string[], requiredModel?: string): Promise<void> {
   report.stage = 'models';
   const modelsAfter = await fetch(new URL('v1/models', BASE_URL), {
     headers: { Authorization: `Bearer ${gatewayKey}`, Accept: 'application/json' },
@@ -1395,8 +1526,11 @@ async function projectModelsAndChat(gatewayKey: string, selectedIds: string[]): 
     fail('models', 'data: [] after writing provider credential — Chat not proven');
   }
   layer('models', true, `HTTP ${modelsAfter.status}; ${projected.length} model(s): ${projected.join(', ')}`);
+  if (requiredModel && !projected.includes(requiredModel)) {
+    fail('models', `Required model ${requiredModel} is absent from the actual /v1/models projection`);
+  }
 
-  const chatModel = selectedIds.find((id) => projected.includes(id)) ?? projected[0];
+  const chatModel = requiredModel ?? selectedIds.find((id) => projected.includes(id)) ?? projected[0];
   report.stage = 'chat';
   await chatOnce(gatewayKey, chatModel);
 }

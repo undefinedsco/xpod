@@ -9,6 +9,7 @@ import { getSolidDataset, getThing, getPodUrlAllFrom } from '@inrupt/solid-clien
 import { AI_CONNECTIONS_SERVICE_RESOURCE_IDS } from '@undefineds.co/ai-connections/service-access-resources';
 import { discoverSolidLocalRoute } from '@undefineds.co/solid-sdk/local-route-fetch';
 import { createCloudAccountPassword, prepareManagedLocalAcceptancePods, parseKeyFile } from './accept-live-gateway-login-chat';
+import { createPlatformProviderForAccount } from './prepare-rc-platform-provider';
 import { launchOwnedPackagedDesktop, type OwnedPackagedDesktop } from './helpers/packaged-desktop-fixture';
 import { acceptMountedPodPermissions, attributeMountedOperation, MountedPermissionError,
   observeOwnedPodTraffic, type MountedPermissionCondition, type MountedPodPermissionPhase } from './helpers/packaged-desktop-permissions';
@@ -26,8 +27,65 @@ const { verifyEvidence } = createRequire(import.meta.url)('./desktop-permission-
 
 type Stage = 'input' | 'launch' | 'provision' | 'pod-a' | 'operations-a' | 'switch' | 'pod-b' | 'operations-b' | 'cleanup' | 'verify';
 export interface PackagedPermissionOptions {
-  archive: string; version: string; sourceSha: string; issuer: string; keyFile: string;
+  archive: string; version: string; sourceSha: string; issuer: string;
+  /** Explicit external diagnostic input. Omit to use the normal Account-issued
+   * platform provider from the same owned test account. */
+  keyFile?: string;
   privateDirectory: string; evidenceFile: string;
+}
+
+const ALLOWED_PLATFORM_ORIGINS = ['https://id-rc.undefineds.cn', 'https://id.undefineds.co'] as const;
+
+type PlatformProviderIssue = typeof createPlatformProviderForAccount;
+type PlatformProviderHandle = Awaited<ReturnType<PlatformProviderIssue>>;
+
+export interface DefaultPlatformProviderOptions {
+  baseUrl: string;
+  authorization: string;
+  controls: Parameters<PlatformProviderIssue>[0]['controls'];
+  /** The authoritative binding WebID; issuance is deferred until it is known. */
+  webId: string;
+  fetchImpl?: typeof fetch;
+  /** Test seam; production uses the shared normal Account lifecycle. */
+  issue?: PlatformProviderIssue;
+}
+
+/** Validate the descriptor the shared helper returns and revoke it if the
+ * platform kind, endpoint or expected model is not the approved one. */
+export async function configureDefaultPlatformProvider(
+  options: DefaultPlatformProviderOptions,
+): Promise<PlatformProviderHandle> {
+  let issuer: URL;
+  try { issuer = new URL(options.baseUrl); } catch { throw new DesktopAcceptanceError('provider-input', 'Invalid platform issuer'); }
+  if (issuer.protocol !== 'https:' || !(ALLOWED_PLATFORM_ORIGINS as readonly string[]).includes(issuer.origin)
+    || issuer.pathname !== '/' || issuer.search || issuer.hash || issuer.username || issuer.password
+    || options.authorization.trim() === '' || options.controls.account?.clientCredentials === undefined) {
+    throw new DesktopAcceptanceError('provider-input', 'Platform issuer or Account controls are not approved');
+  }
+  let webId: URL;
+  try { webId = new URL(options.webId); } catch { throw new DesktopAcceptanceError('provider-input', 'Invalid authoritative WebID'); }
+  if (!webId.hash || webId.origin !== issuer.origin) {
+    throw new DesktopAcceptanceError('provider-input', 'Platform provider requires the authoritative same-issuer WebID');
+  }
+  const issue = options.issue ?? createPlatformProviderForAccount;
+  const handle = await issue({ baseUrl: options.baseUrl, authorization: options.authorization,
+    controls: options.controls, webId: options.webId, fetchImpl: options.fetchImpl });
+  try {
+    const provider = handle.provider;
+    let base: URL;
+    try { base = new URL(provider.baseUrl); } catch { throw new Error('Platform provider base URL is invalid'); }
+    if (provider.id !== 'custom' || provider.offeringId !== 'openai-compatible'
+      || !provider.expected.includes('linx-lite') || typeof provider.apiKey !== 'string'
+      || !provider.apiKey.startsWith('sk-') || base.origin !== issuer.origin
+      || base.pathname !== '/v1' || base.search || base.hash || base.username || base.password) {
+      throw new Error('Platform provider descriptor is not the approved custom linx-lite provider');
+    }
+  } catch (error) {
+    try { await handle.revoke(); }
+    catch (cleanup) { throw new AggregateError([error, cleanup], 'Platform provider validation and cleanup failed'); }
+    throw error;
+  }
+  return handle;
 }
 
 /** HTTP document location loses its fragment; subject identity never does.
@@ -239,6 +297,7 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
   let phase: MountedPodPermissionPhase | undefined;
   let keyHandle: MountedPodPermissionPhase['handle'] | undefined;
   let provider: Awaited<ReturnType<typeof createConfirmedMountedProvider>> | undefined;
+  let platformProvider: PlatformProviderHandle | undefined;
   let key: Awaited<ReturnType<typeof createMountedKeyInUi>> | undefined;
   let fixtureCleanup: Awaited<ReturnType<OwnedPackagedDesktop['close']>> | undefined;
   let record: Record<string, unknown> | undefined;
@@ -248,9 +307,14 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
   try {
     if (!/^[a-f0-9]{40}$/u.test(options.sourceSha)) throw new DesktopAcceptanceError('invalid-arguments', 'Invalid source SHA');
     await verifyPackagedSourceCheckout({ cwd: process.cwd(), sourceSha: options.sourceSha, version: options.version });
-    if ((await stat(options.keyFile)).mode & 0o077) throw new DesktopAcceptanceError('provider-input', 'Provider key file is not private');
-    const configuration = parseKeyFile(await readFile(options.keyFile, 'utf8'));
-    if (!configuration?.apiKey || !configuration.expected.length) throw new DesktopAcceptanceError('provider-input', 'Missing declared provider acceptance input');
+    let externalConfiguration: Awaited<ReturnType<typeof parseKeyFile>>;
+    if (options.keyFile !== undefined) {
+      if ((await stat(options.keyFile)).mode & 0o077) throw new DesktopAcceptanceError('provider-input', 'Provider key file is not private');
+      externalConfiguration = parseKeyFile(await readFile(options.keyFile, 'utf8'));
+      if (!externalConfiguration?.apiKey || !externalConfiguration.expected.length) {
+        throw new DesktopAcceptanceError('provider-input', 'Missing declared provider acceptance input');
+      }
+    }
     advance('launch');
     fixture = await launchOwnedPackagedDesktop({ archive: options.archive, version: options.version,
       issuer: options.issuer, evidenceDirectory: options.privateDirectory });
@@ -317,10 +381,27 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
       const invocation = requirePackagedInvocationKey(descriptor);
       if (index === 0) firstInvocation = invocation;
       advance(index === 0 ? 'operations-a' : 'operations-b');
-      provider = await createConfirmedMountedProvider(phase, { provider: configuration.id,
-        credential: { apiKey: configuration.apiKey, offeringId: configuration.offeringId,
-          baseUrl: configuration.baseUrl, proxyUrl: process.env.XPOD_AI_PROXY_URL?.trim() || undefined,
-          label: `desktop-${unique}-${index}` }, expectedModels: configuration.expected });
+      let mountedInput: { id: Parameters<typeof createConfirmedMountedProvider>[1]['provider'];
+        offeringId: string; apiKey: string; baseUrl?: string; expected: string[] };
+      if (externalConfiguration) {
+        mountedInput = { id: externalConfiguration.id, offeringId: externalConfiguration.offeringId,
+          apiKey: externalConfiguration.apiKey, baseUrl: externalConfiguration.baseUrl, expected: externalConfiguration.expected };
+      } else {
+        // Default platform path: the same owned test account issues a normal
+        // Account client credential once the authoritative binding WebID is
+        // known. The Local mounted Pod registers it as its own custom
+        // OpenAI-compatible provider; the key never goes to a file.
+        platformProvider = await attributePackagedOperation('provider-create', () =>
+          configureDefaultPlatformProvider({ baseUrl: options.issuer, authorization: account.authorization,
+            controls: account.controls, webId: binding.webId, fetchImpl: fetch }));
+        mountedInput = { id: 'custom', offeringId: platformProvider.provider.offeringId,
+          apiKey: platformProvider.provider.apiKey, baseUrl: platformProvider.provider.baseUrl,
+          expected: platformProvider.provider.expected };
+      }
+      provider = await createConfirmedMountedProvider(phase, { provider: mountedInput.id,
+        credential: { apiKey: mountedInput.apiKey, offeringId: mountedInput.offeringId,
+          baseUrl: mountedInput.baseUrl, proxyUrl: process.env.XPOD_AI_PROXY_URL?.trim() || undefined,
+          label: `desktop-${unique}-${index}` }, expectedModels: mountedInput.expected });
       // Account controls may commit a new host after the Pod-only handle was
       // retained. Keep the original grant actor for restore; bind Key UI work
       // to the current committed host with the exact same identity/storage.
@@ -352,6 +433,7 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
       const chat = chatOutcome.value;
       await privateJson(options.privateDirectory, `operations-${index}-private.json`, {
         credentialId: provider.credentialId, model: provider.model, quotaObserved: provider.quotaObserved,
+        quotaStatus: provider.quotaStatus,
         keyId: key.id, accountActor: key.accountActor, samePodReuse, chat,
       });
       if (index === 0) {
@@ -394,10 +476,16 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
         } finally { writes.stop(); }
       }
       podEvidence.push({ ...phase.evidence, webIdSha256: createHash('sha256').update(binding.webId).digest('hex'), selectedInUi: true,
+        // Public: the quota capability was handled safely, not that the provider
+        // reported quota capacity. The actual status stays in the private file.
         management: { configuration: true, models: true, quota: true } });
       await attributePackagedOperation('key-cleanup', () => key!.remove()); key = undefined;
       await keyHandle.dispose(); keyHandle = undefined;
       await provider.remove(); provider = undefined;
+      if (platformProvider) {
+        await attributePackagedOperation('provider-cleanup', () => platformProvider!.revoke());
+        platformProvider = undefined;
+      }
       await phase.restore(); await phase.handle.dispose(); phase = undefined;
       if (index === 0) {
         advance('switch');
@@ -417,7 +505,9 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
     advance('cleanup');
     try { if (taskSnapshot) await privateJson(options.privateDirectory, 'tasks-private.json', taskSnapshot); }
     catch (error) { failures.push(error); }
-    for (const cleanup of [async () => { if (key) await attributePackagedOperation('key-cleanup', () => key!.remove()); }, async () => { if (provider) await provider.remove(); },
+    for (const cleanup of [async () => { if (key) await attributePackagedOperation('key-cleanup', () => key!.remove()); },
+      async () => { if (provider) await provider.remove(); },
+      async () => { if (platformProvider) await attributePackagedOperation('provider-cleanup', () => platformProvider!.revoke()); },
       async () => { if (phase) await phase.restore(); }]) {
       try { await cleanup(); } catch (error) { failures.push(error); }
     }
@@ -453,17 +543,28 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
   await writeFile(options.evidenceFile, JSON.stringify(record, null, 2) + '\n');
 }
 
-async function main(argv: string[]): Promise<void> {
-  const keys = ['--archive', '--version', '--source-sha', '--issuer', '--key-file', '--private-directory', '--evidence'];
+const PACKAGED_ARGUMENTS = ['--archive', '--version', '--source-sha', '--issuer', '--key-file', '--private-directory', '--evidence'] as const;
+const PACKAGED_REQUIRED_ARGUMENTS = ['--archive', '--version', '--source-sha', '--issuer', '--private-directory', '--evidence'] as const;
+
+/** `--key-file` is an explicit external diagnostic only; omitting it keeps the
+ * default platform path and never invents an empty provider file. */
+export function parsePackagedPermissionArguments(argv: string[]): PackagedPermissionOptions {
   const values = new Map<string, string>();
   for (let index = 0; index < argv.length; index += 2) {
-    if (!keys.includes(argv[index]) || !argv[index + 1] || values.has(argv[index])) throw new DesktopAcceptanceError('invalid-arguments', 'Invalid packaged runner argument');
+    if (!(PACKAGED_ARGUMENTS as readonly string[]).includes(argv[index]) || !argv[index + 1] || values.has(argv[index])) {
+      throw new DesktopAcceptanceError('invalid-arguments', 'Invalid packaged runner argument');
+    }
     values.set(argv[index], argv[index + 1]);
   }
-  if (keys.some(key => !values.has(key))) throw new DesktopAcceptanceError('invalid-arguments', 'Missing packaged runner argument');
-  await acceptPackagedDesktopPermissions({ archive: values.get('--archive')!, version: values.get('--version')!,
-    sourceSha: values.get('--source-sha')!, issuer: values.get('--issuer')!, keyFile: values.get('--key-file')!,
-    privateDirectory: values.get('--private-directory')!, evidenceFile: values.get('--evidence')! });
+  if (PACKAGED_REQUIRED_ARGUMENTS.some(key => !values.has(key))) throw new DesktopAcceptanceError('invalid-arguments', 'Missing packaged runner argument');
+  return { archive: values.get('--archive')!, version: values.get('--version')!,
+    sourceSha: values.get('--source-sha')!, issuer: values.get('--issuer')!,
+    ...(values.has('--key-file') ? { keyFile: values.get('--key-file')! } : {}),
+    privateDirectory: values.get('--private-directory')!, evidenceFile: values.get('--evidence')! };
+}
+
+async function main(argv: string[]): Promise<void> {
+  await acceptPackagedDesktopPermissions(parsePackagedPermissionArguments(argv));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

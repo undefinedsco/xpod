@@ -10,7 +10,7 @@ test('RC requires real permission producer and source-bound artifact in the comb
   assert.ok(jobs.build_desktop_rc.needs.includes('deploy_and_accept'));
   const producer = jobs.build_desktop_rc.steps.find(step => step.run?.includes('bun scripts/accept-packaged-desktop-permissions.ts'));
   assert.ok(producer);
-  assert.match(producer.run, /chmod 600/);
+  assert.doesNotMatch(producer.run, /--key-file|XPOD_LIVE_PROVIDER_API_KEY_CONFIG/);
   assert.match(producer.run, /--source-sha "\$\{\{ github\.sha \}\}"/);
   assert.match(producer.run, /--archive "\$new_zip"/);
   assert.equal(producer['continue-on-error'], undefined);

@@ -18,7 +18,7 @@ import publishedSdk93 from './fixtures/published-sdk93-source-binding-versioning
 import publishedSdk94 from './fixtures/published-sdk94-source-binding-versioning.json';
 
 const ROOT=path.resolve(import.meta.dir,'../..');
-const CURRENT_SDK_CONSUMER_GROUP_COUNT=116;
+const CURRENT_SDK_CONSUMER_GROUP_COUNT=117;
 const sha=(value:Buffer|string)=>createHash('sha256').update(value).digest('hex');
 const disk=(name:string)=>sha(readFileSync(path.join(ROOT,name)));
 const whole=(group:unknown)=>sha(JSON.stringify(group));
@@ -313,7 +313,7 @@ test('SDK103 stays the FROZEN consumer for the RC380 GNU long-name pack repair',
   expect(sdk103.secondarySelectors).toEqual(sdk102.secondarySelectors);
   // Frozen axes must not move: every published normal-source group stays at its
   // history, and only the appended CURRENT generations track live bytes.
-  expect(QLEVER_NORMAL_SOURCE_GROUPS).toHaveLength(8);
+  expect(QLEVER_NORMAL_SOURCE_GROUPS).toHaveLength(9);
   expect(whole(QLEVER_SDK_NORMAL_SOURCE_BINDINGS)).toBe(publishedSdk93.published.normalFlatBindingsSha256);
   expect(QLEVER_SDK_NORMAL_SOURCE_BINDINGS).toHaveLength(23);
   // SDK103 is FROZEN history, so its bytes are checked against the published
@@ -399,13 +399,13 @@ test('SDK106 and SDK107 are FROZEN history and SDK108 is the CURRENT in-place re
   expect(QLEVER_SDK_NORMAL_SOURCE_BINDINGS).toHaveLength(23);
 });
 
-test('RC397: SDK115/Linux117 append ONLY the candidate-workflow retry variant',()=>{
-  // SDK114/Linux116 are published history now. Whole-group constants trace to the
-  // immutable 7aa88e0b base, so an in-place edit cannot keep this green.
+test('RC398: SDK116/Linux118 append ONLY the candidate-workflow platform variant',()=>{
+  // SDK114/Linux116 and the RC397 SDK115 pair are published history now. Whole-group
+  // constants trace to the immutable base, so an in-place edit cannot keep this green.
   const PUBLISHED_SDK113='5ef0c061be13f692b8caaeb82d1a8a8433ee4e2f081ce6fe3c53c92b49b7fbf9';
   const PUBLISHED_SDK114='a274000c4142b04f0625c8fdbaa3823de748e1981faecbc84f76dc4ae8306f44';
   const CANDIDATE='.github/workflows/candidate.yml';
-  const CANDIDATE_SHA='70b14a6afc3da3f8f074c5fb4e2bc2d097639b8a33efce57469c45adef1b1d87';
+  const CANDIDATE_SHA='f488709ab38b7d42f58accd90cbe59a162eae89ee23169db9b28ecdf264a7581';
   const sdk113=QLEVER_SDK_CONSUMER_GROUPS[113]!;
   const sdk114=QLEVER_SDK_CONSUMER_GROUPS[114]!;
   const sdk115=QLEVER_SDK_CONSUMER_GROUPS[115]!;
@@ -419,16 +419,20 @@ test('RC397: SDK115/Linux117 append ONLY the candidate-workflow retry variant',(
   expect(sdk115).toBe(QLEVER_LINUX_CONSUMER_GROUPS[116]);
   expect(sdk115).not.toBe(sdk114);
   // Only the candidate workflow row moved; every other role and all 15 stages are exact.
-  expect(sdk115.candidateServiceRelationship?.workflowSha256).toBe(CANDIDATE_SHA);
-  expect(sdk114.candidateServiceRelationship?.workflowSha256).not.toBe(CANDIDATE_SHA);
-  expect((sdk115.secondarySelectorStages??[]).length).toBe((sdk114.secondarySelectorStages??[]).length);
-  expect((sdk115.secondarySelectorStages??[]).length).toBe(15);
-  expect(sdk115.selectors).toEqual(sdk114.selectors);
-  expect(sdk115.secondarySelectors).toEqual(sdk114.secondarySelectors);
-  const differing=sdk114.sourceBindings.filter((row,index)=>row.path!==CANDIDATE
-    &&JSON.stringify(row)!==JSON.stringify(sdk115.sourceBindings[index]));
+  const sdk116=QLEVER_SDK_CONSUMER_GROUPS[116]!;
+  expect(sdk116).toBe(QLEVER_LINUX_CONSUMER_GROUPS[117]);
+  expect(sdk116).not.toBe(sdk115);
+  expect(whole(sdk115)).not.toBe(whole(sdk116));
+  expect(sdk116.candidateServiceRelationship?.workflowSha256).toBe(CANDIDATE_SHA);
+  expect(sdk115.candidateServiceRelationship?.workflowSha256).not.toBe(CANDIDATE_SHA);
+  expect((sdk116.secondarySelectorStages??[]).length).toBe((sdk115.secondarySelectorStages??[]).length);
+  expect((sdk116.secondarySelectorStages??[]).length).toBe(15);
+  expect(sdk116.selectors).toEqual(sdk115.selectors);
+  expect(sdk116.secondarySelectors).toEqual(sdk115.secondarySelectors);
+  const differing=sdk115.sourceBindings.filter((row,index)=>row.path!==CANDIDATE
+    &&JSON.stringify(row)!==JSON.stringify(sdk116.sourceBindings[index]));
   expect(differing).toEqual([]);
-  expect(row(sdk115,CANDIDATE).map(value=>value.sha256)).toEqual([CANDIDATE_SHA]);
+  expect(row(sdk116,CANDIDATE).map(value=>value.sha256)).toEqual([CANDIDATE_SHA]);
   // Historical producer axes stay frozen; normalBuild and the flat 23 are untouched.
   expect(QLEVER_NORMAL_BUILD_GROUPS).toHaveLength(3);
   expect(QLEVER_SDK_NORMAL_SOURCE_BINDINGS).toHaveLength(23);
@@ -484,13 +488,14 @@ test('SDK96/97/98/99/100/101/102/103 trees select their own tuple; current tree 
 });
 
 test('normal producer keeps the frozen 23-row flat list and all earlier groups',()=>{
-  expect(QLEVER_NORMAL_SOURCE_GROUPS).toHaveLength(8);
-  const [old,next,dockerignore,registry,currentNormal,scopeNormal,retryPredecessor,activeNormal]=QLEVER_NORMAL_SOURCE_GROUPS;
+  expect(QLEVER_NORMAL_SOURCE_GROUPS).toHaveLength(9);
+  const [old,next,dockerignore,registry,currentNormal,scopeNormal,retryPredecessor,activeNormal,platformNormal]=QLEVER_NORMAL_SOURCE_GROUPS;
   // RC397: groups 6 (RC392) and 7 (RC396 scope) are FROZEN history; only group 8
   // tracks today's candidate-workflow bytes. Compare whole groups, not one row.
   const RC392_NORMAL_LOAD='5e25855e6c9b1b9cd6825aee495ba309e39ccd4fa12cc30269f2e59a7cb8d04d';
   const RC397_NORMAL_SCOPE='b2418f775120a51d875d76fd46a7b1dcb5aef3072127d3510c10e70a6daf88fd';
   const RC397_CANDIDATE='70b14a6afc3da3f8f074c5fb4e2bc2d097639b8a33efce57469c45adef1b1d87';
+  const RC398_CANDIDATE='f488709ab38b7d42f58accd90cbe59a162eae89ee23169db9b28ecdf264a7581';
   expect(old!.sourceBindings).toBe(QLEVER_SDK_NORMAL_SOURCE_BINDINGS);
   expect(QLEVER_SDK_NORMAL_SOURCE_BINDINGS).toHaveLength(23);
   expect(whole(QLEVER_SDK_NORMAL_SOURCE_BINDINGS)).toBe(publishedSdk93.published.normalFlatBindingsSha256);
@@ -521,13 +526,15 @@ test('normal producer keeps the frozen 23-row flat list and all earlier groups',
   // only the appended tail tracks the new bytes.
   expect(whole(scopeNormal!)).toBe(RC392_NORMAL_LOAD);
   expect(whole(retryPredecessor!)).toBe(RC397_NORMAL_SCOPE);
+  expect(row(platformNormal!,'.github/workflows/candidate.yml').map(value=>value.sha256))
+    .toEqual([RC398_CANDIDATE]);
   expect(row(activeNormal!,'.github/workflows/candidate.yml').map(value=>value.sha256))
     .toEqual([RC397_CANDIDATE]);
   expect(row(retryPredecessor!,'.github/workflows/candidate.yml').map(value=>value.sha256))
     .not.toEqual([RC397_CANDIDATE]);
-  expect((activeNormal!.secondarySelectorStages??[]).length)
-    .toBe((retryPredecessor!.secondarySelectorStages??[]).length);
-  expect(activeNormal!.selectors).toEqual(retryPredecessor!.selectors);
+  expect((platformNormal!.secondarySelectorStages??[]).length)
+    .toBe((activeNormal!.secondarySelectorStages??[]).length);
+  expect(platformNormal!.selectors).toEqual(activeNormal!.selectors);
   expect(scopeNormal!.selectors).toEqual(retryPredecessor!.selectors);
 });
 
