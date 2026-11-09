@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, openSync, closeSync, fstatSync, readSync, constants } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -39,9 +39,27 @@ interface InstalledReport {
 
 const IMMUTABLE_IMAGE_REF = /^[A-Za-z0-9._:/-]+@sha256:[a-f0-9]{64}$/;
 const DOCKER_PROBE_TIMEOUT_MS = 5_000;
+/** Docker create is a mutating call on a cold runner (volume/network attach and
+ * metadata) and must not share the fast read-only probe budget. Inspection,
+ * readiness, logs and cleanup keep DOCKER_PROBE_TIMEOUT_MS. */
+const DOCKER_CREATE_TIMEOUT_MS = 60_000;
+/** Only fixed spawn outcomes may be published; raw error text, stderr, args and
+ * env are never included in StepError. */
+const SAFE_SPAWN_ERROR_CODES = new Set(['ETIMEDOUT', 'ENOENT', 'EACCES']);
+const SAFE_SIGNALS = new Set(['SIGTERM', 'SIGKILL', 'SIGINT', 'SIGHUP']);
 const PUBLIC_FIXTURE_SHA256 = 'c15f1bba83aff573b9e3bab685bf66bacb35cd82bac7a13e93e8163559ed5778';
 const FORBIDDEN_PRODUCT_LOG = /product[- ]fallback|compatibility.*fallback|rdf3x|degraded|stub|mock/iu;
 const RUNNER_PATH = 'dist/acceptance/run-installed-qlever-conformance.js';
+
+function safeSpawnDiagnostic(result: SpawnSyncReturns<string>): string | undefined {
+  const rawCode = (result.error as NodeJS.ErrnoException | undefined)?.code;
+  const code = result.error ? (rawCode && SAFE_SPAWN_ERROR_CODES.has(rawCode) ? rawCode : 'other') : undefined;
+  const signal = result.signal ? (SAFE_SIGNALS.has(result.signal) ? result.signal : 'other') : undefined;
+  const status = Number.isSafeInteger(result.status) && result.status! >= 0 ? result.status! : undefined;
+  const parts = [code ? `code=${code}` : '', status === undefined ? '' : `status=${status}`, signal ? `signal=${signal}` : '']
+    .filter(Boolean);
+  return parts.length ? parts.join(',') : undefined;
+}
 
 class StepError extends Error {
   constructor(readonly stage: string, readonly exitStatus: number, readonly errorClass: string, diagnostic?: string) {
@@ -98,7 +116,7 @@ function runStep(
   });
   if (result.error || result.signal || result.status !== 0) {
     throw new StepError(stage, result.status && result.status > 0 ? result.status : 1,
-      result.signal ? 'signal' : result.error ? 'execution-error' : 'producer-failed');
+      result.signal ? 'signal' : result.error ? 'execution-error' : 'producer-failed', safeSpawnDiagnostic(result));
   }
   if (options.scanProductLogs !== false && FORBIDDEN_PRODUCT_LOG.test(`${result.stdout}\n${result.stderr}`)) {
     throw new StepError(stage, 1, 'forbidden-product-fallback');
@@ -436,7 +454,11 @@ async function main(): Promise<void> {
     const command = kind === 'network'
       ? ['network', 'create', '--label', ownershipLabel, name]
       : ['create', '--name', name, '--network', networkID, '--label', ownershipLabel, ...dockerArgs];
-    const id = runStep(`create conformance ${kind}`, command, { scanProductLogs: false });
+    // Network create is a mutating creation too, so it shares the same bounded
+    // create budget; only the read-only probes keep the 5s probe budget.
+    const id = runStep(`create conformance ${kind}`, command, {
+      scanProductLogs: false, timeoutMs: DOCKER_CREATE_TIMEOUT_MS,
+    });
     if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('Docker create returned no immutable resource ID');
     ownedResources.push({ kind, name, id });
     return id;

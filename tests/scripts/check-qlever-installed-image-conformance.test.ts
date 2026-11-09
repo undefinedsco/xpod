@@ -216,6 +216,10 @@ const fakeDocker = `#!/usr/bin/env python3
 import sys,os,json,pathlib,hashlib
 args=sys.argv[1:]; root=pathlib.Path(os.environ['FAKE_DOCKER_STATE']); scenario=os.environ['FAKE_DOCKER_SCENARIO']
 with (root/'calls.jsonl').open('a') as out: out.write(json.dumps(args)+'\\n')
+delay=int(os.environ.get('FAKE_DOCKER_DELAY_MS','0') or 0); delay_kind=os.environ.get('FAKE_DOCKER_DELAY_KIND','')
+delayed={'create':args[0]=='create','inspect':args[:2]==['image','inspect'],'pg-create':args[0]=='create' and '--network-alias' in args}.get(delay_kind,False)
+if delay and delayed:
+ import time; time.sleep(delay/1000)
 def identity(name,suffix=''): return hashlib.sha256((name+suffix).encode()).hexdigest()
 def create(name,kind,created,foreign=False):
  id=identity(name,'foreign' if foreign else ''); nonce=next((a.split('=',1)[1] for i,a in enumerate(created) if i and created[i-1]=='--label'),'')
@@ -230,6 +234,8 @@ elif args[:2]==['network','create']:
  if scenario=='network-ack-loss': sys.exit(28)
 elif args[0]=='create':
  name=args[args.index('--name')+1]
+ if scenario=='create-stderr':
+  print('sk-'+'s'*24+' raw-create-stderr',file=sys.stderr); sys.exit(9)
  if scenario=='foreign' and name.startswith('xpod-qlever-pg-'):
   create(name,'container',args,True); print('foreign-create-refused',file=sys.stderr); sys.exit(18)
  id=create(name,'container',args); print(id)
@@ -271,31 +277,38 @@ elif args[:2]==['container','ls'] or args[:2]==['network','ls']:
   if mapping.exists(): print(mapping.read_text())
 `;
 
+function runFakeDocker(options: { scenario?: string; cleanupExit?: string; env?: Record<string, string> } = {}) {
+  const base = path.join(root, '.test-data/installed-native-producer-test');
+  mkdirSync(base, { recursive: true, mode: 0o700 });
+  const dir = mkdtempSync(path.join(base, 'producer-'));
+  chmodSync(dir, 0o700);
+  const bin = path.join(dir, 'bin'); const state = path.join(dir, 'state'); const artifacts = path.join(dir, 'artifacts');
+  for (const child of [bin, state, artifacts]) mkdirSync(child, { mode: 0o700 });
+  writeFileSync(path.join(bin, 'docker'), fakeDocker, { mode: 0o700 });
+  writeFileSync(path.join(dir, 'sqlite.json'), JSON.stringify(validReport()), { mode: 0o600 });
+  writeFileSync(path.join(dir, 'pg.json'), JSON.stringify(validReport('pg')), { mode: 0o600 });
+  const commandArgs = [path.join(root, 'scripts/check-qlever-installed-image-conformance.ts'),
+    '--installed-image', `ghcr.io/undefinedsco/xpod@sha256:${'b'.repeat(64)}`,
+    '--pg-image', `ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:${'c'.repeat(64)}`,
+    '--fixture', fixturePath, '--artifact-dir', artifacts, '--source-sha', 'a'.repeat(40), '--runner-sha256', 'd'.repeat(64)];
+  const start = Date.now();
+  const result = spawnSync('bun', commandArgs, { cwd: root, encoding: 'utf8', timeout: 20_000, env: {
+    ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, FAKE_DOCKER_STATE: state,
+    FAKE_DOCKER_SCENARIO: options.scenario ?? 'success', FAKE_CLEANUP_EXIT: options.cleanupExit ?? '0',
+    FAKE_REPORT_ROOT: dir, ...options.env,
+  } });
+  return { dir, state, artifacts, commandArgs, result, elapsed: Date.now() - start };
+}
+
 describe('actual installed helper with fake Docker producers', () => {
   it.each([
     ['primary-failed', 23, 42], ['success', 23, 70], ['primary-failed', 0, 42], ['success', 0, 0],
     ['start-failed', 0, 45], ['foreign', 0, 18], ['bad-abi', 0, 1], ['forged', 0, 1], ['wrong-source', 0, 1],
     ['create-ack-loss', 0, 27], ['network-ack-loss', 0, 28], ['same-name-replaced', 0, 0], ['network-replaced', 0, 0],
   ] as const)('%s / cleanup %s returns %s and only cleans created resources', (scenario, cleanupExit, expectedExit) => {
-    const base = path.join(root, '.test-data/installed-native-producer-test');
-    mkdirSync(base, { recursive: true, mode: 0o700 });
-    const dir = mkdtempSync(path.join(base, 'producer-'));
-    chmodSync(dir, 0o700);
-    const bin = path.join(dir, 'bin'); const state = path.join(dir, 'state'); const artifacts = path.join(dir, 'artifacts');
-    for (const child of [bin, state, artifacts]) mkdirSync(child, { mode: 0o700 });
-    writeFileSync(path.join(bin, 'docker'), fakeDocker, { mode: 0o700 });
-    writeFileSync(path.join(dir, 'sqlite.json'), JSON.stringify(validReport()), { mode: 0o600 });
-    writeFileSync(path.join(dir, 'pg.json'), JSON.stringify(validReport('pg')), { mode: 0o600 });
+    const { dir, state, artifacts, commandArgs, result, elapsed } =
+      runFakeDocker({ scenario, cleanupExit: String(cleanupExit) });
     try {
-      const commandArgs = [path.join(root, 'scripts/check-qlever-installed-image-conformance.ts'),
-        '--installed-image', `ghcr.io/undefinedsco/xpod@sha256:${'b'.repeat(64)}`,
-        '--pg-image', `ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:${'c'.repeat(64)}`,
-        '--fixture', fixturePath, '--artifact-dir', artifacts, '--source-sha', 'a'.repeat(40), '--runner-sha256', 'd'.repeat(64)];
-      const start = Date.now();
-      const result = spawnSync('bun', commandArgs, { cwd: root, encoding: 'utf8', timeout: 20_000, env: {
-        ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, FAKE_DOCKER_STATE: state,
-        FAKE_DOCKER_SCENARIO: scenario, FAKE_CLEANUP_EXIT: String(cleanupExit), FAKE_REPORT_ROOT: dir,
-      } });
       const evidenceDir = process.env.XPOD_NATIVE_TEST_EVIDENCE_DIR;
       if (evidenceDir) {
         mkdirSync(evidenceDir, { recursive: true, mode: 0o700 });
@@ -303,7 +316,7 @@ describe('actual installed helper with fake Docker producers', () => {
         writeFileSync(path.join(evidenceDir, `${scenario}-${cleanupExit}.log`), raw, { mode: 0o600 });
         writeFileSync(path.join(evidenceDir, `${scenario}-${cleanupExit}.receipt.json`), JSON.stringify({
           command: ['bun', ...commandArgs], pid: result.pid, actualExit: result.status, signal: result.signal,
-          wallMs: Date.now() - start, closedLogSHA256: createHash('sha256').update(raw).digest('hex'),
+          wallMs: elapsed, closedLogSHA256: createHash('sha256').update(raw).digest('hex'),
           calls: readFileSync(path.join(state, 'calls.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line)),
         }, null, 2), { mode: 0o600 });
       }
@@ -351,6 +364,42 @@ describe('actual installed helper with fake Docker producers', () => {
   });
 });
 
+
+describe('bounded create budget and safe spawn diagnostics', () => {
+  it('lets a docker create that exceeds the 5s probe budget finish and still verify cleanup', () => {
+    const run = runFakeDocker({ env: { FAKE_DOCKER_DELAY_MS: '5500', FAKE_DOCKER_DELAY_KIND: 'pg-create' } });
+    try {
+      expect(run.elapsed).toBeGreaterThan(5_000);
+      expect(run.result.error).toBeUndefined();
+      expect(run.result.status).toBe(0);
+      expect(JSON.parse(readFileSync(path.join(run.dir, 'artifacts', 'installed-image-conformance.json'), 'utf8')).ownedCleanup)
+        .toBe('verified-absent');
+    } finally { rmSync(run.dir, { recursive: true, force: true }); }
+  }, 20_000);
+
+  it('keeps the 5s bound for read-only inspect and publishes only a safe spawn diagnostic', () => {
+    const run = runFakeDocker({ env: { FAKE_DOCKER_DELAY_MS: '5500', FAKE_DOCKER_DELAY_KIND: 'inspect' } });
+    try {
+      expect(run.elapsed).toBeLessThan(10_000);
+      // Do not require one runtime's signal representation; either spawn
+      // failure form must remain bounded and must reject acceptance.
+      expect(run.result.status).toBeGreaterThan(0);
+      expect(run.result.stderr).toContain('inspect installed Xpod image');
+      expect(run.result.stderr).toMatch(/"errorClass":"(?:signal|execution-error)"/u);
+      expect(run.result.stderr).toMatch(/code=(ETIMEDOUT|other)/u);
+    } finally { rmSync(run.dir, { recursive: true, force: true }); }
+  }, 20_000);
+
+  it('never copies raw docker stderr into the reported failure', () => {
+    const run = runFakeDocker({ scenario: 'create-stderr' });
+    try {
+      expect(run.result.status).toBe(9);
+      expect(run.result.stderr).toContain('status=9');
+      expect(run.result.stderr).not.toContain('raw-create-stderr');
+      expect(run.result.stderr).not.toContain('ssssssss');
+    } finally { rmSync(run.dir, { recursive: true, force: true }); }
+  }, 20_000);
+});
 
 describe('private17 sanitized single JSON boundary', () => {
   const expected = { admissionSha256: '', installedImage: `ghcr.io/undefinedsco/xpod@sha256:${'a'.repeat(64)}`,
