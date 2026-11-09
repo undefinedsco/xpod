@@ -1722,7 +1722,19 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install --yes xvfb libgtk-3-0t64 libnss3 libxss1 libgbm1 libasound2t64
-          node node_modules/electron/install.js
+          electron_install_attempts=3
+          for electron_install_attempt in 1 2 3; do
+            if node node_modules/electron/install.js; then
+              break
+            fi
+            if [ "$electron_install_attempt" -eq "$electron_install_attempts" ]; then
+              echo "Electron install failed after ${electron_install_attempts} attempts" >&2
+              exit 1
+            fi
+            electron_install_delay=$((electron_install_attempt * 2))
+            echo "Electron install attempt ${electron_install_attempt}/${electron_install_attempts} failed; retrying in ${electron_install_delay}s" >&2
+            sleep "$electron_install_delay"
+          done
           node - <<'NODE'
           const fs = require('node:fs');
           const { execFileSync } = require('node:child_process');

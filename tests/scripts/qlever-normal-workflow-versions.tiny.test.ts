@@ -96,7 +96,7 @@ test('the production set derives from the normal axis and keeps the published co
 
 test('the ACTUAL on-disk candidate workflow is reviewed and resolves on the consumer axis',()=>{
  // Independent of any policy value: the bytes really in the tree.
- expect(DISK_WORKFLOW_SHA).toBe('e407ebeb6598a95eb14d9cf8c1db0a2fcfe6a30dcc51791ef6ae3d6aaf5daac1');
+ expect(DISK_WORKFLOW_SHA).toBe('70b14a6afc3da3f8f074c5fb4e2bc2d097639b8a33efce57469c45adef1b1d87');
  // The real production set must review those exact bytes.
  expect(normalWorkflowVersions()).toContain(DISK_WORKFLOW_SHA);
  // The real production resolver must map them to a contract on the CONSUMER axis.
