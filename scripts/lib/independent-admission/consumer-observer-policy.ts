@@ -428,6 +428,14 @@ return Object.freeze({path:'scripts/lib/independent-admission/'+name,sha256:crea
 }finally{fs.closeSync(fd);}
 }));
 
+/** The exact controller bytes the PUBLISHED declarations were reviewed against.
+ * Only the newest appended variant may use the live held-FD bindings below. */
+const REVIEWED_CONTROLLER_POLICY_BINDINGS = Object.freeze([
+  Object.freeze({ path: 'scripts/lib/independent-admission/consumer-observer-policy.ts',
+    sha256: '160b25be3c50a19463db7ebbf38136907294aab0eaf086791f5edfcdd42f481d' }),
+  Object.freeze({ path: 'scripts/lib/independent-admission/consumer-execution-current.json',
+    sha256: '37acf879ef285b0174f7eb3746dabffefc987cbb9597f6de35614b06a6166727' }),
+]);
 export const CI_PUBLICATION_WORKFLOW_SHA='d16b77e564d2f84795bdea2ef806f6fb36c80aa7a1c1017ac18c4606ad2a1dae';
 export const CALLABLE_PUBLICATION_WORKFLOW_SHA='5b830f4a3375a7f886f19b5617db5694b7cdcab23d21d82661d01899300e9e07';
 export const STAGING_CHECKED_PUBLICATION_WORKFLOW_SHA='d72284b8dc5b91669f0b41a8dafca787b6e1581a495d891cead38a07d9ab0852';
@@ -456,9 +464,9 @@ function restoreDeclarations(nodes: readonly DeclarationNode[], root: number): D
         if (typeof name !== 'string') throw new Error('Invalid reviewed declaration key');
         return [name, read(value)] as const;
       })))); break;
-      case 3: values.push(CONTROLLER_POLICY_BINDINGS[node[1]]!.sha256); break;
+      case 3: values.push(REVIEWED_CONTROLLER_POLICY_BINDINGS[node[1]]!.sha256); break;
       case 4: values.push(CONSUMER_SOURCE_BINDINGS); break;
-      case 5: values.push(CONTROLLER_POLICY_BINDINGS[node[1]]!); break;
+      case 5: values.push(REVIEWED_CONTROLLER_POLICY_BINDINGS[node[1]]!); break;
     }
   }
   if (!Number.isSafeInteger(root) || root < 0 || root >= values.length)
@@ -474,7 +482,10 @@ const reviewedDeclarations = restoreDeclarations(reviewedDeclarationNodes, 4298)
  * Only this controller's self-reference uses the existing held-file binding;
  * canonical and SDK policy bytes remain fixed reviewed literals. */
 const RC398_REVIEWED_SOURCE_HASHES: Readonly<Record<string, string>> = Object.freeze({
-  'scripts/lib/independent-admission/consumer-observer-policy.ts': CONTROLLER_POLICY_BINDINGS[0]!.sha256,
+  // RC398 history is frozen to the bytes it was reviewed against. The live
+  // CONTROLLER_POLICY_BINDINGS[0] self-reference moved on with RC399+ appends,
+  // so reusing it here would rewrite published RC398 history in place.
+  'scripts/lib/independent-admission/consumer-observer-policy.ts': '160b25be3c50a19463db7ebbf38136907294aab0eaf086791f5edfcdd42f481d',
   'scripts/lib/independent-admission/consumer-execution-current.json': '37acf879ef285b0174f7eb3746dabffefc987cbb9597f6de35614b06a6166727',
   'scripts/lib/independent-admission/qlever-sdk-origin-policy.ts': '09667c275ba4e5d01b20059d8eaf01914192b92c117932b0212b880cc2a0b08d',
 });
@@ -490,14 +501,41 @@ function rc398ConsumerVariant<T extends GitHubSourceBindingGroup>(group: T): T {
     sourceBindings: Object.freeze(group.sourceBindings.map(rebind)),
   }) as T;
 }
+/* RC399_CANDIDATE_WORKFLOW_REGISTRATION: the reviewed change moves only the qlever SDK
+ * origin policy bytes (one appended candidate-workflow version). One shared variant per
+ * family is appended; every published group and both RC398 variants stay byte-exact.
+ * Only this new variant uses the held-FD live controller self-reference. */
+const QLEVER_RC399_POLICY_SHA256='429d489f0662c5ac1c66b46b1b2626a85077e246701edaa1057efc25b077bd27';
+function rc399ConsumerVariant<T extends GitHubSourceBindingGroup>(group: T): T {
+  const rebind = (row: GitHubSourceBinding): GitHubSourceBinding => {
+    if (row.path === 'scripts/lib/independent-admission/consumer-observer-policy.ts') {
+      return CONTROLLER_POLICY_BINDINGS[0]!;
+    }
+    if (row.path === 'scripts/lib/independent-admission/consumer-execution-current.json') {
+      return CONTROLLER_POLICY_BINDINGS[1]!;
+    }
+    return row.path === 'scripts/lib/independent-admission/qlever-sdk-origin-policy.ts'
+      ? Object.freeze({ ...row, sha256: QLEVER_RC399_POLICY_SHA256 })
+      : row;
+  };
+  return Object.freeze({
+    ...group,
+    selectors: Object.freeze(group.selectors.map(rebind)),
+    secondarySelectors: Object.freeze((group.secondarySelectors ?? []).map(rebind)),
+    sourceBindings: Object.freeze(group.sourceBindings.map(rebind)),
+  }) as T;
+}
 export const CONSUMER_SOURCE_GROUPS = Object.freeze([
   ...reviewedDeclarations.consumer,
   rc398ConsumerVariant(reviewedDeclarations.consumer[112]!),
+  rc399ConsumerVariant(reviewedDeclarations.consumer[112]!),
 ]);
 export const CI_CONSUMER_SOURCE_GROUPS = Object.freeze([
   ...reviewedDeclarations.ci,
   rc398ConsumerVariant(reviewedDeclarations.ci[228]!),
   rc398ConsumerVariant(reviewedDeclarations.ci[229]!),
+  rc399ConsumerVariant(reviewedDeclarations.ci[228]!),
+  rc399ConsumerVariant(reviewedDeclarations.ci[229]!),
 ]);
 freezeGitHubSourceBindingGroups(CONSUMER_SOURCE_GROUPS);
 freezeGitHubSourceBindingGroups(CI_CONSUMER_SOURCE_GROUPS);
