@@ -96,7 +96,9 @@ test('the production set derives from the normal axis and keeps the published co
 
 test('the ACTUAL on-disk candidate workflow is reviewed and resolves on the consumer axis',()=>{
  // Independent of any policy value: the bytes really in the tree.
- expect(DISK_WORKFLOW_SHA).toBe('f488709ab38b7d42f58accd90cbe59a162eae89ee23169db9b28ecdf264a7581');
+ expect(DISK_WORKFLOW_SHA).toBe('a56cccf5de22d5d41097e49624e50d0f9083672291593fd0ca2eb8a80c356b6e');
+ // The previously reviewed RC398 bytes stay accepted history, never replaced.
+ expect(normalWorkflowVersions()).toContain('f488709ab38b7d42f58accd90cbe59a162eae89ee23169db9b28ecdf264a7581');
  // The real production set must review those exact bytes.
  expect(normalWorkflowVersions()).toContain(DISK_WORKFLOW_SHA);
  // The real production resolver must map them to a contract on the CONSUMER axis.
@@ -110,6 +112,9 @@ test('the ACTUAL on-disk candidate workflow is reviewed and resolves on the cons
   if(typeof relationship?.workflowSha256==='string') frozen.add(relationship.workflowSha256);
  }
  expect(frozen.has(DISK_WORKFLOW_SHA)).toBe(false);
+ // The consumer axis (the published contract route) carries it.
+ const consumerResolved=resolveCandidateWorkflowContract(DISK_WORKFLOW_SHA);
+ expect(consumerResolved!.workflowSha256).toBe(DISK_WORKFLOW_SHA);
 });
 
 test('the resolver reads the axis it is given and resolves identical duplicates once',()=>{

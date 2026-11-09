@@ -59,7 +59,8 @@ test('NEW variants are appended, and the shared CI total reflects 214',()=>{
   // CI207/208; RC386 appended CI209/210 (ABI helper custody). CI195..CI208 are all
   // frozen published history.
   expect(CI_CONSUMER_SOURCE_GROUPS.length).toBe(CURRENT_SOURCE_GROUP_COUNTS.ci);
-  expect(CURRENT_SOURCE_GROUP_COUNTS.ci).toBe(232);
+  // Sourced from the single CURRENT fixture, never a second scattered literal.
+  expect(CURRENT_SOURCE_GROUP_COUNTS.ci).toBe(234);
   // The RC384 and RC385 pairs are now historical: freeze them rather than letting a
   // later append re-bind them.
   expect(sha(CI_CONSUMER_SOURCE_GROUPS[204]!)).toBe(FROZEN_CI205);
@@ -135,7 +136,7 @@ test('consumer101 and CI205/CI206 are FROZEN whole-group history, not live',()=>
   expect(sha(CI_CONSUMER_SOURCE_GROUPS[207]!)).toBe(FROZEN_CI208);
   expect(sha(CI_CONSUMER_SOURCE_GROUPS[208]!)).not.toBe(FROZEN_CI207);
   expect(sha(CI_CONSUMER_SOURCE_GROUPS[215]!)).not.toBe(FROZEN_CI208);
-  expect(CURRENT_SOURCE_GROUP_COUNTS.consumer).toBe(114);
+  expect(CURRENT_SOURCE_GROUP_COUNTS.consumer).toBe(115);
 });
 
 test('real resolver picks CI224 for current bytes and refuses an old-origin mix',()=>{
