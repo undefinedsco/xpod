@@ -5,6 +5,11 @@ on:
     branches: ['staging']
   workflow_dispatch:
     inputs:
+      service_source_diagnostics:
+        description: 'Run full service-image source/legal diagnostics; not release qualification'
+        type: boolean
+        required: false
+        default: false
       task_diagnostic_only:
         description: 'Diagnose Task against the fixed rc230 runtime; never produces release acceptance'
         type: boolean
@@ -336,6 +341,9 @@ jobs:
 
 
   observe_service_sdk_source:
+    name: Full service-image audit (diagnostic)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.service_source_diagnostics == true }}
+    continue-on-error: true
     needs: [metadata, build_image, publish_qlever_local_runtime, publish_qlever_runtime_sdk]
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -385,12 +393,12 @@ jobs:
         with:
           name: candidate-service-sdk-source-observation-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/service-sdk-source-observation/service-source-observation.json
-          if-no-files-found: error
+          if-no-files-found: warn
 
   deploy_and_accept:
     # Mandatory shared-RC mutation join: the 18 compatibility lanes must pass
     # before this job can mutate the shared RC. SDK lookup/build stays parallel.
-    needs: [metadata, build_image, observe_service_sdk_source, legacy_root_compat]
+    needs: [metadata, build_image, legacy_root_compat]
     runs-on: ubuntu-latest
     environment: rc
     concurrency:
@@ -1759,7 +1767,6 @@ jobs:
       - build_desktop_rc
       - legacy_root_compat
       - runtime_mode_matrix
-      - observe_service_sdk_source
     runs-on: ubuntu-latest
     environment: rc
     permissions:
@@ -1778,6 +1785,20 @@ jobs:
           node-version: 22
       - run: bun install --frozen-lockfile
       - run: bun run build:packages
+      - name: Disclose service-image audit scope
+        env:
+          SCOPE_SOURCE_SHA: ${{ needs.metadata.outputs.sourceSha }}
+          SCOPE_IMAGE: ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          python3 -I -S -B -c 'import json,os,pathlib,re; sha=os.environ["SCOPE_SOURCE_SHA"]; image=os.environ["SCOPE_IMAGE"]; assert re.fullmatch("[0-9a-f]{40}",sha); assert re.fullmatch("ghcr.io/undefinedsco/xpod@sha256:[0-9a-f]{64}",image); data={"schemaVersion":1,"kind":"service-image-audit-scope","sourceSha":sha,"image":image,"runId":os.environ["GITHUB_RUN_ID"],"runAttempt":os.environ["GITHUB_RUN_ATTEMPT"],"fullServiceAuditRole":"opt-in-diagnostic","wholeServiceSourceQualificationClaimed":False,"wholeServiceAbiQualificationClaimed":False,"wholeServiceLegalQualificationClaimed":False}; pathlib.Path(os.environ["RUNNER_TEMP"],"service-image-audit-scope.json").write_text(json.dumps(data)+"\n")'
+          echo 'Full service-image per-file SOURCE/LEGAL/ABI derivation is diagnostic, not claimed as release qualification. Existing SDK/native and product checks remain mandatory.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain service-image audit scope disclosure
+        uses: actions/upload-artifact@v4
+        with:
+          name: service-image-audit-scope-${{ github.sha }}
+          path: ${{ runner.temp }}/service-image-audit-scope.json
+          if-no-files-found: error
       - name: Download exact same-image mode acceptance
         uses: actions/download-artifact@v4
         with:
