@@ -53,12 +53,12 @@ test('PR159: fixed producer execution counts hold; reviewer-owned heads advanced
   // workflow version allow-list, so each genuine workflow change adds one reviewed
   // version (RC392: 5 -> 6; RC396 scope narrowing: 6 -> 7). Published history rows
   // stay byte-identical.
-  expect(s.QLEVER_NORMAL_SOURCE_GROUPS).toHaveLength(9);
+  expect(s.QLEVER_NORMAL_SOURCE_GROUPS).toHaveLength(10);
   // CURRENT totals after RC389 + RC391 + RC392 + RC393. The PR159 objects remain at their fixed
   // published indexes (108/109/103/210/211 above are unchanged); only these four
   // consumer-side CURRENT totals advanced with the real appends.
-  expect(s.QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(117);
-  expect(s.QLEVER_LINUX_CONSUMER_GROUPS).toHaveLength(118);
+  expect(s.QLEVER_SDK_CONSUMER_GROUPS).toHaveLength(118);
+  expect(s.QLEVER_LINUX_CONSUMER_GROUPS).toHaveLength(119);
   expect(c.CONSUMER_SOURCE_GROUPS).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.consumer);
   expect(c.CI_CONSUMER_SOURCE_GROUPS).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.ci);
   // CURRENT totals follow the single shared expectation, never a scattered literal.

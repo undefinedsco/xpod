@@ -125,7 +125,11 @@ function deleteOptions(job, nonce) {
   if (owner !== nonce) {
     throw new Error('job is not owned by this run; refusing to delete a foreign object');
   }
-  return { apiVersion: 'v1', kind: 'DeleteOptions', preconditions: { uid } };
+  // Job's API default is orphanDependents: without an explicit policy a
+  // deleted Job leaves its Succeeded Pod (and controller-uid) behind, so the
+  // post-delete wait-for-delete could never succeed. Background makes the Job
+  // garbage-collect its own Pods; ownership is still pinned by the UID.
+  return { apiVersion: 'v1', kind: 'DeleteOptions', propagationPolicy: 'Background', preconditions: { uid } };
 }
 
 function argValue(argv, name) {

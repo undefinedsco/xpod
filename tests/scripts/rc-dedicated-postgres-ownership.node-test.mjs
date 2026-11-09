@@ -100,6 +100,9 @@ test('delete-options pins the exact live UID', () => {
   assert.deepEqual(helper.deleteOptions(ownedJob('uid-42'), NONCE), {
     apiVersion: 'v1',
     kind: 'DeleteOptions',
+    // Job's default orphanDependents would keep the Succeeded Pod; the policy
+    // must be explicit so the Pod is garbage-collected and can be waited on.
+    propagationPolicy: 'Background',
     preconditions: { uid: 'uid-42' },
   });
 });

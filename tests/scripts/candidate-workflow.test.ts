@@ -1287,6 +1287,9 @@ exit "$TEST_ORIGINAL"
     expect(step.run).not.toContain('kubectl apply');
     expect(step.run).toContain('job_created=true');
     expect(step.run).toContain('preconditions:{uid:job.metadata.uid}');
+    // Job deletion must not rely on the API's orphanDependents default; the
+    // Succeeded Pod has to be garbage-collected before the wait-for-delete.
+    expect(step.run).toContain('propagationPolicy:"Background"');
     expect(step.run).toContain('--validate-pull-job');
     expect(step.run).toContain('--job-uid "$job_uid"');
     expect(step.run).toContain('scripts/select-pg-registry-authority.ts');
@@ -1335,6 +1338,7 @@ elif args[0]=='delete' and '--raw' in args:
  options=json.loads(pathlib.Path(args[args.index('-f')+1]).read_text()); job=json.loads(jobfile.read_text())
  if mode=='raw-race': job['metadata']['uid']='foreign-uid'; jobfile.write_text(json.dumps(job))
  if options['preconditions']['uid']!=job['metadata']['uid']: print('PRIVATE_409_BODY',file=sys.stderr); sys.exit(39)
+ if options.get('propagationPolicy')!='Background': print('PRIVATE_FOREGROUND_REQUIRED',file=sys.stderr); sys.exit(41)
  if os.environ['FAKE_KUBE_CLEANUP_EXIT']!='0': print('PRIVATE_CLEANUP_BODY',file=sys.stderr); sys.exit(23)
  jobfile.unlink(); podfile.unlink()
 else: print('unsupported-fake-call',file=sys.stderr); sys.exit(80)
