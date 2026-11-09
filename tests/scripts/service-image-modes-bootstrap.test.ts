@@ -201,3 +201,56 @@ test('a successful bootstrap leaves no stale diagnosis for a later failure', asy
   await run('ok');
   expect(reported).toBeUndefined();
 });
+
+// platformFixtureBaseUrl / platformBuiltinServiceEnvironment / platformBuiltinLiveEnvironment
+import {
+  platformBuiltinLiveEnvironment,
+  platformBuiltinServiceEnvironment,
+  platformFixtureBaseUrl,
+} from '../../scripts/accept-service-image-modes';
+
+test('the shared platform fixture base URL must be public HTTPS and is normalized once', () => {
+  expect(platformFixtureBaseUrl('https://id-rc.undefineds.cn/v1/')).toBe('https://id-rc.undefineds.cn/v1');
+  for (const rejected of [undefined, '', 'not-a-url', 'http://id-rc.undefineds.cn/v1',
+    'https://localhost/v1', 'https://127.0.0.1/v1', 'https://[::1]/v1',
+    'https://user:pass@id-rc.undefineds.cn/v1', 'https://id-rc.undefineds.cn/v1?x=1',
+    'https://id-rc.undefineds.cn/v1#fragment']) {
+    expect(() => platformFixtureBaseUrl(rejected)).toThrow();
+  }
+});
+
+test('only the owned Cloud service receives the real DEFAULT_* builtin config, key by interpolation', () => {
+  const base = 'https://id-rc.undefineds.cn/v1';
+  expect(platformBuiltinServiceEnvironment('local', base)).toEqual({});
+  expect(platformBuiltinServiceEnvironment('standalone', base)).toEqual({});
+  expect(platformBuiltinServiceEnvironment('cloud', base)).toEqual({
+    DEFAULT_API_BASE: base,
+    // Private process env is interpolated by compose; the literal secret never enters this file.
+    DEFAULT_API_KEY: '${XPOD_MATRIX_PLATFORM_API_KEY:?required}',
+  });
+  // A key value must never be accepted as an argument at all.
+  expect(platformBuiltinServiceEnvironment.length).toBe(2);
+});
+
+test('the live platform-builtin flag is passed only to cloud mode', () => {
+  expect(platformBuiltinLiveEnvironment('cloud')).toEqual({ XPOD_LIVE_PLATFORM_BUILTIN: '1' });
+  expect(platformBuiltinLiveEnvironment('local')).toEqual({});
+  expect(platformBuiltinLiveEnvironment('standalone')).toEqual({});
+});
+
+test('the matrix harness serializes the platform base URL but never the platform key', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const path = await import('node:path');
+  const script = await readFile(path.resolve('scripts/accept-service-image-modes.ts'), 'utf8');
+  // The compose document can only reference the key through interpolation.
+  expect(script).toContain("DEFAULT_API_KEY: '${XPOD_MATRIX_PLATFORM_API_KEY:?required}'");
+  expect(/DEFAULT_API_KEY:\s*`\$\{provider/.test(script)).toBe(false);
+  expect(script).not.toContain('DEFAULT_API_KEY: provider');
+  // The raw inspect document is projected so Config.Env can never reach the private command log.
+  expect(script).toContain("'inspect', '--format'");
+  expect(script).not.toContain("['inspect', id]");
+  // The cloud builtin lane requires the exact declared model instead of accepting any projection.
+  const canary = await readFile(path.resolve('scripts/accept-live-gateway-login-chat.ts'), 'utf8');
+  expect(canary).toContain("projectModelsAndChat(gatewayKey, ['linx-lite'], 'linx-lite')");
+  expect(canary).not.toContain("projectModelsAndChat(gatewayKey, ['linx-lite'])");
+});

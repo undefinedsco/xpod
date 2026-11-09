@@ -46,6 +46,46 @@ async function freePort(): Promise<number> {
   need(port !== 60895, 'Reserved port selected'); return port;
 }
 /** Deployment-only material for this owned Cloud; never emitted into safe facts. */
+/**
+ * Parse the single private provider fixture's public base URL.
+ *
+ * The fixture is shared by all three modes, so its endpoint must be publicly routable. A
+ * localhost/loopback or plain-HTTP target would turn the owned Cloud builtin lane into a
+ * self-loop or test-only transport, so it fails closed here.
+ */
+export function platformFixtureBaseUrl(value: string | undefined): string {
+  if (!value) throw new Error('Provider fixture must declare a public baseUrl');
+  let url: URL;
+  try { url = new URL(value); } catch { throw new Error('Provider fixture baseUrl is invalid'); }
+  if (url.protocol !== 'https:' || ['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname)
+    || url.username || url.password || url.search || url.hash) {
+    throw new Error('Provider fixture baseUrl must be a public HTTPS URL');
+  }
+  return url.href.replace(/\/$/u, '');
+}
+
+/**
+ * The owned Cloud service's operator builtin configuration. The base URL is public; the key is a
+ * compose interpolation resolved from the private process environment, never a serialized literal
+ * in the private compose file or any published report.
+ */
+export function platformBuiltinServiceEnvironment(
+  mode: string,
+  baseUrl: string,
+): Record<string, string> {
+  if (mode !== 'cloud') return {};
+  return {
+    DEFAULT_API_BASE: baseUrl,
+    DEFAULT_API_KEY: '${XPOD_MATRIX_PLATFORM_API_KEY:?required}',
+  };
+}
+
+/** Only the owned Cloud container serves the deployment builtin; Local/Standalone use the custom
+ * Pod credential. The flag is passed only into the live child, never into the service container. */
+export function platformBuiltinLiveEnvironment(mode: string): Record<string, string> {
+  return mode === 'cloud' ? { XPOD_LIVE_PLATFORM_BUILTIN: '1' } : {};
+}
+
 export function ownedModeSecretCellEnvironment(mode: string, environment: Record<string, string>): Record<string, string> {
   if (mode !== 'cloud') return environment;
   const key = randomBytes(32);
@@ -456,7 +496,14 @@ export async function runMatrix(options: { image: string; platform: string; sour
   need(/^[1-9][0-9]*$/.test(options.runId) && /^[1-9][0-9]*$/.test(options.runAttempt), 'Exact run/attempt required');
   need(options.platform === 'linux/amd64' || options.platform === 'linux/arm64', 'Unsupported matrix platform');
   const keyStat = await lstat(options.providerFile); need(keyStat.isFile() && !keyStat.isSymbolicLink() && keyStat.size <= 65536 && (keyStat.mode & 0o077) === 0, 'Private0600 provider file required');
-  need(parseKeyFile(await readFile(options.providerFile, 'utf8')), 'Explicit test provider configuration required');
+  const provider = parseKeyFile(await readFile(options.providerFile, 'utf8'));
+  need(provider, 'Explicit test provider configuration required');
+  // The same private fixture drives Local/Standalone Pod credentials and the owned Cloud
+  // container's deployment builtin. Only this public base URL is serialized; the key stays in
+  // process environment and is referenced from compose as an interpolation.
+  need(provider!.baseUrl, 'Provider fixture must declare a public baseUrl');
+  const platformBaseUrl = platformFixtureBaseUrl(provider!.baseUrl);
+  const previousPlatformKey = process.env.XPOD_MATRIX_PLATFORM_API_KEY;
   const output = path.resolve(options.output); await mkdir(output, { recursive: false, mode: 0o700 });
   let exportedBytes = 0;
   async function writeSafe(relative: string, bytes: Buffer): Promise<void> {
@@ -490,6 +537,9 @@ export async function runMatrix(options: { image: string; platform: string; sour
   const compose = (label: string, args: string[], cleanup = false) => docker(label, ['compose', '-p', project, '-f', composeFile, ...args], cleanup);
   let configuration: any;
   try {
+    // The key exists only in this process environment for the lifetime of the owned harness; the
+    // private compose file references it by interpolation.
+    process.env.XPOD_MATRIX_PLATFORM_API_KEY = provider!.apiKey;
     for (const f of sources) report.sources[f] = await digest(path.join(repo, f));
     const actual = (await command('exact-checkout', 'git', ['rev-parse', 'HEAD'])).toString().trim(); need(actual === options.sourceSha, 'Checkout mismatch');
     const fs = await statfs(root); need(Number(fs.bavail) * Number(fs.bsize) >= 8 * 1024 ** 3, 'At least8GiB disk required before image pull');
@@ -529,7 +579,10 @@ export async function runMatrix(options: { image: string; platform: string; sour
       service.environment.XPOD_RDF_NATIVE_SPARQL_ENABLED = 'false'; service.environment.XPOD_PORT = String(ports[mode]);
       if (mode !== 'local') service.environment.CSS_BASE_URL = urls[mode as 'cloud' | 'standalone'];
       service.environment.SOLID_OIDC_ISSUER = mode === 'local' ? urls.cloud : urls[mode as 'cloud' | 'standalone'];
-      if (mode === 'cloud') Object.assign(service.environment, { CSS_IDENTITY_DB_URL: `postgres://xpod:acceptance-only@127.0.0.1:${ports.postgres}/xpod`, CSS_SPARQL_ENDPOINT: `postgres://xpod:acceptance-only@127.0.0.1:${ports.postgres}/xpod`, CSS_REDIS_CLIENT: `127.0.0.1:${ports.redis}`, CSS_MINIO_ENDPOINT: `http://127.0.0.1:${ports.minio}` });
+      if (mode === 'cloud') Object.assign(service.environment, { CSS_IDENTITY_DB_URL: `postgres://xpod:acceptance-only@127.0.0.1:${ports.postgres}/xpod`, CSS_SPARQL_ENDPOINT: `postgres://xpod:acceptance-only@127.0.0.1:${ports.postgres}/xpod`, CSS_REDIS_CLIENT: `127.0.0.1:${ports.redis}`, CSS_MINIO_ENDPOINT: `http://127.0.0.1:${ports.minio}`,
+        // The owned Cloud container owns a deployment builtin connection that calls the real
+        // public RC platform endpoint.
+        ...platformBuiltinServiceEnvironment(mode, platformBaseUrl) });
       if (service.healthcheck) service.healthcheck.test = ['CMD', 'curl', '--fail', '--silent', `${urls[mode as keyof typeof urls]}.well-known/openid-configuration`];
     }
     configuration = canonical;
@@ -688,7 +741,11 @@ export async function runMatrix(options: { image: string; platform: string; sour
     }
     async function inspectMode(mode: string): Promise<any> {
       const id = (await compose(`container-id-${mode}`, ['ps', '-q', mode])).toString().trim(); need(/^[a-f0-9]+$/.test(id), 'Owned container missing');
-      const c = JSON.parse((await docker(`inspect-${mode}`, ['inspect', id])).toString())[0];
+      // Project only the fields this assertion needs. The raw inspect document repeats the full
+      // resolved Config.Env, which now contains the private platform key; it must never be dumped
+      // into raw command logs, even the private ones.
+      const c = JSON.parse((await docker(`inspect-${mode}`, ['inspect', '--format',
+        '{"Image":{{json .Image}},"Config":{"Image":{{json .Config.Image}}},"Mounts":{{json .Mounts}}}', id])).toString());
       need(c.Image === image.Id && c.Config.Image === options.image, 'Running image mismatch');
       const mounts = c.Mounts.map((m: any) => ({ destination: m.Destination, type: m.Type, readOnly: !m.RW }));
       need(mounts.every((m: any) => m.destination === '/app/data' && m.type === 'volume' || m.destination === '/app/config/main.json' && m.type === 'bind' && m.readOnly), 'Unexpected service mount');
@@ -705,7 +762,10 @@ export async function runMatrix(options: { image: string; platform: string; sour
       }
       const facts = await inspectMode(mode); const directory = path.join(root, `live-${mode}`); await mkdir(directory);
       try {
-        await command(`live-${mode}`, process.execPath, [path.join(repo, 'scripts/accept-live-gateway-login-chat.ts')], directory, { ...process.env, XPOD_LIVE_MODE: mode, XPOD_BASE_URL: urls[mode as keyof typeof urls], XPOD_LIVE_CLOUD_IDP: urls.cloud, XPOD_LIVE_PROVIDER_KEY_FILE: options.providerFile, XPOD_LIVE_TASK_APPROVAL: '0' }, LIMITS.liveMs);
+        await command(`live-${mode}`, process.execPath, [path.join(repo, 'scripts/accept-live-gateway-login-chat.ts')], directory, { ...process.env, XPOD_LIVE_MODE: mode, XPOD_BASE_URL: urls[mode as keyof typeof urls], XPOD_LIVE_CLOUD_IDP: urls.cloud, XPOD_LIVE_PROVIDER_KEY_FILE: options.providerFile, XPOD_LIVE_TASK_APPROVAL: '0',
+          // Only the owned Cloud container serves the deployment builtin; Local/Standalone
+          // exercise the actual custom Pod credential instead.
+          ...platformBuiltinLiveEnvironment(mode) }, LIMITS.liveMs);
       } catch (error) {
         // The child already wrote its structured report on failure and the raw
         // stdout/stderr are retained privately by `command`. Recover ONLY the
@@ -788,10 +848,16 @@ export async function runMatrix(options: { image: string; platform: string; sour
       report.cancelled = cancellation.signal.aborted;
       if (report.status === 'passed') validateMatrix(report, options);
     } catch { report.status = 'failed'; report.failure = 'owned-matrix-or-cleanup-incomplete'; }
-    await writeSafe('matrix.safe.json', Buffer.from(JSON.stringify(report, null, 2) + '\n'));
-    // Private credentials, browser state and raw server/client output never enter public artifacts.
-    // Retain private raw originals on failure for the owning CI runner; never upload this directory.
-    if (report.status === 'passed') await rm(root, { recursive: true, force: true });
+    try {
+      await writeSafe('matrix.safe.json', Buffer.from(JSON.stringify(report, null, 2) + '\n'));
+      // Private credentials, browser state and raw server/client output never enter public artifacts.
+      // Retain private raw originals on failure for the owning CI runner; never upload this directory.
+      if (report.status === 'passed') await rm(root, { recursive: true, force: true });
+    } finally {
+      // Restore even if writing the receipt or removing private files fails.
+      if (previousPlatformKey === undefined) delete process.env.XPOD_MATRIX_PLATFORM_API_KEY;
+      else process.env.XPOD_MATRIX_PLATFORM_API_KEY = previousPlatformKey;
+    }
   }
   process.removeListener('SIGTERM', cancel); process.removeListener('SIGINT', cancel);
   need(report.status === 'passed', 'Same-image mode matrix failed; see safe receipt');

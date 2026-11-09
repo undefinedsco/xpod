@@ -70,8 +70,9 @@ Windows 保留平台默认 shell/PATH。完整 build 产生的 UI 变化由 Vite
 限制为 `staging`，并对 `staging`/`main` 启用 PR 审查与必需检查；这些服务端设置需另行核对，
 不能仅凭本文或 workflow 文件宣称已配置。
 
-`release.yml` 的 `build_desktop_macos` 也使用 `rc` Environment 读取真实 AI
-验收 secrets，因此仅允许 `staging` 的策略会阻止 stable tag 的桌面 job。
+`release.yml` 的 `build_desktop_macos` 仍在 `rc` Environment 中运行，
+因此仅允许 `staging` 的策略会阻止 stable tag 的桌面 job。桌面推理验收使用
+正常账号凭据访问平台模型，不再读取第三方 Provider Key。
 准备提升时，先核对 exact accepted staging SHA、版本和 acceptance，再为这一个
 确定的 stable tag 添加精确 tag policy；保留 staging branch policy，不开放通配符
 或其他开发分支。必须在触发 stable workflow 前完成并读取服务端策略确认，避免
@@ -124,8 +125,8 @@ GitHub 需要配置独立的 GitHub Environment `rc`：
 | Secret | `KUBE_CONFIG_DATA` | base64 编码的 GZ Sealos kubeconfig，server 必须为 `https://gzg.sealos.run:6443` |
 | Secret | `APP_ENV_FILE` | RC runtime env 文件内容 |
 | Secret | `XPOD_RC_SEED_CONFIG` | 固定 RC seed JSON，必须包含 Alice 和 Bob 账号及 Pod 名称 |
-| Secret | `XPOD_LIVE_PROVIDER_API_KEY_CONFIG` | 真实 AI Provider 验收配置，格式同 `scripts/live-provider-api-key.example`；用于证明 `/v1/chat/completions` 真可用 |
-| Secret | `XPOD_AI_PROXY_URL` | 可选，真实 AI Provider 验收需要代理时填写 |
+| Secret | `XPOD_LIVE_PROVIDER_API_KEY_CONFIG` | 可选的第三方上游监测/手动诊断输入，格式同 `scripts/live-provider-api-key.example`；不是 RC 或 stable 发布必填项 |
+| Secret | `XPOD_AI_PROXY_URL` | 可选，仅供显式第三方手动诊断使用，不是发布推理链路配置 |
 | Variable | `SEALOS_NAMESPACE` | 必须为 GZ 固定 namespace `ns-iknkxtc8` |
 | Variable | `XPOD_RUNTIME_SECRET_NAME` | 必填变量，推荐值 `xpod-rc-secret` |
 | Variable | `XPOD_INSTALL_REGISTRY` | 可选，安装烟测 registry 覆盖 |
@@ -200,7 +201,9 @@ Electron/preload 与自带 Local runtime，Cloud card 身份、两份权威 Loca
 路由，实际 Consent 绑定证明（显式选择，或观察到的 singleton/no-chooser 呈现形态加已认证且与
 目标完全一致的 exact 运行态 binding；两条路径都必须另有实际批准提交与 callback/PKCE 证据）
 与回调、两轮完整资源授权、Account Key/配置、collection 写入确认、
-Models/Quota/单发 Chat、跨 Pod 拒绝与清理。缺任一证据不得写入 `desktop:passed`。
+Models/Quota 能力响应/单发 Chat、跨 Pod 拒绝与清理。通用接口明确返回 `unsupported`
+属于额度能力响应，不等于已验证上游余额；观察到的额度状态保存在私有操作证据。
+鉴权失败、接口错误和不支持的其它状态仍然失败。缺任一产品证据不得写入 `desktop:passed`。
 详见[桌面权限验收契约](testing/desktop-permission-acceptance.md)。这项并不声明 Pod、Network、
 Status 所有管理操作、所有订阅 provider 或原安装 App 已验；不得用普通 Chromium 截图补足。
 失败时的公开归因现在同时覆盖浏览器批准阶段（`oidc-approval` + 操作 token）与 mounted 权限
@@ -225,6 +228,30 @@ Task adapter 使用已验证 runtime 根目录下的 ESM 文件 URL 加载，普
 不能因 Task 用例通过就跳过第二个 Pod 与跨 Pod 拒绝验收。
 切换 WebID 必须清理旧会话、Pod 绑定和关联凭据，同时将切换导航意图保留到新登录事务创建前；
 账号预检期间重新挂载不得退化成普通登录并复用旧身份，取消切换则必须消费该意图。
+
+### 平台推理与第三方上游监测
+
+发布必须实测平台 `linx`、`linx-lite` 的模型列表及真实推理。Cloud 的内置列表是部署声明，
+不依赖腾讯或其它第三方的 `/models`，也不依赖用户 Pod 或个人 Key；实际 Chat 仍必须取得
+并校验真实响应，平台推理不可用继续阻断发布。SPARQL、Matrix、认证、Pod 读写、权限隔离、
+Tasks 审批和桌面完整操作继续作为硬门禁，不因第三方欠费而整段跳过。
+
+`prepare-rc-platform-provider.ts` 使用本轮 Alice seed 的正常 Account 接口签发临时
+client credential，实际确认平台模型列表后写入私密接口配置；各验收 job 结束时正常撤销。
+Local 和 Standalone 通过现有 `custom/openai-compatible` 流程写入凭据、真实发现模型、
+保存选择并调用同一 RC 的平台推理。OpenAI 专用适配器的官方端点限制保持不变。
+三模式矩阵在当前 RC 就绪后运行；隔离 Cloud 使用自己的部署内置连接访问同一 RC，
+并验证只读内置 Provider 配置、真实 Models/Chat，不能将它记成用户 Provider 写入证明。
+所有模式仍须通过原有运行、身份、Pod、Gateway 和推理检查。
+
+桌面使用它本来创建的验收账号及权威 WebID 签发临时平台凭据，在 `finally` 中撤销。
+RC 桌面访问 RC；stable 桌面在生产 co 部署后访问生产 co，不依赖已经回收的 RC。
+Provider 配置、鉴权、路由和错误处理的确定性回归继续执行。
+
+第三方 `/models`、限流和账户额度由独立的 `provider-availability.yml` 监测：相关适配代码
+合入 staging 时运行，也可在 staging 上手动触发。监测真实发现模型并调用一次 Chat，失败
+保留 HTTP 状态和脱敏报告，使监测自己的 run 失败；candidate/release 不依赖该 run。
+凭据缺失只报告未配置，不得声称上游通过。该工作流不操作共享 RC，也不提供产品验收凭证。
 
 这些值必须由 RC seed 自动生成，不能作为 GitHub secret/variable 手工维护：
 
@@ -414,10 +441,11 @@ stable promotion 校验以下内容：
 - artifact 的 source SHA、source branch、target version、candidate version
   和 endpoint 与当前 tag 匹配；
 - image digest 是 `sha256:<64-lowercase-hex>`；
-- required checks 全部 25 项通过：`image`、`service-status`、`oidc`、
+- required checks 全部 29 项通过：`image`、`service-status`、`oidc`、
   `dashboard`、`protected-route`、`deployed-digest`、`direct-pod`、
   `public-service`、`secret-isolation`、`authenticated-pod`、`pod-read-write`、
-  `gateway-key`、`ai-connections`、`models`、`chat`、`task-approval`、
+  `gateway-key`、`ai-connections`、`models`、`chat`、`rc-pod-sparql`、
+  `rc-builtin-models-chat`、`rc-matrix-collaboration`、`rc-browser-consent`、`task-approval`、
   `native-sparql`、`native-public16`、`native-private17`、
   `native-namespace-pull`、`qlever-local`、`package-consumers`、
   `legacy-root-compat`、`runtime-mode-matrix` 和 `desktop`。
@@ -439,7 +467,7 @@ deployment、replicaset、pod、service、describe 和当前/previous logs，不
 - RC `APP_ENV_FILE` 复用了生产 domain、database、bucket、Redis DB 0 或凭据；
 - logical database or schema、nonzero Redis DB index、object bucket 权限未创建；
 - `XPOD_RC_SEED_CONFIG` 缺失、不是 seed account 数组，或没有 Alice/Bob 账号；
-- seed Alice/Bob 无法完成浏览器 OIDC 登录，或一次性 provider canary 验收失败。
+- seed Alice/Bob 无法完成浏览器 OIDC 登录，或平台推理及真实产品 canary 验收失败。
 
 修复方式是将修复普通 merge 到 staging，让 candidate workflow 产生新的
 RC。不要删除 stable tag 重新试，也不要把失败 digest 手工推进生产。

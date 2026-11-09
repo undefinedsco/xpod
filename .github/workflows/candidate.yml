@@ -417,8 +417,6 @@ jobs:
       XPOD_ACCEPTANCE_REAL_XPOD: 'true'
       XPOD_ACCEPTANCE_RUN_VISUAL: 'true'
       XPOD_SETTINGS_E2E_BASE_URL: https://id-rc.undefineds.cn
-      XPOD_LIVE_PROVIDER_API_KEY_CONFIG: ${{ secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG }}
-      XPOD_AI_PROXY_URL: ${{ secrets.XPOD_AI_PROXY_URL }}
       REF_NAME: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
@@ -1079,16 +1077,20 @@ jobs:
           fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'rc-user-flows-checks.json'), `${JSON.stringify(checks, null, 2)}\n`);
           NODE
 
+      - name: Prepare platform inference credential
+        id: platform_provider
+        run: |
+          set -euo pipefail
+          bun scripts/prepare-rc-platform-provider.ts create \
+            --base-url "$XPOD_SETTINGS_E2E_BASE_URL" \
+            --seed-config "${RUNNER_TEMP}/xpod-rc-seed.json" \
+            --key-file "${RUNNER_TEMP}/live-platform-provider" \
+            --receipt "${RUNNER_TEMP}/live-platform-provider-receipt.json"
+
       - name: Live Gateway login and Chat acceptance
         run: |
           set -euo pipefail
-          if [ -z "$XPOD_LIVE_PROVIDER_API_KEY_CONFIG" ]; then
-            echo "::error::XPOD_LIVE_PROVIDER_API_KEY_CONFIG secret is required for live Pod read/write, Gateway key, models, and chat acceptance"
-            exit 1
-          fi
-          provider_file="${RUNNER_TEMP}/live-provider-api-key"
-          printf '%s\n' "$XPOD_LIVE_PROVIDER_API_KEY_CONFIG" > "$provider_file"
-          chmod 600 "$provider_file"
+          provider_file="${RUNNER_TEMP}/live-platform-provider"
 
           local_name="xpod-rc-local-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           local_name_file="${RUNNER_TEMP}/live-gateway-local-container-name"
@@ -1155,6 +1157,16 @@ jobs:
           }
           fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'live-gateway-checks.json'), `${JSON.stringify(checks, null, 2)}\n`);
           NODE
+
+      - name: Revoke temporary platform inference credential
+        if: ${{ always() && steps.platform_provider.outcome != '' && steps.platform_provider.outcome != 'skipped' }}
+        run: |
+          set -euo pipefail
+          bun scripts/prepare-rc-platform-provider.ts cleanup \
+            --base-url "$XPOD_SETTINGS_E2E_BASE_URL" \
+            --seed-config "${RUNNER_TEMP}/xpod-rc-seed.json" \
+            --key-file "${RUNNER_TEMP}/live-platform-provider" \
+            --receipt "${RUNNER_TEMP}/live-platform-provider-receipt.json"
 
       - name: Create service acceptance evidence
         run: |
@@ -1415,8 +1427,6 @@ jobs:
       CANDIDATE_VERSION: ${{ needs.metadata.outputs.candidate }}
       XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT: ${{ github.workspace }}/.test-data/qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-      XPOD_LIVE_PROVIDER_API_KEY_CONFIG: ${{ secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG }}
-      XPOD_AI_PROXY_URL: ${{ secrets.XPOD_AI_PROXY_URL }}
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -1624,10 +1634,6 @@ jobs:
       - name: Accept actual packaged desktop permissions and operations
         run: |
           set -euo pipefail
-          test -n "$XPOD_LIVE_PROVIDER_API_KEY_CONFIG"
-          provider_file="${RUNNER_TEMP}/desktop-provider-api-key"
-          printf '%s\n' "$XPOD_LIVE_PROVIDER_API_KEY_CONFIG" > "$provider_file"
-          chmod 600 "$provider_file"
           new_zip="$(find "$PWD/desktop/release" -maxdepth 1 -type f -name '*-mac.zip' -print -quit)"
           test -n "$new_zip"
           bun scripts/accept-packaged-desktop-permissions.ts \
@@ -1635,7 +1641,6 @@ jobs:
             --version "$CANDIDATE_VERSION" \
             --source-sha "${{ github.sha }}" \
             --issuer "https://id-rc.undefineds.cn/" \
-            --key-file "$provider_file" \
             --private-directory "${RUNNER_TEMP}/desktop-permission-private" \
             --evidence "${RUNNER_TEMP}/desktop-permission-evidence.json"
           node scripts/desktop-permission-acceptance.cjs \
@@ -1674,7 +1679,7 @@ jobs:
 
   runtime_mode_matrix:
     name: Same image three-mode live and session acceptance
-    needs: [metadata, build_image]
+    needs: [metadata, build_image, deploy_and_accept]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     environment: rc
@@ -1745,21 +1750,39 @@ jobs:
           }
           execFileSync('which', ['xvfb-run'], { stdio: 'ignore' });
           NODE
-      - name: Verify all modes against the same immutable image
+      - name: Prepare mode matrix platform inference credential
+        id: platform_provider
         env:
-          XPOD_LIVE_PROVIDER_API_KEY_CONFIG: ${{ secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG }}
+          XPOD_RC_SEED_CONFIG: ${{ secrets.XPOD_RC_SEED_CONFIG }}
         run: |
           set -euo pipefail
-          test -n "$XPOD_LIVE_PROVIDER_API_KEY_CONFIG"
-          export XPOD_LIVE_PROVIDER_KEY_FILE="${RUNNER_TEMP}/mode-matrix-provider"
-          trap 'rm -f "$XPOD_LIVE_PROVIDER_KEY_FILE"' EXIT
+          test -n "$XPOD_RC_SEED_CONFIG"
           umask 077
-          printf '%s\n' "$XPOD_LIVE_PROVIDER_API_KEY_CONFIG" > "$XPOD_LIVE_PROVIDER_KEY_FILE"
+          printf '%s\n' "$XPOD_RC_SEED_CONFIG" > "${RUNNER_TEMP}/mode-matrix-seeds.json"
+          bun scripts/prepare-rc-platform-provider.ts create \
+            --base-url https://id-rc.undefineds.cn \
+            --seed-config "${RUNNER_TEMP}/mode-matrix-seeds.json" \
+            --key-file "${RUNNER_TEMP}/mode-matrix-provider" \
+            --receipt "${RUNNER_TEMP}/mode-matrix-provider-receipt.json"
+      - name: Verify all modes against the same immutable image
+        run: |
+          set -euo pipefail
+          export XPOD_LIVE_PROVIDER_KEY_FILE="${RUNNER_TEMP}/mode-matrix-provider"
           bun scripts/accept-service-image-modes.ts run "${RUNNER_TEMP}/service-image-modes"
           node scripts/verify-service-image-modes.cjs \
             --directory "${RUNNER_TEMP}/service-image-modes" \
             --source-sha "$GITHUB_SHA" --image "$XPOD_MATRIX_IMAGE" --platform "$XPOD_MATRIX_PLATFORM" \
             --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --producer-check true
+      - name: Revoke mode matrix platform inference credential
+        if: ${{ always() && steps.platform_provider.outcome != '' && steps.platform_provider.outcome != 'skipped' }}
+        run: |
+          set -euo pipefail
+          bun scripts/prepare-rc-platform-provider.ts cleanup \
+            --base-url https://id-rc.undefineds.cn \
+            --seed-config "${RUNNER_TEMP}/mode-matrix-seeds.json" \
+            --key-file "${RUNNER_TEMP}/mode-matrix-provider" \
+            --receipt "${RUNNER_TEMP}/mode-matrix-provider-receipt.json"
+          rm -f "${RUNNER_TEMP}/mode-matrix-seeds.json"
       - name: Preserve safe per-mode originals and matrix receipt
         id: mode_artifact
         if: always()
@@ -2223,7 +2246,7 @@ jobs:
 
   cleanup_rc:
     name: Cleanup RC after all acceptance jobs
-    needs: [deploy_and_accept, build_desktop_rc, finalize_acceptance]
+    needs: [deploy_and_accept, build_desktop_rc, runtime_mode_matrix, finalize_acceptance]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     environment: rc

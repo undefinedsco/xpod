@@ -395,7 +395,7 @@ const liveRetainedCurrent=Object.freeze(liveIndexedCurrent.map(row=>Object.freez
 const liveParkedCurrent=Object.freeze(liveRetainedCurrent.map(row=>Object.freeze({...row,sha256:({"qlever/scripts/sdk-coordinated-wait.py":"65c5389179944c3f01f28560540d5b27b7e0dd96f21eba7da1365016dac1ed28",[sourcePaths.sdkGeneratedSourceOriginalsPy]:"a2082aeefe499d8f41dcf15c1dcb79a34f8d220806c1fa5fbb17f2a9f5920bf6",[sourcePaths.sdkGeneratedVmaOriginalsPy]:"773ecbf211967cdceb75464580d97af450e41c68943fd77679c10209bf50f583",[sourcePaths.sdkGenerationMultiprocessBindingsPy]:"b7bfa608966d8ab100a16bbb9df07988886a6ea9229a4b455b17cb3a6ffaffdf",[sourcePaths.sdkPtraceExecutionPy]:"cd93f2dd6331628c8889f99d518498cd44a2c6a807070f2627892a94a6d0df23",[sourcePaths.qleverSdkFetchcontentTs]:"96f6ce5a3591fe04235c8cade828a2b3bd99246005a7af62b9119b68e6e816ce",[sourcePaths.qleverSdkGenerationTs]:"9413a0b0c56cdef059f7284a95e10c909b108c2c1f573dfbed9a7c2b26be7850",[sourcePaths.qleverSdkOriginPolicyTs]:"1a741d70367b96754e98a3e81f1dde0df94fc4be88c095ec633d6684e7eee1f4",[sourcePaths.qleverSdkReadonlyExecutorTs]:"1e5371642f5e32391f9c5a16f713e68301dfdb0505f5b6759f0c9b805aab83e0",[sourcePaths.qleverSdkToolchainSourceTs]:"980955e3fe32542bc13a8a00fc1159e3ed72dce1d692e771c74342641c94fdfb",[sourcePaths.sdkControllerHelperGroupsTs]:"e53bd492ae8a7b759ddf3ef667658227985ed32d68b9cd0130eb9ab6e9cb7d2d"} as Readonly<Record<string,string>>)[row.path]??row.sha256})));
 const liveCurrent=Object.freeze(liveParkedCurrent.map(row=>Object.freeze({...row,sha256:({"qlever/scripts/sdk-coordinated-wait.py":"d3f949e1c6e472be52a70c1495b4fe03274542f284355c67fef61a44fe396cc4",[sourcePaths.sdkGeneratedVmaOriginalsPy]:"7f1749d503af56b11b58666d9a11895326c2a5a967ce405352c02602e4ec5d09",[sourcePaths.sdkGenerationMultiprocessBindingsPy]:"ff47287c6ce30d52982d774906fbfc8d64980ea90637bfa02b46d0d5fe9ccac9",[sourcePaths.sdkPtraceExecutionPy]:"627c13d76a29ab482b2eb7db72ba598ab181540f8a75c6747feac97e2010647e",[sourcePaths.sdkPtraceKernelPy]:"b268762e40f70f993f7e3cbd1ad64c00146052d11c9430cb66e41b413b0b74d9",[sourcePaths.sdkToolProviderOriginalsPy]:"8c66ce9c374a64dc448fb3818b4bd1708f8fbb2e1c565d0a29793e445662d8fe",[sourcePaths.qleverSdkFetchcontentTs]:"f6ccf34c768395002bb7900c50a125af268ad30aebd58e2294f45e60085385e0",[sourcePaths.qleverSdkGenerationTs]:"5a63d246b6c2e2f374e54b01b5711286f6a2c8dfdf87f6c02f043ff3e7e672ab",[sourcePaths.qleverSdkOriginPolicyTs]:"7133f47e20b7e906d97306f859e32dbe4aa96dc7794fd441c6444f4f404c2e44",[sourcePaths.sdkControllerHelperGroupsTs]:"d05c6e652ebee70682f44fbbd6c267dde7d92fb0f9548005ce5523f50e390ab4"} as Readonly<Record<string,string>>)[row.path]??row.sha256})));
 const current=Object.freeze(liveCurrent.filter(row=>row.path!=="qlever/scripts/sdk-coordinated-wait.py").map(row=>Object.freeze({...row,sha256:({[sourcePaths.sdkGeneratedVmaOriginalsPy]:"c1c52f52e1dd1087e00d14d4319cdc8969c0ef9491e364eca7c623f2f1fc7ae6",[sourcePaths.sdkGenerationMultiprocessBindingsPy]:"e0010b05a1aa5d4ab023557f4dab8559a2c38d9699dd5d5d8dba082a1eac5993",[sourcePaths.sdkPtraceExecutionPy]:"fc7465673026136c4a26e972f80449e0cb4ba6fc08b05a3498906a79351551b9",[sourcePaths.sdkToolchainMaterialsPy]:"0cc20e6c0c589f6b3af8420a6aa230e65a39ca12f429bcba88e0578aeb02dee1",[sourcePaths.qleverSdkFetchcontentTs]:"3b08084d20fb29aa8d8b8ad23389fd9b201c06ced725d4da43edce9be354edfc",[sourcePaths.qleverSdkGenerationTs]:"010c47554e061fc7831810e16ab869dbbd8305ba073893d20f365fb5fa23a5c9",[sourcePaths.qleverSdkOriginPolicyTs]:"01390a9d7fdf9776826bcc48a109212fda37a8e35a57301e9fb2bd25f685c6c3",[sourcePaths.sdkControllerHelperGroupsTs]:"bd499bc3278260a814914392fe4a05ffc9773689ca0b8a8b23be80e4176d79fe"} as Readonly<Record<string,string>>)[row.path]??row.sha256})));
-import type {GitHubSourceBindingGroup} from './github-source-binding-groups';
+import type {GitHubSourceBinding,GitHubSourceBindingGroup} from './github-source-binding-groups';
 import {freezeGitHubSourceBindingGroups,sourceBindingKey} from './github-source-binding-groups';
 /** Exact consumer source implementation reviewed with the v18 workflow tree.
 * These bind the actual checked-out source, separately from run-head YAML. */
@@ -470,7 +470,34 @@ const reviewedDeclarations = restoreDeclarations(reviewedDeclarationNodes, 4298)
   readonly consumer: readonly GitHubSourceBindingGroup[];
   readonly ci: readonly GitHubSourceBindingGroup[];
 };
-export const CONSUMER_SOURCE_GROUPS = reviewedDeclarations.consumer;
-export const CI_CONSUMER_SOURCE_GROUPS = reviewedDeclarations.ci;
+/** Append one reviewed variant while retaining every published declaration.
+ * Only this controller's self-reference uses the existing held-file binding;
+ * canonical and SDK policy bytes remain fixed reviewed literals. */
+const RC398_REVIEWED_SOURCE_HASHES: Readonly<Record<string, string>> = Object.freeze({
+  'scripts/lib/independent-admission/consumer-observer-policy.ts': CONTROLLER_POLICY_BINDINGS[0]!.sha256,
+  'scripts/lib/independent-admission/consumer-execution-current.json': '37acf879ef285b0174f7eb3746dabffefc987cbb9597f6de35614b06a6166727',
+  'scripts/lib/independent-admission/qlever-sdk-origin-policy.ts': '09667c275ba4e5d01b20059d8eaf01914192b92c117932b0212b880cc2a0b08d',
+});
+function rc398ConsumerVariant<T extends GitHubSourceBindingGroup>(group: T): T {
+  const rebind = (row: GitHubSourceBinding): GitHubSourceBinding =>
+    RC398_REVIEWED_SOURCE_HASHES[row.path] && row.sha256 !== RC398_REVIEWED_SOURCE_HASHES[row.path]
+      ? Object.freeze({ ...row, sha256: RC398_REVIEWED_SOURCE_HASHES[row.path] })
+      : row;
+  return Object.freeze({
+    ...group,
+    selectors: Object.freeze(group.selectors.map(rebind)),
+    secondarySelectors: Object.freeze((group.secondarySelectors ?? []).map(rebind)),
+    sourceBindings: Object.freeze(group.sourceBindings.map(rebind)),
+  }) as T;
+}
+export const CONSUMER_SOURCE_GROUPS = Object.freeze([
+  ...reviewedDeclarations.consumer,
+  rc398ConsumerVariant(reviewedDeclarations.consumer[112]!),
+]);
+export const CI_CONSUMER_SOURCE_GROUPS = Object.freeze([
+  ...reviewedDeclarations.ci,
+  rc398ConsumerVariant(reviewedDeclarations.ci[228]!),
+  rc398ConsumerVariant(reviewedDeclarations.ci[229]!),
+]);
 freezeGitHubSourceBindingGroups(CONSUMER_SOURCE_GROUPS);
 freezeGitHubSourceBindingGroups(CI_CONSUMER_SOURCE_GROUPS);
