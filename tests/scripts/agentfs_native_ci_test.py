@@ -836,6 +836,16 @@ class SupervisorTests(unittest.TestCase):
         except ImportError:
             yaml = None
         text = (ROOT / '.github/workflows/agentfs-native-acceptance.yml').read_text()
+        # Text checks run even when PyYAML is absent, so the runner, branch
+        # and deployment-minimum contract is still asserted in that fallback.
+        self.assertIn('codex/afs-module-integration-20261010', text)
+        self.assertIn('codex/afs-native-input-refresh-20261109', text)
+        self.assertIn('runner: macos-15\n', text)
+        self.assertIn('runner: macos-15-intel', text)
+        self.assertNotIn('runner: macos-14', text)
+        self.assertIn("deployment-target: '14.0'", text)
+        self.assertIn('ARM_DEPLOYMENT_TARGET: ${{ matrix.deployment-target }}', text)
+        self.assertIn("MACOSX_DEPLOYMENT_TARGET=%s\\n", text)
         if yaml is None:
             self.assertIn('--init', text)
             self.assertIn(a.BOOKWORM_IMAGE, text)
@@ -846,8 +856,25 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(job['env']['BOOKWORM_IMAGE'], a.BOOKWORM_IMAGE)
         self.assertEqual([(x['target'], x['runner']) for x in job['strategy']['matrix']['include']],
                          [('linux-arm64', 'ubuntu-24.04-arm'), ('linux-x64', 'ubuntu-24.04')])
-        self.assertEqual([(x['target'], x['runner']) for x in workflow['jobs']['native-macos']['strategy']['matrix']['include']],
-                         [('darwin-arm64', 'macos-14'), ('darwin-x64', 'macos-15-intel')])
+        macos = workflow['jobs']['native-macos']
+        self.assertEqual([(x['target'], x['runner']) for x in macos['strategy']['matrix']['include']],
+                         [('darwin-arm64', 'macos-15'), ('darwin-x64', 'macos-15-intel')])
+        # ARM must carry an explicit OS14 deployment minimum so the macos-15
+        # runner stays deployable to the former tested OS. This is a minimum
+        # target, not a reproduction of the expired old binary's exact one.
+        arm = [x for x in macos['strategy']['matrix']['include'] if x['target'] == 'darwin-arm64'][0]
+        self.assertEqual(arm['deployment-target'], '14.0')
+        self.assertNotIn('MACOSX_DEPLOYMENT_TARGET', macos['env'])
+        minimum_step = next(step for step in macos['steps']
+                            if step.get('name') == 'Keep ARM deployment compatible with macOS 14')
+        self.assertEqual(minimum_step['if'], "matrix.target == 'darwin-arm64'")
+        self.assertEqual(minimum_step['env']['ARM_DEPLOYMENT_TARGET'], '${{ matrix.deployment-target }}')
+        self.assertIn('MACOSX_DEPLOYMENT_TARGET=%s\\n', minimum_step['run'])
+        # PyYAML 1.1 safe_load turns the bare `on` key into True.
+        triggers = workflow.get('on', workflow.get(True))
+        branches = triggers['push']['branches']
+        self.assertEqual(branches, ['codex/afs-module-integration-20261010',
+                                    'codex/afs-native-input-refresh-20261109'])
         commands = '\n'.join(step.get('run', '') for step in job['steps'])
         self.assertIn('--init', commands)
         self.assertIn('bookworm-entry.sh', commands)

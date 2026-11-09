@@ -2,7 +2,9 @@ name: AgentFS native source-bound acceptance
 
 on:
   push:
-    branches: ['codex/afs-module-integration-20261010']
+    branches:
+      - codex/afs-module-integration-20261010
+      - codex/afs-native-input-refresh-20261109
   workflow_call:
 
 permissions:
@@ -19,7 +21,9 @@ jobs:
       matrix:
         include:
           - target: darwin-arm64
-            runner: macos-14
+            runner: macos-15
+            # Keep ARM deployable on the former producer's tested macOS 14.
+            deployment-target: '14.0'
           - target: darwin-x64
             runner: macos-15-intel
     name: native (${{ matrix.target }})
@@ -47,6 +51,11 @@ jobs:
           printf '%s  %s\n' '8e3dc89614debe66c2a6ad2313a1adb06eb37db6cd6c40d7de6f7d987f7d1afd' "$node_archive" | shasum -a 256 -c -
           tar -xzf "$node_archive" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/node-v22.21.1-darwin-x64/bin" >> "$GITHUB_PATH"
+      - name: Keep ARM deployment compatible with macOS 14
+        if: matrix.target == 'darwin-arm64'
+        env:
+          ARM_DEPLOYMENT_TARGET: ${{ matrix.deployment-target }}
+        run: printf 'MACOSX_DEPLOYMENT_TARGET=%s\n' "$ARM_DEPLOYMENT_TARGET" >> "$GITHUB_ENV"
       - name: Lightweight supervisor regression
         run: python3 tests/scripts/agentfs_native_ci_test.py -v
       - name: Official export, offline rebuild, package and extracted install gate
