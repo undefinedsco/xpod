@@ -61,10 +61,13 @@ jobs:
       - run: bun install --frozen-lockfile
 
       # The monitor reads the shared provider/offering catalog through its
-      # published package export, exactly as product code does. Build only the
-      # capability package and its type-only prerequisite; no product bundle or
-      # candidate artifact is produced.
+      # published package export, exactly as product code does. The runtime
+      # package's build imports the CLI's build-tools output, so that prerequisite
+      # is built first; then its type-only contracts prerequisite. Only these
+      # three workspace packages are built; no product bundle or candidate
+      # artifact is produced.
       - run: |
+          bun run --filter @undefineds.co/xpod-cli build:tools
           bun run --filter @undefineds.co/extension-host-contracts build
           bun run --filter @undefineds.co/ai-connections-runtime build
 
