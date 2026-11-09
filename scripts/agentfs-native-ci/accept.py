@@ -94,6 +94,7 @@ STAGE_TIMEOUTS = {
     'toolchain-docs': 1500,
     'dependencies': 1500,
     'workspace-packages': 1200,
+    'supervisor-units': 900,
     'upstream': 600,
     'upstream-checkout': 180,
     'export': 1200,
@@ -598,6 +599,13 @@ def main():
             raise RuntimeError('Pinned JS runtime actual architecture mismatch')
     gate('dependencies', [bun, 'install', '--frozen-lockfile'])
     gate('workspace-packages', [bun, 'run', 'build:packages'])
+    # The existing 76 supervisor/case regressions run exactly once, here, as a
+    # bounded gate of this same producer: after the pinned Bun/Node architecture
+    # checks, locked dependency install and workspace-package build, and before
+    # any native export, rebuild, package or extracted install. No second
+    # installer, download or unverified runtime is introduced.
+    gate('supervisor-units', [sys.executable, str(root / 'tests/scripts/agentfs_native_ci_test.py'), '-v'],
+         environment={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
     upstream = base / 'upstream'
     gate('upstream', ['git', 'clone', '--no-checkout', 'https://github.com/tursodatabase/agentfs', str(upstream)])
     gate('upstream-checkout', ['git', '-C', str(upstream), 'checkout', '--detach', UPSTREAM])
@@ -742,13 +750,20 @@ LINUX_RUNTIME_STAGES = frozenset(['runtime-extract', 'runtime-readelf', 'runtime
 
 
 def verify_native_stage_inventory(stages, os_name, generated_notices):
+    # 'supervisor-units' is a bounded gate of the current producer but not part
+    # of the historical native archive contract: already-admitted archives
+    # (which are reused as-is) legitimately lack it, while new producers carry
+    # it. It is therefore an optional closed extra, never a required stage, so
+    # reuse verification stays valid for both generations.
     required = set(['bun-extract', 'toolchain', 'dependencies', 'workspace-packages', 'upstream',
                     'upstream-checkout', 'export', 'verify-source', 'rebuild', 'sdk-suite', 'cli-suite', 'package', 'verify-install'])
     if generated_notices:
         required.add('toolchain-docs')
     if os_name == 'linux':
         required.update(LINUX_RUNTIME_STAGES)
-    if set(stages) != required or len(stages) != len(required):
+    if len(stages) != len(set(stages)) or set(stages) - required - {'supervisor-units'}:
+        raise RuntimeError('Native reuse stage inventory mismatch')
+    if not required.issubset(stages):
         raise RuntimeError('Native reuse stage inventory mismatch')
     return required
 

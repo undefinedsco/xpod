@@ -50,5 +50,6 @@ export PATH="$node_dir/bin:$PATH"
 [ "$(node --version)" = "v${node_version}" ] || { echo "Pinned Node identity drift" >&2; exit 1; }
 
 cd "$repo"
-PYTHONDONTWRITEBYTECODE=1 python3 tests/scripts/agentfs_native_ci_test.py -v
+# accept.py owns the single supervisor-unit execution, after its pinned Bun/Node
+# admission and workspace setup; nothing runs here before that initialization.
 exec env PYTHONDONTWRITEBYTECODE=1 python3 scripts/agentfs-native-ci/accept.py

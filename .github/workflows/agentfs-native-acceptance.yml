@@ -56,8 +56,9 @@ jobs:
         env:
           ARM_DEPLOYMENT_TARGET: ${{ matrix.deployment-target }}
         run: printf 'MACOSX_DEPLOYMENT_TARGET=%s\n' "$ARM_DEPLOYMENT_TARGET" >> "$GITHUB_ENV"
-      - name: Lightweight supervisor regression
-        run: python3 tests/scripts/agentfs_native_ci_test.py -v
+      # The supervisor/case regressions are not a separate pre-download step:
+      # accept.py runs the same suite once, after its pinned Bun/Node checks and
+      # workspace setup, so no unpinned `bun` is needed before accept.py.
       - name: Official export, offline rebuild, package and extracted install gate
         run: python3 scripts/agentfs-native-ci/accept.py
       - name: Retain closed gate evidence and new archive only

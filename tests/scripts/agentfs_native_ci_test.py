@@ -846,6 +846,18 @@ class SupervisorTests(unittest.TestCase):
         self.assertIn("deployment-target: '14.0'", text)
         self.assertIn('ARM_DEPLOYMENT_TARGET: ${{ matrix.deployment-target }}', text)
         self.assertIn("MACOSX_DEPLOYMENT_TARGET=%s\\n", text)
+        # The supervisor-unit suite must not run before accept.py's pinned Bun
+        # and workspace setup, and accept.py owns exactly one such gate; the
+        # Mac workflow and Bookworm entry must not invoke it separately.
+        self.assertNotIn('agentfs_native_ci_test.py', text)
+        entry = (ROOT / 'scripts/agentfs-native-ci/bookworm-entry.sh').read_text()
+        self.assertNotIn('agentfs_native_ci_test.py', entry)
+        producer = (ROOT / 'scripts/agentfs-native-ci/accept.py').read_text()
+        self.assertEqual(producer.count("gate('supervisor-units'"), 1)
+        self.assertLess(producer.index("gate('workspace-packages'"), producer.index("gate('supervisor-units'"))
+        self.assertLess(producer.index("gate('supervisor-units'"), producer.index("gate('upstream'"))
+        self.assertIsInstance(a.STAGE_TIMEOUTS['supervisor-units'], int)
+        self.assertGreater(a.STAGE_TIMEOUTS['supervisor-units'], 0)
         if yaml is None:
             self.assertIn('--init', text)
             self.assertIn(a.BOOKWORM_IMAGE, text)
@@ -1109,9 +1121,9 @@ class NativeReuseTests(unittest.TestCase):
                 a.native_test_contract(ROOT, 'a' * 40, kit)
 
     def test_generated_stage_inventory_is_exact_on_both_platforms(self):
-        base = ['bun-extract', 'toolchain', 'dependencies', 'workspace-packages', 'upstream', 'upstream-checkout', 'export', 'verify-source', 'rebuild', 'sdk-suite', 'cli-suite', 'package', 'verify-install']
+        base = ['bun-extract', 'toolchain', 'dependencies', 'workspace-packages', 'supervisor-units', 'upstream', 'upstream-checkout', 'export', 'verify-source', 'rebuild', 'sdk-suite', 'cli-suite', 'package', 'verify-install']
         linux = ['runtime-extract', 'runtime-readelf', 'runtime-dynamic', 'runtime-launcher-version', 'runtime-helper-version', 'runtime-status', 'runtime-ldd', 'runtime-node-version']
-        for os_name, expected in [('darwin', 14), ('linux', 22)]:
+        for os_name, expected in [('darwin', 15), ('linux', 23)]:
             stages = base + (linux if os_name == 'linux' else []) + ['toolchain-docs']
             self.assertEqual(len(stages), expected)
             a.verify_native_stage_inventory(stages, os_name, True)
@@ -1160,8 +1172,8 @@ class NativeReuseTests(unittest.TestCase):
                      upstreamSuites={'sdk-suite': dict(passed=102, failed=0, ignored=0), 'cli-suite': dict(passed=27, failed=0, ignored=1)}, **inventory)
         entries = {'source-kit.json': kit, 'native-receipt.json': json.dumps(native).encode(), 'final.json': json.dumps(final).encode(),
                    'native-test.log': b'unit inventory parser is tested separately', 'xpod-cli-unit-darwin-arm64.tar.gz': package}
-        for name in ['bun-extract', 'toolchain', 'dependencies', 'workspace-packages', 'upstream', 'upstream-checkout',
-                     'export', 'verify-source', 'rebuild', 'sdk-suite', 'cli-suite', 'package', 'verify-install']:
+        for name in ['bun-extract', 'toolchain', 'dependencies', 'workspace-packages', 'supervisor-units', 'upstream',
+                     'upstream-checkout', 'export', 'verify-source', 'rebuild', 'sdk-suite', 'cli-suite', 'package', 'verify-install']:
             raw = b'owned stage closed'
             command = ['owned-tool']
             if name in ['sdk-suite', 'cli-suite']:
@@ -1185,7 +1197,7 @@ class NativeReuseTests(unittest.TestCase):
             with patch.object(a, 'check_tests', return_value=inventory):
                 result = a.verify_reuse_archive(archive, pins, 'darwin')
             self.assertEqual(result['passedTests'], 96)
-            self.assertEqual(len(result['stages']), 13)
+            self.assertEqual(len(result['stages']), 14)
 
     def test_x64_reuse_is_target_bound_and_checks_actual_helper_bytes(self):
         def x64(entries):
@@ -1301,7 +1313,7 @@ class NativeReuseTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, 'budget exceeded'):
                     a.verify_generated_notice_archive(tar, 'darwin-x64', native)
 
-    def test_generated_notices_require_fourteen_closed_stages_and_actual_originals(self):
+    def test_generated_notices_require_fifteen_closed_stages_and_actual_originals(self):
         for failure in [None, 'missing-docs', 'unclosed-docs', 'missing-binding', 'missing-object']:
             def change(entries):
                 self.add_generated_notices(entries)
@@ -1320,7 +1332,7 @@ class NativeReuseTests(unittest.TestCase):
                 archive, pins, inventory = self.fixture(directory, change)
                 with zipfile.ZipFile(archive) as z: pins['DARWIN_ARCHIVE_SHA'] = json.loads(z.read('final.json'))['archiveSHA256']
                 with patch.object(a, 'check_tests', return_value=inventory):
-                    if failure is None: self.assertEqual(len(a.verify_reuse_archive(archive, pins, 'darwin')['stages']), 14)
+                    if failure is None: self.assertEqual(len(a.verify_reuse_archive(archive, pins, 'darwin')['stages']), 15)
                     else:
                         with self.assertRaises(RuntimeError): a.verify_reuse_archive(archive, pins, 'darwin')
 
@@ -1412,7 +1424,7 @@ class NativeReuseTests(unittest.TestCase):
                     pins.update(PRODUCT_TARGET=target, LINUX_ZIP_SHA=a.sha256(archive), LINUX_ARCHIVE_SHA=final['archiveSHA256'], LINUX_HELPER_SHA=final['nativeReceipt']['helperSha256'])
                     with patch.object(a, 'check_tests', return_value=inventory):
                         if failure is None:
-                            result = a.verify_reuse_archive(archive, pins, 'linux', arch); self.assertEqual(len(result['stages']), 22 if generated else 21)
+                            result = a.verify_reuse_archive(archive, pins, 'linux', arch); self.assertEqual(len(result['stages']), 23 if generated else 22)
                         else:
                             with self.assertRaises(RuntimeError):
                                 a.verify_reuse_archive(archive, pins, 'linux', arch)
