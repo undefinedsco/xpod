@@ -334,7 +334,7 @@ function initialEvidence(baseUrl: URL): RcUserFlowsEvidence {
     startedAt: new Date().toISOString(),
     completedAt: '',
     checks,
-    evidenceScope: 'Real HTTPS against the deployed RC only. Browser OIDC/PKCE/DPoP protocol evidence is reported separately from HTTP facts. No desktop, LinX, mock, local server, manual sk, or provider key is claimed.',
+    evidenceScope: 'Real HTTPS against the deployed RC only. Browser OIDC/PKCE/DPoP-based protocol evidence is reported separately from HTTP facts. No desktop, LinX, mock, local server, manual sk, or provider key is claimed.',
   };
 }
 
@@ -403,7 +403,7 @@ function consentCheck(alice: Login, bob: Login): RcUserFlowCheck {
   const bobConsent = verifyRcConsentBinding(bob.session);
   return {
     ok: true,
-    detail: 'Alice and Bob each completed a fresh browser OIDC/PKCE/DPoP login with exactly one visible Consent screen and exactly one matching WebID/storage binding.',
+    detail: 'Alice and Bob each completed a fresh browser OIDC/PKCE/DPoP-based login with exactly one visible Consent screen and exactly one matching WebID/storage binding.',
     facts: {
       protocol: 'browser-oidc-pkce-dpop',
       authorizationRequestSeen: true,
@@ -434,7 +434,7 @@ async function sparqlCheck(alice: Login): Promise<RcUserFlowCheck> {
 
   return {
     ok: true,
-    detail: `DPoP Pod SPARQL root HTTP 200; unique descendant scope HTTP 200 with ASK=${askFalse} and SELECT rows=${selectRows}.`,
+    detail: `Pod SPARQL (DPoP) root HTTP 200; unique descendant scope HTTP 200 with ASK=${askFalse} and SELECT rows=${selectRows}.`,
     facts: {
       credential: 'browser-dpop-session',
       rootStatus: root.status,
@@ -476,7 +476,7 @@ async function modelsChatCheck(alice: Login, baseUrl: URL): Promise<RcUserFlowCh
 
   return {
     ok: true,
-    detail: `Browser DPoP session: /v1/models HTTP 200 includes ${modelIds.join(', ')}; real /v1/chat/completions responses matched unique nonces for linx and linx-lite.`,
+    detail: `Browser session over DPoP: /v1/models HTTP 200 includes ${modelIds.join(', ')}; real /v1/chat/completions responses matched unique nonces for linx and linx-lite.`,
     facts: {
       credential: 'browser-dpop-session',
       manualSkSupplied: false,
