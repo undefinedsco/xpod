@@ -2977,7 +2977,19 @@ const QLEVER_NORMAL_RC392_LOAD_GROUP:GitHubSourceBindingGroup=Object.freeze({
   sourceBindings:Object.freeze(QLEVER_NORMAL_RC385_VERIFIER_GROUP.sourceBindings.map(row=>
     Object.freeze({...row,sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_NORMAL_CANDIDATE_WORKFLOW_HASH_RC392:row.sha256}))),
 });
-export const QLEVER_NORMAL_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([QLEVER_NORMAL_PREVIOUS_GROUP,QLEVER_NORMAL_CURRENT_GROUP,QLEVER_NORMAL_DOCKERIGNORE_GROUP,QLEVER_NORMAL_REGISTRY_PRODUCER_GROUP,QLEVER_NORMAL_RC385_VERIFIER_GROUP,QLEVER_NORMAL_RC392_LOAD_GROUP]);
+/* RC396_SCOPE_SOURCE_REGISTRATION: the approved RC396 release-scope edit changes ONLY the candidate
+ * workflow bytes. A bounded normal producer variant is appended, never rewritten:
+ * group 6 stays the exact published RC392 tuple; group 7 clones it and rebinds the
+ * one candidate-workflow role it already owns. No SDK recipe, SDK input identity,
+ * Dockerfile, source tree or cold-build requirement is invented. */
+const QLEVER_RC396_CANDIDATE_WORKFLOW_HASH='e407ebeb6598a95eb14d9cf8c1db0a2fcfe6a30dcc51791ef6ae3d6aaf5daac1';
+const QLEVER_NORMAL_RC396_SCOPE_GROUP:GitHubSourceBindingGroup=Object.freeze({...QLEVER_NORMAL_RC392_LOAD_GROUP,
+  secondarySelectors:Object.freeze((QLEVER_NORMAL_RC392_LOAD_GROUP.secondarySelectors??[]).map(row=>
+    Object.freeze({...row,sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_RC396_CANDIDATE_WORKFLOW_HASH:row.sha256}))),
+  sourceBindings:Object.freeze(QLEVER_NORMAL_RC392_LOAD_GROUP.sourceBindings.map(row=>
+    Object.freeze({...row,sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_RC396_CANDIDATE_WORKFLOW_HASH:row.sha256}))),
+});
+export const QLEVER_NORMAL_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([QLEVER_NORMAL_PREVIOUS_GROUP,QLEVER_NORMAL_CURRENT_GROUP,QLEVER_NORMAL_DOCKERIGNORE_GROUP,QLEVER_NORMAL_REGISTRY_PRODUCER_GROUP,QLEVER_NORMAL_RC385_VERIFIER_GROUP,QLEVER_NORMAL_RC392_LOAD_GROUP,QLEVER_NORMAL_RC396_SCOPE_GROUP]);
 
 export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP,SDK78_GROUP,SDK79_GROUP,SDK80_GROUP,SDK81_GROUP,SDK82_GROUP,SDK83_GROUP,SDK84_GROUP,SDK85_GROUP,SDK86_GROUP,SDK87_GROUP,SDK88_GROUP,SDK89_GROUP,SDK90_GROUP,SDK91_GROUP,SDK92_GROUP,SDK93_GROUP]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
@@ -3249,5 +3261,21 @@ const RC395_SDK113_GROUP:GitHubSourceBindingGroup=Object.freeze({...RC393_SDK112
     row.path==='scripts/lib/independent-admission/source-original-tar.ts'
       ?Object.freeze({...row,sha256:'e2c59ae1bee5a7d051b55a02d0dc5f5ccabc615758de289f9c31c7f5391a08c9'}):row)),
 });
-export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP,RC391_SDK110_GROUP,RC392_SDK111_GROUP,RC393_SDK112_GROUP,RC395_SDK113_GROUP]);
-export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP,RC391_SDK110_GROUP,RC392_SDK111_GROUP,RC393_SDK112_GROUP,RC395_SDK113_GROUP]);
+/* RC396_SCOPE_SOURCE_REGISTRATION: shared SDK/Linux consumer variant for the same candidate-workflow
+ * bytes. This is an APPEND: SDK113/Linux115 stay byte-exact published history. The
+ * candidate role is already an owned stage-1 entry and sourceBinding, so the clone
+ * rebinds it in place and updates the candidate relationship; no path, stage, role,
+ * input identity or SDK build semantics are added. */
+const RC396_SDK114_GROUP:GitHubSourceBindingGroup=Object.freeze({...RC395_SDK113_GROUP,
+  candidateServiceRelationship:RC395_SDK113_GROUP.candidateServiceRelationship
+    ?Object.freeze({...RC395_SDK113_GROUP.candidateServiceRelationship,
+      workflowSha256:QLEVER_RC396_CANDIDATE_WORKFLOW_HASH})
+    :undefined,
+  secondarySelectorStages:Object.freeze((RC395_SDK113_GROUP.secondarySelectorStages??[]).map(stage=>
+    Object.freeze(stage.map(row=>Object.freeze({...row,
+      sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_RC396_CANDIDATE_WORKFLOW_HASH:row.sha256}))))),
+  sourceBindings:Object.freeze(RC395_SDK113_GROUP.sourceBindings.map(row=>
+    Object.freeze({...row,sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_RC396_CANDIDATE_WORKFLOW_HASH:row.sha256}))),
+});
+export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP,RC391_SDK110_GROUP,RC392_SDK111_GROUP,RC393_SDK112_GROUP,RC395_SDK113_GROUP,RC396_SDK114_GROUP]);
+export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP,RC391_SDK110_GROUP,RC392_SDK111_GROUP,RC393_SDK112_GROUP,RC395_SDK113_GROUP,RC396_SDK114_GROUP]);

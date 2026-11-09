@@ -596,6 +596,8 @@ source/run/target、SDK 输入身份与不可变镜像、runtime 镜像/config�
 shutdown；提前关闭会取消仍在排队的查询。失败时保留独立诊断附件，并撤销未完成的
 master，诊断附件不能作为发布通过的证据。
 
+服务镜像的逐文件 SOURCE/LEGAL/ABI 推导审计与上述 SDK/原生验证分开：仅在手动运行 candidate 时显式勾选 `service_source_diagnostics` 执行，结果作为独立诊断保留，不再作为共享 RC 部署或最终验收的前置。诊断失败仍记录失败，不授予 `wholeServiceSourceVerified`、`serviceAbiVerified` 或 `legalCoverageVerified`。最终验收单独披露这一范围；既有 SDK/原生验证、18 路兼容、不可变源码和镜像绑定，以及全部 29 项真实产品检查仍须通过。原生兼容测试不等价于完整镜像 ABI 推导审计。
+
 **并行度按机器实测决定，不再手写**：
 
 | 作业 | runner | 实测 | 并行度 |

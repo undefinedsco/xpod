@@ -18,7 +18,7 @@ import publishedSdk93 from './fixtures/published-sdk93-source-binding-versioning
 import publishedSdk94 from './fixtures/published-sdk94-source-binding-versioning.json';
 
 const ROOT=path.resolve(import.meta.dir,'../..');
-const CURRENT_SDK_CONSUMER_GROUP_COUNT=114;
+const CURRENT_SDK_CONSUMER_GROUP_COUNT=115;
 const sha=(value:Buffer|string)=>createHash('sha256').update(value).digest('hex');
 const disk=(name:string)=>sha(readFileSync(path.join(ROOT,name)));
 const whole=(group:unknown)=>sha(JSON.stringify(group));
@@ -311,9 +311,9 @@ test('SDK103 stays the FROZEN consumer for the RC380 GNU long-name pack repair',
   }
   expect(sdk103.selectors).toEqual(sdk102.selectors);
   expect(sdk103.secondarySelectors).toEqual(sdk102.secondarySelectors);
-  // Frozen axes must not move: the published normal-source groups stay at their
-  // history, and only the appended CURRENT generation (group 5) tracks live bytes.
-  expect(QLEVER_NORMAL_SOURCE_GROUPS).toHaveLength(6);
+  // Frozen axes must not move: every published normal-source group stays at its
+  // history, and only the appended CURRENT generations track live bytes.
+  expect(QLEVER_NORMAL_SOURCE_GROUPS).toHaveLength(7);
   expect(whole(QLEVER_SDK_NORMAL_SOURCE_BINDINGS)).toBe(publishedSdk93.published.normalFlatBindingsSha256);
   expect(QLEVER_SDK_NORMAL_SOURCE_BINDINGS).toHaveLength(23);
   // SDK103 is FROZEN history, so its bytes are checked against the published
@@ -399,6 +399,35 @@ test('SDK106 and SDK107 are FROZEN history and SDK108 is the CURRENT in-place re
   expect(QLEVER_SDK_NORMAL_SOURCE_BINDINGS).toHaveLength(23);
 });
 
+test('RC396: SDK114/Linux116 append ONLY the candidate-workflow variant and freeze SDK113',()=>{
+  // SDK113/Linux115 are published history now. Whole-group constants are captured from
+  // the immutable 9c base, so an in-place edit cannot keep this green.
+  const PUBLISHED_SDK113='5ef0c061be13f692b8caaeb82d1a8a8433ee4e2f081ce6fe3c53c92b49b7fbf9';
+  const CANDIDATE='.github/workflows/candidate.yml';
+  const CANDIDATE_SHA='e407ebeb6598a95eb14d9cf8c1db0a2fcfe6a30dcc51791ef6ae3d6aaf5daac1';
+  const sdk113=QLEVER_SDK_CONSUMER_GROUPS[113]!;
+  const sdk114=QLEVER_SDK_CONSUMER_GROUPS[114]!;
+  expect(whole(sdk113)).toBe(PUBLISHED_SDK113);
+  expect(sdk113).toBe(QLEVER_LINUX_CONSUMER_GROUPS[114]);
+  // ONE new shared object on both axes, and it is NOT the frozen predecessor.
+  expect(sdk114).toBe(QLEVER_LINUX_CONSUMER_GROUPS[115]);
+  expect(sdk114).not.toBe(sdk113);
+  // Only the candidate workflow row moved; every other role and all 15 stages are exact.
+  expect(sdk114.candidateServiceRelationship?.workflowSha256).toBe(CANDIDATE_SHA);
+  expect(sdk113.candidateServiceRelationship?.workflowSha256).not.toBe(CANDIDATE_SHA);
+  expect((sdk114.secondarySelectorStages??[]).length).toBe((sdk113.secondarySelectorStages??[]).length);
+  expect((sdk114.secondarySelectorStages??[]).length).toBe(15);
+  expect(sdk114.selectors).toEqual(sdk113.selectors);
+  expect(sdk114.secondarySelectors).toEqual(sdk113.secondarySelectors);
+  const differing=sdk113.sourceBindings.filter((row,index)=>row.path!==CANDIDATE
+    &&JSON.stringify(row)!==JSON.stringify(sdk114.sourceBindings[index]));
+  expect(differing).toEqual([]);
+  expect(row(sdk114,CANDIDATE).map(value=>value.sha256)).toEqual([CANDIDATE_SHA]);
+  // Historical producer axes stay frozen; normalBuild and the flat 23 are untouched.
+  expect(QLEVER_NORMAL_BUILD_GROUPS).toHaveLength(3);
+  expect(QLEVER_SDK_NORMAL_SOURCE_BINDINGS).toHaveLength(23);
+});
+
 test('SDK96/97/98/99/100/101/102/103 trees select their own tuple; current tree selects SDK104',()=>{
   expect(selectGitHubSourceBindingGroup(QLEVER_SDK_CONSUMER_GROUPS,observe(QLEVER_SDK_CONSUMER_GROUPS,sdk96))).toBe(sdk96);
   expect(selectGitHubSourceBindingGroup(QLEVER_SDK_CONSUMER_GROUPS,observe(QLEVER_SDK_CONSUMER_GROUPS,sdk97))).toBe(sdk97);
@@ -449,8 +478,12 @@ test('SDK96/97/98/99/100/101/102/103 trees select their own tuple; current tree 
 });
 
 test('normal producer keeps the frozen 23-row flat list and all earlier groups',()=>{
-  expect(QLEVER_NORMAL_SOURCE_GROUPS).toHaveLength(6);
-  const [old,next,dockerignore,registry,currentNormal]=QLEVER_NORMAL_SOURCE_GROUPS;
+  expect(QLEVER_NORMAL_SOURCE_GROUPS).toHaveLength(7);
+  const [old,next,dockerignore,registry,currentNormal,publishedNormal,activeNormal]=QLEVER_NORMAL_SOURCE_GROUPS;
+  // RC396 candidates: group 6 (RC392) is now FROZEN history; only group 7 tracks
+  // today's candidate-workflow bytes. Compare whole groups, not just one row.
+  const RC396_NORMAL_PUBLISHED='5e25855e6c9b1b9cd6825aee495ba309e39ccd4fa12cc30269f2e59a7cb8d04d';
+  const RC396_CANDIDATE='e407ebeb6598a95eb14d9cf8c1db0a2fcfe6a30dcc51791ef6ae3d6aaf5daac1';
   expect(old!.sourceBindings).toBe(QLEVER_SDK_NORMAL_SOURCE_BINDINGS);
   expect(QLEVER_SDK_NORMAL_SOURCE_BINDINGS).toHaveLength(23);
   expect(whole(QLEVER_SDK_NORMAL_SOURCE_BINDINGS)).toBe(publishedSdk93.published.normalFlatBindingsSha256);
@@ -476,6 +509,16 @@ test('normal producer keeps the frozen 23-row flat list and all earlier groups',
   // The published flat list keeps its historical ignore bytes.
   expect(QLEVER_SDK_NORMAL_SOURCE_BINDINGS.filter(value=>value.path===DOCKERIGNORE)
     .map(value=>value.sha256)).toEqual([SDK95_DOCKERIGNORE]);
+  // RC396 scope narrowing: append-only, bounded to the ONE candidate-workflow role.
+  // The predecessor whole group is frozen; only the appended tail tracks the new bytes.
+  expect(whole(publishedNormal!)).toBe(RC396_NORMAL_PUBLISHED);
+  expect(row(activeNormal!,'.github/workflows/candidate.yml').map(value=>value.sha256))
+    .toEqual([RC396_CANDIDATE]);
+  expect(row(publishedNormal!,'.github/workflows/candidate.yml').map(value=>value.sha256))
+    .not.toEqual([RC396_CANDIDATE]);
+  expect((activeNormal!.secondarySelectorStages??[]).length)
+    .toBe((publishedNormal!.secondarySelectorStages??[]).length);
+  expect(activeNormal!.selectors).toEqual(publishedNormal!.selectors);
 });
 
 test('normal source groups pick old, current and dockerignore trees and refuse mixes',()=>{

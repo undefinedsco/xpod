@@ -17,6 +17,26 @@ const { PROFILES, validateInput, validateReceipt } = require('./lib/service-imag
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const sources = ['scripts/accept-service-image-modes.ts', 'scripts/lib/service-image-modes.cjs', 'scripts/lib/owned-mode-command.cjs', 'scripts/lib/mode-evidence-reader.cjs', 'scripts/lib/mode-artifact-authority.cjs', 'scripts/verify-service-image-modes.cjs', 'scripts/lib/service-image-session-contract.cjs', 'scripts/accept-live-gateway-login-chat.ts', 'scripts/accept-service-image-session.ts', 'docker-compose.acceptance.yml', 'bun.lock'];
 const need = (fact: unknown, message: string): void => { if (!fact) throw new Error(message); };
+/** Export the child's OWN already-safe failure evidence when the browser command
+ * fails. Only members the existing bounded/symlink-guarded reader admits are
+ * copied verbatim through `write`; an absent or unsafe file is honestly skipped,
+ * never fabricated, and raw stdout/stderr/URLs/tokens are never exported. This
+ * adds no failure reason, schema or proof axis. */
+export async function exportSessionSafeEvidence(
+  sessionOutput: string,
+  write: (relative: string, bytes: Buffer) => Promise<void>,
+  destination: string,
+): Promise<void> {
+  let reader: Awaited<ReturnType<typeof createModeEvidenceReader>>;
+  try { reader = await createModeEvidenceReader(sessionOutput); } catch { return; }
+  for (const name of ['lifecycle.safe.json', 'session.safe.json']) {
+    try {
+      const bytes = await reader.read(name);
+      assertSafeJson(JSON.parse(bytes.toString()));
+      await write(path.join(destination, name), bytes);
+    } catch { /* missing or inadmissible member: retain nothing rather than invent it */ }
+  }
+}
 async function digest(file: string): Promise<string> { return hash(await readFile(file)); }
 async function json(file: string): Promise<any> { return JSON.parse(await readFile(file, 'utf8')); }
 async function freePort(): Promise<number> {
@@ -725,7 +745,19 @@ export async function runMatrix(options: { image: string; platform: string; sour
         const input = { schemaVersion: 1, sourceSha: options.sourceSha, mode, baseUrl: urls[mode as keyof typeof urls], issuer: mode === 'local' ? urls.cloud : urls[mode as 'cloud' | 'standalone'], image: { reference: options.image, platform: options.platform, id: image.Id }, profile: { kind, ...policy }, binding: { webId: account.webId, podUrl: account.podUrl }, ownershipRoot: root, accountFile, outputDirectory: sessionOutput };
         validateInput(input);
         const manifest = path.join(directory, 'private-input.json'); await writeFile(manifest, JSON.stringify(input), { mode: 0o600 });
-        await command(`browser-${mode}-${kind}`, 'xvfb-run', ['--auto-servernum', process.execPath, path.join(repo, 'scripts/accept-service-image-session.ts'), 'run', manifest], repo, process.env, LIMITS.browserMs, false, 10_000);
+        // Retain the child's OWN already-safe failure evidence on failure. The child
+        // writes lifecycle.safe.json before it throws, but a failing `command()`
+        // used to abort before any export, losing the only bounded record of why
+        // the browser case failed. Export runs only on failure (a success path
+        // already exports both files later, and a duplicate would break it). The
+        // original command error is preserved: export failures are swallowed,
+        // absent files stay honestly absent, and nothing is fabricated.
+        try {
+          await command(`browser-${mode}-${kind}`, 'xvfb-run', ['--auto-servernum', process.execPath, path.join(repo, 'scripts/accept-service-image-session.ts'), 'run', manifest], repo, process.env, LIMITS.browserMs, false, 10_000);
+        } catch (error) {
+          try { await exportSessionSafeEvidence(sessionOutput, writeSafe, `session-${mode}-${kind}`); } catch { /* never let retention override the real command outcome */ }
+          throw error;
+        }
         const browserReader = await createModeEvidenceReader(sessionOutput);
         const receiptBytes = await browserReader.read('session.safe.json'); const session = JSON.parse(receiptBytes.toString()); assertSafeJson(session);
         validateReceipt(session, input);

@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module';
 import { readFile, mkdtemp, mkdir, writeFile, rm, chmod } from 'node:fs/promises';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -389,7 +390,7 @@ esac
     }
     // The shared-RC mutation entry is the explicit mandatory join: a failed or
     // skipped 18-lane matrix skips deployment, with no always/failure/continue.
-    expect(jobs.deploy_and_accept.needs).toEqual(['metadata', 'build_image', 'observe_service_sdk_source', 'legacy_root_compat']);
+    expect(jobs.deploy_and_accept.needs).toEqual(['metadata', 'build_image', 'legacy_root_compat']);
     expect(jobs.deploy_and_accept.if).toBeUndefined();
     expect(jobs.deploy_and_accept['continue-on-error']).not.toBe(true);
     expect(jobs.legacy_root_compat.if).toBeUndefined();
@@ -518,9 +519,12 @@ esac
     const runText = jobRunText(workflow, 'deploy_and_accept');
 
     expect(deploy.environment).toBe('rc');
-    expect(deploy.needs).toEqual([ 'metadata', 'build_image', 'observe_service_sdk_source', 'legacy_root_compat' ]);
+    expect(deploy.needs).toEqual([ 'metadata', 'build_image', 'legacy_root_compat' ]);
     expect(deploy.if).toBeUndefined();
-    expect(workflow.jobs.observe_service_sdk_source['continue-on-error']).not.toBe(true);
+    const diagnosticObserver = workflow.jobs.observe_service_sdk_source;
+    expect(diagnosticObserver.name).toContain('diagnostic');
+    expect(diagnosticObserver.if).toContain('inputs.service_source_diagnostics == true');
+    expect(diagnosticObserver['continue-on-error']).toBe(true);
     expect(jobRunText(workflow, 'observe_service_sdk_source')).toContain('--require-qualification');
     expect(deploy.env.KUBE_CONFIG_DATA).toBe('${{ secrets.KUBE_CONFIG_DATA }}');
     expect(deploy.env.APP_ENV_FILE).toBe('${{ secrets.APP_ENV_FILE }}');
@@ -997,7 +1001,8 @@ esac
       step.uses === 'actions/upload-artifact@v4');
     const finalize = workflow.jobs.finalize_acceptance;
     const finalizeText = jobRunText(workflow, 'finalize_acceptance');
-    const finalUpload = finalize.steps.find((step: any) => step.uses === 'actions/upload-artifact@v4');
+    const finalUpload = finalize.steps.find((step: any) =>
+      step.uses === 'actions/upload-artifact@v4' && step.with?.name === 'release-acceptance-${{ github.sha }}');
 
     expect(serviceText).not.toContain('release-acceptance-manifest.cjs create');
     // The desktop job builds the app; it cannot see the service acceptance artifact or the
@@ -1022,7 +1027,6 @@ esac
       'build_desktop_rc',
       'legacy_root_compat',
       'runtime_mode_matrix',
-      'observe_service_sdk_source',
     ]);
     expect(finalizeText).toContain('node scripts/release-acceptance-manifest.cjs create');
     for (const check of [
@@ -1103,7 +1107,11 @@ esac
     const workflow = await loadWorkflow();
     const text = await readFile(workflowPath, 'utf8');
 
-    expect(text).not.toContain('continue-on-error');
+    expect(text.match(/continue-on-error/g)).toHaveLength(1);
+    expect(workflow.jobs.observe_service_sdk_source['continue-on-error']).toBe(true);
+    for (const [ name, job ] of Object.entries(workflow.jobs)) {
+      if (name !== 'observe_service_sdk_source') expect((job as any)['continue-on-error'], name).not.toBe(true);
+    }
     expect(text).not.toMatch(/:latest\b|value=latest/);
     expect(text).not.toContain('deploy/sealos/cloud');
     expect(text).not.toContain('environment: production');
@@ -1388,11 +1396,112 @@ describe('source-bound private17 Release mutation guard', () => {
 });
 
 
+describe('service-image audit scope change', () => {
+  const require = createRequire(import.meta.url);
+
+  it('keeps the opt-in full-image audit out of both RC joins and validates its safe disclosure', async () => {
+    const workflow = await loadWorkflow();
+    const observer = workflow.jobs.observe_service_sdk_source;
+    const input = workflow.on.workflow_dispatch.inputs.service_source_diagnostics;
+
+    expect(input).toEqual({
+      description: 'Run full service-image source/legal diagnostics; not release qualification',
+      type: 'boolean',
+      required: false,
+      default: false,
+    });
+    expect(observer.name).toBe('Full service-image audit (diagnostic)');
+    expect(observer.if).toBe("${{ github.event_name == 'workflow_dispatch' && inputs.service_source_diagnostics == true }}");
+    expect(observer['continue-on-error']).toBe(true);
+    expect(jobRunText(workflow, 'observe_service_sdk_source')).toContain('--require-qualification');
+    const observerUpload = observer.steps.find((step: any) => step.uses === 'actions/upload-artifact@v4');
+    expect(observerUpload.with['if-no-files-found']).toBe('warn');
+
+    // Exactly these two source-dependency edges are removed: no job may need
+    // the diagnostic observer, while the actual RC deployment and finalization
+    // keep their existing compatibility/product joins.
+    for (const [ name, job ] of Object.entries(workflow.jobs)) {
+      expect([(job as any).needs ?? []].flat(), name).not.toContain('observe_service_sdk_source');
+    }
+    expect(workflow.jobs.deploy_and_accept.needs).toEqual(['metadata', 'build_image', 'legacy_root_compat']);
+    expect(workflow.jobs.finalize_acceptance.needs).toEqual([
+      'metadata',
+      'build_image',
+      'deploy_and_accept',
+      'build_desktop_rc',
+      'legacy_root_compat',
+      'runtime_mode_matrix',
+    ]);
+
+    const { rootCompatLanes } = require('../../scripts/release-gate-evidence.cjs');
+    expect(rootCompatLanes()).toHaveLength(18);
+    expect(workflow.jobs.legacy_root_compat.uses).toBe('./.github/workflows/legacy-root-compat.yml');
+    expect(workflow.jobs.deploy_and_accept.needs).toContain('legacy_root_compat');
+    expect(workflow.jobs.finalize_acceptance.needs).toContain('legacy_root_compat');
+    const releaseText = readFileSync(path.join(repoRoot, '.github/workflows/release.yml'), 'utf8');
+    const requiredChecks = [...releaseText.matchAll(/--required-check\s+(\S+)/g)].map((match) => match[1]);
+    expect(requiredChecks).toHaveLength(29);
+    expect(requiredChecks).toEqual(expect.arrayContaining([
+      'legacy-root-compat', 'runtime-mode-matrix', 'desktop', 'chat', 'rc-builtin-models-chat', 'native-private17',
+    ]));
+
+    const steps = workflow.jobs.finalize_acceptance.steps;
+    const disclose = steps.find((step: any) => step.name === 'Disclose service-image audit scope');
+    expect(disclose.env).toEqual({
+      SCOPE_SOURCE_SHA: '${{ needs.metadata.outputs.sourceSha }}',
+      SCOPE_IMAGE: 'ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}',
+    });
+    expect(disclose.run).toContain('wholeServiceSourceQualificationClaimed');
+    expect(disclose.run).toContain('wholeServiceAbiQualificationClaimed');
+    expect(disclose.run).toContain('wholeServiceLegalQualificationClaimed');
+    expect(disclose.run).not.toMatch(/wholeServiceSourceVerified"\s*:\s*true/);
+    const scopeUpload = steps.find((step: any) => step.with?.name === 'service-image-audit-scope-${{ github.sha }}');
+    expect(scopeUpload.with.path).toBe('${{ runner.temp }}/service-image-audit-scope.json');
+    expect(scopeUpload.with['if-no-files-found']).toBe('error');
+    expect(JSON.stringify(workflow.jobs.finalize_acceptance)).not.toContain("'service-image-audit-scope': 'passed'");
+
+    // Execute the exact disclosure step locally with fixed safe inputs. This
+    // proves the step syntax and the false full-audit-claim fields without any
+    // real deployment or product-pass fabrication.
+    const base = path.join(repoRoot, '.test-data');
+    mkdirSync(base, { recursive: true });
+    const directory = mkdtempSync(path.join(base, 'service-audit-scope-'));
+    try {
+      const summary = path.join(directory, 'summary.md');
+      writeFileSync(summary, '');
+      const sourceSha = 'a'.repeat(40);
+      const image = `ghcr.io/undefinedsco/xpod@sha256:${'b'.repeat(64)}`;
+      execFileSync('bash', [ '-euo', 'pipefail', '-c', disclose.run ], {
+        encoding: 'utf8',
+        env: { ...process.env, RUNNER_TEMP: directory, GITHUB_STEP_SUMMARY: summary,
+          GITHUB_RUN_ID: '424242', GITHUB_RUN_ATTEMPT: '2', SCOPE_SOURCE_SHA: sourceSha, SCOPE_IMAGE: image },
+      });
+      const scope = JSON.parse(readFileSync(path.join(directory, 'service-image-audit-scope.json'), 'utf8'));
+      expect(scope).toEqual({
+        schemaVersion: 1,
+        kind: 'service-image-audit-scope',
+        sourceSha,
+        image,
+        runId: '424242',
+        runAttempt: '2',
+        fullServiceAuditRole: 'opt-in-diagnostic',
+        wholeServiceSourceQualificationClaimed: false,
+        wholeServiceAbiQualificationClaimed: false,
+        wholeServiceLegalQualificationClaimed: false,
+      });
+      expect(JSON.stringify(scope)).not.toMatch(/token|secret|password|api[-_]?key/i);
+      expect(readFileSync(summary, 'utf8')).toContain('not claimed as release qualification');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('public Release transport contract', () => {
   it('keeps build and qualification needs, read-only identity and no private fixture acquisition', async () => {
     const workflow = await loadWorkflow(); const job = workflow.jobs.deploy_and_accept;
     const gate = job.steps.find((entry: any) => entry.name === 'Require independent exact-pair Private17 admission before RC mutation');
-    expect(job.needs).toEqual(['metadata', 'build_image', 'observe_service_sdk_source', 'legacy_root_compat']); expect(job.permissions.contents).toBe('read');
+    expect(job.needs).toEqual(['metadata', 'build_image', 'legacy_root_compat']); expect(job.permissions.contents).toBe('read');
     expect(gate.env.GH_TOKEN).toBe('${{ github.token }}');
     expect(gate.env.PRIVATE17_ADMISSION_SHA256).toBe('${{ vars.XPOD_PRIVATE17_ADMISSION_SHA256 }}');
     expect(gate.run).toContain('--acquire-private17-admission'); expect(gate.run).toContain('mktemp -d');

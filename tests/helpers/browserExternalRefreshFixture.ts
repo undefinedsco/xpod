@@ -4,7 +4,9 @@ import { createRequire } from 'node:module';
 import type { RefreshProfile } from './browserRefreshPolicy';
 import { createSolidLocalRouteFetch, discoverSolidLocalRoute, resolveSolidLocalRouteUrl } from '../../packages/solid-sdk/src/local-route-fetch';
 
-const { validateInput } = createRequire(import.meta.url)('../../scripts/lib/service-image-session-contract.cjs');
+// Playwright loads this helper as CommonJS; __filename also works in Bun.
+const contractRequire = createRequire(__filename);
+const { validateInput } = contractRequire('../../scripts/lib/service-image-session-contract.cjs');
 
 // The shape is for TypeScript callers only. The central contract owns validation.
 export interface ExternalRefreshInput {
