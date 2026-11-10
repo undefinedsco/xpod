@@ -497,7 +497,7 @@ test('normal producer keeps the frozen 23-row flat list and all earlier groups',
   const RC397_NORMAL_SCOPE='b2418f775120a51d875d76fd46a7b1dcb5aef3072127d3510c10e70a6daf88fd';
   const RC397_CANDIDATE='70b14a6afc3da3f8f074c5fb4e2bc2d097639b8a33efce57469c45adef1b1d87';
   const RC398_CANDIDATE='f488709ab38b7d42f58accd90cbe59a162eae89ee23169db9b28ecdf264a7581';
-  const RC399_CANDIDATE='a56cccf5de22d5d41097e49624e50d0f9083672291593fd0ca2eb8a80c356b6e';
+  const RC399_CANDIDATE='0c9b5fd156e6ae42f331c51f0fdef7e803195c957b08fa4e2c4adf2d0888f78d';
   expect(old!.sourceBindings).toBe(QLEVER_SDK_NORMAL_SOURCE_BINDINGS);
   expect(QLEVER_SDK_NORMAL_SOURCE_BINDINGS).toHaveLength(23);
   expect(whole(QLEVER_SDK_NORMAL_SOURCE_BINDINGS)).toBe(publishedSdk93.published.normalFlatBindingsSha256);

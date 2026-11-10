@@ -55,6 +55,24 @@ export function syntheticDigest(label = 'a') {
   return `ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:${label.repeat(64)}`;
 }
 
+/**
+ * GitHub Actions materializes `${{ ... }}` expressions in `run:` bodies BEFORE
+ * the runner ever starts a shell. A locally extracted step body therefore still
+ * contains those tokens verbatim, and real Bash rejects `${{` with
+ * "bad substitution". This substitutes only the expressions a fixture supplies,
+ * mirroring the runner's pre-shell templating; anything not supplied stays
+ * visible so a missing value fails loudly instead of being silently invented.
+ */
+export function materializeExpressions(source, values = {}) {
+  return source.replace(/\$\{\{\s*([^{}]+?)\s*\}\}/gu, (token, expression) => {
+    const key = expression.trim();
+    if (!Object.hasOwn(values, key)) {
+      throw new Error(`fixture did not supply the GitHub expression: ${token}`);
+    }
+    return String(values[key]);
+  });
+}
+
 export const syntheticAppImage = `ghcr.io/undefinedsco/xpod@sha256:${'a'.repeat(64)}`;
 
 /** Temporary directory removed after the node:test case. */

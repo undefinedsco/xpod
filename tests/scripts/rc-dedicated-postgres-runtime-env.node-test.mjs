@@ -14,6 +14,7 @@ import test from 'node:test';
 import {
   deploySteps,
   findStep,
+  materializeExpressions,
   repoRoot,
   runShell,
   tempDir,
@@ -24,6 +25,11 @@ const NS = 'ns-iknkxtc8';
 const PASSWORD = 'p%40ss%2Fw%3Ard%27%3B%24x';
 const SHARED = `postgresql://xpod_rc:${PASSWORD}@xpod-rdf-postgres.${NS}.svc:5432/xpod_rc`;
 const RC = 'xpod-rc-rdf-postgres';
+// The producer's run identity. The step's `${{ steps.seed_identity.outputs.suffix }}`
+// resolves to exactly this on a real runner, so the fixture supplies the same value.
+const RUN_ID = '4242';
+const RUN_ATTEMPT = '3';
+const PRODUCER_SUFFIX = `rc-${RUN_ID}-${RUN_ATTEMPT}`;
 
 function runStep(t) {
   const directory = tempDir(t, 'xpod-rc-runtime-env-');
@@ -50,7 +56,12 @@ function runStep(t) {
     { email: 'bob@example.test', pods: [ { name: 'bob-pod' } ] },
   ]);
   const script = path.join(directory, 'step.sh');
-  writeFileSync(script, step.run);
+  // The runner substitutes `${{ ... }}` before Bash runs. The step now uses the
+  // producer's published seed suffix, so supply exactly that expression; the
+  // suffix derives from the SAME run/attempt the step materializes with.
+  writeFileSync(script, materializeExpressions(step.run, {
+    'steps.seed_identity.outputs.suffix': PRODUCER_SUFFIX,
+  }));
   const result = runShell('bash', [ '-e' ], script, {
     cwd: repoRoot,
     env: {
@@ -59,8 +70,8 @@ function runStep(t) {
       SEALOS_NAMESPACE: NS,
       APP_ENV_FILE: envText,
       XPOD_RC_SEED_CONFIG: seedText,
-      GITHUB_RUN_ID: '4242',
-      GITHUB_RUN_ATTEMPT: '3',
+      GITHUB_RUN_ID: RUN_ID,
+      GITHUB_RUN_ATTEMPT: RUN_ATTEMPT,
     },
     timeout: 120_000,
   });
@@ -109,7 +120,11 @@ test('production hosts/roles and conflicting aliases are rejected by the step', 
     mkdirSync(bin);
     writeFileSync(path.join(bin, 'bun'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
     const script = path.join(directory, 'step.sh');
-    writeFileSync(script, step.run);
+    // Same runner-side templating as above: a rejection case must fail for its
+    // rejected credential, never for an unmaterialized `${{ }}` token.
+    writeFileSync(script, materializeExpressions(step.run, {
+      'steps.seed_identity.outputs.suffix': PRODUCER_SUFFIX,
+    }));
     const envText = [
       `CSS_IDENTITY_DB_URL=${replacement}`,
       `CSS_SPARQL_ENDPOINT=${replacement}`,
