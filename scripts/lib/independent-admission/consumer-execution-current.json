@@ -1221,7 +1221,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "429d489f0662c5ac1c66b46b1b2626a85077e246701edaa1057efc25b077bd27"
+    "sha256": "cbf8051cc1465cfad7c9de76ceed2a236b3f952c7cf92a7b5c3d38bc02967d20"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -1337,7 +1337,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/source-rules.ts",
-    "sha256": "3531df0c3af1f1d7392498847cfc9d14a78f11622c75578c8b6aa7c339ec03a6"
+    "sha256": "2a86ba017b4f48dba21fb11af6e1867d13cb32b9db37002c80572920fa616d4e"
   },
   {
     "path": "scripts/lib/independent-admission/verified-admission-cache.ts",

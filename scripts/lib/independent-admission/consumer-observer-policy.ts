@@ -510,13 +510,18 @@ function rc398ConsumerVariant<T extends GitHubSourceBindingGroup>(group: T): T {
  * origin policy bytes (one appended candidate-workflow version). One shared variant per
  * family is appended; every published group and both RC398 variants stay byte-exact.
  * Only this new variant uses the held-FD live controller self-reference. */
-const QLEVER_RC399_POLICY_SHA256='429d489f0662c5ac1c66b46b1b2626a85077e246701edaa1057efc25b077bd27';
-/** Live bytes of the two release inputs this generation's dependency declaration moved. */
+const QLEVER_RC399_POLICY_SHA256='cbf8051cc1465cfad7c9de76ceed2a236b3f952c7cf92a7b5c3d38bc02967d20';
+/** Live bytes of the release inputs this generation's dependency declaration and its
+ * already-owned policy rows actually moved. Only these rows move; every earlier tuple
+ * keeps its published bytes. */
 const RC399_LIVE_RELEASE_INPUTS: Readonly<Record<string, string>> = Object.freeze({
   'package.json': '9a8aa57d082c0bf28cedcb0f27ebb9245419a271e53efb1aa7bf42a80a76fef0',
   'bun.lock': 'dd41359d7fa5df0f5d32e030ede320c5ef7e395d6aa3f495aa6c9e0914037722',
   // github-origin owns the API group definition changed by the same append.
   'scripts/lib/independent-admission/github-origin.ts': 'bbd1928cd47c220183022012bbc554a4bcfee9b598274368de9c87347ebbd8b2',
+  // CLI16 is the declared in-place current CLI tuple in this same generation; its
+  // verifier module is an already-owned row of the consumer/CI tails.
+  'scripts/lib/independent-admission/source-rules.ts': '2a86ba017b4f48dba21fb11af6e1867d13cb32b9db37002c80572920fa616d4e',
 });
 function rc399ConsumerVariant<T extends GitHubSourceBindingGroup>(group: T): T {
   const rebind = (row: GitHubSourceBinding): GitHubSourceBinding => {
