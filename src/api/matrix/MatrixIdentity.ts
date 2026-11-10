@@ -56,6 +56,18 @@ export function isMatrixUserId(userId: unknown): userId is string {
 }
 
 /**
+ * Canonical Matrix room surface id on a Pod.
+ *
+ * Single implementation shared by the store, the reference directory and the
+ * RC acceptance helper. Behavior is unchanged from the previous private
+ * copies: `matrix-` plus the first 16 hex chars of sha256(roomId). Validation
+ * of what counts as an acceptable room id stays with each caller.
+ */
+export function matrixRoomSurfaceId(roomId: string): string {
+  return `matrix-${createHash('sha256').update(roomId).digest('hex').slice(0, 16)}`;
+}
+
+/**
  * Event type carrying verified room-storage provenance in invite_state:
  * `{ storage, room_container, verified: true }`.
  *

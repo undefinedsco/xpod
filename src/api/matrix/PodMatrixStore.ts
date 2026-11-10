@@ -37,6 +37,7 @@ import {
   isMatrixUserId,
   isMatrixUserIdForWebId,
   MATRIX_STORAGE_BINDING_EVENT_TYPE,
+  matrixRoomSurfaceId,
   matrixUserIdForWebId,
 } from './MatrixIdentity';
 import { encodeSyncCursor, parseSyncCursor } from './MatrixSyncCursor';
@@ -2195,7 +2196,7 @@ export class PodMatrixStore {
   }
 
   private surfaceIdFromRoomId(roomId: string): string {
-    return `matrix-${createHash('sha256').update(roomId).digest('hex').slice(0, 16)}`;
+    return matrixRoomSurfaceId(roomId);
   }
 
   private chatResourceIdFromRoomId(roomId: string): string {

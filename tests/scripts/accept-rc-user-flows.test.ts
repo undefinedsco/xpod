@@ -16,6 +16,7 @@ import {
   classifyCredentialIssuanceFailure,
   describeAcceptanceFailure,
   formatCredentialFailure,
+  matrixCheck,
   matrixSk,
   normalizeRcBaseUrl,
   runRcUserFlows,
@@ -614,5 +615,90 @@ describe('RC user-flow acceptance runner', () => {
     const diagnostics = ts.getPreEmitDiagnostics(program).filter((diagnostic) =>
       diagnostic.file && path.resolve(diagnostic.file.fileName) === entry);
     expect(diagnostics.map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n'))).toEqual([]);
+  });
+});
+
+describe('RC matrix grant ordering (real matrixCheck)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('runs the owner room grant before the invite and aborts without inviting when the grant fails', async () => {
+    const aliceIdentity = {
+      accountId: 'alice-account',
+      webId: 'https://id-rc.undefineds.cn/alice/profile/card#me',
+      storageUrl: 'https://pods-rc.undefineds.cn/alice/',
+    };
+    const bobIdentity = {
+      accountId: 'bob-account',
+      webId: 'https://id-rc.undefineds.cn/bob/profile/card#me',
+      storageUrl: 'https://pods-rc.undefineds.cn/bob/',
+    };
+    const order: string[] = [];
+    const inviteCalls: string[] = [];
+
+    // Alice's own DPoP fetch: the room container HEAD is denied, so the grant
+    // fails before any Matrix invite can be sent.
+    const aliceFetch = vi.fn(async (input: any, init?: RequestInit) => {
+      order.push(`grant:${String(init?.method ?? input?.method ?? 'GET').toUpperCase()}`);
+      return new Response(null, { status: 403 });
+    });
+
+    const login = (identity: typeof aliceIdentity) => ({
+      context: {} as never,
+      page: {} as never,
+      accountToken: `account-token-${identity.accountId}`,
+      session: {
+        identity,
+        authenticatedFetch: aliceFetch as unknown as typeof fetch,
+        account: {
+          accountId: identity.accountId,
+          bindings: [{ webId: identity.webId, storageUrl: identity.storageUrl }],
+          clientCredentials: '/alice/profile/card#clientCredentials',
+        },
+      },
+    });
+
+    vi.stubGlobal('fetch', vi.fn(async (input: any, init?: RequestInit) => {
+      const url = new URL(String(input?.url ?? input), 'https://id-rc.undefineds.cn');
+      const method = String(init?.method ?? input?.method ?? 'GET').toUpperCase();
+      const podUrl = new Headers(init?.headers ?? input?.headers).get('X-Xpod-Pod-Url') ?? '';
+      const who = podUrl === aliceIdentity.storageUrl ? 'alice' : 'bob';
+      if (url.pathname.endsWith('/account/whoami')) {
+        return Response.json({
+          user_id: `@u_${who}:example.test`,
+          'co.undefineds.webid': who === 'alice' ? aliceIdentity.webId : bobIdentity.webId,
+        });
+      }
+      if (url.pathname.endsWith('/createRoom') && method === 'POST') {
+        order.push('createRoom');
+        return Response.json({ room_id: '!room-order:example.test' });
+      }
+      if (url.pathname.includes('/invite')) {
+        inviteCalls.push(url.pathname);
+        return Response.json({});
+      }
+      throw new Error(`unexpected Matrix fetch ${method} ${url.pathname}`);
+    }));
+
+    const issueCredential = vi.fn(async (options: any) => ({
+      id: `${options.name.includes('alice') ? 'alice' : 'bob'}-credential`,
+      secret: 'fixture-secret',
+      resource: options.controls.account.clientCredentials,
+    }));
+
+    await expect(matrixCheck({
+      baseUrl: new URL('https://id-rc.undefineds.cn/'),
+      alice: login(aliceIdentity) as never,
+      bob: login(bobIdentity) as never,
+      timeoutMs: 5_000,
+      issueCredential: issueCredential as never,
+      secrets: [],
+    })).rejects.toMatchObject({ errorClass: 'container-unreachable' });
+
+    expect(order[0]).toBe('createRoom');
+    expect(order).toContain('grant:HEAD');
+    expect(order.indexOf('grant:HEAD')).toBeGreaterThan(order.indexOf('createRoom'));
+    expect(inviteCalls).toEqual([]);
   });
 });

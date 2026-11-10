@@ -19,6 +19,7 @@
  * are the only release-gate facts this runner adds.
  */
 import { createHash, randomUUID } from 'node:crypto';
+import { grantMatrixRoomAccess, matrixRoomContainerUri } from './lib/rc-matrix-room-access';
 import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
@@ -567,7 +568,7 @@ async function issueMatrixCredential(input: {
   return { token, credentialId: credential.id, resource: credential.resource };
 }
 
-async function matrixCheck(input: {
+export async function matrixCheck(input: {
   baseUrl: URL;
   alice: Login;
   bob: Login;
@@ -635,6 +636,21 @@ async function matrixCheck(input: {
   }
   const roomId: string = room.room_id;
   const roomPath = `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}`;
+
+  // Product precondition (LinX createMatrixGroupRoom): the owner grants the
+  // invitee room-scoped access BEFORE the Matrix invite, so the invitee's own
+  // credential can read the room Pod once discovered. Matrix invitations never
+  // grant Solid ACL themselves. A grant failure aborts before any invite.
+  const roomContainerUri = matrixRoomContainerUri(roomId, input.alice.session.identity.storageUrl);
+  const roomGrant = await grantMatrixRoomAccess({
+    roomId,
+    roomContainerUri,
+    storageRoot: input.alice.session.identity.storageUrl,
+    authFetch: input.alice.session.authenticatedFetch,
+    participants: [input.bob.session.identity.webId],
+    ownerWebId: input.alice.session.identity.webId,
+    timeoutMs: Math.min(input.timeoutMs, 30_000),
+  });
 
   await matrixRequest({
     baseUrl: input.baseUrl, token: aliceCredential.token, podUrl: input.alice.session.identity.storageUrl,
@@ -752,6 +768,11 @@ async function matrixCheck(input: {
       bobSyncAttempts: bobSees.attempts,
       aliceSyncAttempts: aliceSees.attempts,
       transport: 'real-http-rc-only',
+      roomAccess: {
+        mechanism: roomGrant.mechanism,
+        granted: roomGrant.grantedWebIds.length,
+        beforeInvite: true,
+      },
     },
   };
 }
