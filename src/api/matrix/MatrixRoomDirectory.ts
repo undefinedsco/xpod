@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import {
   executeQuery,
@@ -8,6 +7,7 @@ import {
 } from '../../identity/drizzle/db';
 import { chatResource, threadResource } from '@undefineds.co/models';
 import { MatrixError } from './MatrixError';
+import { matrixRoomSurfaceId } from './MatrixIdentity';
 
 /**
  * A room binding whose canonical root was checked against persisted ownership
@@ -532,9 +532,9 @@ export function roomContainerOf(iri: string): string {
   return parsed.toString();
 }
 
-/** Matches PodMatrixStore's canonical room surface id derivation. */
+/** Canonical room surface id; shared with PodMatrixStore and the RC helper. */
 function surfaceId(roomId: string): string {
-  return `matrix-${createHash('sha256').update(roomId).digest('hex').slice(0, 16)}`;
+  return matrixRoomSurfaceId(roomId);
 }
 
 /** Rows read back from SQL must still be canonical; never trust storage text. */
