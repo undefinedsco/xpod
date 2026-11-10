@@ -496,8 +496,13 @@ function rc398ConsumerVariant<T extends GitHubSourceBindingGroup>(group: T): T {
       : row;
   return Object.freeze({
     ...group,
+    // selectors are owned roles too: rebind them as well so a changed selector
+    // (e.g. github-origin) cannot keep a stale hash in the current tail.
     selectors: Object.freeze(group.selectors.map(rebind)),
     secondarySelectors: Object.freeze((group.secondarySelectors ?? []).map(rebind)),
+    secondarySelectorStages: group.secondarySelectorStages
+      ? Object.freeze(group.secondarySelectorStages.map((stage) => Object.freeze(stage.map(rebind))))
+      : undefined,
     sourceBindings: Object.freeze(group.sourceBindings.map(rebind)),
   }) as T;
 }
@@ -506,6 +511,13 @@ function rc398ConsumerVariant<T extends GitHubSourceBindingGroup>(group: T): T {
  * family is appended; every published group and both RC398 variants stay byte-exact.
  * Only this new variant uses the held-FD live controller self-reference. */
 const QLEVER_RC399_POLICY_SHA256='429d489f0662c5ac1c66b46b1b2626a85077e246701edaa1057efc25b077bd27';
+/** Live bytes of the two release inputs this generation's dependency declaration moved. */
+const RC399_LIVE_RELEASE_INPUTS: Readonly<Record<string, string>> = Object.freeze({
+  'package.json': '9a8aa57d082c0bf28cedcb0f27ebb9245419a271e53efb1aa7bf42a80a76fef0',
+  'bun.lock': 'dd41359d7fa5df0f5d32e030ede320c5ef7e395d6aa3f495aa6c9e0914037722',
+  // github-origin owns the API group definition changed by the same append.
+  'scripts/lib/independent-admission/github-origin.ts': 'bbd1928cd47c220183022012bbc554a4bcfee9b598274368de9c87347ebbd8b2',
+});
 function rc399ConsumerVariant<T extends GitHubSourceBindingGroup>(group: T): T {
   const rebind = (row: GitHubSourceBinding): GitHubSourceBinding => {
     if (row.path === 'scripts/lib/independent-admission/consumer-observer-policy.ts') {
@@ -514,9 +526,15 @@ function rc399ConsumerVariant<T extends GitHubSourceBindingGroup>(group: T): T {
     if (row.path === 'scripts/lib/independent-admission/consumer-execution-current.json') {
       return CONTROLLER_POLICY_BINDINGS[1]!;
     }
-    return row.path === 'scripts/lib/independent-admission/qlever-sdk-origin-policy.ts'
-      ? Object.freeze({ ...row, sha256: QLEVER_RC399_POLICY_SHA256 })
-      : row;
+    if (row.path === 'scripts/lib/independent-admission/qlever-sdk-origin-policy.ts') {
+      return Object.freeze({ ...row, sha256: QLEVER_RC399_POLICY_SHA256 });
+    }
+    // This generation also declared the direct @inrupt/solid-client dependency,
+    // which moved exactly these two owned release inputs. Only those rows move;
+    // every earlier tuple keeps its published bytes.
+    const live = RC399_LIVE_RELEASE_INPUTS[row.path];
+    if (live && row.sha256 !== live) return Object.freeze({ ...row, sha256: live });
+    return row;
   };
   return Object.freeze({
     ...group,

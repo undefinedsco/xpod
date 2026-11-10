@@ -33,7 +33,7 @@
   },
   {
     "path": "bun.lock",
-    "sha256": "6cb041b44fdc2dfe9171e449a69eeeec4617b5ccf754a0312cd194b7b7e3aa7b"
+    "sha256": "dd41359d7fa5df0f5d32e030ede320c5ef7e395d6aa3f495aa6c9e0914037722"
   },
   {
     "path": "desktop/package.json",
@@ -45,7 +45,7 @@
   },
   {
     "path": "package.json",
-    "sha256": "effb5cbd1c4d9e191b2e4f3052b1c76fed2c172063ba2274d8558fefa6fa282f"
+    "sha256": "9a8aa57d082c0bf28cedcb0f27ebb9245419a271e53efb1aa7bf42a80a76fef0"
   },
   {
     "path": "packages/ai-connections-runtime/package.json",
@@ -941,7 +941,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "a58254d2566dd6e23534dffadd74399e1f451a0c77e6096697b5c7f90b3a2ddc"
+    "sha256": "bbd1928cd47c220183022012bbc554a4bcfee9b598274368de9c87347ebbd8b2"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",

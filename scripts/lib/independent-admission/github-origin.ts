@@ -1291,7 +1291,8 @@ const apiRc159Tuple=Object.freeze({...apiCurrentSharedParserGroup,name:'api-curr
  *
  * API32 above keeps its exact published bytes; API33 clones it and rebinds ONLY the
  * drifted rows, appending the one new owned original. No published tuple is rewritten. */
-const apiRc393PackageHash='effb5cbd1c4d9e191b2e4f3052b1c76fed2c172063ba2274d8558fefa6fa282f';
+const apiRc393PackageHash='9a8aa57d082c0bf28cedcb0f27ebb9245419a271e53efb1aa7bf42a80a76fef0';
+const apiRc393LockHash='dd41359d7fa5df0f5d32e030ede320c5ef7e395d6aa3f495aa6c9e0914037722';
 const apiRc393DependencyStateHash='012ba511fbb68b441a25821933d53a49a47aa5ad39c64a3b25c5dc58ba4a0950';
 const apiRc393UndiciEntryHash='d3e118347eef031adda164a503b0ba0eb1a709ff228c7c33f94e108b42767158';
 /** The graph fix in this same unpublished API33 closes over its own verifier bytes:
@@ -1305,9 +1306,10 @@ const API33_REBOUND:Readonly<Record<string,string>>=Object.freeze({
 });
 const apiRc393Tuple=Object.freeze({...apiRc159Tuple,name:'api-current-bun-postinstall-hook',
   secondarySelectors:Object.freeze((apiRc159Tuple.secondarySelectors??[]).map(row=>Object.freeze({...row,
-    sha256:row.path==='package.json'?apiRc393PackageHash:row.sha256}))),
+    sha256:row.path==='package.json'?apiRc393PackageHash
+      :row.path==='bun.lock'?apiRc393LockHash:row.sha256}))),
   sourceBindings:Object.freeze([...(apiRc159Tuple.sourceBindings??[]).map(row=>Object.freeze({...row,
-    sha256:API33_REBOUND[row.path]??row.sha256})),
+    sha256:API33_REBOUND[row.path]??(row.path==='bun.lock'?apiRc393LockHash:row.sha256)})),
     Object.freeze({path:'patches/comunica-undici-entry.cjs',sha256:apiRc393UndiciEntryHash})])});
 export const API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS:readonly (GitHubSourceBindingGroup&{readonly name?:string})[]=Object.freeze([...API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS_BASE,apiRc159Tuple,apiRc393Tuple]);
 /** CURRENT API33 sourceBindings; the frozen API32/API31 tuples keep their own objects. */
