@@ -185,6 +185,7 @@
   },
   "devDependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.39",
+    "@inrupt/solid-client": "3.0.0",
     "@playwright/test": "^1.57.0",
     "@types/http-proxy": "^1.17.17",
     "@types/nat-upnp": "^1.1.5",

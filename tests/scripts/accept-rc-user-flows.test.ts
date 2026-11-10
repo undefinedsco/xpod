@@ -16,8 +16,10 @@ import {
   classifyCredentialIssuanceFailure,
   describeAcceptanceFailure,
   formatCredentialFailure,
+  matrixCheck,
   matrixSk,
   normalizeRcBaseUrl,
+  runRcUserFlows,
   writeEvidenceFile,
   type RcUserFlowsEvidence,
 } from '../../scripts/accept-rc-user-flows';
@@ -511,6 +513,66 @@ describe('RC user-flow acceptance runner', () => {
     })).rejects.toThrow(/last status: matrix fixed status/u);
   });
 
+  it('writer boundary sample: fixed prose serializes and header-shaped credentials are still rejected', async () => {
+    // This is a writer-boundary sample, not a generator regression: it copies the
+    // fixed prose into a fixture, so it would also pass against the old helper.
+    // The generator itself is exercised by the next test.
+    const emitted = evidence({
+      evidenceScope: 'Real HTTPS against the deployed RC only. Browser OIDC/PKCE/DPoP-based protocol evidence is reported separately from HTTP facts. No desktop, LinX, mock, local server, manual sk, or provider key is claimed.',
+      checks: {
+        ...evidence().checks,
+        'rc-pod-sparql': { ok: true, detail: 'Pod SPARQL (DPoP) root HTTP 200; unique descendant scope HTTP 200 with ASK=false and SELECT rows=0.' },
+        'rc-builtin-models-chat': { ok: true, detail: 'Browser session over DPoP: /v1/models HTTP 200 includes linx, linx-lite; real /v1/chat/completions responses matched unique nonces for linx and linx-lite.' },
+        'rc-browser-consent': { ok: true, detail: 'Alice and Bob each completed a fresh browser OIDC/PKCE/DPoP-based login with exactly one visible Consent screen and exactly one matching WebID/storage binding.' },
+      },
+    });
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-rc-user-flows-prose-'));
+    tempRoots.push(root);
+    const file = await writeEvidenceFile(root, emitted);
+    const written = JSON.parse(await readFile(file, 'utf8'));
+    expect(written.checks['rc-pod-sparql'].detail).toContain('Pod SPARQL (DPoP) root');
+    expect(written.checks['rc-builtin-models-chat'].detail).toContain('Browser session over DPoP');
+
+    // Real credentials in any supported header shape are still rejected by the
+    // unchanged guard, including arbitrary opaque alphanumeric DPoP tokens.
+    for (const leaked of ['sk-abcdefgh', 'Bearer opaque-token-1', 'DPoP abc123', 'DPoP eyJhbGciOiJFUzI1NiJ9']) {
+      await expect(writeEvidenceFile(root, evidence({
+        checks: { ...evidence().checks, 'rc-pod-sparql': { ok: false, detail: `leaked ${leaked}` } },
+      }))).rejects.toThrow(/credential material/u);
+    }
+  });
+
+  it('real generator writes legitimate failure evidence for a missing seed instead of tripping the credential guard', async () => {
+    // Public generator with a valid RC HTTPS origin but a nonexistent seed file.
+    // loadRcSeedAccounts runs before chromium.launch, so this never starts Chrome
+    // or touches the network; the catch marks all four checks false and the
+    // runner writes its REAL initial evidence before raising a normal failure.
+    // On the old source the scope prose matched the DPoP header alternation and
+    // writeEvidenceFile threw "credential material" with no file at all.
+    const root = await mkdtemp(path.join(os.tmpdir(), 'xpod-rc-user-flows-generator-'));
+    tempRoots.push(root);
+    const failure = await runRcUserFlows({
+      baseUrl: 'https://id-rc.undefineds.cn/',
+      seedConfigPath: path.join(root, 'missing-seed.json'),
+      outputDir: root,
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(AcceptanceError);
+    expect(String((failure as Error).message)).toMatch(/RC user-flow acceptance failed/u);
+    expect(String((failure as Error).message)).not.toMatch(/credential material/u);
+
+    const written = JSON.parse(await readFile(path.join(root, 'evidence.json'), 'utf8'));
+    expect(written.kind).toBe('xpod-rc-user-flows');
+    expect(written.evidenceScope).toContain('DPoP');
+    expect(Object.keys(written.checks).sort()).toEqual([
+      'rc-browser-consent', 'rc-builtin-models-chat', 'rc-matrix-collaboration', 'rc-pod-sparql',
+    ]);
+    for (const check of Object.values(written.checks) as Array<{ ok: boolean }>) {
+      expect(check.ok).toBe(false);
+    }
+    expect(() => assertNoSecretMaterial(JSON.stringify(written), [])).not.toThrow();
+  });
+
   it('keeps credentials out of evidence and rejects any secret that reaches it', async () => {
     const secret = 'sk-SYNTHETICSECRETVALUE';
     expect(() => assertNoSecretMaterial('{"value":"safe"}', [secret])).not.toThrow();
@@ -553,5 +615,90 @@ describe('RC user-flow acceptance runner', () => {
     const diagnostics = ts.getPreEmitDiagnostics(program).filter((diagnostic) =>
       diagnostic.file && path.resolve(diagnostic.file.fileName) === entry);
     expect(diagnostics.map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n'))).toEqual([]);
+  });
+});
+
+describe('RC matrix grant ordering (real matrixCheck)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('runs the owner room grant before the invite and aborts without inviting when the grant fails', async () => {
+    const aliceIdentity = {
+      accountId: 'alice-account',
+      webId: 'https://id-rc.undefineds.cn/alice/profile/card#me',
+      storageUrl: 'https://pods-rc.undefineds.cn/alice/',
+    };
+    const bobIdentity = {
+      accountId: 'bob-account',
+      webId: 'https://id-rc.undefineds.cn/bob/profile/card#me',
+      storageUrl: 'https://pods-rc.undefineds.cn/bob/',
+    };
+    const order: string[] = [];
+    const inviteCalls: string[] = [];
+
+    // Alice's own DPoP fetch: the room container HEAD is denied, so the grant
+    // fails before any Matrix invite can be sent.
+    const aliceFetch = vi.fn(async (input: any, init?: RequestInit) => {
+      order.push(`grant:${String(init?.method ?? input?.method ?? 'GET').toUpperCase()}`);
+      return new Response(null, { status: 403 });
+    });
+
+    const login = (identity: typeof aliceIdentity) => ({
+      context: {} as never,
+      page: {} as never,
+      accountToken: `account-token-${identity.accountId}`,
+      session: {
+        identity,
+        authenticatedFetch: aliceFetch as unknown as typeof fetch,
+        account: {
+          accountId: identity.accountId,
+          bindings: [{ webId: identity.webId, storageUrl: identity.storageUrl }],
+          clientCredentials: '/alice/profile/card#clientCredentials',
+        },
+      },
+    });
+
+    vi.stubGlobal('fetch', vi.fn(async (input: any, init?: RequestInit) => {
+      const url = new URL(String(input?.url ?? input), 'https://id-rc.undefineds.cn');
+      const method = String(init?.method ?? input?.method ?? 'GET').toUpperCase();
+      const podUrl = new Headers(init?.headers ?? input?.headers).get('X-Xpod-Pod-Url') ?? '';
+      const who = podUrl === aliceIdentity.storageUrl ? 'alice' : 'bob';
+      if (url.pathname.endsWith('/account/whoami')) {
+        return Response.json({
+          user_id: `@u_${who}:example.test`,
+          'co.undefineds.webid': who === 'alice' ? aliceIdentity.webId : bobIdentity.webId,
+        });
+      }
+      if (url.pathname.endsWith('/createRoom') && method === 'POST') {
+        order.push('createRoom');
+        return Response.json({ room_id: '!room-order:example.test' });
+      }
+      if (url.pathname.includes('/invite')) {
+        inviteCalls.push(url.pathname);
+        return Response.json({});
+      }
+      throw new Error(`unexpected Matrix fetch ${method} ${url.pathname}`);
+    }));
+
+    const issueCredential = vi.fn(async (options: any) => ({
+      id: `${options.name.includes('alice') ? 'alice' : 'bob'}-credential`,
+      secret: 'fixture-secret',
+      resource: options.controls.account.clientCredentials,
+    }));
+
+    await expect(matrixCheck({
+      baseUrl: new URL('https://id-rc.undefineds.cn/'),
+      alice: login(aliceIdentity) as never,
+      bob: login(bobIdentity) as never,
+      timeoutMs: 5_000,
+      issueCredential: issueCredential as never,
+      secrets: [],
+    })).rejects.toMatchObject({ errorClass: 'container-unreachable' });
+
+    expect(order[0]).toBe('createRoom');
+    expect(order).toContain('grant:HEAD');
+    expect(order.indexOf('grant:HEAD')).toBeGreaterThan(order.indexOf('createRoom'));
+    expect(inviteCalls).toEqual([]);
   });
 });

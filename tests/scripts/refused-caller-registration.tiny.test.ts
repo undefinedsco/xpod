@@ -86,12 +86,23 @@ test('the appended tuples are exactly two genuine slices each and the deltas are
  expect(linux.slice(1).map(digest)).toEqual(sdk.map(digest));
  // CI is the published CI slice plus one appended pair per new consumer recipe.
  expect(ci.slice(0,172).map(digest)).toEqual((published.groupHashes as Record<string,string[]>).ci!);
- // Retain the previous generation's roles, rebinding only the two changed
- // policies. Both members of the new CI pair share the same secondary recipe.
+ // Retain the previous generation's roles and shape: the CURRENT mutable tail may
+ // re-pin only rows it ALREADY owns. Both members of the new CI pair share the
+ // same secondary recipe.
  const tail=ci[ci.length-1]!,prior=ci[ci.length-3]!;
  const priorSecondary=prior.secondarySelectors??[];
  const tailSecondary=tail.secondarySelectors??[];
- const rebound=new Set([CONTROLLER_POLICY_PATH,'scripts/lib/independent-admission/qlever-sdk-origin-policy.ts']);
+ // The reviewed current generation moves exactly these already-owned roles:
+ // the two controller policies, the API policy it binds, the CLI verifier that
+ // the CLI16 current tuple lives in, and the two release inputs the reviewed
+ // @inrupt/solid-client devDependency declaration changed.
+ const rebound=new Set([CONTROLLER_POLICY_PATH,
+  'scripts/lib/independent-admission/qlever-sdk-origin-policy.ts',
+  'scripts/lib/independent-admission/github-origin.ts',
+  'scripts/lib/independent-admission/source-rules.ts',
+  'package.json','bun.lock']);
+ // No role is added or dropped by the append, only the reviewed rows move.
+ expect(tailSecondary.map(row=>row.path)).toEqual(priorSecondary.map(row=>row.path));
  expect(tailSecondary).toEqual(priorSecondary.map(row=>rebound.has(row.path)?{...row,sha256:sha(row.path)}:row));
  expect(ci[ci.length-2]!.secondarySelectors).toEqual(tailSecondary);
  const controller=tailSecondary.filter(row=>row.path===CONTROLLER_POLICY_PATH);

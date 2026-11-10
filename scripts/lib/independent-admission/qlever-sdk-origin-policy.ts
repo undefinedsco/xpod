@@ -3340,17 +3340,31 @@ const RC398_SDK116_GROUP:GitHubSourceBindingGroup=Object.freeze({...RC397_SDK115
 });
 /* RC399_CANDIDATE_CLEANUP_REGISTRATION: one shared SDK/Linux consumer variant for the same
  * candidate-workflow bytes. RC398_SDK116 stays byte-exact. The candidate role is already an
- * owned stage-1 entry + sourceBinding, so it is rebound in place and the relationship follows. */
+ * owned stage-1 entry + sourceBinding, so it is rebound in place and the relationship follows.
+ * This is the declared CURRENT mutable tail, so the two release inputs already owned by every
+ * earlier tail (`package.json` in the secondary selector + sourceBindings, `bun.lock` in the
+ * sourceBindings) are re-pinned to their ACTUAL reviewed bytes. No path, stage or role is
+ * added, and every earlier SDK/Linux consumer group keeps its exact frozen bytes. */
+const RC399_LIVE_RELEASE_INPUTS:Readonly<Record<string,string>>=Object.freeze({
+  'package.json':'9a8aa57d082c0bf28cedcb0f27ebb9245419a271e53efb1aa7bf42a80a76fef0',
+  'bun.lock':'dd41359d7fa5df0f5d32e030ede320c5ef7e395d6aa3f495aa6c9e0914037722',
+});
+const rc399LiveReleaseRow=(row:GitHubSourceBinding)=>Object.freeze({
+  ...row,sha256:RC399_LIVE_RELEASE_INPUTS[row.path]??row.sha256,
+});
 const RC399_SDK117_GROUP:GitHubSourceBindingGroup=Object.freeze({...RC398_SDK116_GROUP,
   candidateServiceRelationship:RC398_SDK116_GROUP.candidateServiceRelationship
     ?Object.freeze({...RC398_SDK116_GROUP.candidateServiceRelationship,
       workflowSha256:QLEVER_RC399_CANDIDATE_WORKFLOW_HASH})
     :undefined,
+  secondarySelectors:RC398_SDK116_GROUP.secondarySelectors
+    ?Object.freeze(RC398_SDK116_GROUP.secondarySelectors.map(rc399LiveReleaseRow))
+    :undefined,
   secondarySelectorStages:Object.freeze((RC398_SDK116_GROUP.secondarySelectorStages??[]).map(stage=>
-    Object.freeze(stage.map(row=>Object.freeze({...row,
-      sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_RC399_CANDIDATE_WORKFLOW_HASH:row.sha256}))))),
+    Object.freeze(stage.map(row=>Object.freeze({...rc399LiveReleaseRow(row),
+      sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_RC399_CANDIDATE_WORKFLOW_HASH:rc399LiveReleaseRow(row).sha256}))))),
   sourceBindings:Object.freeze(RC398_SDK116_GROUP.sourceBindings.map(row=>
-    Object.freeze({...row,sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_RC399_CANDIDATE_WORKFLOW_HASH:row.sha256}))),
+    Object.freeze({...row,sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_RC399_CANDIDATE_WORKFLOW_HASH:rc399LiveReleaseRow(row).sha256}))),
 });
 export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP,RC391_SDK110_GROUP,RC392_SDK111_GROUP,RC393_SDK112_GROUP,RC395_SDK113_GROUP,RC396_SDK114_GROUP,RC397_SDK115_GROUP,RC398_SDK116_GROUP,RC399_SDK117_GROUP]);
 export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP,RC391_SDK110_GROUP,RC392_SDK111_GROUP,RC393_SDK112_GROUP,RC395_SDK113_GROUP,RC396_SDK114_GROUP,RC397_SDK115_GROUP,RC398_SDK116_GROUP,RC399_SDK117_GROUP]);

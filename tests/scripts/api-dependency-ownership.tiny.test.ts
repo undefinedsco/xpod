@@ -4,6 +4,7 @@ import {createHash} from 'node:crypto';
 import {createRequire} from 'node:module';
 import legacy from '../fixtures/independent-admission/api-pre-catalog-manifests.original.json';
 import ts from 'typescript';
+import {execFileSync} from 'node:child_process';
 const {JSONC}=createRequire(import.meta.url)('bun') as {JSONC:{parse(text:string):any}};
 const normalize=(x:any):any=>Array.isArray(x)?x.map(normalize):x&&typeof x==='object'?Object.fromEntries(Object.keys(x).sort().map(k=>[k,normalize(x[k])])):x;
 const digest=(x:any)=>createHash('sha256').update(JSON.stringify(normalize(x))).digest('hex');
@@ -13,15 +14,19 @@ describe('API declaration ownership proposal, not installer proof',()=>{
  it('preserves every existing root capability range through a single shared catalog',()=>{
   const before=old('package.json'),after=current('package.json');const catalog=after.catalogs['api-producer'];
   // Keep the reviewed ORM bump and the explicit userland Undici runtime dependency.
-  // All historical ranges and every other dependency key remain unchanged.
+  // The reviewed direct devDependency @inrupt/solid-client@3.0.0 is the ONLY other
+  // declared root capability addition. All historical ranges and every other
+  // dependency key remain unchanged.
   expect(after.catalogs['api-producer']['@undefineds.co/drizzle-solid']).toBe('0.3.26');
   expect(after.dependencies.undici).toBe('^7.29.0');
+  expect(after.devDependencies['@inrupt/solid-client']).toBe('3.0.0');
+  expect(before.devDependencies['@inrupt/solid-client']).toBeUndefined();
   const resolve=(manifest:any,name:string)=>{
    const range=manifest.dependencies?.[name]??manifest.devDependencies?.[name]??manifest.peerDependencies?.[name]??manifest.optionalDependencies?.[name];
    return range==='catalog:api-producer'?catalog[name]:range;
   };
   for(const kind of ['dependencies','devDependencies','peerDependencies','optionalDependencies']){
-   const added=kind==='dependencies'?['undici']:[];
+   const added=kind==='dependencies'?['undici']:kind==='devDependencies'?['@inrupt/solid-client']:[];
    expect(Object.keys(after[kind]??{}).sort())
     .toEqual([...Object.keys(before[kind]??{}),...added].sort());
    for(const name of Object.keys(before[kind]??{})){
@@ -56,13 +61,38 @@ describe('API declaration ownership proposal, not installer proof',()=>{
  });
  it('actual generated lock binds catalogs/workspaces without package resolution or peer drift',()=>{
   const lock=JSONC.parse(readFileSync('bun.lock','utf8')),root=current('package.json'),api=current('packages/xpod-api/package.json');expect(lock.catalogs).toEqual(root.catalogs);
-  // The historical fixture keeps its published pre-catalog table facts. The
-  // ORM dependency moved 0.3.25 -> 0.3.26. The direct Undici edge reuses an
-  // already resolved package, so the package table and its row count keep
-  // their previously reviewed identities.
+  // The historical fixture keeps its published pre-catalog table facts untouched.
+  // The ORM dependency moved 0.3.25 -> 0.3.26 and the reviewed direct
+  // devDependency @inrupt/solid-client@3.0.0 was declared, which re-hoisted the
+  // shared jsonld-streaming-parser@5.0.1 that already existed. The package
+  // INSTANCES and their resolved name@version/integrity identities therefore do
+  // not change: only the explicit root edge plus the alias/hoist keys move.
   expect(legacy.lockPackageRows).toBe(2780);
-  expect(Object.keys(lock.packages).length).toBe(legacy.lockPackageRows);
-  expect(digest(lock.packages)).toBe('4923c8134808a345a9d6a85c283292af6e7ab9bc1a132157b1f9af4572c0ebd8');
+  expect(Object.keys(lock.packages).length).toBe(legacy.lockPackageRows+8);
+  // Every package NAME is unchanged; the net 8 extra rows are path/hoist aliases for
+  // packages that were already resolved (no new name@version appears). Prove that
+  // structurally: each added alias key resolves to a (pkg@version, integrity)
+  // identity that ALREADY existed in the reviewed pre-inrupt resolution, and each
+  // dropped alias key maps to an identity that still exists here.
+  const identityOf=(value:any)=>JSON.stringify([value[0],value[3]??null]);
+  const currentIdentities=new Set(Object.values(lock.packages).map(identityOf));
+  const reviewedPreInrupt=JSONC.parse(execFileSync('git',['show','a5a0b766^:bun.lock'],{maxBuffer:1<<28}).toString());
+  const reviewedIdentities=new Set(Object.values(reviewedPreInrupt.packages).map(identityOf));
+  const addedKeys=Object.keys(lock.packages).filter(key=>!(key in reviewedPreInrupt.packages));
+  const droppedKeys=Object.keys(reviewedPreInrupt.packages).filter(key=>!(key in lock.packages));
+  // The reviewed hoist delta: 13 new alias keys replace 5 stale alias keys, a net
+  // +8 rows over the 2780 published rows. No package identity is introduced.
+  expect(addedKeys).toHaveLength(13);
+  expect(droppedKeys).toHaveLength(5);
+  for(const key of addedKeys)expect([key,reviewedIdentities.has(identityOf(lock.packages[key]))]).toEqual([key,true]);
+  for(const key of droppedKeys)expect([key,currentIdentities.has(identityOf(reviewedPreInrupt.packages[key]))]).toEqual([key,true]);
+  // The reviewed CURRENT identity set: one row per distinct (pkg@version, integrity).
+  // It has the same cardinality (2042) and the same digest as the reviewed
+  // pre-inrupt resolution, which is what "equivalent identities" means here.
+  const identities=[...currentIdentities].sort();
+  expect(identities).toHaveLength(2042);
+  expect(digest(identities)).toBe('63ddbd0c7cfcfd789432a0f34f4cf22c9ad7bbf61f9f54e859799c437fd82906');
+  expect(lock.packages['@inrupt/solid-client'][0]).toBe('@inrupt/solid-client@3.0.0');
   expect(digest(lock.overrides)).toBe('1f08aa51a613ad41468683e53ffef3f11e4674dbe73fea8ce61cb646e8412634');
   expect(lock.overrides['@undefineds.co/drizzle-solid']).toBe('0.3.26');
   for(const [path,manifest] of [['',root],['packages/xpod-api',api]] as const)for(const kind of ['dependencies','devDependencies','optionalDependencies','peerDependencies'])expect(lock.workspaces[path][kind]??{}).toEqual(manifest[kind]??{});
