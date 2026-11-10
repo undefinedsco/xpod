@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -15,8 +15,12 @@ import {
 
 const RC = 'https://id-rc.undefineds.cn';
 const ACCOUNT = { id: 'account-alice', webId: 'https://id-rc.undefineds.cn/alice/profile/card#me', storageUrl: 'https://pods-rc.undefineds.cn/alice/' };
-const CREDENTIAL_ID = 'cred-abc123';
-const CREDENTIAL_RESOURCE = `${RC}/.account/account/alice/client-credentials/${CREDENTIAL_ID}/`;
+/** The real deployed CSS contract has TWO identifiers per credential: the public
+ * OAuth label returned as the wire `id` (used as `client_id`) and the internal
+ * storage UUID that appears in the `resource` path. They are never equal. */
+const CREDENTIAL_ID = 'rc-platform-provider-testnonce_1f2e3d4c-5b6a-4978-8c9d-0e1f2a3b4c5d';
+const STORAGE_ID = '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d';
+const CREDENTIAL_RESOURCE = `${RC}/.account/account/alice/client-credentials/${STORAGE_ID}/`;
 
 interface Fixture {
   fetches: string[];
@@ -60,7 +64,7 @@ function baseFetch(state: Fixture): typeof fetch {
       state.modelsCalls++;
       return Response.json(state.modelsBody ?? { data: [{ id: 'linx' }, { id: 'linx-lite' }] }, { status: state.modelsStatus ?? 200 });
     }
-    if (url.pathname === `/.account/account/alice/client-credentials/${CREDENTIAL_ID}/`) {
+    if (url.pathname === `/.account/account/alice/client-credentials/${STORAGE_ID}/`) {
       if (method === 'DELETE') {
         state.deletes.push(url.pathname);
         if (!state.resourceExists) return new Response(null, { status: 404 });
@@ -69,7 +73,13 @@ function baseFetch(state: Fixture): typeof fetch {
       }
       if (method === 'GET') {
         if (!state.resourceExists) return new Response('', { status: 404 });
-        return Response.json({ id: CREDENTIAL_ID, name: state.issuedBodies.at(-1) && (state.issuedBodies.at(-1) as { name?: string }).name });
+        // Real ClientCredentialsDetailsHandler shape: `id` is the LABEL, plus the
+        // linked WebID; `name` here mirrors the nonce this tool supplied.
+        return Response.json({
+          id: CREDENTIAL_ID,
+          webId: ACCOUNT.webId,
+          name: state.issuedBodies.at(-1) && (state.issuedBodies.at(-1) as { name?: string }).name,
+        });
       }
     }
     return new Response('', { status: 500 });
@@ -120,18 +130,27 @@ describe('prepare RC platform provider', () => {
     }
   });
 
-  it('rejects a credential resource outside the RC Account authority or wrong id', () => {
+  it('accepts only the exact RC Account client-credentials resource shape', () => {
     const base = new URL(`${RC}/`);
-    expect(assertOwnedCredentialResource(`/.account/account/alice/client-credentials/${CREDENTIAL_ID}/`, base, CREDENTIAL_ID))
+    // The wire id (OAuth label) is NOT a path segment; the path carries the
+    // distinct storage UUID. Shape/authority is what this predicate proves.
+    expect(assertOwnedCredentialResource(`/.account/account/alice/client-credentials/${STORAGE_ID}/`, base))
       .toBe(CREDENTIAL_RESOURCE);
+    expect(CREDENTIAL_RESOURCE).not.toContain(CREDENTIAL_ID);
     for (const raw of [
-      `https://evil.test/.account/account/alice/client-credentials/${CREDENTIAL_ID}/`,
-      `https://id-rc.undefineds.cn/other/${CREDENTIAL_ID}/`,
-      `https://id-rc.undefineds.cn/.account/account/alice/client-credentials/${CREDENTIAL_ID}/?x=1`,
+      `https://evil.test/.account/account/alice/client-credentials/${STORAGE_ID}/`,
+      `https://id-rc.undefineds.cn/other/${STORAGE_ID}/`,
+      `https://id-rc.undefineds.cn/.account/account/alice/client-credentials/${STORAGE_ID}/?x=1`,
+      `https://id-rc.undefineds.cn/.account/account/alice/client-credentials/${STORAGE_ID}/#frag`,
+      `https://user:pass@id-rc.undefineds.cn/.account/account/alice/client-credentials/${STORAGE_ID}/`,
+      // Wrong namespace: not the client-credentials collection.
+      `https://id-rc.undefineds.cn/.account/account/alice/bindings/${STORAGE_ID}/`,
+      // Missing trailing slash / missing id segment.
+      `https://id-rc.undefineds.cn/.account/account/alice/client-credentials/`,
+      `https://id-rc.undefineds.cn/.account/account/alice/client-credentials/${STORAGE_ID}`,
     ]) {
-      expect(() => assertOwnedCredentialResource(raw, base, CREDENTIAL_ID)).toThrow(PlatformProviderError);
+      expect(() => assertOwnedCredentialResource(raw, base)).toThrow(PlatformProviderError);
     }
-    expect(() => assertOwnedCredentialResource(CREDENTIAL_RESOURCE, base, 'other-id')).toThrow(PlatformProviderError);
   });
 
   it('issues one normal Account client credential, proves real models, and writes 0600 owned files', async () => {
@@ -188,7 +207,7 @@ describe('prepare RC platform provider', () => {
       baseUrl: `${RC}/`, seedConfigPath: files.seed, keyFile: files.keyFile, receiptFile: files.receiptFile,
       fetchImpl: baseFetch(state), nonce: 'rc-platform-provider-failmodels',
     })).rejects.toMatchObject({ reason: 'models', status: 404 });
-    expect(state.deletes).toEqual([`/.account/account/alice/client-credentials/${CREDENTIAL_ID}/`]);
+    expect(state.deletes).toEqual([`/.account/account/alice/client-credentials/${STORAGE_ID}/`]);
     await expect(stat(files.keyFile)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(stat(files.receiptFile)).rejects.toMatchObject({ code: 'ENOENT' });
   });
@@ -214,6 +233,148 @@ describe('prepare RC platform provider', () => {
     expect(JSON.stringify(receipt)).not.toContain('fixture-secret');
   });
 
+  /** Rewrite only the details GET so the identity proof sees a foreign payload. */
+  function detailsOverride(
+    state: Fixture,
+    payload: Record<string, unknown>,
+  ): typeof fetch {
+    return detailsResponder(state, () => Response.json(payload));
+  }
+
+  it('refuses a credential whose details id is not ours and never deletes it', async () => {
+    const files = await paths();
+    const state = newFixture();
+    const foreign = detailsOverride(state, { id: 'someone-elses-label', webId: ACCOUNT.webId });
+    await expect(createPlatformProvider({
+      baseUrl: `${RC}/`, seedConfigPath: files.seed, keyFile: files.keyFile, receiptFile: files.receiptFile,
+      fetchImpl: foreign, nonce: 'rc-platform-provider-testnonce',
+    })).rejects.toMatchObject({ reason: 'resource' });
+    // Never DELETE an unproven resource, and never emit key material.
+    expect(state.deletes).toEqual([]);
+    await expect(stat(files.keyFile)).rejects.toMatchObject({ code: 'ENOENT' });
+    // The private non-secret recovery receipt survives, so the credential is not
+    // silently orphaned behind a `no-receipt` cleanup success.
+    const receipt = JSON.parse(await readFile(files.receiptFile, 'utf8'));
+    expect(receipt).toMatchObject({
+      phase: 'issued', id: CREDENTIAL_ID, nonce: 'rc-platform-provider-testnonce', resource: CREDENTIAL_RESOURCE,
+    });
+    expect(JSON.stringify(receipt)).not.toContain('fixture-secret');
+  });
+
+  it('refuses a credential whose details WebID is not ours and keeps the receipt', async () => {
+    const files = await paths();
+    const state = newFixture();
+    const foreign = detailsOverride(state, { id: CREDENTIAL_ID, webId: 'https://evil.test/card#me' });
+    await expect(createPlatformProvider({
+      baseUrl: `${RC}/`, seedConfigPath: files.seed, keyFile: files.keyFile, receiptFile: files.receiptFile,
+      fetchImpl: foreign, nonce: 'rc-platform-provider-testnonce',
+    })).rejects.toMatchObject({ reason: 'resource' });
+    expect(state.deletes).toEqual([]);
+    await expect(stat(files.keyFile)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect((await stat(files.receiptFile)).isFile()).toBe(true);
+  });
+
+  it('refuses when the identity proof cannot read the resource at all', async () => {
+    const files = await paths();
+    const state = newFixture();
+    const broken = ((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
+      if ((init?.method ?? 'GET') === 'GET' && url.pathname.includes('/client-credentials/')) {
+        return Promise.resolve(new Response('', { status: 403 }));
+      }
+      return baseFetch(state)(input, init);
+    }) as typeof fetch;
+    await expect(createPlatformProvider({
+      baseUrl: `${RC}/`, seedConfigPath: files.seed, keyFile: files.keyFile, receiptFile: files.receiptFile,
+      fetchImpl: broken, nonce: 'rc-platform-provider-testnonce',
+    })).rejects.toMatchObject({ reason: 'resource', status: 403 });
+    expect(state.deletes).toEqual([]);
+    await expect(stat(files.keyFile)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  /**
+   * Every test below fails BEFORE identity is proven: the transport throws, the
+   * details body is malformed/oversized, or the receipt cannot be written. None
+   * of them may DELETE: the resource was never attributed to this tool, so a
+   * DELETE would destroy an unproven credential. Each must keep the private
+   * non-secret receipt when one exists and emit no key.
+   */
+  function detailsResponder(
+    state: Fixture,
+    respond: () => Response | Promise<Response>,
+  ): typeof fetch {
+    return ((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
+      if ((init?.method ?? 'GET') === 'GET' && url.pathname.includes('/client-credentials/')) {
+        state.fetches.push(`GET ${url.pathname}`);
+        return Promise.resolve(respond());
+      }
+      return baseFetch(state)(input, init);
+    }) as typeof fetch;
+  }
+
+  it('never deletes when the identity-proof transport throws before proof', async () => {
+    const files = await paths();
+    const state = newFixture();
+    const throwing = detailsResponder(state, () => {
+      throw new TypeError('network connection reset');
+    });
+    await expect(createPlatformProvider({
+      baseUrl: `${RC}/`, seedConfigPath: files.seed, keyFile: files.keyFile, receiptFile: files.receiptFile,
+      fetchImpl: throwing, nonce: 'rc-platform-provider-testnonce',
+    })).rejects.toBeInstanceOf(PlatformProviderError);
+    expect(state.deletes).toEqual([]);
+    await expect(stat(files.keyFile)).rejects.toMatchObject({ code: 'ENOENT' });
+    // The recovery receipt survives so the live credential is not orphaned.
+    const receipt = JSON.parse(await readFile(files.receiptFile, 'utf8'));
+    expect(receipt).toMatchObject({ phase: 'issued', id: CREDENTIAL_ID, resource: CREDENTIAL_RESOURCE });
+    expect(JSON.stringify(receipt)).not.toContain('fixture-secret');
+  });
+
+  it('never deletes when the identity-proof details body is malformed JSON', async () => {
+    const files = await paths();
+    const state = newFixture();
+    const malformed = detailsResponder(state, () => new Response('{"id":', { status: 200 }));
+    await expect(createPlatformProvider({
+      baseUrl: `${RC}/`, seedConfigPath: files.seed, keyFile: files.keyFile, receiptFile: files.receiptFile,
+      fetchImpl: malformed, nonce: 'rc-platform-provider-testnonce',
+    })).rejects.toBeInstanceOf(PlatformProviderError);
+    expect(state.deletes).toEqual([]);
+    await expect(stat(files.keyFile)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect((await stat(files.receiptFile)).isFile()).toBe(true);
+  });
+
+  it('never deletes when the identity-proof details body is oversized', async () => {
+    const files = await paths();
+    const state = newFixture();
+    const oversized = detailsResponder(state, () => new Response('x'.repeat(65 * 1024), { status: 200 }));
+    await expect(createPlatformProvider({
+      baseUrl: `${RC}/`, seedConfigPath: files.seed, keyFile: files.keyFile, receiptFile: files.receiptFile,
+      fetchImpl: oversized, nonce: 'rc-platform-provider-testnonce',
+    })).rejects.toBeInstanceOf(PlatformProviderError);
+    expect(state.deletes).toEqual([]);
+    await expect(stat(files.keyFile)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect((await stat(files.receiptFile)).isFile()).toBe(true);
+  });
+
+  it('never deletes when the receipt cannot be written before proof', async () => {
+    const files = await paths();
+    const state = newFixture();
+    // A read-only parent makes the exclusive receipt write fail for real.
+    const readonly = path.dirname(files.receiptFile);
+    await chmod(readonly, 0o500);
+    try {
+      await expect(createPlatformProvider({
+        baseUrl: `${RC}/`, seedConfigPath: files.seed, keyFile: files.keyFile, receiptFile: files.receiptFile,
+        fetchImpl: baseFetch(state), nonce: 'rc-platform-provider-testnonce',
+      })).rejects.toBeInstanceOf(PlatformProviderError);
+    } finally {
+      await chmod(readonly, 0o700);
+    }
+    expect(state.deletes).toEqual([]);
+    await expect(stat(files.keyFile)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('cleans up an issued credential after the same seed login and removes only owned files', async () => {
     const files = await paths();
     const state = newFixture();
@@ -226,7 +387,7 @@ describe('prepare RC platform provider', () => {
       fetchImpl: baseFetch(state),
     });
     expect(summary).toEqual({ phase: 'cleanup', ok: true, reason: 'revoked' });
-    expect(state.deletes).toEqual([`/.account/account/alice/client-credentials/${CREDENTIAL_ID}/`]);
+    expect(state.deletes).toEqual([`/.account/account/alice/client-credentials/${STORAGE_ID}/`]);
     await expect(stat(files.keyFile)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(stat(files.receiptFile)).rejects.toMatchObject({ code: 'ENOENT' });
   });
@@ -316,7 +477,10 @@ describe('prepare RC platform provider', () => {
 });
 
 describe('process-local platform provider for an already authenticated account', () => {
-  const GENERIC_CREDENTIAL = `${RC}/.account/account/alice/client-credentials/generic-1/`;
+  // Distinct label vs storage UUID, exactly as CSS issues them.
+  const GENERIC_LABEL = 'rc-platform-provider-generic_2b3c4d5e-6f70-4819-9a2b-3c4d5e6f7081';
+  const GENERIC_STORAGE = 'generic-1';
+  const GENERIC_CREDENTIAL = `${RC}/.account/account/alice/client-credentials/${GENERIC_STORAGE}/`;
 
   function accountFetch(
     state: { issued: unknown[]; models: number; deletes: string[]; deleteStatus?: number },
@@ -328,16 +492,20 @@ describe('process-local platform provider for an already authenticated account',
       if (method === 'POST' && url.pathname.endsWith('/client-credentials/')) {
         state.issued.push(init?.body ? JSON.parse(String(init.body)) : undefined);
         return Response.json({
-          id: 'generic-1',
+          id: GENERIC_LABEL,
           secret: 'generic-secret',
-          resource: `${origin}/.account/account/alice/client-credentials/generic-1/`,
+          resource: `${origin}/.account/account/alice/client-credentials/${GENERIC_STORAGE}/`,
         }, { status: 201 });
       }
       if (method === 'GET' && url.pathname === '/v1/models') {
         state.models++;
         return Response.json({ data: [{ id: 'linx' }, { id: 'linx-lite' }] });
       }
-      if (method === 'DELETE' && url.pathname === '/.account/account/alice/client-credentials/generic-1/') {
+      if (method === 'GET' && url.pathname === `/.account/account/alice/client-credentials/${GENERIC_STORAGE}/`) {
+        // Real details shape: echo the LABEL, not the storage UUID.
+        return Response.json({ id: GENERIC_LABEL, webId: ACCOUNT.webId });
+      }
+      if (method === 'DELETE' && url.pathname === `/.account/account/alice/client-credentials/${GENERIC_STORAGE}/`) {
         state.deletes.push(url.pathname);
         return new Response(null, { status: state.deleteStatus ?? 204 });
       }
@@ -373,7 +541,8 @@ describe('process-local platform provider for an already authenticated account',
     expect(created.provider).toEqual({
       id: 'custom',
       offeringId: 'openai-compatible',
-      apiKey: `sk-${Buffer.from('generic-1:generic-secret').toString('base64')}`,
+      // The apiKey wrapper keeps the OAuth LABEL as client_id, as CSS expects.
+      apiKey: `sk-${Buffer.from(`${GENERIC_LABEL}:generic-secret`).toString('base64')}`,
       baseUrl: `${RC}/v1`,
       expected: ['linx-lite'],
       source: 'file',

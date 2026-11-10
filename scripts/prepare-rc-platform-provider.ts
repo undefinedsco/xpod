@@ -66,6 +66,14 @@ export class PlatformProviderError extends Error {
   }
 }
 
+/** Errors that carry PROOF a credential was actually revoked. Only these may
+ * discard the private recovery receipt; every other outcome keeps it. */
+const CONFIRMED_REVOCATION = new WeakSet<object>();
+function markRevokedConfirmed<T extends object>(error: T): T {
+  CONFIRMED_REVOCATION.add(error);
+  return error;
+}
+
 export interface PlatformProviderSummary {
   phase: PlatformProviderPhase;
   ok: boolean;
@@ -188,27 +196,77 @@ export function requirePlatformOrigin(value: string | undefined): URL {
 }
 
 /**
- * The credential resource must stay on the exact RC Account origin, beneath
- * `/.account/`, and identify the exact issued id. Anything else is a foreign
- * resource and must never be DELETEd.
+ * CSS keeps two identifiers per client credential: the public OAuth label (the
+ * wire `id`, used as `client_id`) and the internal storage UUID that appears in
+ * the `resource` path. They are always distinct, so a path segment can never
+ * stand in for the wire id.
+ *
+ * This predicate therefore proves only the SHAPE and AUTHORITY of a resource:
+ * exact platform origin, the Account client-credentials namespace, no query,
+ * hash or userinfo. Identity is proven separately, by an authenticated GET of
+ * that resource compared against the issued id/WebID (see
+ * `proveCredentialIdentity`). Anything outside this shape is foreign and must
+ * never be DELETEd.
  */
-export function assertOwnedCredentialResource(raw: string, base: URL, id: string): string {
-  if (!id || /[/\\]/u.test(id)) {
-    throw new PlatformProviderError('resource');
-  }
+const CREDENTIAL_RESOURCE_PATH = /^\/\.account\/account\/[^/]+\/client-credentials\/[^/]+\/$/u;
+
+export function assertOwnedCredentialResource(raw: string, base: URL): string {
   let resource: URL;
   try {
     resource = new URL(raw, base);
   } catch {
     throw new PlatformProviderError('resource');
   }
-  const segments = resource.pathname.split('/').filter(Boolean);
-  if (resource.origin !== base.origin || !resource.pathname.startsWith('/.account/')
-    || resource.search !== '' || resource.hash !== '' || resource.username !== '' || resource.password !== ''
-    || !segments.includes(id)) {
+  if (resource.origin !== base.origin || !CREDENTIAL_RESOURCE_PATH.test(resource.pathname)
+    || resource.search !== '' || resource.hash !== '' || resource.username !== '' || resource.password !== '') {
     throw new PlatformProviderError('resource');
   }
   return resource.href;
+}
+
+/**
+ * Compare the Account details payload with the credential this tool issued.
+ * Both fields the deployed issuer actually returns (`id`, `webId`) and the
+ * optional `name` nonce are checked when present; a missing field is never
+ * treated as a match for a value the caller supplied.
+ */
+function credentialDetailsMatch(payload: unknown, expected: {
+  id: string;
+  webId?: string;
+  nonce?: string;
+}): boolean {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+  const record = payload as { id?: unknown; webId?: unknown; name?: unknown };
+  if (record.id !== expected.id) return false;
+  if (expected.webId !== undefined && record.webId !== expected.webId) return false;
+  if (record.name !== undefined && record.name !== expected.nonce) return false;
+  return true;
+}
+
+/**
+ * Prove the resource really carries OUR credential BEFORE any key material is
+ * emitted. A failed proof never deletes: an unproven resource may belong to
+ * somebody else, so it is preserved and reported instead.
+ */
+async function proveCredentialIdentity(input: {
+  authorization: string;
+  resource: string;
+  id: string;
+  webId: string;
+  nonce: string;
+  fetchImpl: typeof fetch;
+}): Promise<void> {
+  const response = await boundedFetch(input.fetchImpl, input.resource, {
+    method: 'GET',
+    headers: accountHeaders(input.authorization),
+  }, REQUEST_TIMEOUT_MS);
+  if (response.status !== 200) {
+    throw new PlatformProviderError('resource', response.status);
+  }
+  const payload = await readBoundedJson(response);
+  if (!credentialDetailsMatch(payload, { id: input.id, webId: input.webId, nonce: input.nonce })) {
+    throw new PlatformProviderError('resource', response.status);
+  }
 }
 
 export async function createPlatformProvider(
@@ -262,10 +320,15 @@ export async function createPlatformProvider(
     return { keyFile: options.keyFile, receiptFile: options.receiptFile };
   } catch (error) {
     if (!created) {
-      // The shared lifecycle already attempted revocation on its own failure.
-      // Keep the receipt when revocation itself failed so `cleanup` can retry.
-      const revokeFailed = error instanceof PlatformProviderError && error.reason === 'revoke-failed';
-      if (receiptWritten && !revokeFailed) await removeQuietly(options.receiptFile);
+      // The shared lifecycle never DELETEs an unproven resource. Only a failure
+      // that CARRIES proof of a confirmed revocation may drop the recovery
+      // receipt; every other outcome (before-proof transport/JSON/oversize
+      // error, identity mismatch, or an unconfirmed DELETE) preserves any
+      // successfully written receipt. A failed receipt write is reported
+      // separately and cannot establish that recovery metadata exists.
+      const revokedConfirmed = typeof error === 'object' && error !== null
+        && CONFIRMED_REVOCATION.has(error);
+      if (receiptWritten && revokedConfirmed) await removeQuietly(options.receiptFile);
       throw error;
     }
     try {
@@ -291,7 +354,7 @@ export async function cleanupPlatformProvider(
     // delete an unowned private file.
     return { phase: 'cleanup', ok: true, reason: 'no-receipt' };
   }
-  const resource = assertOwnedCredentialResource(receipt.resource, base, receipt.id);
+  const resource = assertOwnedCredentialResource(receipt.resource, base);
   const alice = await loadAlice(options.seedConfigPath);
   const authorization = await login(base, alice, fetchImpl);
   await readControls(base, authorization, fetchImpl);
@@ -308,16 +371,14 @@ export async function cleanupPlatformProvider(
     throw new PlatformProviderError('cleanup', details.status);
   }
   const payload = await readBoundedJson(details);
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)
-    || (payload as { id?: unknown }).id !== receipt.id) {
-    throw new PlatformProviderError('ownership-mismatch');
-  }
-  const name = (payload as { name?: unknown }).name;
-  if (name !== undefined && name !== receipt.nonce) {
+  // The receipt carries the label and nonce this tool wrote, so an id/name
+  // mismatch means the UUID now resolves to somebody else's credential. Never
+  // DELETE it; preserve both private files and fail loudly.
+  if (!credentialDetailsMatch(payload, { id: receipt.id, nonce: receipt.nonce })) {
     throw new PlatformProviderError('ownership-mismatch');
   }
 
-  const revoked = await deleteCredential(base, authorization, resource, receipt.id, fetchImpl);
+  const revoked = await deleteCredential(base, authorization, resource, fetchImpl);
   if (!revoked.ok) {
     throw new PlatformProviderError('revoke-failed', revoked.status);
   }
@@ -461,16 +522,45 @@ async function issuePlatformProviderForAccount(
   } catch {
     throw new PlatformProviderError('issue');
   }
-  const resource = assertOwnedCredentialResource(issued.resource, base, issued.id);
+  const resource = assertOwnedCredentialResource(issued.resource, base);
   const apiKey = encodeClientCredentialsApiKey(issued.id, issued.secret);
+  /** Explicit proof state. Only a successful details GET sets this, and only a
+   * proven resource may ever be DELETEd on a failure path. Everything before it
+   * -- receipt write, transport error, malformed/oversized body, or a details
+   * mismatch -- leaves the resource UNPROVEN and therefore undeletable. */
+  let identityProven = false;
   try {
+    // Persist the private, non-secret recovery receipt before the identity proof
+    // and key-file emission. Once written, it survives an unproven failure;
+    // `cleanup` still re-proves identity before any DELETE.
     await options.onIssued?.({ id: issued.id, nonce, resource });
+    await proveCredentialIdentity({
+      authorization: options.authorization,
+      resource,
+      id: issued.id,
+      webId: options.webId,
+      nonce,
+      fetchImpl,
+    });
+    identityProven = true;
     await proveModels(base, apiKey, fetchImpl);
   } catch (error) {
-    const revoked = await deleteCredential(base, options.authorization, resource, issued.id, fetchImpl);
-    throw revoked.ok
-      ? error
-      : new PlatformProviderError('revoke-failed', revoked.status);
+    // NEVER delete on an unproven resource: an early transport/JSON/oversize
+    // failure or a failed receipt write says nothing about who owns it. Preserve
+    // it (and any recovery receipt) and report instead.
+    if (!identityProven) {
+      throw error;
+    }
+    // Identity IS proven, so this is genuinely our credential (e.g. models
+    // failed) and an owned revocation is correct. Keep the receipt when the
+    // DELETE cannot be confirmed so `cleanup` can retry.
+    const revoked = await deleteCredential(base, options.authorization, resource, fetchImpl);
+    if (!revoked.ok) {
+      throw new PlatformProviderError('revoke-failed', revoked.status);
+    }
+    throw markRevokedConfirmed(
+      typeof error === 'object' && error !== null ? error : new PlatformProviderError('unexpected'),
+    );
   }
   let revoked = false;
   return {
@@ -484,7 +574,7 @@ async function issuePlatformProviderForAccount(
     },
     async revoke(): Promise<void> {
       if (revoked) return;
-      const result = await deleteCredential(base, options.authorization, resource, issued.id, fetchImpl);
+      const result = await deleteCredential(base, options.authorization, resource, fetchImpl);
       if (!result.ok) {
         throw new PlatformProviderError('revoke-failed', result.status);
       }
@@ -534,10 +624,11 @@ async function deleteCredential(
   base: URL,
   authorization: string,
   resource: string,
-  id: string,
   fetchImpl: typeof fetch,
 ): Promise<{ ok: boolean; status: number }> {
-  const owned = assertOwnedCredentialResource(resource, base, id);
+  // Callers prove identity (id/WebID/name) against this exact resource before
+  // reaching here, so the delete stays scoped to that already-proven URL.
+  const owned = assertOwnedCredentialResource(resource, base);
   try {
     const response = await boundedFetch(fetchImpl, owned, {
       method: 'DELETE',
