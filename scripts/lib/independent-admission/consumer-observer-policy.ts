@@ -510,7 +510,7 @@ function rc398ConsumerVariant<T extends GitHubSourceBindingGroup>(group: T): T {
  * origin policy bytes (one appended candidate-workflow version). One shared variant per
  * family is appended; every published group and both RC398 variants stay byte-exact.
  * Only this new variant uses the held-FD live controller self-reference. */
-const QLEVER_RC399_POLICY_SHA256='cbf8051cc1465cfad7c9de76ceed2a236b3f952c7cf92a7b5c3d38bc02967d20';
+const QLEVER_RC399_POLICY_SHA256='5eae540c738cac693cc23d56d018aaeb9a8ca90176bc76280f81e3292ab69a30';
 /** Live bytes of the release inputs this generation's dependency declaration and its
  * already-owned policy rows actually moved. Only these rows move; every earlier tuple
  * keeps its published bytes. */

@@ -3015,7 +3015,7 @@ const QLEVER_NORMAL_RC398_PLATFORM_GROUP:GitHubSourceBindingGroup=Object.freeze(
  * candidate workflow (explicit Background propagation for owned Job cleanup). Group 8 stays
  * byte-exact published history; the new group clones it and rebinds ONLY the candidate-workflow
  * row it already owns. No SDK source/recipe, no proof axis and no other row moves. */
-const QLEVER_RC399_CANDIDATE_WORKFLOW_HASH='a56cccf5de22d5d41097e49624e50d0f9083672291593fd0ca2eb8a80c356b6e';
+const QLEVER_RC399_CANDIDATE_WORKFLOW_HASH='0c9b5fd156e6ae42f331c51f0fdef7e803195c957b08fa4e2c4adf2d0888f78d';
 const QLEVER_NORMAL_RC399_CLEANUP_GROUP:GitHubSourceBindingGroup=Object.freeze({...QLEVER_NORMAL_RC398_PLATFORM_GROUP,
   secondarySelectors:Object.freeze((QLEVER_NORMAL_RC398_PLATFORM_GROUP.secondarySelectors??[]).map(row=>
     Object.freeze({...row,sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_RC399_CANDIDATE_WORKFLOW_HASH:row.sha256}))),
