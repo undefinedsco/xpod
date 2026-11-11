@@ -1467,6 +1467,21 @@ jobs:
       # and packaging on clean runners.
       - name: Bootstrap the Electron vendor binary
         run: node node_modules/electron/install.js
+      # desktop/test imports packages/xpod-cli SOURCE, and that source resolves
+      # @undefineds.co/xpod-client through its package `exports` -> dist/*. A cold
+      # runner has no such dist yet, so build the workspace packages BEFORE the
+      # desktop contract suites. desktop's own `test` script only builds desktop.
+      - name: Build workspace packages required by the desktop contracts
+        run: bun run build:packages
+      - name: Verify shared applet tarballs in a clean Bun consumer
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          node scripts/workspace-package-consumer.cjs --local \
+            --source-sha "$SOURCE_SHA" \
+            --archive-dir "${RUNNER_TEMP}/package-consumer-archive/workspace" \
+            --evidence "${RUNNER_TEMP}/workspace-consumer-evidence.json"
       - name: Apply and verify the candidate version
         run: |
           node scripts/release-candidate.cjs \
@@ -1476,12 +1491,6 @@ jobs:
             --sha "${{ github.sha }}" \
             --apply-root-version
           node -e 'if (require("./desktop/package.json").version !== process.env.CANDIDATE_VERSION) process.exit(1)'
-      # desktop/test imports packages/xpod-cli SOURCE, and that source resolves
-      # @undefineds.co/xpod-client through its package `exports` -> dist/*. A cold
-      # runner has no such dist yet, so build the workspace packages BEFORE the
-      # desktop contract suites. desktop's own `test` script only builds desktop.
-      - name: Build workspace packages required by the desktop contracts
-        run: bun run build:packages
       # desktop/test/** is excluded from the root vitest and Bun test runs, so
       # without this the brand provenance, Dock and updater suites never execute
       # in CI. The desktop `test` script builds first (`bun run build`), so this
@@ -1524,15 +1533,6 @@ jobs:
           set -euo pipefail
           node scripts/run-npm-pack.cjs .test-data/npm-preflight .test-data/npm-preflight-cache
           node scripts/check-pack-json.cjs .test-data/npm-preflight/pack.json
-      - name: Verify shared applet tarballs in a clean Bun consumer
-        env:
-          SOURCE_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          node scripts/workspace-package-consumer.cjs --local \
-            --source-sha "$SOURCE_SHA" \
-            --archive-dir "${RUNNER_TEMP}/package-consumer-archive/workspace" \
-            --evidence "${RUNNER_TEMP}/workspace-consumer-evidence.json"
       - name: Verify packed Node and Bun consumers before publication
         run: |
           set -euo pipefail
