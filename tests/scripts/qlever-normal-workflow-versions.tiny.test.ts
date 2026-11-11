@@ -96,7 +96,8 @@ test('the production set derives from the normal axis and keeps the published co
 
 test('the ACTUAL on-disk candidate workflow is reviewed and resolves on the consumer axis',()=>{
  // Independent of any policy value: the bytes really in the tree.
- expect(DISK_WORKFLOW_SHA).toBe('0c9b5fd156e6ae42f331c51f0fdef7e803195c957b08fa4e2c4adf2d0888f78d');
+ // CURRENT reviewed candidate bytes (c998509f appended the root-package compile step).
+ expect(DISK_WORKFLOW_SHA).toBe('a11dd8c4a26e074209cf9302b94a6b024730a595d37a2754d48b536d98ce5f63');
  // The previously reviewed RC398 bytes stay accepted history, never replaced.
  expect(normalWorkflowVersions()).toContain('f488709ab38b7d42f58accd90cbe59a162eae89ee23169db9b28ecdf264a7581');
  // The real production set must review those exact bytes.

@@ -3015,7 +3015,10 @@ const QLEVER_NORMAL_RC398_PLATFORM_GROUP:GitHubSourceBindingGroup=Object.freeze(
  * candidate workflow (explicit Background propagation for owned Job cleanup). Group 8 stays
  * byte-exact published history; the new group clones it and rebinds ONLY the candidate-workflow
  * row it already owns. No SDK source/recipe, no proof axis and no other row moves. */
-const QLEVER_RC399_CANDIDATE_WORKFLOW_HASH='0c9b5fd156e6ae42f331c51f0fdef7e803195c957b08fa4e2c4adf2d0888f78d';
+/* c998509f appended the root-package compile step to candidate.yml, so the
+ * CURRENT-tail candidate binding follows the ACTUAL reviewed bytes. Every
+ * published RC396/RC397/RC398 value above stays byte-exact. */
+const QLEVER_RC399_CANDIDATE_WORKFLOW_HASH='a11dd8c4a26e074209cf9302b94a6b024730a595d37a2754d48b536d98ce5f63';
 const QLEVER_NORMAL_RC399_CLEANUP_GROUP:GitHubSourceBindingGroup=Object.freeze({...QLEVER_NORMAL_RC398_PLATFORM_GROUP,
   secondarySelectors:Object.freeze((QLEVER_NORMAL_RC398_PLATFORM_GROUP.secondarySelectors??[]).map(row=>
     Object.freeze({...row,sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_RC399_CANDIDATE_WORKFLOW_HASH:row.sha256}))),
@@ -3346,8 +3349,15 @@ const RC398_SDK116_GROUP:GitHubSourceBindingGroup=Object.freeze({...RC397_SDK115
  * sourceBindings) are re-pinned to their ACTUAL reviewed bytes. No path, stage or role is
  * added, and every earlier SDK/Linux consumer group keeps its exact frozen bytes. */
 const RC399_LIVE_RELEASE_INPUTS:Readonly<Record<string,string>>=Object.freeze({
-  'package.json':'9a8aa57d082c0bf28cedcb0f27ebb9245419a271e53efb1aa7bf42a80a76fef0',
-  'bun.lock':'dd41359d7fa5df0f5d32e030ede320c5ef7e395d6aa3f495aa6c9e0914037722',
+  // c998509f moved exactly these already-owned release inputs.
+  'package.json':'5b22bfea56abce62244dcb9930446a68d91cfd684b31c99c770081eaa24536c1',
+  'bun.lock':'b7fa5ccb7ea73679a345aeafafa0dfe2a03c119d721d31abab3c02e82a483808',
+  // c998509f also changed the packer (optional-dependency transport); 96c817d5 and
+  // the frozen apt-mirror fix changed ci.yml. Both roles are already owned rows of
+  // this CURRENT tail, so only those rows move. Every frozen SDK105/normalBuild3
+  // group above keeps its published bytes.
+  'scripts/run-npm-pack.cjs':'6e1c6144cc71a8399350a0873c9f3dfafc06a9a2967c0fe88b09c269e8aabe46',
+  '.github/workflows/ci.yml':'c8b892f7323b88683434f4870e40fc74a5a904447a82379e72347903114f055f',
 });
 const rc399LiveReleaseRow=(row:GitHubSourceBinding)=>Object.freeze({
   ...row,sha256:RC399_LIVE_RELEASE_INPUTS[row.path]??row.sha256,

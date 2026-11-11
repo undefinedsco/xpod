@@ -57,24 +57,28 @@ Object.freeze({...buildCliParent,sourceHelper:'d0bcdbdec78a1bdb2cebb90910b4dd7c6
  * every earlier CLI tuple keeps its exact published bytes. */
  Object.freeze({...buildCliParent,sourceHelper:'d0bcdbdec78a1bdb2cebb90910b4dd7c678c5027fc9856fc5475961b3da10dd1',supervisors:Object.freeze(['30b890b9b73e819b40b1fc4de511b80cad50255d99af7d0699315b06e4a5a2c3'] as const),secondarySourcePaths:Object.freeze([...(buildCliParent.secondarySourcePaths??[]),'package.json','bun.lock']),sourceBindings:Object.freeze((buildCliParent.sourceBindings??[]).map(row=>Object.freeze({...row,sha256:row.path==='scripts/workspace-package-payload.cjs'?'058c6f633ed805cf0af2f5f3ebac1cfd1706c8ed106da2f16766dde4a20c145a':row.path==='package.json'?'f07277658e7d111655eb52ba560d6c2f2b3b3652a38ad0f137b2cb0812c206f6':row.path==='bun.lock'?'ff70b48d929511d94b9350abbb91ee4980aa9e86532190574fe2f3e42b221042':row.sha256}))),sourceLimits:'5eb76b0cfcefc0b0352342fe0bf2d46dab2cbfa4a6f549af17c819e8cf90494c'})
 ]);
-export const CLI_SOURCE_VERSION_GROUPS:readonly CliSourceVersionGroup[]=Object.freeze([...CLI_SOURCE_VERSION_BASE,
- /** RC159 CLI15 (APPEND-ONLY): package.json and bun.lock are ALREADY owned
-  * sourceBindings of the CURRENT CLI tuple, so CLI15 clones the last base tuple and
-  * rebinds only those two rows. Earlier CLI tuples keep their exact bytes. */
- Object.freeze({...CLI_SOURCE_VERSION_BASE[CLI_SOURCE_VERSION_BASE.length-1]!,sourceBindings:Object.freeze((CLI_SOURCE_VERSION_BASE[CLI_SOURCE_VERSION_BASE.length-1]!.sourceBindings??[]).map(row=>Object.freeze({...row,
-   sha256:row.path==='package.json'?'f09bc8ffce79f394825231e38eeff615179f99df977dc8b4b1654dd4e740feb4':row.path==='bun.lock'?'6cb041b44fdc2dfe9171e449a69eeeec4617b5ccf754a0312cd194b7b7e3aa7b':row.sha256})))}),
- /** CURRENT CLI16: the declared in-place current tuple tracks the ACTUAL executed
-  * catalog bytes after the reviewed `@inrupt/solid-client` devDependency append.
-  * package.json and bun.lock are already owned discriminator rows; the manifest
-  * copier and the workspace payload parser are genuinely changed helpers that are
-  * already owned sourceBindings too, so this tuple rebinds only those four rows.
-  * CLI1..CLI15 (and every earlier base tuple) keep their exact frozen bytes. */
- Object.freeze({...CLI_SOURCE_VERSION_BASE[CLI_SOURCE_VERSION_BASE.length-1]!,sourceBindings:Object.freeze((CLI_SOURCE_VERSION_BASE[CLI_SOURCE_VERSION_BASE.length-1]!.sourceBindings??[]).map(row=>Object.freeze({...row,
+const CLI15_GROUP:CliSourceVersionGroup=Object.freeze({...CLI_SOURCE_VERSION_BASE[CLI_SOURCE_VERSION_BASE.length-1]!,sourceBindings:Object.freeze((CLI_SOURCE_VERSION_BASE[CLI_SOURCE_VERSION_BASE.length-1]!.sourceBindings??[]).map(row=>Object.freeze({...row,
+   sha256:row.path==='package.json'?'f09bc8ffce79f394825231e38eeff615179f99df977dc8b4b1654dd4e740feb4':row.path==='bun.lock'?'6cb041b44fdc2dfe9171e449a69eeeec4617b5ccf754a0312cd194b7b7e3aa7b':row.sha256})))});
+/** CURRENT CLI16: the declared in-place current tuple tracks the ACTUAL executed
+ * catalog bytes after the reviewed `@inrupt/solid-client` devDependency append.
+ * package.json and bun.lock are already owned discriminator rows; the manifest
+ * copier and the workspace payload parser are genuinely changed helpers that are
+ * already owned sourceBindings too, so this tuple rebinds only those four rows.
+ * CLI1..CLI15 (and every earlier base tuple) keep their exact frozen bytes. */
+const CLI16_GROUP:CliSourceVersionGroup=Object.freeze({...CLI_SOURCE_VERSION_BASE[CLI_SOURCE_VERSION_BASE.length-1]!,sourceBindings:Object.freeze((CLI_SOURCE_VERSION_BASE[CLI_SOURCE_VERSION_BASE.length-1]!.sourceBindings??[]).map(row=>Object.freeze({...row,
    sha256:row.path==='package.json'?'9a8aa57d082c0bf28cedcb0f27ebb9245419a271e53efb1aa7bf42a80a76fef0'
      :row.path==='bun.lock'?'dd41359d7fa5df0f5d32e030ede320c5ef7e395d6aa3f495aa6c9e0914037722'
      :row.path==='scripts/prepare-package-manifest.cjs'?'c85d5f092821c53d7b7893417512a26be3c6165f835a8f03507fe0d09228ebf2'
-     :row.path==='scripts/workspace-package-payload.cjs'?'058c6f633ed805cf0af2f5f3ebac1cfd1706c8ed106da2f16766dde4a20c145a':row.sha256})))}),
-]);
+     :row.path==='scripts/workspace-package-payload.cjs'?'058c6f633ed805cf0af2f5f3ebac1cfd1706c8ed106da2f16766dde4a20c145a':row.sha256})))});
+/** CURRENT CLI17 (APPEND-ONLY): commit c998509f declared the two direct runtime
+ * dependencies (`componentsjs` 6.4.0 and `rdf-parse`) and removed the duplicated
+ * `resolutions.componentsjs`, so package.json and bun.lock moved. Both roles are
+ * already owned discriminator rows, so CLI17 clones CLI16 and rebinds ONLY those
+ * two rows to the ACTUAL reviewed bytes. CLI1..CLI16 keep their exact frozen bytes. */
+const CLI17_GROUP:CliSourceVersionGroup=Object.freeze({...CLI16_GROUP,sourceBindings:Object.freeze((CLI16_GROUP.sourceBindings??[]).map(row=>Object.freeze({...row,
+   sha256:row.path==='package.json'?'5b22bfea56abce62244dcb9930446a68d91cfd684b31c99c770081eaa24536c1'
+     :row.path==='bun.lock'?'b7fa5ccb7ea73679a345aeafafa0dfe2a03c119d721d31abab3c02e82a483808':row.sha256})))});
+export const CLI_SOURCE_VERSION_GROUPS:readonly CliSourceVersionGroup[]=Object.freeze([...CLI_SOURCE_VERSION_BASE,CLI15_GROUP,CLI16_GROUP,CLI17_GROUP]);
 
 function reviewedCliSourceGroup(observed:Readonly<Record<keyof typeof CLI_SOURCE_POLICY,string>>,readTracked?:(name:string)=>Buffer):CliSourceVersionGroup|undefined{
  let candidates=CLI_SOURCE_VERSION_GROUPS.filter(group=>

@@ -13,20 +13,31 @@ const current=(name:string)=>JSON.parse(readFileSync(name,'utf8'));
 describe('API declaration ownership proposal, not installer proof',()=>{
  it('preserves every existing root capability range through a single shared catalog',()=>{
   const before=old('package.json'),after=current('package.json');const catalog=after.catalogs['api-producer'];
-  // Keep the reviewed ORM bump and the explicit userland Undici runtime dependency.
-  // The reviewed direct devDependency @inrupt/solid-client@3.0.0 is the ONLY other
-  // declared root capability addition. All historical ranges and every other
-  // dependency key remain unchanged.
+  // Reviewed CURRENT root capability declarations, enumerated exactly:
+  //  - ORM catalog bump 0.3.25 -> 0.3.26
+  //  - explicit userland Undici runtime dependency ^7.29.0
+  //  - explicit direct devDependency @inrupt/solid-client@3.0.0
+  //  - componentsjs declared DIRECTLY at the exact 6.4.0 (was only a ^6.4.0
+  //    resolution before, which is what made the lock carry a duplicate)
+  //  - rdf-parse declared directly through the existing api-producer catalog
   expect(after.catalogs['api-producer']['@undefineds.co/drizzle-solid']).toBe('0.3.26');
   expect(after.dependencies.undici).toBe('^7.29.0');
   expect(after.devDependencies['@inrupt/solid-client']).toBe('3.0.0');
   expect(before.devDependencies['@inrupt/solid-client']).toBeUndefined();
+  expect(after.dependencies.componentsjs).toBe('6.4.0');
+  expect(after.dependencies['rdf-parse']).toBe('catalog:api-producer');
+  expect(after.catalogs['api-producer']['rdf-parse']).toBe('4.0.0');
+  // Both were previously absent as DIRECT declarations: componentsjs existed only
+  // as a resolution pin, rdf-parse not at all.
+  expect(before.dependencies.componentsjs).toBeUndefined();
+  expect(before.resolutions.componentsjs).toBe('^6.4.0');
+  expect(before.dependencies['rdf-parse']).toBeUndefined();
   const resolve=(manifest:any,name:string)=>{
    const range=manifest.dependencies?.[name]??manifest.devDependencies?.[name]??manifest.peerDependencies?.[name]??manifest.optionalDependencies?.[name];
    return range==='catalog:api-producer'?catalog[name]:range;
   };
   for(const kind of ['dependencies','devDependencies','peerDependencies','optionalDependencies']){
-   const added=kind==='dependencies'?['undici']:kind==='devDependencies'?['@inrupt/solid-client']:[];
+   const added=kind==='dependencies'?['componentsjs','rdf-parse','undici']:kind==='devDependencies'?['@inrupt/solid-client']:[];
    expect(Object.keys(after[kind]??{}).sort())
     .toEqual([...Object.keys(before[kind]??{}),...added].sort());
    for(const name of Object.keys(before[kind]??{})){
@@ -45,9 +56,17 @@ describe('API declaration ownership proposal, not installer proof',()=>{
   // Within resolutions and patchedDependencies, only the ORM version changes:
   // historical entries stay as published everywhere else, and the single
   // drizzle-solid pin moves from the historical 0.3.25 fact to the actual 0.3.26.
-  expect({...after.resolutions,'@undefineds.co/drizzle-solid':before.resolutions['@undefineds.co/drizzle-solid']}).toEqual(before.resolutions);
+  // Resolutions: the ORM pin moves, AND the componentsjs resolution is consumed
+  // because that package is now declared directly at an exact version. Restoring
+  // both historical facts must reproduce the published resolutions table exactly.
+  expect({...after.resolutions,
+    '@undefineds.co/drizzle-solid':before.resolutions['@undefineds.co/drizzle-solid'],
+    componentsjs:before.resolutions.componentsjs}).toEqual(before.resolutions);
   expect(after.resolutions['@undefineds.co/drizzle-solid']).toBe('0.3.26');
   expect(before.resolutions['@undefineds.co/drizzle-solid']).toBe('0.3.25');
+  expect(after.resolutions.componentsjs).toBeUndefined();
+  // No OTHER resolution was added or dropped.
+  expect(Object.keys(before.resolutions).filter(name=>!(name in after.resolutions)).sort()).toEqual(['componentsjs']);
   const historicalPatched={...after.patchedDependencies};
   delete historicalPatched['@undefineds.co/drizzle-solid@0.3.26'];
   historicalPatched['@undefineds.co/drizzle-solid@0.3.25']=before.patchedDependencies['@undefineds.co/drizzle-solid@0.3.25'];
@@ -93,7 +112,24 @@ describe('API declaration ownership proposal, not installer proof',()=>{
   expect(identities).toHaveLength(2042);
   expect(digest(identities)).toBe('63ddbd0c7cfcfd789432a0f34f4cf22c9ad7bbf61f9f54e859799c437fd82906');
   expect(lock.packages['@inrupt/solid-client'][0]).toBe('@inrupt/solid-client@3.0.0');
-  expect(digest(lock.overrides)).toBe('1f08aa51a613ad41468683e53ffef3f11e4674dbe73fea8ce61cb646e8412634');
+  // Lock overrides: the only delta vs the reviewed pre-c998 resolution is that the
+  // DUPLICATE componentsjs override disappeared, because componentsjs is now a
+  // direct exact dependency. Reconstruct the historical object explicitly from the
+  // already-reviewed git input (never a blind digest refresh) and anchor the OLD
+  // reviewed digest on that reconstruction.
+  const HISTORICAL_OVERRIDE_DIGEST='1f08aa51a613ad41468683e53ffef3f11e4674dbe73fea8ce61cb646e8412634';
+  const reconstructedOverrides={...lock.overrides,componentsjs:'^6.4.0'};
+  expect(digest(reconstructedOverrides)).toBe(HISTORICAL_OVERRIDE_DIGEST);
+  // Prove the ONLY change is that single key, in both directions.
+  expect(Object.keys(reviewedPreInrupt.overrides).filter(name=>!(name in lock.overrides))).toEqual(['componentsjs']);
+  expect(Object.keys(lock.overrides).filter(name=>!(name in reviewedPreInrupt.overrides))).toEqual([]);
+  for(const [name,range] of Object.entries(lock.overrides)){
+    expect([name,range]).toEqual([name,reviewedPreInrupt.overrides[name]]);
+  }
+  // The removed override's historical value was the loose range, and the direct
+  // declaration uses the exact reviewed version.
+  expect(reviewedPreInrupt.overrides.componentsjs).toBe('^6.4.0');
+  expect(root.dependencies.componentsjs).toBe('6.4.0');
   expect(lock.overrides['@undefineds.co/drizzle-solid']).toBe('0.3.26');
   for(const [path,manifest] of [['',root],['packages/xpod-api',api]] as const)for(const kind of ['dependencies','devDependencies','optionalDependencies','peerDependencies'])expect(lock.workspaces[path][kind]??{}).toEqual(manifest[kind]??{});
  });

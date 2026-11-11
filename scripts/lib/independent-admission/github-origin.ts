@@ -1291,8 +1291,8 @@ const apiRc159Tuple=Object.freeze({...apiCurrentSharedParserGroup,name:'api-curr
  *
  * API32 above keeps its exact published bytes; API33 clones it and rebinds ONLY the
  * drifted rows, appending the one new owned original. No published tuple is rewritten. */
-const apiRc393PackageHash='9a8aa57d082c0bf28cedcb0f27ebb9245419a271e53efb1aa7bf42a80a76fef0';
-const apiRc393LockHash='dd41359d7fa5df0f5d32e030ede320c5ef7e395d6aa3f495aa6c9e0914037722';
+const apiRc393PackageHash='5b22bfea56abce62244dcb9930446a68d91cfd684b31c99c770081eaa24536c1';
+const apiRc393LockHash='b7fa5ccb7ea73679a345aeafafa0dfe2a03c119d721d31abab3c02e82a483808';
 const apiRc393DependencyStateHash='012ba511fbb68b441a25821933d53a49a47aa5ad39c64a3b25c5dc58ba4a0950';
 const apiRc393UndiciEntryHash='d3e118347eef031adda164a503b0ba0eb1a709ff228c7c33f94e108b42767158';
 /** The graph fix in this same unpublished API33 closes over its own verifier bytes:
@@ -1731,6 +1731,15 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
       // zero-skip regression gate. Same registered caller/job contract and the
       // same exact source group; every earlier reviewed version remains exact.
       {workflowSha256:'7752a8dd9a38c32e90881078d581cef7b7ef163713259a0fa1c38043e3887c15',
+      jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // APPEND-ONLY: current ci.yml pins the runtime toolchain to ubuntu-24.04 with
+      // a bounded compiler install and routes apt through the reviewed HTTPS mirror
+      // list. The registered caller jobs, artifact names and the manual publication
+      // route are unchanged, so this is a new reviewed workflow identity over the
+      // same contract. Every earlier reviewed version above stays byte-exact and
+      // selectable; unknown hashes are still refused.
+      {workflowSha256:'c8b892f7323b88683434f4870e40fc74a5a904447a82379e72347903114f055f',
       jobName:()=>callerNames[0]!,
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,

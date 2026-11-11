@@ -62,13 +62,26 @@ jobs:
         timeout-minutes: 10
         run: |
           set -eu
+          # Use an HTTPS Ubuntu archive mirror while the default hosts fail DNS.
+          # All apt consumers, including Playwright, share this list; the stock
+          # source definitions and Ubuntu signing keys remain unchanged.
+          mirror_list=/etc/apt/apt-mirrors.txt
+          sources=/etc/apt/sources.list.d/ubuntu.sources
+          sudo test -f "$mirror_list"
+          # Fail closed if the image stops routing sources through that list.
+          grep -Fq 'mirror+file:/etc/apt/apt-mirrors.txt' "$sources" 2>/dev/null \
+            || { echo "::error::apt sources no longer route through the mirror list"; exit 1; }
+          # Keep the original list for the rest of this ephemeral job only.
+          sudo cp "$mirror_list" "${RUNNER_TEMP}/apt-mirrors.original.txt"
+          printf 'https://mirrors.kernel.org/ubuntu/\tpriority:1\n' \
+            | sudo tee "$mirror_list" >/dev/null
           missing=0
           for pkg in g++-12 gcc-12 clang-19 cmake ninja-build; do
             dpkg -s "$pkg" >/dev/null 2>&1 || missing=1
           done
           if [ "$missing" -eq 1 ]; then
             sudo apt-get update
-            # Exact reviewed majors from the existing Ubuntu repositories only.
+            # Exact reviewed majors, unchanged, now resolved via the mirror.
             sudo apt-get install -y --no-install-recommends \
               g++-12 gcc-12 clang-19 cmake ninja-build
           fi

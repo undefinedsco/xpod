@@ -5,7 +5,7 @@ import path from 'node:path';
 import {execFileSync} from 'node:child_process';
 import published from '../fixtures/independent-admission/9d02b2d-published-slice.original.json';
 import {CONSUMER_SOURCE_GROUPS as consumer,CI_CONSUMER_SOURCE_GROUPS as ci,CONSUMER_SOURCE_BINDINGS} from '../../scripts/lib/independent-admission/consumer-observer-policy';
-import {QLEVER_SDK_EXECUTION_GROUPS as sdk,QLEVER_LINUX_EXECUTION_GROUPS as linux} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
+import {QLEVER_SDK_EXECUTION_GROUPS as sdk,QLEVER_LINUX_EXECUTION_GROUPS as linux,QLEVER_SDK_CONSUMER_GROUPS as SDK_CONSUMER} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as api} from '../../scripts/lib/independent-admission/github-origin';
 import {CLI_SOURCE_VERSION_GROUPS as cli} from '../../scripts/lib/independent-admission/source-rules';
 import {selectGitHubSourceBindingGroup as select,sourceBindingKey,secondaryGitHubSourceBindingSelectors as secondary} from '../../scripts/lib/independent-admission/github-source-binding-groups';
@@ -325,9 +325,17 @@ test('SDK90 CURRENT owned-input helper and changed core bytes bind exactly and t
  const group=sdk.at(-1)!;
  expect(sdk.length).toBe(CURRENT_SOURCE_GROUP_COUNTS.sdk);
  const own=new Map(group.sourceBindings.map(row=>[row.path,row]));
- for(const file of ['qlever/scripts/sdk-owned-input-generation.py','qlever/scripts/sdk-ptrace-execution.py','qlever/scripts/sdk-generation-multiprocess-bindings.py','qlever/scripts/sdk-tool-lifetime-leases.py','qlever/scripts/sdk-toolchain-materials.py','qlever/tests/test_sdk_owned_input_generation.py','qlever/tests/run_sdk_owned_input_generation_gate.py','.github/workflows/ci.yml']){
+ for(const file of ['qlever/scripts/sdk-owned-input-generation.py','qlever/scripts/sdk-ptrace-execution.py','qlever/scripts/sdk-generation-multiprocess-bindings.py','qlever/scripts/sdk-tool-lifetime-leases.py','qlever/scripts/sdk-toolchain-materials.py','qlever/tests/test_sdk_owned_input_generation.py','qlever/tests/run_sdk_owned_input_generation_gate.py']){
   const row=own.get(file);expect(row).toBeDefined();expect(row!.sha256).toBe(sha(file));
  }
+ // The published SDK93 producer tuple is frozen history: its ci.yml row keeps the
+ // exact bytes it was reviewed against even though the CURRENT workflow moved.
+ expect(own.get('.github/workflows/ci.yml')!.sha256)
+  .toBe('7752a8dd9a38c32e90881078d581cef7b7ef163713259a0fa1c38043e3887c15');
+ // The CURRENT declaration is the appended SDK/Linux consumer tail, which rebinds
+ // only already-owned rows; that tail must bind today's exact ci.yml bytes.
+ const currentConsumer=(SDK_CONSUMER.at(-1) as any).sourceBindings as readonly {path:string;sha256:string}[];
+ expect(currentConsumer.find(row=>row.path==='.github/workflows/ci.yml')!.sha256).toBe(sha('.github/workflows/ci.yml'));
  const values=completeObserved(sdk as any,group as any);
  expect(select(sdk as any,values)).toBe(group);
  for(const file of ['qlever/scripts/sdk-ptrace-execution.py']){

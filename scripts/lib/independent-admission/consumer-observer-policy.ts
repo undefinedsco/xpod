@@ -510,18 +510,26 @@ function rc398ConsumerVariant<T extends GitHubSourceBindingGroup>(group: T): T {
  * origin policy bytes (one appended candidate-workflow version). One shared variant per
  * family is appended; every published group and both RC398 variants stay byte-exact.
  * Only this new variant uses the held-FD live controller self-reference. */
-const QLEVER_RC399_POLICY_SHA256='5eae540c738cac693cc23d56d018aaeb9a8ca90176bc76280f81e3292ab69a30';
+const QLEVER_RC399_POLICY_SHA256='5dad11b089eeeb94342791ecb6683869482ef3ed6709fe02e2457d5e660bb8b1';
 /** Live bytes of the release inputs this generation's dependency declaration and its
  * already-owned policy rows actually moved. Only these rows move; every earlier tuple
  * keeps its published bytes. */
 const RC399_LIVE_RELEASE_INPUTS: Readonly<Record<string, string>> = Object.freeze({
-  'package.json': '9a8aa57d082c0bf28cedcb0f27ebb9245419a271e53efb1aa7bf42a80a76fef0',
-  'bun.lock': 'dd41359d7fa5df0f5d32e030ede320c5ef7e395d6aa3f495aa6c9e0914037722',
+  // c998509f declared the direct componentsjs/rdf-parse runtime dependencies and
+  // dropped the duplicated resolutions.componentsjs, moving these two owned rows.
+  'package.json': '5b22bfea56abce62244dcb9930446a68d91cfd684b31c99c770081eaa24536c1',
+  'bun.lock': 'b7fa5ccb7ea73679a345aeafafa0dfe2a03c119d721d31abab3c02e82a483808',
+  // c998509f also moved the registry supply, packer and owned-command originals;
+  // the frozen apt mirror fix moved ci.yml. All four are already owned rows.
+  'scripts/lib/root-registry-supply.cjs': 'c8b2445bba41efd24156129587cdb12489cf75a6d193dd1e3f38c5f1239bdb59',
+  'scripts/run-npm-pack.cjs': '6e1c6144cc71a8399350a0873c9f3dfafc06a9a2967c0fe88b09c269e8aabe46',
+  'scripts/lib/owned-mode-command.cjs': '8ebb1a1b5ed3ee841ea2eabcd7275cbe879c74661dfc4dc0a60e22cb38cfa66a',
+  '.github/workflows/ci.yml': 'c8b892f7323b88683434f4870e40fc74a5a904447a82379e72347903114f055f',
   // github-origin owns the API group definition changed by the same append.
-  'scripts/lib/independent-admission/github-origin.ts': '6354e2977caa42f98baad4e640a665b88b5fa4da7985a842cad8b1be1074e4f2',
+  'scripts/lib/independent-admission/github-origin.ts': '3f40e787a5ae590dc60592d9f5491709104e4ea07513a9c6fbdd8e7b0a5c9bb3',
   // CLI16 is the declared in-place current CLI tuple in this same generation; its
   // verifier module is an already-owned row of the consumer/CI tails.
-  'scripts/lib/independent-admission/source-rules.ts': '2a86ba017b4f48dba21fb11af6e1867d13cb32b9db37002c80572920fa616d4e',
+  'scripts/lib/independent-admission/source-rules.ts': '4bad2440d95b29d04abd6a78f24cd9c262ae0a6faeacd8c252050888a23b168b',
   // desktop/package.json (already owned by these tails) moved with the desktop
   // runtime descriptor initializer.
   'desktop/package.json': 'a09bb65633addabdcd0ed8bd43e2dcbe8817949a21d6363f394007bf05e0057b',
