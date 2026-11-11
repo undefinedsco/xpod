@@ -96,11 +96,21 @@ export function stageBundledBun(repoRoot: string, destination: string, descripto
     return { path: relative, kind: file.kind, sourceUrl: file.sourceUrl, sha256: file.sha256 };
   });
   writeFileSync(path.join(materialRoot, 'authority.original.json'), authorityBytes, { flag: 'wx' });
+  // `release` admission above proves the DECLARED material set: a verified
+  // assessment, named reviewer, matching root LICENSE, and license/source/relink/
+  // assessment originals whose identities and digests match. That is not evidence
+  // of whole-binary legal coverage, and no rebuilt/relinked binary is produced
+  // here, so this receipt must never assert `legalComplete`. It reports the
+  // narrower fact it actually established.
+  const declaredMaterialSetVerified = descriptor.mode === 'release';
   writeFileSync(path.join(materialRoot, 'receipt.json'), JSON.stringify({ version: '1.4.2', target: descriptor.target,
     runtimePhase: 'pre-sign', revision: provenance.revision,
     archiveUrl: compiler.officialArchiveUrl, archiveSha256: sha(archive), executableSha256: sha(executable), sourceCommit: provenance.bunCommit,
     mode: descriptor.mode, authoritySha256: descriptor.authoritySha256, assessment,
-    releaseQualified: descriptor.mode === 'release', legalComplete: descriptor.mode === 'release',
-    qualificationBasis: 'Explicit supplied binary-runtime authority and material hashes; never the JS prefix assessment', files,
+    releaseQualified: declaredMaterialSetVerified,
+    declaredMaterialSetVerified,
+    legalComplete: false,
+    legalStatus: 'not-assessed',
+    qualificationBasis: 'Explicit supplied binary-runtime authority and material hashes; never the JS prefix assessment; not an assessment of whole-binary legal coverage, and no rebuilt or relinked binary is claimed', files,
   }, null, 2));
 }

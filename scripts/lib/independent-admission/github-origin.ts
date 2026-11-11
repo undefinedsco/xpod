@@ -1301,6 +1301,9 @@ const apiRc393UndiciEntryHash='d3e118347eef031adda164a503b0ba0eb1a709ff228c7c33f
 const apiRc393ProducerGraphHash='03cefdca16320bd190bdfab612f67b9077f51c8c22b6a73d47b5faf71524f84d';
 const API33_REBOUND:Readonly<Record<string,string>>=Object.freeze({
   'package.json':apiRc393PackageHash,
+  // desktop/package.json (already an owned row of this CURRENT tuple) moved when
+  // the desktop build gained the explicit Bun runtime descriptor initializer.
+  'desktop/package.json':'a09bb65633addabdcd0ed8bd43e2dcbe8817949a21d6363f394007bf05e0057b',
   'scripts/check-dependency-state.ts':apiRc393DependencyStateHash,
   'scripts/lib/api-producer-graph.ts':apiRc393ProducerGraphHash,
 });

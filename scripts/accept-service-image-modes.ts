@@ -10,6 +10,7 @@ import YAML from 'yaml';
 import { setupAccount } from '../tests/integration/helpers/solidAccount';
 import { createCloudAccountPassword, prepareManagedLocalAcceptancePod, parseKeyFile } from './accept-live-gateway-login-chat';
 import { discoverSolidLocalRoute } from '../packages/solid-sdk/src/local-route-fetch';
+import { isFailureSafeEnvelope } from '../tests/helpers/browserExternalPhase';
 const { MODES, CASES, LIMITS, hash, projectLive, validateMatrix, assertSafeJson } = require('./lib/service-image-modes.cjs');
 const { runOwnedModeCommand } = require('./lib/owned-mode-command.cjs');
 const { createModeEvidenceReader } = require('./lib/mode-evidence-reader.cjs');
@@ -21,7 +22,7 @@ const need = (fact: unknown, message: string): void => { if (!fact) throw new Er
  * fails. Only members the existing bounded/symlink-guarded reader admits are
  * copied verbatim through `write`; an absent or unsafe file is honestly skipped,
  * never fabricated, and raw stdout/stderr/URLs/tokens are never exported. This
- * adds no failure reason, schema or proof axis. */
+ * does not turn failure diagnostics into release qualification. */
 export async function exportSessionSafeEvidence(
   sessionOutput: string,
   write: (relative: string, bytes: Buffer) => Promise<void>,
@@ -36,6 +37,19 @@ export async function exportSessionSafeEvidence(
       await write(path.join(destination, name), bytes);
     } catch { /* missing or inadmissible member: retain nothing rather than invent it */ }
   }
+  // The external session child writes a CLOSED-SCHEMA failure checkpoint. Only a
+  // byte-for-byte valid projection is copied: exactly {schemaVersion:1,diagnostic}
+  // with a fixed 7-key diagnostic, closed enums and bounded counters. A malformed,
+  // oversized or extra-field file is dropped rather than exported.
+  try {
+    const bytes = await reader.read('failure.safe.json');
+    if (bytes.length > 4096) return;
+    const parsed: unknown = JSON.parse(bytes.toString());
+    if (!isFailureSafeEnvelope(parsed)) return;
+    // Re-serialise from the validated value so nothing outside the schema ships.
+    await write(path.join(destination, 'failure.safe.json'),
+      Buffer.from(`${JSON.stringify(parsed)}\n`));
+  } catch { /* absent or inadmissible: retain nothing rather than invent it */ }
 }
 async function digest(file: string): Promise<string> { return hash(await readFile(file)); }
 async function json(file: string): Promise<any> { return JSON.parse(await readFile(file, 'utf8')); }

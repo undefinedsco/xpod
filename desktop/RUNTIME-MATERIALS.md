@@ -5,9 +5,36 @@ ModuleStore capabilities. A packaged app runs its CLI with `runtime/bin/bun`;
 missing bundled Bun is an incomplete app, even when system Bun exists.
 Unpackaged use retains the normal CLI launcher and its Node/Bun contract.
 
-Run `bun run --cwd desktop build:runtime --runtime-input /absolute/input.json`,
-then `bun run --cwd desktop pack`. The old `dist` convenience chain does not
-supply this required producer input. No runtime is downloaded by this producer.
+Run `bun run --cwd desktop dist`, or `build:runtime` then `pack`. `build:runtime`
+composes `init:runtime`, the ONE initializer that derives every identity from the
+reviewed Bun 1.4.2 pin and writes the descriptor under
+`desktop/.test-data/runtime-input/`. By default it downloads the pin's own
+official archive (cached by digest); `bun scripts/init-runtime-input.ts
+--archive /path/to/bun-darwin-aarch64.zip` reuses a local copy instead. No user
+environment variable and no caller-supplied digest/target/version is accepted.
+
+`stage-runtime.ts --runtime-input /absolute/input.json` still accepts an explicit
+descriptor, so a custom producer can drive staging directly without this
+initializer. That is the supported entry for anything other than the pinned
+runtime.
+
+**Qualification scope.** The checked-in policy in `desktop/runtime-materials/`
+is the single authority: `manifest.json` names every original with its pinned
+source URL and SHA-256, plus the full pinned Bun source archive identity. When
+that assessment is reviewed and `verified`, the initializer emits `release` and
+stable `dist` consumes it with no extra flags, workflow download or user
+environment variable. An unreviewed assessment can only emit
+`controlled-preview`, and asking for `release` with unreviewed material is
+refused, so a preview runtime cannot silently become the stable default.
+
+`verified` means the declared original set and its pinned identities were
+reviewed. It does not claim whole-binary licence coverage, and no rebuilt or
+relinked binary is produced or asserted. The LGPL components are recorded by
+exact source identity only (oven-sh/WebKit and oven-sh/tinycc commits), with the
+upstream relink instructions retained rather than any prebuilt object files.
+
+The full source archive is declared as a material by URL and digest but is a
+download cache artifact: it is never committed, and packaging must not embed it.
 
 The descriptor contains `mode` (`release` or `controlled-preview`), `target`
 (currently only `darwin-arm64`), `archive`, `authority`, and `authoritySha256`.
@@ -32,6 +59,13 @@ pending assessment; its receipt always records legal/release qualification as
 false. The earlier JS-prefix notice assessment is not binary-runtime approval.
 Original authority and supplied materials are retained under `licenses/bun` with
 source URLs and hashes. Missing or changed inputs fail before runtime promotion.
+
+The receipt reports exactly what admission proved. `releaseQualified` and
+`declaredMaterialSetVerified` are true only for an admitted release set, meaning
+the declared originals, their pinned identities and their digests were verified.
+`legalComplete` is always `false` with `legalStatus: 'not-assessed'`: this
+producer does not assert whole-binary legal coverage, and no rebuilt or relinked
+binary is produced or claimed.
 
 Small fixture archives test admission, failure and selection only; they are not
 executed as Bun. Real acceptance must bind the merged source commit, official
