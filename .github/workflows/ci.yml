@@ -34,7 +34,8 @@ concurrency:
 jobs:
   test:
     if: ${{ github.event_name != 'workflow_dispatch' }}
-    runs-on: ubuntu-latest
+    # Pin the documented Ubuntu 24.04 native toolchain environment.
+    runs-on: ubuntu-24.04
     steps:
       # The Git-history immutability tests read real commits (9d02/2406/19fe).
       # A default shallow checkout cannot resolve them, so this job needs full
@@ -57,6 +58,8 @@ jobs:
       # instantiate the real native SdkLeaseSet. Build the canonical helper and
       # its compiler/header prerequisites before that discovery.
       - name: Install the two reviewed scoped-PCH compilers when absent
+        # Bound compiler downloads so stalled mirrors fail promptly.
+        timeout-minutes: 10
         run: |
           set -eu
           missing=0
