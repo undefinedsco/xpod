@@ -61,9 +61,20 @@ function verifyPublicationMetadata(value, metadata) {
   const manifest = value.manifest, version = metadata?.versions?.[manifest.version];
   if (metadata?.name !== manifest.name || version?.name !== manifest.name || version.version !== manifest.version
     || version.dist?.integrity !== value.integrity || version.dist?.shasum !== crypto.createHash('sha1').update(value.bytes).digest('hex')) throw new Error('Publication identity/dist changed');
-  for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies', 'peerDependenciesMeta']) assert.deepEqual(version[field], manifest[field], 'Publication dependency metadata changed');
-  // npm normalizes the two supported aliases. Preserve originals, compare the same semantic list.
   const bundled = row => row.bundleDependencies ?? row.bundledDependencies;
+  // npm adds a required '*' edge for bundled optional names. Derive only that
+  // normalization from the original; the exact optional version remains bound.
+  let expectedDependencies = manifest.dependencies;
+  const originalBundled = bundled(manifest);
+  for (const name of Array.isArray(originalBundled) ? originalBundled : []) {
+    if (Object.hasOwn(manifest.optionalDependencies ?? {}, name)
+      && !Object.hasOwn(manifest.dependencies ?? {}, name)) {
+      expectedDependencies = { ...expectedDependencies, [name]: '*' };
+    }
+  }
+  assert.deepEqual(version.dependencies, expectedDependencies, 'Publication dependency metadata changed');
+  for (const field of ['optionalDependencies', 'peerDependencies', 'peerDependenciesMeta']) assert.deepEqual(version[field], manifest[field], 'Publication dependency metadata changed');
+  // npm normalizes the two supported aliases. Preserve originals, compare the same semantic list.
   assert.deepEqual(bundled(version), bundled(manifest), 'Publication bundled metadata changed');
 }
 function sourceAuthority(root) {

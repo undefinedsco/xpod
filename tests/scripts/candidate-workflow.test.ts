@@ -549,6 +549,22 @@ esac
     expect(jobRunText(workflow, 'build_desktop_rc')).not.toContain('mock');
   });
 
+  it('emits root JS and components before packing and checking consumers', async () => {
+    const workflow = await loadWorkflow();
+    const steps: any[] = workflow.jobs.build_desktop_rc.steps;
+    const emitIndex = steps.findIndex(step => step.run?.includes('bun run build:ts')
+      && step.run?.includes('bun run build:components'));
+    const packIndex = steps.findIndex(step => step.name === 'Verify root npm package boundary');
+    const consumerIndex = steps.findIndex(step => step.name === 'Verify packed Node and Bun consumers before publication');
+    expect(emitIndex).toBeGreaterThan(-1);
+    expect(packIndex).toBeGreaterThan(-1);
+    expect(consumerIndex).toBeGreaterThan(-1);
+    expect(steps[emitIndex]['working-directory'] ?? '.').toBe('.');
+    expect(workflow.jobs.build_desktop_rc.defaults?.run?.['working-directory'] ?? '.').toBe('.');
+    expect(emitIndex).toBeLessThan(packIndex);
+    expect(packIndex).toBeLessThan(consumerIndex);
+  });
+
   it('derives every downstream RC seed from the producer suffix, never the raw secret or own attempt', async () => {
     const workflow = await loadWorkflow();
     const deploy: any = workflow.jobs.deploy_and_accept;
