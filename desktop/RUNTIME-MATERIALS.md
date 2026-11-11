@@ -60,6 +60,13 @@ false. The earlier JS-prefix notice assessment is not binary-runtime approval.
 Original authority and supplied materials are retained under `licenses/bun` with
 source URLs and hashes. Missing or changed inputs fail before runtime promotion.
 
+The receipt reports exactly what admission proved. `releaseQualified` and
+`declaredMaterialSetVerified` are true only for an admitted release set, meaning
+the declared originals, their pinned identities and their digests were verified.
+`legalComplete` is always `false` with `legalStatus: 'not-assessed'`: this
+producer does not assert whole-binary legal coverage, and no rebuilt or relinked
+binary is produced or claimed.
+
 Small fixture archives test admission, failure and selection only; they are not
 executed as Bun. Real acceptance must bind the merged source commit, official
 archive, extracted runtime, normal installed CLI and module inventories, and
