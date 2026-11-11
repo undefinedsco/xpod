@@ -32,7 +32,7 @@ test('projection accepts only closed-enum phases and reasons', () => {
 
 test('counters are clamped and non-integers cannot become payload', () => {
   const row = externalPhaseDiagnostic({
-    phase: 'renewal', reason: 'poll-timed-out',
+    phase: 'renewal', reason: 'approval-timed-out',
     authorizationCodes: 3,
     passwordPosts: Number.NaN as never,
     refreshGrants: -5 as never,
