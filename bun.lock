@@ -34,6 +34,7 @@
         "asynciterator": "catalog:api-producer",
         "awilix": "catalog:api-producer",
         "classic-level": "^1.4.1",
+        "componentsjs": "6.4.0",
         "drizzle-orm": "catalog:api-producer",
         "http-proxy": "^1.18.1",
         "inngest": "catalog:api-producer",
@@ -47,6 +48,7 @@
         "portfinder": "^1.0.38",
         "quadstore": "^15.4.1",
         "quadstore-comunica": "^6.3.1",
+        "rdf-parse": "catalog:api-producer",
         "sparqljs": "catalog:api-producer",
         "sqlite-vec": "^0.1.7-alpha.2",
         "tree-kill": "^1.2.2",
@@ -476,7 +478,6 @@
     "@inrupt/solid-client-authn-browser": "^3.1.1",
     "@inrupt/solid-client-authn-core": "^3.1.1",
     "@undefineds.co/drizzle-solid": "0.3.26",
-    "componentsjs": "^6.4.0",
     "oidc-provider": "9.5.1",
   },
   "catalogs": {

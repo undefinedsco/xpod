@@ -1509,6 +1509,14 @@ jobs:
             fi
           done
           echo "Account document assets verified"
+      # Packing consumes generated root outputs; desktop builds do not emit them.
+      - name: Compile root package outputs consumed by the packed tarball
+        run: |
+          set -euo pipefail
+          bun run build:ts
+          bun run build:components
+          test -s dist/runtime/index.js
+          test -s dist/components/components.jsonld
       - name: Verify root npm package boundary
         env:
           XPOD_INCLUDE_PLATFORM_PACKAGES: 'true'

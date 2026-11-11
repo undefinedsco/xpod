@@ -662,7 +662,15 @@ function projectPackedManifest(preparedManifest, dependencies, profile = 'compat
     manifest.dependencies ??= {};
     if (dependency.patchedRuntime || profile === 'compat') {
       if (typeof dependency.version !== 'string' || !dependency.version) throw new Error('Actual installed/public manifest version required');
-      manifest.dependencies[dependency.name] = dependency.version;
+      if (dependency.patchedRuntime) {
+        manifest.dependencies[dependency.name] = dependency.version;
+      } else {
+        // Local payload remains required and bundled; only the redundant
+        // registry fallback is optional, including for unpublished packages.
+        manifest.optionalDependencies ??= {};
+        manifest.optionalDependencies[dependency.name] = dependency.version;
+        delete manifest.dependencies[dependency.name];
+      }
       manifest.bundledDependencies ??= [];
       if (!manifest.bundledDependencies.includes(dependency.name)) manifest.bundledDependencies.push(dependency.name);
     } else {

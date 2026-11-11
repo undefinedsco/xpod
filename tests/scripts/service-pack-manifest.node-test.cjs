@@ -12,10 +12,20 @@ test('service manifest projection keeps unrelated fields and composes actual exi
  assert.deepEqual(projected.optionalDependencies,{leaf:'^4.0.0'});assert.deepEqual(projected.overrides,{'@undefineds.co/xpod-client':'file:./runtime-packages/-undefineds.co-xpod-client.tgz'});assert.deepEqual(projected.bundledDependencies,['patched']);
  assert.equal(projected.version,'1.2.3-rc.41');assert.equal(projected.description,'preserved');assert.deepEqual(projected.custom,root.custom);assert.deepEqual(projected.bin,{'xpod-service':'./dist/runtime/service-entry.js'});assert.equal(projected.xpodArtifactProfile,'service');assert.equal(projected.scripts,undefined);assert.equal(projected.devDependencies,undefined);assert.equal(projected.workspaces,undefined);assert.deepEqual(projected.peerDependencies,{});assert.equal(JSON.stringify(root),snapshot);
 });
-test('compat projection preserves public package version edges and scripts rather than emitting service file references',()=>{
- const input={name:'root',version:'1',scripts:{start:'unchanged'},dependencies:{external:'^1'},bundledDependencies:['existing']};
+test('compat projection makes non-patched local bundles optional-but-bundled and keeps patched runtime required',()=>{
+ const input={name:'root',version:'1',scripts:{start:'unchanged'},dependencies:{external:'^1',public:'2.3.4'},bundledDependencies:['existing']};
  const output=projectPackedManifest(input,[{name:'public',version:'2.3.4',patchedRuntime:false},{name:'patched',version:'5.6.7',patchedRuntime:true}],'compat');
- assert.deepEqual(output.dependencies,{external:'^1',public:'2.3.4',patched:'5.6.7'});assert.deepEqual(output.bundledDependencies,['existing','public','patched']);assert.deepEqual(output.scripts,input.scripts);assert.equal(output.xpodArtifactProfile,undefined);assert.deepEqual(input.bundledDependencies,['existing']);
+ // A non-patched local bundle keeps its exact version and stays bundled, but its
+ // REQUIRED registry edge is dropped so a fresh resolver cannot prefer an
+ // unpublished fallback over the bytes shipped in the tarball.
+ assert.deepEqual(output.dependencies,{external:'^1',patched:'5.6.7'});
+ assert.deepEqual(output.optionalDependencies,{public:'2.3.4'});
+ assert.deepEqual(output.bundledDependencies,['existing','public','patched']);
+ assert.deepEqual(output.scripts,input.scripts);assert.equal(output.xpodArtifactProfile,undefined);
+ // The caller-supplied input is never mutated.
+ assert.deepEqual(input.bundledDependencies,['existing']);
+ assert.deepEqual(input.dependencies,{external:'^1',public:'2.3.4'});
+ assert.equal(input.optionalDependencies,undefined);
 });
 test('projection requires actual installed/public versions and unique selected inputs, and never infers versions from image output',()=>{
  for(const entries of [[{name:'patched',patchedRuntime:true}],[{name:'public',patchedRuntime:false}],[{name:'same',version:'1'},{name:'same',version:'2'}]])assert.throws(()=>projectPackedManifest({},entries,'compat'),/actual|Actual/);

@@ -57,8 +57,14 @@ it('keeps workspace icon consumers on one external runtime while preserving thei
   expect(entries.some((entry) => entry.endsWith('/helper/agentfs-pod'))).toBe(false);
   for (const dependency of dependencies) {
     const originalManifest = JSON.parse(readFileSync(path.join(dependency.sourcePackageRoot, 'package.json'), 'utf8'));
-    expect(rootManifest.dependencies[dependency.name]).toBe(originalManifest.version);
+    // COMPAT intent: the exact selected version is retained and the package stays
+    // bundled, but the REQUIRED registry edge is removed so a fresh resolver cannot
+    // prefer an unpublished fallback over the bytes already in the tarball.
+    expect(rootManifest.optionalDependencies[dependency.name]).toBe(originalManifest.version);
+    expect(rootManifest.dependencies[dependency.name]).toBeUndefined();
     expect(rootManifest.bundledDependencies).toContain(dependency.name);
+    // The physical payload is still shipped and required.
+    expect(entries.some((entry) => entry.startsWith(`package/node_modules/${dependency.name}/`))).toBe(true);
   }
   for (const [index, name] of names.entries()) {
     expect(readManifest(`package/node_modules/@undefineds.co/${name}/package.json`).exports).toEqual(manifests[index].exports);
