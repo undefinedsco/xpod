@@ -3015,10 +3015,12 @@ const QLEVER_NORMAL_RC398_PLATFORM_GROUP:GitHubSourceBindingGroup=Object.freeze(
  * candidate workflow (explicit Background propagation for owned Job cleanup). Group 8 stays
  * byte-exact published history; the new group clones it and rebinds ONLY the candidate-workflow
  * row it already owns. No SDK source/recipe, no proof axis and no other row moves. */
-/* c998509f appended the root-package compile step to candidate.yml, so the
- * CURRENT-tail candidate binding follows the ACTUAL reviewed bytes. Every
- * published RC396/RC397/RC398 value above stays byte-exact. */
-const QLEVER_RC399_CANDIDATE_WORKFLOW_HASH='a11dd8c4a26e074209cf9302b94a6b024730a595d37a2754d48b536d98ce5f63';
+/* The CURRENT-tail candidate binding follows the ACTUAL reviewed bytes.
+ * This generation moves ONLY the workspace build+consumer ahead of the
+ * candidate-version transform inside build_desktop_rc; no other byte of the
+ * workflow changes. Every published RC396/RC397/RC398 value above stays
+ * byte-exact. */
+const QLEVER_RC399_CANDIDATE_WORKFLOW_HASH='c174c5f94f2d4f5b460cc9ed9da11e675fd0c58658ed3eb9bde21d4cd881c8c6';
 const QLEVER_NORMAL_RC399_CLEANUP_GROUP:GitHubSourceBindingGroup=Object.freeze({...QLEVER_NORMAL_RC398_PLATFORM_GROUP,
   secondarySelectors:Object.freeze((QLEVER_NORMAL_RC398_PLATFORM_GROUP.secondarySelectors??[]).map(row=>
     Object.freeze({...row,sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_RC399_CANDIDATE_WORKFLOW_HASH:row.sha256}))),

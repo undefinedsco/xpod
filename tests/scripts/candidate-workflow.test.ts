@@ -1652,3 +1652,52 @@ sys.exit(${mode === 'missing-release' ? 27 : 0})
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
+
+describe('desktop candidate-version ordering', () => {
+  // The workspace consumer's source contract is "clean exact source". The
+  // candidate version transform rewrites TRACKED manifests (root package.json,
+  // native optional refs, desktop/package.json), so it must run AFTER the
+  // workspace build+consumer, never before it.
+  it('builds and consumes the workspace source BEFORE applying the candidate version', async () => {
+    const workflow = await loadWorkflow();
+    const steps: any[] = workflow.jobs.build_desktop_rc.steps;
+    const index = (name: string) => steps.findIndex((step) => step.name === name);
+    const build = index('Build workspace packages required by the desktop contracts');
+    const consumer = index('Verify shared applet tarballs in a clean Bun consumer');
+    const apply = index('Apply and verify the candidate version');
+    expect(build).toBeGreaterThanOrEqual(0);
+    expect(consumer).toBeGreaterThanOrEqual(0);
+    expect(apply).toBeGreaterThanOrEqual(0);
+    // Clean-source window: build, then the consumer, then the transform.
+    expect(build).toBeLessThan(consumer);
+    expect(consumer).toBeLessThan(apply);
+    // The transform still precedes everything that needs the candidate version.
+    expect(apply).toBeLessThan(index('Run the desktop unit test suite'));
+    expect(apply).toBeLessThan(index('Build desktop with the accepted native runtime'));
+    expect(apply).toBeLessThan(index('Verify root npm package boundary'));
+  });
+
+  it('keeps the workspace consumer before the root pack and Node/Bun consumers', async () => {
+    const workflow = await loadWorkflow();
+    const steps: any[] = workflow.jobs.build_desktop_rc.steps;
+    const index = (name: string) => steps.findIndex((step) => step.name === name);
+    expect(index('Verify shared applet tarballs in a clean Bun consumer'))
+      .toBeLessThan(index('Verify root npm package boundary'));
+    expect(index('Verify root npm package boundary'))
+      .toBeLessThan(index('Verify packed Node and Bun consumers before publication'));
+    expect(index('Verify packed Node and Bun consumers before publication'))
+      .toBeLessThan(index('Bind the package-consumers acceptance evidence'));
+  });
+
+  it('runs no workspace build or consumer after the candidate version transform', async () => {
+    const workflow = await loadWorkflow();
+    const steps: any[] = workflow.jobs.build_desktop_rc.steps;
+    const apply = steps.findIndex((step) => step.name === 'Apply and verify the candidate version');
+    const after = steps.slice(apply + 1)
+      .map((step) => step.run ?? '')
+      .join('\n');
+    // No second workspace pack/consumer pass on transformed source.
+    expect(after).not.toContain('workspace-package-consumer.cjs');
+    expect(after).not.toContain('bun run build:packages');
+  });
+});

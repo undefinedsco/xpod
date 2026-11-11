@@ -175,6 +175,9 @@ for (const mode of profiles) {
     let phase: ExternalPhase = 'preflight';
     let browserEvidence: Awaited<ReturnType<typeof verifyExternalBrowser>> | undefined;
     let persistedHostRestored = false;
+    // Network-issue time of the first refresh_token POST (renew-before-dispatch proof).
+    let refreshRequestAt: number | undefined;
+    let refreshRequestIndex: number | undefined;
     let hostClosed = false;
     const hostGroups: OwnedHostGroup[] = [];
     const observerPath = (phase: 'initial' | 'restart') => path.join(externalRefreshPrivateRoot(external!.input), `${phase}-observer.safe.json`);
@@ -207,7 +210,12 @@ for (const mode of profiles) {
       });
       if (external) hostGroups.push(recordOwnedHost(app));
       app.context().on('request', (request) => {
-        requests.push({ at: Date.now(), path: normalizeAccountPath(new URL(request.url()).pathname), method: request.method(), authorizationScheme: request.headers().authorization?.split(/\s+/u, 1)[0] ?? 'none' });
+        const at = Date.now();
+        if (request.method() === 'POST' && new URLSearchParams(request.postData() ?? '').get('grant_type') === 'refresh_token') {
+          refreshRequestAt ??= at;
+          refreshRequestIndex ??= requests.length;
+        }
+        requests.push({ at, path: normalizeAccountPath(new URL(request.url()).pathname), method: request.method(), authorizationScheme: request.headers().authorization?.split(/\s+/u, 1)[0] ?? 'none' });
       });
       if (mode === 'idle') {
         await app.context().addInitScript(() => {
@@ -300,10 +308,21 @@ for (const mode of profiles) {
       await Promise.allSettled([...pending]);
       evidence.passwordPosts = requests.filter(entry => entry.method === 'POST' && entry.path === '/.account/login/password/').length;
       expect(evidence.passwordPosts).toBe(initialPasswordPosts);
-      evidence.firstExpiredRequest = requests.find(entry => entry.at > initial.receivedAt + initial.expiresIn! * 1000 && ['DPoP', 'Bearer'].includes(entry.authorizationScheme));
+      // Keep token requests out of the protected-request ordering comparison.
+      const firstExpiredRequestIndex = requests.findIndex(entry => entry.at > initial.receivedAt + initial.expiresIn! * 1000
+        && ['DPoP', 'Bearer'].includes(entry.authorizationScheme) && !entry.path.endsWith('/token'));
+      evidence.firstExpiredRequest = requests[firstExpiredRequestIndex];
       if (mode === 'idle') {
         expect(evidence.firstExpiredRequest).toBeDefined();
-        expect(tokens.find(entry => entry.grant === 'refresh_token' && entry.status === 200)!.receivedAt).toBeGreaterThanOrEqual(evidence.firstExpiredRequest!.at);
+        // Renew-before-dispatch semantics. Inrupt's proactive timer fires at
+        // expiresIn-5s, i.e. BEFORE the token expires, so a renewal ISSUED after
+        // expiry can only be request-driven.
+        expect(refreshRequestAt).toBeDefined();
+        // (1) Request-driven, not proactive: strictly after the old token expired.
+        expect(refreshRequestAt!).toBeGreaterThan(initial.receivedAt + initial.expiresIn! * 1000);
+        // Event indices distinguish the order even within one millisecond.
+        expect(refreshRequestIndex).toBeDefined();
+        expect(refreshRequestIndex!).toBeLessThan(firstExpiredRequestIndex);
         expect(tokens.filter(entry => entry.grant === 'refresh_token' && entry.status === 200)).toHaveLength(1);
         expect(tokens.filter(entry => entry.grant === 'authorization_code')).toHaveLength(1);
         expect((await readBrowserXpodRuntime(page)).status).toBe('authenticated');

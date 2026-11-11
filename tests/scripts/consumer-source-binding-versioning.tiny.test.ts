@@ -497,10 +497,10 @@ test('normal producer keeps the frozen 23-row flat list and all earlier groups',
   const RC397_NORMAL_SCOPE='b2418f775120a51d875d76fd46a7b1dcb5aef3072127d3510c10e70a6daf88fd';
   const RC397_CANDIDATE='70b14a6afc3da3f8f074c5fb4e2bc2d097639b8a33efce57469c45adef1b1d87';
   const RC398_CANDIDATE='f488709ab38b7d42f58accd90cbe59a162eae89ee23169db9b28ecdf264a7581';
-  // CURRENT tail: c998509f appended the root-package compile step to candidate.yml,
-  // so the reviewed CURRENT bytes are the ones now in the tree. RC396/397/398 above
-  // keep their frozen values.
-  const RC399_CANDIDATE='a11dd8c4a26e074209cf9302b94a6b024730a595d37a2754d48b536d98ce5f63';
+  // CURRENT tail: this generation moves only the workspace build+consumer ahead of
+  // the candidate-version transform inside build_desktop_rc, so the reviewed CURRENT
+  // bytes are the ones now in the tree. RC396/397/398 above keep their frozen values.
+  const RC399_CANDIDATE='c174c5f94f2d4f5b460cc9ed9da11e675fd0c58658ed3eb9bde21d4cd881c8c6';
   expect(old!.sourceBindings).toBe(QLEVER_SDK_NORMAL_SOURCE_BINDINGS);
   expect(QLEVER_SDK_NORMAL_SOURCE_BINDINGS).toHaveLength(23);
   expect(whole(QLEVER_SDK_NORMAL_SOURCE_BINDINGS)).toBe(publishedSdk93.published.normalFlatBindingsSha256);
