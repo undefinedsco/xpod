@@ -36,10 +36,13 @@ export const EXTERNAL_PHASES = [
 
 export type ExternalPhase = typeof EXTERNAL_PHASES[number];
 
-/** Fixed reason codes. Deliberately coarse so no message text can be inferred. */
+/** Fixed reason codes. Deliberately coarse so no message text can be inferred.
+ * `approval-timed-out` says the bounded external LOGIN approval loop exhausted
+ * its own budget. It is not proof of an `expect.poll` exhaustion: the browser
+ * driver throws its timeout error through the same catch. */
 export const EXTERNAL_REASONS = [
   'assertion-failed',
-  'poll-timed-out',
+  'approval-timed-out',
   'launch-failed',
 ] as const;
 

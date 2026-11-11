@@ -68,6 +68,54 @@ export function externalRefreshPrivateRoot(input: ExternalRefreshInput): string 
   return path.join(path.dirname(input.accountFile), 'private-session');
 }
 
+/**
+ * Resolve the Cloud-issued provision scope for a managed Local login.
+ *
+ * A managed Local deployment is the only mode whose OIDC issuer is not its
+ * storage deployment (the session contract rejects every other topology where
+ * issuer and base URL differ). Without this scope the Cloud IdP scopes Account
+ * ownership to its own storage root, so the Local Pod binding is never offered
+ * and Consent has no actionable approval. The product and the deployment matrix
+ * already carry the same value on the authorization request.
+ *
+ * Cloud and standalone return `undefined` WITHOUT any request: their issuer and
+ * storage deployment are the same origin, so a scope would be meaningless and
+ * the existing acceptance path must not gain a network dependency.
+ *
+ * Reads the existing `/provision/status` contract once and fails closed. A
+ * managed Local deployment must be registered and expose a non-empty code; a
+ * self-managed Local deployment cannot satisfy the session contract, so a
+ * `managed: false` answer is a fixture error rather than an unscoped login.
+ */
+export async function readManagedLocalProvisionCode(
+  input: Pick<ExternalRefreshInput, 'mode' | 'baseUrl'>,
+  transport: typeof fetch = fetch,
+): Promise<string | undefined> {
+  if (input.mode !== 'local') return undefined;
+  let response: Response;
+  try {
+    response = await transport(new URL('provision/status', input.baseUrl).href, {
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(5_000),
+    });
+  } catch {
+    throw new Error('Managed Local provision status request failed');
+  }
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new Error('Managed Local provision status unavailable');
+  }
+  const status = await response.json().catch(() => undefined) as {
+    managed?: unknown; registered?: unknown; provisionCode?: unknown;
+  } | undefined;
+  if (status?.managed !== true) throw new Error('Managed Local provision scope requires managed registration');
+  if (status.registered !== true
+    || typeof status.provisionCode !== 'string' || !status.provisionCode.trim()) {
+    throw new Error('Managed Local provision scope unavailable');
+  }
+  return status.provisionCode.trim();
+}
+
 /** Reuse the SDK's authoritative local-route contract; never infer a Pod origin. */
 export async function verifyExternalRefreshStorage(input: ExternalRefreshInput, transport: typeof fetch = fetch): Promise<typeof fetch> {
   if (input.mode !== 'local') {

@@ -5,10 +5,10 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import { _electron as electron, expect, test, type ElectronApplication, type Page, type Browser } from '@playwright/test';
 import { normalizeAccountPath, chooseConsentBinding, type BrowserSolidCredentials } from '../helpers/browserSolidOidc';
-import { externalRefreshFromEnvironment, externalRefreshPrivateRoot, verifyExternalRefreshStorage } from '../helpers/browserExternalRefreshFixture';
+import { externalRefreshFromEnvironment, externalRefreshPrivateRoot, readManagedLocalProvisionCode, verifyExternalRefreshStorage } from '../helpers/browserExternalRefreshFixture';
 import { recordOwnedHost, closeOwnedHost, cleanupOwnedHostGroup, hostGroupPassed, type OwnedHostGroup } from '../helpers/ownedElectronHost';
 import { startBrowserExternalRp } from '../helpers/browserExternalRp';
-import { completeOidcLogin } from '../helpers/browserSolidOidc';
+import { completeOidcLogin, OidcApprovalError } from '../helpers/browserSolidOidc';
 import { fetchBrowserXpodPod, readBrowserXpodRuntime } from '../helpers/browserXpodRuntime';
 import { assertRestartObserver, recordExternalFailure, type ExternalPhase } from '../helpers/browserExternalPhase';
 
@@ -109,6 +109,11 @@ async function completeDesktopLogin(app: ElectronApplication, account: BrowserSo
 
 async function verifyExternalBrowser(browser: Browser, stateRoot: string) {
   if (!external) throw new Error('External browser input missing');
+  // Managed Local is the only deployment whose OIDC issuer is not its storage
+  // deployment, so its Cloud authorization request must carry the Cloud-issued
+  // provision scope; the Cloud IdP then scopes Account ownership to this Local
+  // Pod. Cloud/standalone return undefined and issue no extra request.
+  const provisionCode = await readManagedLocalProvisionCode(external.input);
   const rp = await startBrowserExternalRp(external.input.issuer);
   let context: Awaited<ReturnType<Browser['newContext']>> | undefined;
   let passwordPosts = 0;
@@ -118,7 +123,7 @@ async function verifyExternalBrowser(browser: Browser, stateRoot: string) {
     if (request.method() === 'POST' && normalizeAccountPath(new URL(request.url()).pathname) === '/.account/login/password/') passwordPosts++;
   });
   const login = async (rememberAccount: boolean) => {
-    const transaction = rp.authorization();
+    const transaction = rp.authorization(provisionCode);
     const page = await context!.newPage();
     await completeOidcLogin(page, external.ready.account, {
       baseUrl: new URL(rp.callbackUrl).origin, startUrl: transaction.url, rememberAccount,
@@ -355,9 +360,12 @@ for (const mode of profiles) {
         throw new Error(recordExternalFailure({
           outputDirectory: external.input.outputDirectory,
           phase,
-          // Only claim a timeout when the failure is provably a poll exhaustion.
-          reason: primaryFailure instanceof Error && /timed out|Timeout/i.test(primaryFailure.message)
-            ? 'poll-timed-out' : 'assertion-failed',
+          // Only claim the bounded login-approval timeout when the OIDC driver
+          // itself reports it; a generic Playwright poll timeout stays an
+          // assertion failure (the old regex conflated the two).
+          reason: primaryFailure instanceof OidcApprovalError
+            && primaryFailure.condition === 'login-timeout'
+            ? 'approval-timed-out' : 'assertion-failed',
           authorizationCodes: tokens.filter(entry => entry.grant === 'authorization_code').length,
           passwordPosts: requests.filter(entry => entry.method === 'POST' && entry.path === '/.account/login/password/').length,
           refreshGrants: tokens.filter(entry => entry.grant === 'refresh_token' && entry.status === 200).length,
