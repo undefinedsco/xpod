@@ -37,7 +37,7 @@
   },
   {
     "path": "desktop/package.json",
-    "sha256": "b29ecdd63bd7b0c7fc9e3eff53866432831fad4acc4d637c769cb03977810e85"
+    "sha256": "a09bb65633addabdcd0ed8bd43e2dcbe8817949a21d6363f394007bf05e0057b"
   },
   {
     "path": "docker/qlever-runtime-sdk/Dockerfile.module-bookworm",
@@ -941,7 +941,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "bbd1928cd47c220183022012bbc554a4bcfee9b598274368de9c87347ebbd8b2"
+    "sha256": "6354e2977caa42f98baad4e640a665b88b5fa4da7985a842cad8b1be1074e4f2"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",

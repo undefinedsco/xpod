@@ -10,6 +10,7 @@ import { recordOwnedHost, closeOwnedHost, cleanupOwnedHostGroup, hostGroupPassed
 import { startBrowserExternalRp } from '../helpers/browserExternalRp';
 import { completeOidcLogin } from '../helpers/browserSolidOidc';
 import { fetchBrowserXpodPod, readBrowserXpodRuntime } from '../helpers/browserXpodRuntime';
+import { assertRestartObserver, recordExternalFailure, type ExternalPhase } from '../helpers/browserExternalPhase';
 
 const external = externalRefreshFromEnvironment();
 
@@ -164,6 +165,9 @@ for (const mode of profiles) {
     let app: ElectronApplication | undefined;
     let page: Page | undefined;
     let primaryFailure: unknown;
+    // Fixed-enum checkpoint so the EXTERNAL failure keeps its location without
+    // exporting page text, messages, URLs, tokens or identifiers.
+    let phase: ExternalPhase = 'preflight';
     let browserEvidence: Awaited<ReturnType<typeof verifyExternalBrowser>> | undefined;
     let persistedHostRestored = false;
     let hostClosed = false;
@@ -184,8 +188,10 @@ for (const mode of profiles) {
     const payload = 'Private Pod data survives real SDK renewal and reauthentication.';
     const evidence = { initialPrivateRead: false, anonymousDenied: false, pastInitialAccessExpiry: false, recoveredByLogin: false, finalPrivateRead: false, idleRequestCount: undefined as number | undefined, suspendedRefreshTimers: undefined as number | undefined, passwordPosts: undefined as number | undefined, firstExpiredRequest: undefined as { at: number; path: string; method: string; authorizationScheme: string } | undefined };
     try {
+      if (external) phase = 'storage-verify';
       const anonymousFetch = external ? await verifyExternalRefreshStorage(external.input) : fetch;
-      if (external) browserEvidence = await verifyExternalBrowser(browser, userData);
+      if (external) { phase = 'browser-verify'; browserEvidence = await verifyExternalBrowser(browser, userData); }
+      phase = 'electron-launch';
       app = await electron.launch({
         args: external ? [path.resolve('tests/helpers/desktopSessionObserver.cjs'), path.resolve('desktop/dist/main.js')] : [path.resolve('desktop/dist/main.js')],
         env: { ...process.env, XPOD_DESKTOP_ACCEPTANCE: '1',
@@ -225,6 +231,7 @@ for (const mode of profiles) {
         }).catch(() => undefined);
         pending.add(task); void task.finally(() => pending.delete(task));
       });
+      phase = 'login';
       page = await completeDesktopLogin(app, fixture.ready.account);
       await expect.poll(() => tokens.filter((entry) => entry.grant === 'authorization_code').length).toBe(1);
       if (external) {
@@ -234,6 +241,7 @@ for (const mode of profiles) {
         expect(runtime.issuer).toBe(external.input.issuer);
       }
       const initial = tokens.find((entry) => entry.grant === 'authorization_code')!;
+      phase = 'initial-private-read';
       expect(initial.expiresIn).toBe(fixture.ready.accessTokenTtl);
       expect(initial.refreshIssued).toBe(true);
       expect((await fetchBrowserXpodPod(page, resource, { method: 'PUT', headers: { 'content-type': 'text/plain' }, body: payload })).status).toBe(201);
@@ -241,6 +249,7 @@ for (const mode of profiles) {
       expect([200, 201, 205]).toContain((await fetchBrowserXpodPod(page, `${resource}.acl`, { method: 'PUT', headers: { 'content-type': 'text/turtle' }, body: acl })).status);
       expect(await fetchBrowserXpodPod(page, resource)).toEqual({ status: 200, body: payload });
       evidence.initialPrivateRead = true;
+      phase = 'anonymous-denied';
       const anonymous = await anonymousFetch(new URL(resource, fixture.ready.account.podUrl));
       expect([401, 403]).toContain(anonymous.status);
       await anonymous.arrayBuffer();
@@ -263,10 +272,12 @@ for (const mode of profiles) {
         expect(Date.now()).toBeGreaterThan(initial.receivedAt + initial.expiresIn! * 1000);
         evidence.pastInitialAccessExpiry = true;
       } else if (mode === 'renew') {
+        phase = 'renewal';
         await expect.poll(() => tokens.some((entry) => entry.grant === 'refresh_token' && entry.status === 200), { timeout: 45_000 }).toBe(true);
         // Wall-clock wait beyond the original access token's complete lifetime.
         await expect.poll(() => Date.now() > initial.receivedAt + initial.expiresIn! * 1000 + 1000, { timeout: 45_000 }).toBe(true);
         evidence.pastInitialAccessExpiry = true;
+        phase = 'post-renew-runtime';
         expect((await readBrowserXpodRuntime(page)).status).toBe('authenticated');
         expect(tokens.filter((entry) => entry.grant === 'authorization_code')).toHaveLength(1);
       } else {
@@ -278,6 +289,7 @@ for (const mode of profiles) {
         evidence.recoveredByLogin = true;
         await expect.poll(() => tokens.filter((entry) => entry.grant === 'authorization_code').length).toBe(2);
       }
+      phase = 'final-private-read';
       expect(await fetchBrowserXpodPod(page, resource)).toEqual({ status: 200, body: payload });
       evidence.finalPrivateRead = true;
       await Promise.allSettled([...pending]);
@@ -300,28 +312,59 @@ for (const mode of profiles) {
         expect(initialObserver.authorizationCodes).toBe(codesBeforeRestart);
         expect(initialObserver.passwordPosts).toBe(passwordBeforeRestart);
         app = undefined;
+        phase = 'restart-launch';
         app = await electron.launch({ args: [path.resolve('tests/helpers/desktopSessionObserver.cjs'), path.resolve('desktop/dist/main.js')],
           env: { ...process.env, XPOD_DESKTOP_ACCEPTANCE: '1', XPOD_DESKTOP_URL: new URL('/ai-connections', fixture.ready.baseUrl).href,
             XPOD_DESKTOP_USER_DATA_DIR: userData, XPOD_SESSION_OBSERVER_OUTPUT: observerPath('restart'),
             XPOD_SESSION_OBSERVER_ISSUER: external.input.issuer }, timeout: 30_000 });
         hostGroups.push(recordOwnedHost(app));
         page = await app.firstWindow();
-        await expect.poll(async () => (await readBrowserXpodRuntime(page!)).status, { timeout: 45_000 }).toBe('authenticated');
+        // A window can precede the React commit. Wait for the same Pod-ready UI
+        // as initial login before inspecting the restored session.
+        phase = 'restart-runtime';
+        await expect.poll(() => ready(page!), { timeout: 45_000 }).toBe(true);
         const restored = await readBrowserXpodRuntime(page);
+        expect(restored.status).toBe('authenticated');
+        // Stage BEFORE each binding compare so the exact failing field is named.
+        phase = 'restart-binding-webid';
         expect(restored.webId).toBe(external.input.binding.webId);
+        phase = 'restart-binding-pod';
         expect(restored.podUrl).toBe(external.input.binding.podUrl);
+        phase = 'restart-binding-issuer';
         expect(restored.issuer).toBe(external.input.issuer);
+        phase = 'restart-private-read';
         expect(await fetchBrowserXpodPod(page, resource)).toEqual({ status: 200, body: payload });
+        phase = 'observer-binding';
         restartObserver = readObserver('restart');
-        expect(restartObserver.authorizationCodes).toBe(0);
-        expect(restartObserver.passwordPosts).toBe(0);
+        // Silent SSO restore: exactly one silent authorization code, never a
+        // password and never a second code. Centralised in the helper.
+        assertRestartObserver(restartObserver);
         expect(tokens.filter(entry => entry.grant === 'authorization_code')).toHaveLength(codesBeforeRestart);
         expect(requests.filter(entry => entry.method === 'POST' && entry.path === '/.account/login/password/')).toHaveLength(passwordBeforeRestart);
         persistedHostRestored = true;
       }
     } catch (error) {
       primaryFailure = error;
-      if (external) throw new Error('External session verification failed; private page diagnostics suppressed');
+      if (external) {
+        // The parent captures stdout privately and the outer exporter only copies
+        // allowlisted members, so the checkpoint must reach the SHARED output
+        // directory on disk. Diagnostics only: the original error is still thrown
+        // and the exit is unchanged. Any write problem is swallowed so it can
+        // never mask the real failure or its cleanup.
+        // Keep the first safe checkpoint while preserving the failure outcome.
+        throw new Error(recordExternalFailure({
+          outputDirectory: external.input.outputDirectory,
+          phase,
+          // Only claim a timeout when the failure is provably a poll exhaustion.
+          reason: primaryFailure instanceof Error && /timed out|Timeout/i.test(primaryFailure.message)
+            ? 'poll-timed-out' : 'assertion-failed',
+          authorizationCodes: tokens.filter(entry => entry.grant === 'authorization_code').length,
+          passwordPosts: requests.filter(entry => entry.method === 'POST' && entry.path === '/.account/login/password/').length,
+          refreshGrants: tokens.filter(entry => entry.grant === 'refresh_token' && entry.status === 200).length,
+          refreshFailures: tokens.filter(entry => entry.grant === 'refresh_token' && entry.status !== 200).length,
+          requestCount: requests.length,
+        }));
+      }
       const windows = app?.windows().filter(candidate => !candidate.isClosed()) ?? [];
       await testInfo.attach('desktop-failure', { contentType: 'application/json', body: JSON.stringify({
         error: String(error), windows: await Promise.all(windows.map(async candidate => ({
@@ -346,8 +389,7 @@ for (const mode of profiles) {
               await closeOwnedHost(app, hostGroups[hostGroups.length - 1]);
               restartObserver = readObserver('restart');
               expect(restartObserver.hostPid).toBe(hostGroups[1].pid);
-              expect(restartObserver.authorizationCodes).toBe(0);
-              expect(restartObserver.passwordPosts).toBe(0);
+              assertRestartObserver(restartObserver);
               hostClosed = hostGroups.length === 2 && hostGroups.every(hostGroupPassed);
             } else {
               const child = app.process();
@@ -359,7 +401,22 @@ for (const mode of profiles) {
           }
         } catch (error) {
           if (!external) await testInfo.attach('desktop-cleanup-failure', { contentType: 'text/plain', body: String(error) });
-          if (!primaryFailure) throw error;
+          if (!primaryFailure) {
+            // A throw inside `finally` bypasses the main catch. Record a
+            // cleanup-final checkpoint (write-once) and keep the ORIGINAL error.
+            if (external) {
+              throw new Error(recordExternalFailure({
+                outputDirectory: external.input.outputDirectory,
+                phase: 'cleanup-final', reason: 'assertion-failed',
+                authorizationCodes: tokens.filter(entry => entry.grant === 'authorization_code').length,
+                passwordPosts: requests.filter(entry => entry.method === 'POST' && entry.path === '/.account/login/password/').length,
+                refreshGrants: tokens.filter(entry => entry.grant === 'refresh_token' && entry.status === 200).length,
+                refreshFailures: tokens.filter(entry => entry.grant === 'refresh_token' && entry.status !== 200).length,
+                requestCount: requests.length,
+              }));
+            }
+            throw error;
+          }
         } finally {
           for (const group of hostGroups) await cleanupOwnedHostGroup(group);
           hostClosed &&= hostGroups.length === 0 || hostGroups.every(hostGroupPassed);

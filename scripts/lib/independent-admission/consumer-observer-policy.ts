@@ -518,10 +518,13 @@ const RC399_LIVE_RELEASE_INPUTS: Readonly<Record<string, string>> = Object.freez
   'package.json': '9a8aa57d082c0bf28cedcb0f27ebb9245419a271e53efb1aa7bf42a80a76fef0',
   'bun.lock': 'dd41359d7fa5df0f5d32e030ede320c5ef7e395d6aa3f495aa6c9e0914037722',
   // github-origin owns the API group definition changed by the same append.
-  'scripts/lib/independent-admission/github-origin.ts': 'bbd1928cd47c220183022012bbc554a4bcfee9b598274368de9c87347ebbd8b2',
+  'scripts/lib/independent-admission/github-origin.ts': '6354e2977caa42f98baad4e640a665b88b5fa4da7985a842cad8b1be1074e4f2',
   // CLI16 is the declared in-place current CLI tuple in this same generation; its
   // verifier module is an already-owned row of the consumer/CI tails.
   'scripts/lib/independent-admission/source-rules.ts': '2a86ba017b4f48dba21fb11af6e1867d13cb32b9db37002c80572920fa616d4e',
+  // desktop/package.json (already owned by these tails) moved with the desktop
+  // runtime descriptor initializer.
+  'desktop/package.json': 'a09bb65633addabdcd0ed8bd43e2dcbe8817949a21d6363f394007bf05e0057b',
 });
 function rc399ConsumerVariant<T extends GitHubSourceBindingGroup>(group: T): T {
   const rebind = (row: GitHubSourceBinding): GitHubSourceBinding => {
