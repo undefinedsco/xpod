@@ -137,7 +137,7 @@ const digestBytes = value => require('node:crypto').createHash('sha256').update(
 async function artifactFixture(fn) { return evidenceFixture(async root => {
   const repo=path.join(root,'repo'); const artifact=path.join(root,'artifact'); await fsp.mkdir(repo); await fsp.mkdir(artifact);
   const sourceBytes=Buffer.from('owned fixture source');
-  for(const name of ['scripts/a.ts','scripts/b.ts','tests/helper.ts','bun.lock']) { await fsp.mkdir(path.dirname(path.join(repo,name)),{recursive:true}); await fsp.writeFile(path.join(repo,name),sourceBytes); }
+  for(const name of ['scripts/a.ts','scripts/b.ts','tests/helper.ts','tests/helpers/desktopSessionObserverSnapshot.cjs','bun.lock']) { await fsp.mkdir(path.dirname(path.join(repo,name)),{recursive:true}); await fsp.writeFile(path.join(repo,name),sourceBytes); }
   const report=fixture(); report.sources=Object.fromEntries(['scripts/a.ts','scripts/b.ts','bun.lock'].map(name=>[name,digestBytes(sourceBytes)]));
   for(const mode of report.modes) {
     const live={mode:mode.mode,layers:Object.fromEntries(['runtime','identity','podReadWrite','gatewayAuth','aiConnections','models','chat'].map(k=>[k,{ok:true}])),modelIds:['m'],chatModel:'m',chatStatus:200,keyCleanup:{ok:true}};
@@ -145,7 +145,7 @@ async function artifactFixture(fn) { return evidenceFixture(async root => {
     for(const row of mode.sessions) {
       const directory=path.join(artifact,`session-${mode.mode}-${row.profile.kind}`); await fsp.mkdir(directory);
       const original=Buffer.from(JSON.stringify({grant:row.profile.kind==='expire'?'authorization_code':'refresh_token',status:200}));
-      row.originals=[{path:'protocol.json',bytes:original.length,sha256:digestBytes(original)}];row.sources={'tests/helper.ts':digestBytes(sourceBytes)};
+      row.originals=[{path:'protocol.json',bytes:original.length,sha256:digestBytes(original)}];row.sources={'tests/helper.ts':digestBytes(sourceBytes),'tests/helpers/desktopSessionObserverSnapshot.cjs':digestBytes(sourceBytes)};
       const {receiptSHA256,...receipt}=row;const bytes=Buffer.from(JSON.stringify(receipt));row.receiptSHA256=digestBytes(bytes);
       await fsp.writeFile(path.join(directory,'session.safe.json'),bytes);await fsp.writeFile(path.join(directory,'protocol.json'),original);
     }
@@ -160,6 +160,11 @@ test('light verifier re-reads every declared safe original and exact source byte
 test('light verifier rejects undeclared artifacts or changed safe original', () => artifactFixture(async ({repo,artifact}) => {
   await fsp.writeFile(path.join(artifact,'extra.json'),'{}'); await assert.rejects(verifyModeEvidence(artifact,expected,repo));await fsp.unlink(path.join(artifact,'extra.json'));
   await fsp.writeFile(path.join(artifact,'session-local-idle/protocol.json'),'{}');await assert.rejects(verifyModeEvidence(artifact,expected,repo));
+}));
+test('light verifier rejects changed observer snapshot publisher source', () => artifactFixture(async ({repo,artifact}) => {
+  assert.deepEqual(await verifyModeEvidence(artifact,expected,repo),{[CHECK_NAME]:'passed'});
+  await fsp.appendFile(path.join(repo,'tests/helpers/desktopSessionObserverSnapshot.cjs'),'changed publisher');
+  await assert.rejects(verifyModeEvidence(artifact,expected,repo),/Verifier source binding mismatch/);
 }));
 test('stable guard uses the same light verifier on accepted source/digest/run/attempt originals', () => {
   const release=fs.readFileSync(path.resolve('.github/workflows/release.yml'),'utf8');

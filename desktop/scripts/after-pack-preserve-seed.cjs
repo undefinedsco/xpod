@@ -1,49 +1,67 @@
 /**
- * Preserve the packaged capability SEED bytes through electron-builder's pack.
+ * Preserve the packaged capability SEED through electron-builder's pack.
  *
- * PROBLEM: electron-builder copies `extraResources` with `builder-util`'s
- * directory walker, which unconditionally skips the literal names `.DS_Store`
- * and `.gitkeep` BEFORE any include/exclude filter runs. A capability manifest
- * may legitimately list such a member (upstream packages ship them, and they are
- * not necessarily empty), so the packed `Resources/runtime/modules` can end up
- * missing files its own `package.json` inventory still declares. ModuleStore then
- * fails verification and the packaged gateway never becomes ready.
+ * builder-util's directory walker unconditionally skips `.DS_Store` and `.gitkeep`
+ * BEFORE any include/exclude filter, so a capability manifest can declare members
+ * the packed `Resources/runtime/modules` lacks.
  *
- * FIX: re-copy the SEED SUBTREE ONLY (`runtime/modules`) from the build's staged
- * runtime to the packed resources with plain Node `fs` copy semantics - no
- * builder-util walker, no name list, no content heuristics. Every dotfile, every
- * empty file, every mode and each `package.json` is reproduced byte-for-byte, so
- * the shipped inventory and the shipped bytes always agree.
+ * builder-util MAY publish copied entries as HARD LINKS on CI
+ * (`builder-util/out/fs.js`:_isUseHardLink uses is-ci; on some hosts it does not
+ * happen). When it does, re-copying onto such a destination fails with
+ * `ERR_FS_CP_EINVAL "src and dest cannot be the same"`, because the destination is
+ * the same dev+inode under a different path.
  *
- * Runs in `afterPack`, i.e. BEFORE the existing ad-hoc signing in the same hook
- * chain, so the signature seals exactly the corrected bytes.
+ * STRATEGY: copy the complete seed into a fresh, exclusively-created staging
+ * directory inside the RESOURCES root, then replace the packed `modules` subtree
+ * once that copy fully succeeded. The destination path does not exist beforehand,
+ * so no entry there can share an inode with the source. This runs in `afterPack`,
+ * before signing: any failure throws, no half-corrected bundle is signed.
  */
 
-const { cpSync, existsSync, lstatSync } = require('node:fs')
+const { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync } = require('node:fs')
 const path = require('node:path')
 
 /** Where this build staged the runtime (authoritative: packager.projectDir). */
 function stagedRuntime(projectDir) {
-  // `projectDir` for this package IS the desktop directory, so the staged
-  // runtime sits directly beneath it. Deriving from the context (never cwd)
-  // keeps the hook correct for every build entry point.
   return path.join(projectDir, 'runtime')
 }
 
 /**
- * Standard-recursive copy that does NOT reproduce builder-util's skip list.
+ * Resolve `candidate` to a real path even when its tail does not exist yet.
  *
- * `dereference: false` keeps symlinks as-is so a link can never be silently
- * turned into a copy; `preserveTimestamps` keeps the packed tree faithful.
+ * The longest existing prefix is resolved with realpathSync and the remaining
+ * literal components are appended back, so an absent tail no longer collapses the
+ * result to an ancestor. A dangling symlink is reported, never silently treated as
+ * a plain missing path, and unexpected resolution errors fail closed.
  */
-function copySeed(source, target) {
-  cpSync(source, target, {
-    recursive: true,
-    force: true,
-    dereference: false,
-    preserveTimestamps: true,
-    errorOnExist: false,
-  })
+function resolvedWithTail(candidate) {
+  const absolute = path.resolve(candidate)
+  const tail = []
+  let current = absolute
+  for (;;) {
+    if (existsSync(current)) {
+      const real = realpathSync(current)
+      return tail.length ? path.join(real, ...tail.reverse()) : real
+    }
+    // A dangling link must not be mistaken for an ordinary missing component.
+    let stat
+    try { stat = lstatSync(current) } catch (error) {
+      if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error
+      stat = undefined
+    }
+    if (stat && stat.isSymbolicLink()) throw new Error('[xpod-desktop] dangling symlink in seed path')
+    const parent = path.dirname(current)
+    if (parent === current) return absolute
+    tail.push(path.basename(current))
+    current = parent
+  }
+}
+
+/** True when `child` is `parent` or lives beneath it, using resolved paths. */
+function isWithin(parent, child) {
+  const base = resolvedWithTail(parent)
+  const target = resolvedWithTail(child)
+  return target === base || target.startsWith(base + path.sep)
 }
 
 async function afterPackPreserveSeed(context) {
@@ -51,20 +69,66 @@ async function afterPackPreserveSeed(context) {
   if (!packager || typeof packager.getResourcesDir !== 'function' || !packager.projectDir) {
     throw new Error('[xpod-desktop] afterPack context lacks packager.getResourcesDir/projectDir')
   }
+
   const source = path.join(stagedRuntime(packager.projectDir), 'modules')
   if (!existsSync(source) || !lstatSync(source).isDirectory()) {
     // Never manufacture a seed: the pack MUST fail loudly if packaging forgot it.
     throw new Error(`[xpod-desktop] staged capability seed missing: ${source}`)
   }
+
   const resources = packager.getResourcesDir(context.appOutDir)
   const target = path.join(resources, 'runtime', 'modules')
-  if (path.resolve(source) === path.resolve(target)) {
-    throw new Error('[xpod-desktop] seed source and target are the same path')
+
+  if (!lstatSync(resources).isDirectory() || !isWithin(context.appOutDir, resources)) {
+    throw new Error('[xpod-desktop] resources must be a directory inside the app output')
   }
-  copySeed(source, target)
+
+  // The RESOURCES root is the ownership boundary: staging and the final target must
+  // both live inside it, so a symlinked Resources/runtime pointing at an external
+  // directory can never receive our writes or lose its own modules subtree.
+  if (!isWithin(resources, target)) {
+    throw new Error('[xpod-desktop] seed target resolves outside the owned resources root')
+  }
+
+  // Refuse every alias relationship with the staged source, in both directions.
+  if (isWithin(source, target) || isWithin(target, source)) {
+    throw new Error('[xpod-desktop] seed source and target overlap')
+  }
+
+  mkdirSync(path.dirname(target), { recursive: true })
+  if (!isWithin(resources, path.dirname(target))) {
+    throw new Error('[xpod-desktop] seed target parent resolves outside the owned resources root')
+  }
+  if (isWithin(source, path.dirname(target))) {
+    throw new Error('[xpod-desktop] seed destination parent resolves inside the staged source')
+  }
+
+  // Exclusive creation: mkdtempSync either returns a directory only we own, or
+  // fails. Nothing is cleaned unless creation actually succeeded.
+  const staging = mkdtempSync(path.join(path.dirname(target), '.modules-restore-'))
+  try {
+    const building = path.join(staging, 'modules')
+    // verbatimSymlinks keeps a RELATIVE link's literal target instead of rewriting
+    // it to an absolute path, so the packed tree keeps the seed's own link text.
+    cpSync(source, building, {
+      recursive: true,
+      dereference: false,
+      preserveTimestamps: true,
+      errorOnExist: true,
+      verbatimSymlinks: true,
+    })
+    if (!existsSync(building) || !lstatSync(building).isDirectory()) {
+      throw new Error('[xpod-desktop] seed staging produced no modules directory')
+    }
+    rmSync(target, { recursive: true, force: true })
+    renameSync(building, target)
+  } finally {
+    // Only the directory mkdtempSync created for this run is removed.
+    rmSync(staging, { recursive: true, force: true })
+  }
+
   console.log(`[xpod-desktop] preserved capability seed -> ${target}`)
 }
 
 module.exports = afterPackPreserveSeed
 module.exports.default = afterPackPreserveSeed
-module.exports.copySeed = copySeed
