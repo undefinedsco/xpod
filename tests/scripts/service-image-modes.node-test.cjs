@@ -329,8 +329,15 @@ test('a diagnostic-shaped matrix passes the STRICT diagnostic validator and is r
   diagnostic.platformInferenceExcluded = true;
   diagnostic.qualification = false;
   diagnostic.notFullModeQualification = true;
+  // Independent origins, recorded distinctly: newer runner, older image.
+  diagnostic.runnerSourceSha = sourceSha;
+  diagnostic.installedImageSourceSha = 'd'.repeat(40);
+  diagnostic.installedImageSourceUrl = 'https://github.com/undefinedsco/xpod';
   // No live layer is fabricated; the strict common checks still apply.
-  for (const mode of diagnostic.modes) delete mode.live;
+  for (const mode of diagnostic.modes) {
+    delete mode.live;
+    mode.image.installedImageSourceSha = diagnostic.installedImageSourceSha;
+  }
   const { validateSessionMatrixDiagnostic } = require('../../scripts/lib/service-image-modes.cjs');
   assert.deepEqual(validateSessionMatrixDiagnostic(diagnostic, expected), { 'session-matrix-diagnostic': 'passed' });
   // The release validator must reject it outright.
@@ -346,7 +353,12 @@ test('ANY failed command, forced cleanup, timeout or missing case fails the diag
     d.kind = 'session-matrix-diagnostic';
     d.diagnosticOnly = true; d.liveChatExcluded = true; d.platformInferenceExcluded = true;
     d.qualification = false; d.notFullModeQualification = true;
-    for (const mode of d.modes) delete mode.live;
+    d.runnerSourceSha = sourceSha; d.installedImageSourceSha = 'd'.repeat(40);
+    d.installedImageSourceUrl = 'https://github.com/undefinedsco/xpod';
+    for (const mode of d.modes) {
+      delete mode.live;
+      mode.image.installedImageSourceSha = d.installedImageSourceSha;
+    }
     return d;
   };
   // Baseline must pass - otherwise the negatives prove nothing.
@@ -367,4 +379,94 @@ test('ANY failed command, forced cleanup, timeout or missing case fails the diag
     const d = base(); mutate(d);
     assert.throws(() => validateSessionMatrixDiagnostic(d, expected), `expected failure: ${name}`);
   }
+});
+
+// ---- independent run/image origins (BLOCKING: RC410 9-diag image-source) ----
+// The DIAG runner checks out a NEWER commit than the already-published image it
+// inspects. These exercise the ACTUAL exported assertion in a bun subprocess,
+// because a plain node run cannot import the TS script.
+function imageOriginVerdicts() {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const root = path.resolve(__dirname, '../..');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modes-origin-'));
+  try {
+    const probe = path.join(dir, 'probe.ts');
+    fs.writeFileSync(probe, [
+      `import { assertImageProvenance, INSTALLED_IMAGE_SOURCE_URL } from ${JSON.stringify(path.join(root, 'scripts/accept-service-image-modes.ts'))};`,
+      `const IMAGE = ${JSON.stringify(image)};`,
+      `const RUNNER = ${JSON.stringify(sourceSha)};`,
+      `const GOOD_ID = 'sha256:' + 'e'.repeat(64);`,
+      `const mk = (rev, src = INSTALLED_IMAGE_SOURCE_URL, extra = {}) => ({ Os: 'linux', Architecture: 'amd64',`,
+      `  RepoDigests: [IMAGE], Id: GOOD_ID, Config: { Labels: { 'org.opencontainers.image.revision': rev,`,
+      `  'org.opencontainers.image.source': src } }, ...extra });`,
+      `const opts = (o = {}) => ({ image: IMAGE, platform: 'linux/amd64', runnerSourceSha: RUNNER, requireSameOrigin: false, ...o });`,
+      `const verdict = (fn) => { try { fn(); return 'ok'; } catch (e) { return String(e.message); } };`,
+      `const installed = '9'.repeat(40);`,
+      `const out = assertImageProvenance(mk(installed), opts());`,
+      `process.stdout.write(JSON.stringify({`,
+      `  installedRev: out.installedImageSourceSha, installedUrl: out.installedImageSourceUrl,`,
+      `  diffOrigin: verdict(() => assertImageProvenance(mk(installed), opts())),`,
+      `  canonicalSame: verdict(() => assertImageProvenance(mk(RUNNER), opts({ requireSameOrigin: true }))),`,
+      `  canonicalDiff: verdict(() => assertImageProvenance(mk(installed), opts({ requireSameOrigin: true }))),`,
+      `  bad: {`,
+      `    shortRev: verdict(() => assertImageProvenance(mk('abc'), opts())),`,
+      `    noRev: verdict(() => assertImageProvenance({ ...mk(RUNNER), Config: { Labels: {} } }, opts())),`,
+      `    badUrl: verdict(() => assertImageProvenance(mk(RUNNER, 'https://example.invalid/x'), opts())),`,
+      `    noUrl: verdict(() => assertImageProvenance({ ...mk(RUNNER), Config: { Labels: { 'org.opencontainers.image.revision': RUNNER } } }, opts())),`,
+      `    forgedUrl: verdict(() => assertImageProvenance({ ...mk(RUNNER), Config: { Labels: { 'org.opencontainers.image.revision': RUNNER } } }, opts({ sourceUrl: INSTALLED_IMAGE_SOURCE_URL }))),`,
+      `    badPlatform: verdict(() => assertImageProvenance({ ...mk(RUNNER), Architecture: 'arm64' }, opts())),`,
+      `    badRepo: verdict(() => assertImageProvenance({ ...mk(RUNNER), RepoDigests: ['ghcr.io/o/x@sha256:' + 'a'.repeat(64)] }, opts())),`,
+      `    badId: verdict(() => assertImageProvenance({ ...mk(RUNNER), Id: 'sha256:xyz' }, opts())),`,
+      `  },`,
+      `}));`,
+    ].join('\n'));
+    const run = spawnSync('bun', ['run', probe], { cwd: root, encoding: 'utf8', timeout: 120000 });
+    if (run.status !== 0) throw new Error(`origin probe failed (exit ${run.status}): ${run.stderr}`);
+    return JSON.parse(String(run.stdout).trim());
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+test('DIAG accepts DIFFERENT runner/image origins and records both distinctly', () => {
+  const r = imageOriginVerdicts();
+  assert.equal(r.diffOrigin, 'ok');
+  assert.equal(r.installedRev, '9'.repeat(40));
+  assert.equal(r.installedUrl, 'https://github.com/undefinedsco/xpod');
+  assert.notEqual(r.installedRev, sourceSha);   // never relabelled as the runner
+});
+
+test('canonical requires the SAME origin and rejects a different one', () => {
+  const r = imageOriginVerdicts();
+  assert.equal(r.canonicalSame, 'ok');
+  assert.match(r.canonicalDiff, /Image source revision mismatch/);
+});
+
+test('bad or missing revision/source/platform/repoDigest/id are always rejected', () => {
+  const { bad } = imageOriginVerdicts();
+  for (const [name, message] of Object.entries(bad)) assert.notEqual(message, 'ok', `expected reject: ${name}`);
+});
+
+test('release evidence rejects a foreign per-mode image origin', () => {
+  const report = fixture();
+  assert.deepEqual(validateMatrix(report, expected), { [CHECK_NAME]: 'passed' });
+  report.modes[0].image.installedImageSourceSha = '9'.repeat(40);
+  assert.throws(() => validateMatrix(report, expected), /Mode image source must be the accepted source/);
+});
+
+test('canonical provenance check is NOT vacuous: a recorded foreign installed revision fails', () => {
+  // Previously report.installedImageSourceSha was only set on the diagnostic path,
+  // so the canonical rule short-circuited on `undefined` and never proved
+  // anything. Now both paths record it, and a foreign value must fail.
+  const foreign = fixture();
+  foreign.installedImageSourceSha = 'd'.repeat(40);   // != sourceSha
+  assert.throws(() => validateMatrix(foreign, expected), /Installed image source must be the accepted source/);
+  // Per-mode mismatch is likewise rejected.
+  const perMode = fixture();
+  perMode.modes[0].image.installedImageSourceSha = 'd'.repeat(40);
+  assert.throws(() => validateMatrix(perMode, expected), /Mode image source must be the accepted source/);
+  // Recording the accepted source is accepted.
+  const same = fixture();
+  same.installedImageSourceSha = sourceSha;
+  for (const mode of same.modes) mode.image.installedImageSourceSha = sourceSha;
+  assert.deepEqual(validateMatrix(same, expected), { [CHECK_NAME]: 'passed' });
 });

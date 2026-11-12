@@ -4,7 +4,7 @@ import path from 'node:path';
 import { assertBundledRuntimeProcess, createPackagedFixtureEnvironment,
   assertOwnedRuntimeProfile, isMissingProcessReport, readProcessInventory,
   rememberProcessTree, remainingOwnedProcessIds, closeOwnedPackagedApp,
-  isLaunchSubphase } from '../../scripts/helpers/packaged-desktop-fixture';
+  isLaunchSubphase, expectedOwnedRuntimeArgv } from '../../scripts/helpers/packaged-desktop-fixture';
 
 describe('owned packaged desktop permission fixture', () => {
   it('uses the captured OS process when close disposes the Electron channel', async () => {
@@ -48,11 +48,13 @@ describe('owned packaged desktop permission fixture', () => {
     const env = createPackagedFixtureEnvironment({
       inherited: { PATH: '/bin', HOME: '/Users/test', HTTP_PROXY: 'http://127.0.0.1:7897',
         XPOD_RUNTIME_COMMAND: '/other/runtime', XPOD_ENV_FILE: '/other/.env',
+        BUN_RUNTIME_TRANSPILER_CACHE_PATH: '/other/transpiler-cache',
         CSS_ROOT_FILE_PATH: '/other/data', OPENAI_API_KEY: 'private', XPOD_ACCEPTED_SHA: 'private' },
       profile: '/task/.test-data/profile', port: 41234, issuer: 'https://id.example/',
     });
     expect(env.PATH).toBe('/bin');
     expect(env.HOME).toBe('/Users/test');
+    expect(env.BUN_RUNTIME_TRANSPILER_CACHE_PATH).toBe('/task/.test-data/profile/bun-transpiler-cache');
     expect(env.HTTP_PROXY).toBe('http://127.0.0.1:7897');
     expect(env.XPOD_RUNTIME_COMMAND).toBeUndefined();
     expect(env.XPOD_ENV_FILE).toBeUndefined();
@@ -76,15 +78,35 @@ describe('owned packaged desktop permission fixture', () => {
     }
   });
   it('requires the desktop-owned live process to execute exactly the extracted binary', () => {
-    const binary = '/task/Xpod.app/Contents/Resources/runtime/xpod';
-    expect(() => assertBundledRuntimeProcess({ binary, pid: 42, ownership: 'desktop', command: `${binary} start --foreground\n` })).not.toThrow();
+    // Build the expectation from the PRODUCT factory, never a hand-written flag
+    // list, so this test cannot drift from what RuntimeManager really spawns.
+    const binary = '/task/Xpod.app/Contents/Resources/runtime/bin/bun';
+    const entry = '/task/Xpod.app/Contents/Resources/runtime/node_modules/@undefineds.co/xpod-cli/dist/xpod.mjs';
+    const env = { XPOD_EDITION: 'local' };
+    const expected = expectedOwnedRuntimeArgv({ command: binary, args: [entry, 'start'],
+      targetOrigin: 'http://127.0.0.1:41987/', env });
+    const owned = expected.join(' ');
+    // The product's own flags include a value containing no spaces; spaces are
+    // normalised, so a valid launch with padded spacing is still accepted.
+    expect(() => assertBundledRuntimeProcess({ binary, pid: 42, ownership: 'desktop',
+      command: `  ${expected.join('   ')}  `, expectedArgv: expected })).not.toThrow();
+
     for (const value of [
-      { pid: 42, ownership: 'external', command: `${binary} start --foreground` },
-      { pid: undefined, ownership: 'desktop', command: `${binary} start --foreground` },
-      { pid: 42, ownership: 'desktop', command: '/usr/local/bin/xpod start --foreground' },
-      { pid: 42, ownership: 'desktop', command: `${binary}-other start --foreground` },
-      { pid: 42, ownership: 'desktop', command: `${binary} start --foreground --extra` },
-    ]) expect(() => assertBundledRuntimeProcess({ binary, ...value })).toThrow();
+      { pid: 42, ownership: 'external', command: owned },
+      { pid: undefined, ownership: 'desktop', command: owned },
+      // foreign entry with the SAME basename is not the installed entry
+      { pid: 42, ownership: 'desktop', command: owned.replace(entry, '/tmp/foreign/xpod.mjs') },
+      // prefix-similar binary is not this binary
+      { pid: 42, ownership: 'desktop', command: owned.replace(binary, `${binary}-other`) },
+      // the entry missing entirely (bare bun start)
+      { pid: 42, ownership: 'desktop', command: `${binary} start` },
+      // missing the start subcommand
+      { pid: 42, ownership: 'desktop', command: `${binary} ${entry}` },
+      // an extra/disallowed argument the product would never add
+      { pid: 42, ownership: 'desktop', command: `${owned} --forbidden` },
+      // the rejected legacy flag must not be accepted
+      { pid: 42, ownership: 'desktop', command: `${owned} --foreground` },
+    ]) expect(() => assertBundledRuntimeProcess({ binary, ...value, expectedArgv: expected })).toThrow();
   });
   it('does not equate transient/tool/permission failures with a missing PID', () => {
     expect(isMissingProcessReport({ code: 1, stdout: '', stderr: '' })).toBe(true);

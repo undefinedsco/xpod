@@ -832,7 +832,7 @@ jobs:
   desktop-launch-diagnostic:
     name: desktop-launch-diagnostic (NOT release acceptance)
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.operation == 'desktop-launch-diagnostic' }}
-    runs-on: macos-latest
+    runs-on: macos-15
     timeout-minutes: 120
     permissions:
       contents: read
@@ -895,6 +895,17 @@ jobs:
       # cold root compile/components that the native producer hard-requires.
       - name: Build workspace packages required by the desktop contracts
         run: bun run build:packages
+      # Produce the API capability EXACTLY ONCE, on CLEAN source, BEFORE the
+      # diagnostic version stamp. Same canonical pipeline as the release path;
+      # stage-runtime consumes the verified tree rather than rebuilding dirty
+      # source. No second pipeline, no extra job.
+      - name: Produce the API capability from clean source (before any version stamp)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bun -e 'import { prepareApiCapability } from "./desktop/scripts/api-capability-producer.ts"; prepareApiCapability({ repoRoot: process.cwd() });'
+          test -d ".test-data/api-capability-$(git rev-parse HEAD)"
       - name: Apply and verify the candidate version with the existing helper
         run: |
           set -euo pipefail
@@ -912,7 +923,9 @@ jobs:
           test -s dist/components/components.jsonld
       - name: Build desktop with the accepted native runtime
         working-directory: desktop
-        run: bun run dist
+        run: |
+          bun x --no-install tsc --noEmit -p tsconfig.scripts.json
+          bun run dist
       - name: Run the isolated launch diagnostic (launch and close only)
         run: |
           set -euo pipefail

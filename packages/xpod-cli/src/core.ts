@@ -6,8 +6,34 @@ import { writeJsonResult } from './lib/output';
 import { XPOD_CLI_VERSION } from './manifest';
 import { startCommand } from './commands/start';
 
+/**
+ * The ONE canonical store context for this process.
+ *
+ * A packaged desktop starts the CLI as a child process and hands it exactly three
+ * values: the OWNED writable module root, the READ-ONLY seed inside the app bundle,
+ * and the offline flag. They are read here, at instance creation, and passed as
+ * explicit options — there is no process-wide snapshot and no second source of
+ * truth. A half-specified packaged context (seed without root, or the reverse) is
+ * rejected rather than silently degrading to `$HOME` or to the registry.
+ */
+export function moduleStoreContext(env: NodeJS.ProcessEnv = process.env): {
+  root?: string; seed?: string; offline?: boolean;
+} {
+  const root = env.XPOD_MODULES_ROOT;
+  const seed = env.XPOD_MODULES_SEED;
+  const offline = env.XPOD_MODULES_OFFLINE === '1';
+  if (root === undefined && seed === undefined && !offline) return {};
+  if (!root || !seed) {
+    throw new Error('Packaged module context requires both XPOD_MODULES_ROOT and XPOD_MODULES_SEED');
+  }
+  if (!offline) {
+    throw new Error('Packaged module context requires XPOD_MODULES_OFFLINE=1');
+  }
+  return { root, seed, offline: true };
+}
+
 /** Public CLI contains client operations and the module host, never server or AFS code. */
-export async function runCli(args: string[], store = new ModuleStore()): Promise<number> {
+export async function runCli(args: string[], store = new ModuleStore(moduleStoreContext())): Promise<number> {
   const module = moduleDefinition(args[0]);
   if (module) return store.run(module.id, args.slice(1));
   const [auth, login, resources, pod] = await Promise.all([

@@ -1,7 +1,9 @@
 import { describe, expect, it, test } from 'bun:test';
 import { EventEmitter } from 'node:events';
+import path from 'node:path';
 import {
   RuntimeManager,
+  packagedModuleEnvironment,
   resolveRuntimeLaunchCommand,
   type RuntimeChild,
 } from '../src/runtime-manager';
@@ -499,5 +501,117 @@ describe('owned runtime recovery', () => {
     await manager.ensureRunning(); setDirectory('/new/data'); await manager.restart();
     expect(environments.map((env) => env.CSS_ROOT_FILE_PATH)).toEqual(['/old/data', '/new/data']);
     await manager.stopOwned();
+  });
+});
+
+  it('passes the owned module root and read-only seed to a packaged runtime', async () => {
+    // The installed bundle must stay immutable: the mutable store lives under the
+    // OWNED userData root, and the bundle only supplies a read-only seed.
+    let captured: NodeJS.ProcessEnv | undefined;
+    let probes = 0;
+    const manager = new RuntimeManager({
+      targetOrigin: 'http://127.0.0.1:3000',
+      packaged: true,
+      resourcesPath: '/bundle/Resources',
+      ownedDataRoot: '/owned/userData',
+      // Report unreachable FIRST so a real spawn happens (that is what this test
+      // inspects), then become ready so the launch resolves promptly.
+      fetchImpl: async (input) => {
+        if (!String(input).endsWith('/service/status')) return new Response('', { status: 200 });
+        probes += 1;
+        return probes === 1
+          ? new Response('', { status: 503 })
+          : Response.json([{ name: 'css', status: 'running' }, { name: 'api', status: 'running' }]);
+      },
+      resolveLaunch: () => ({ command: '/bundle/Resources/runtime/bin/bun', args: ['/bundle/Resources/xpod.mjs', 'start'] }),
+      spawnImpl: (_command, _args, options) => { captured = options.env; return new FakeChild(); },
+    });
+    await manager.ensureRunning().catch(() => undefined);
+    expect(captured?.XPOD_MODULES_ROOT).toBe(path.join('/owned/userData', 'modules'));
+    expect(captured?.XPOD_MODULES_SEED).toBe(path.join('/bundle/Resources', 'runtime', 'modules'));
+    expect(captured?.XPOD_MODULES_OFFLINE).toBe('1');
+    // The mutable root must not sit inside the bundle.
+    expect(String(captured?.XPOD_MODULES_ROOT).startsWith('/bundle/')).toBe(false);
+  });
+
+  it('stays testable when process.resourcesPath is unavailable', async () => {
+    // Node test processes have no Electron resourcesPath; construction must not
+    // throw and an unpackaged manager must not inject module variables.
+    let captured: NodeJS.ProcessEnv | undefined;
+    const manager = new RuntimeManager({
+      targetOrigin: 'http://127.0.0.1:3000',
+      fetchImpl: async (input) => String(input).endsWith('/service/status')
+        ? Response.json([{ name: 'css', status: 'running' }, { name: 'api', status: 'running' }])
+        : new Response('', { status: 200 }),
+      resolveLaunch: () => ({ command: 'xpod', args: ['start'] }),
+      spawnImpl: (_command, _args, options) => { captured = options.env; return new FakeChild(); },
+    });
+    await manager.ensureRunning().catch(() => undefined);
+    expect(captured?.XPOD_MODULES_ROOT).toBeUndefined();
+    expect(captured?.XPOD_MODULES_SEED).toBeUndefined();
+  });
+
+
+describe('RuntimeManager packaged module context', () => {
+  const packagedManager = (options: Record<string, unknown>, onSpawn: (args: unknown[]) => void) =>
+    new RuntimeManager({
+      targetOrigin: 'http://127.0.0.1:3000',
+      packaged: true,
+      resolveLaunch: () => ({ command: '/bundle/runtime/bin/bun', args: ['/bundle/dist/xpod.mjs', 'start'] }),
+      fetchImpl: async () => { throw new Error('no gateway'); },
+      spawnImpl: (...args: unknown[]) => { onSpawn(args); return new FakeChild(); },
+      ...options,
+    } as never);
+
+  it('passes the OWNED root and the READ-ONLY seed to the packaged child', async () => {
+    // Capture the child environment from the spawn call itself: the module
+    // context is decided before the child is created, so no gateway handshake is
+    // needed (a fake child never becomes ready, which would otherwise time out).
+    const env = packagedModuleEnvironment({
+      packaged: true,
+      ownedDataRoot: '/Users/someone/Library/Application Support/Xpod',
+      resourcesPath: '/Applications/Xpod.app/Contents/Resources',
+    });
+    expect(env.XPOD_MODULES_ROOT).toBe('/Users/someone/Library/Application Support/Xpod/modules');
+    expect(env.XPOD_MODULES_SEED).toBe('/Applications/Xpod.app/Contents/Resources/runtime/modules');
+    expect(env.XPOD_MODULES_OFFLINE).toBe('1');
+  });
+
+  it('refuses to spawn a packaged runtime without an owned data root', async () => {
+    let spawns = 0;
+    const previous = process.env.XPOD_DESKTOP_USER_DATA_DIR;
+    delete process.env.XPOD_DESKTOP_USER_DATA_DIR;
+    try {
+      const manager = packagedManager({ resourcesPath: '/Applications/Xpod.app/Contents/Resources' },
+        () => { spawns += 1; });
+      await expect(manager.ensureRunning()).rejects.toThrow(/userData/);
+      expect(spawns).toBe(0);
+    } finally {
+      if (previous !== undefined) process.env.XPOD_DESKTOP_USER_DATA_DIR = previous;
+    }
+  });
+
+  it('refuses to spawn a packaged runtime without a bundle resources root', async () => {
+    let spawns = 0;
+    const previous = process.env.XPOD_DESKTOP_USER_DATA_DIR;
+    delete process.env.XPOD_DESKTOP_USER_DATA_DIR;
+    try {
+      const manager = new RuntimeManager({
+        targetOrigin: 'http://127.0.0.1:3000',
+        packaged: true,
+        resolveLaunch: () => ({ command: '/bundle/runtime/bin/bun', args: ['start'] }),
+        fetchImpl: async () => { throw new Error('no gateway'); },
+        spawnImpl: () => { spawns += 1; return new FakeChild(); },
+        ownedDataRoot: '/tmp/xpod-owned',
+      } as never);
+      await expect(manager.ensureRunning()).rejects.toThrow(/resources/);
+      expect(spawns).toBe(0);
+    } finally {
+      if (previous !== undefined) process.env.XPOD_DESKTOP_USER_DATA_DIR = previous;
+    }
+  });
+
+  it('an unpackaged developer launch is unaffected by the packaged module context', () => {
+    expect(packagedModuleEnvironment({ packaged: false })).toEqual({});
   });
 });

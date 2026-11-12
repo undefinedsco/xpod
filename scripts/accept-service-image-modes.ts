@@ -11,7 +11,8 @@ import { setupAccount } from '../tests/integration/helpers/solidAccount';
 import { createCloudAccountPassword, prepareManagedLocalAcceptancePod, parseKeyFile } from './accept-live-gateway-login-chat';
 import { discoverSolidLocalRoute } from '../packages/solid-sdk/src/local-route-fetch';
 import { isFailureSafeEnvelope } from '../tests/helpers/browserExternalPhase';
-const { MODES, CASES, LIMITS, hash, projectLive, validateMatrix, validateSessionMatrixDiagnostic, assertSafeJson } = require('./lib/service-image-modes.cjs');
+const { MODES, CASES, LIMITS, hash, projectLive, validateMatrix, validateSessionMatrixDiagnostic, assertSafeJson,
+  INSTALLED_IMAGE_SOURCE_URL: installedImageSourceUrl } = require('./lib/service-image-modes.cjs');
 const { runOwnedModeCommand } = require('./lib/owned-mode-command.cjs');
 const { createModeEvidenceReader } = require('./lib/mode-evidence-reader.cjs');
 const { PROFILES, validateInput, validateReceipt } = require('./lib/service-image-session-contract.cjs');
@@ -95,20 +96,49 @@ export function platformBuiltinServiceEnvironment(
 }
 
 /**
- * Diagnostic-only variant of the Cloud platform-inference environment.
- *
- * The canonical matrix injects a deployment builtin that calls the real public
- * platform endpoint, which is what needs XPOD_MATRIX_PLATFORM_API_KEY. The
- * session-matrix diagnostic runs NO live/Chat/credential-read case, so that
- * inference is unused.
- *
- * This variant therefore omits EXACTLY ONE assignment - `DEFAULT_API_KEY`, the
- * `${XPOD_MATRIX_PLATFORM_API_KEY:?required}` interpolation - and KEEPS
- * `DEFAULT_API_BASE` (a public URL carrying no secret). No fake key is ever
- * introduced and the canonical REQUIRED form above is never weakened; the
- * original `runMatrix` path still uses that form and still refuses to run
- * without the real platform credential.
+ * Canonical public source URL for the installed image's revision.
+ * One value, no configuration alias.
  */
+export const INSTALLED_IMAGE_SOURCE_URL = installedImageSourceUrl as string;
+
+/**
+ * Assert the immutable image identity and project its provenance.
+ *
+ * The runner's own checkout (`runnerSourceSha`) and the INSTALLED image's
+ * revision (`installedImageSourceSha`) are separate facts:
+ * - a release run builds the image from the accepted source, so both MUST match
+ *   (`requireSameOrigin: true`, the canonical default);
+ * - the session-matrix DIAGNOSTIC inspects an already-published image built from
+ *   an earlier staging commit while running newer runner code, so the two
+ *   legitimately differ. It records both fields distinctly and never relabels
+ *   the image as the newer runner.
+ *
+ * Every other identity check stays unconditional: exact `@digest` reference,
+ * RepoDigests membership, platform and id shape. Only the origin equality is
+ * policy-dependent, and it is never waived for a release run.
+ */
+export function assertImageProvenance(
+  image: { Os?: string; Architecture?: string; RepoDigests?: string[]; Id?: string; Config?: { Labels?: Record<string, string> } },
+  options: { image: string; platform: string; runnerSourceSha: string; requireSameOrigin: boolean },
+): { installedImageSourceSha: string; installedImageSourceUrl: string } {
+  const revision = image.Config?.Labels?.['org.opencontainers.image.revision'];
+  const sourceUrl = image.Config?.Labels?.['org.opencontainers.image.source'];
+  need(typeof revision === 'string' && /^[a-f0-9]{40}$/.test(revision), 'Image revision label must be a full 40-hex commit');
+  need(typeof sourceUrl === 'string' && sourceUrl === INSTALLED_IMAGE_SOURCE_URL, 'Image source label must be the canonical repository URL');
+  need(`${image.Os}/${image.Architecture}` === options.platform, 'Resolved image/platform mismatch');
+  need(Array.isArray(image.RepoDigests) && image.RepoDigests.includes(options.image), 'Resolved image/digest mismatch');
+  need(typeof image.Id === 'string' && /^sha256:[a-f0-9]{64}$/.test(image.Id), 'Resolved image id shape invalid');
+  if (options.requireSameOrigin) {
+    need(revision === options.runnerSourceSha, 'Image source revision mismatch');
+  }
+  return {
+    installedImageSourceSha: revision as string,
+    installedImageSourceUrl: sourceUrl as string,
+  };
+}
+
+/** Session diagnostics do not invoke inference, so they omit its unused key.
+ * The canonical release environment keeps the required credential. */
 export function platformBuiltinServiceEnvironmentForDiagnostic(
   mode: string,
   baseUrl: string,
@@ -623,9 +653,25 @@ export async function runMatrix(options: { image: string; platform: string; sour
     report.pullBudget = { compressedBytes, unpackReservationFactor: 4 };
     await docker('pull-exact-image', ['pull', '--platform', options.platform, options.image]);
     const image = JSON.parse((await docker('inspect-image', ['image', 'inspect', options.image])).toString())[0];
-    need(`${image.Os}/${image.Architecture}` === options.platform && image.RepoDigests.includes(options.image), 'Resolved image/platform mismatch');
-    need(image.Config.Labels?.['org.opencontainers.image.revision'] === options.sourceSha, 'Image source revision mismatch');
+    // Release builds the image from the accepted source, so origins must match.
+    // The diagnostic inspects an EXISTING published image built from an earlier
+    // staging commit; it records that actual revision separately instead of
+    // pretending the image came from the newer runner commit.
+    const imageProvenance = assertImageProvenance(image, {
+      image: options.image, platform: options.platform, runnerSourceSha: options.sourceSha,
+      requireSameOrigin: !diagnosticSessionMatrix,
+    });
     report.imageId = image.Id;
+    // Both paths record the INSTALLED image's real revision, so the validator can
+    // prove the release image really is the accepted source (previously only the
+    // diagnostic set it, leaving the canonical check permanently short-circuited
+    // on `undefined`).
+    report.installedImageSourceSha = imageProvenance.installedImageSourceSha;
+    report.installedImageSourceUrl = imageProvenance.installedImageSourceUrl;
+    if (diagnosticSessionMatrix) {
+      // Honest independent origins: runner checkout != installed image revision.
+      report.runnerSourceSha = options.sourceSha;
+    }
     await docker('create-owned-config-reader', ['create', '--name', copyName, options.image]); copiedContainer = true;
     await docker('copy-image-config', ['cp', `${copyName}:/app/config/main.json`, path.join(root, 'main.original.json')]);
     await docker('remove-owned-config-reader', ['rm', '--volumes', copyName]); copiedContainer = false;
@@ -830,7 +876,11 @@ export async function runMatrix(options: { image: string; platform: string; sour
       need(pids.every(pid => Number.isSafeInteger(pid) && pid > 0), 'Runtime PID missing');
       const executables = (await docker(`runtime-exe-${mode}`, ['exec', id, 'readlink', ...pids.map(pid => `/proc/${pid}/exe`)])).toString().trim().split('\n');
       need(executables.length === 3 && executables.every(x => /\/bun$/.test(x)), 'Actual service runtime is not Bun');
-      return { reference: options.image, platform: options.platform, id: c.Image, repoDigests: image.RepoDigests, mounts, noCodeMounts: true, runtimeExecutables: executables };
+      return { reference: options.image, platform: options.platform, id: c.Image, repoDigests: image.RepoDigests,
+        // Project the INSTALLED image's real revision so the validator can prove
+        // every mode record agrees with the image authority, not with a flag.
+        installedImageSourceSha: imageProvenance.installedImageSourceSha,
+        mounts, noCodeMounts: true, runtimeExecutables: executables };
     }
     if (diagnosticSessionMatrix) {
       // No live case runs, so the LIVE loop cannot initialise the per-mode

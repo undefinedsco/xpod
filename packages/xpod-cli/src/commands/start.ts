@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { mkdir } from 'node:fs/promises';
 import type { CommandModule } from 'yargs';
 import { ModuleStore } from '../module-store';
+import { DEFAULT_SERVICE_MODULES } from '../module-catalog';
 import { runForegroundModuleRuntime } from './module-runtime';
 import { nodeRuntimeHost } from '../../../../src/runtime/host/node/NodeRuntimeHost';
 import { buildApiChildEnv, buildCssChildEnv, buildCssArgs, createCssChildRuntimeConfig } from '../../../../src/runtime/css-process';
@@ -14,7 +15,7 @@ export function startCommand(store: ModuleStore): CommandModule {
   return {
     command: 'start', describe: 'Start installed CSS/API capabilities through the Xpod Gateway',
     builder: parser => parser
-      .option('modules', { type: 'string', array: true, choices: ['css', 'api'], default: ['css', 'api'] })
+      .option('modules', { type: 'string', array: true, choices: ['css', 'api'], default: [...DEFAULT_SERVICE_MODULES] })
       .option('port', { type: 'number', default: 3000 })
       .option('baseUrl', { type: 'string' })
       .option('host', { type: 'string', default: '127.0.0.1' })

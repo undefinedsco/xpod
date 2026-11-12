@@ -538,19 +538,40 @@ jobs:
         with:
           node-version: 22
 
-      - name: Download the accepted native runtime without rebuilding
+      # Retain the ORIGINAL accepted QLever artifact through the SAME shared
+      # acquisition contract the RC and diagnostic paths use. The accepted
+      # candidate RUN and the accepted SHA are the identity breadth: the helper
+      # selects exactly ONE nonexpired artifact named
+      # qlever-local-runtime-darwin-arm64-<accepted sha> inside that run, then
+      # validates metadata source/id/digest and the ZIP SHA before retaining the
+      # untouched original. No latest-run lookup and no native recompile.
+      - name: Retain the accepted original QLever artifact without rebuilding
+        env:
+          QLEVER_ARTIFACT_SOURCE_RUN_ID: ${{ needs.promotion_guard.outputs.candidate_run_id }}
+          QLEVER_SOURCE_SHA: ${{ github.sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RUNNER_TEMP: ${{ runner.temp }}
         run: |
           set -euo pipefail
-          mkdir -p "$(dirname "$XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT")"
-          gh run download "$CANDIDATE_RUN_ID" \
-            -n "qlever-local-runtime-darwin-arm64-${XPOD_ACCEPTED_SHA}" \
-            -D "$(dirname "$XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT")"
+          python3 scripts/diagnostics/retain-qlever-materials.py
           test -s "$XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT"
 
       - run: bun install --frozen-lockfile
 
       - name: Bootstrap the Electron vendor binary
         run: node node_modules/electron/install.js
+
+      # Same prerequisite as the RC desktop job: desktop contracts and the
+      # staged native producer import workspace package SOURCE that resolves
+      # @undefineds.co/xpod-client through `exports` -> dist/*, absent on a cold
+      # runner. Build packages BEFORE the native build; canonical order kept.
+      - name: Build workspace packages required by the desktop contracts
+        run: bun run build:packages
+
+      - name: Produce the API capability from clean source
+        run: |
+          set -euo pipefail
+          bun -e 'import { prepareApiCapability } from "./desktop/scripts/api-capability-producer.ts"; prepareApiCapability({ repoRoot: process.cwd() });'
 
       - name: Validate desktop version
         run: |
@@ -576,6 +597,7 @@ jobs:
         working-directory: desktop
         run: |
           set -euo pipefail
+          bun x --no-install tsc --noEmit -p tsconfig.scripts.json
           bun run dist
           test -d release/mac-arm64/Xpod.app
           find release -maxdepth 1 -type f -name '*-mac.zip' -print -quit | grep -q .

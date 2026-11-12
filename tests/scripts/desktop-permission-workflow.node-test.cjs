@@ -89,3 +89,82 @@ test('PR CI runs all Node release and tooling suites before the unit suite', () 
   assert.ok(nodeTests >= 0);
   assert.ok(unitTests > nodeTests);
 });
+
+// ---- RC410 final wiring: clean-source API preparation + artifact custody ----
+const stepIndex = (steps, predicate) => steps.findIndex(predicate);
+
+test('candidate produces the API capability ONCE on clean source BEFORE the version stamp', () => {
+  const { jobs } = read('candidate.yml');
+  const steps = jobs.build_desktop_rc.steps;
+  const api = stepIndex(steps, s => s.run?.includes('prepareApiCapability'));
+  const stamp = stepIndex(steps, s => s.run?.includes('--apply-root-version'));
+  const packages = stepIndex(steps, s => s.run?.includes('bun run build:packages'));
+  assert.ok(api >= 0, 'API capability production step must exist');
+  assert.ok(stamp >= 0, 'version stamp step must exist');
+  assert.ok(packages >= 0, 'workspace packages step must exist');
+  // Order: packages -> API production -> version stamp. The producer refuses a
+  // dirty tree, so preparing after any rewrite is invalid by construction.
+  assert.ok(packages < api, 'API production must follow workspace package build');
+  assert.ok(api < stamp, 'API production must precede the version stamp');
+  // Exactly one canonical pipeline: no duplicated producer invocation.
+  assert.equal(steps.filter(s => s.run?.includes('prepareApiCapability')).length, 1);
+  // Read-only official native input acquisition, never echoed.
+  assert.equal(steps[api].env?.GH_TOKEN, '${{ github.token }}');
+  assert.doesNotMatch(steps[api].run, /echo\s+.*GH_TOKEN|set\s+-x/);
+});
+
+test('diagnostic produces the API capability ONCE on clean source BEFORE its version stamp', () => {
+  const { jobs } = read('ci.yml');
+  const steps = jobs['desktop-launch-diagnostic'].steps;
+  const api = stepIndex(steps, s => s.run?.includes('prepareApiCapability'));
+  const stamp = stepIndex(steps, s => s.run?.includes('applyRootVersion'));
+  const packages = stepIndex(steps, s => s.run?.includes('bun run build:packages'));
+  assert.ok(api >= 0 && stamp >= 0 && packages >= 0);
+  assert.ok(packages < api, 'API production must follow workspace package build');
+  assert.ok(api < stamp, 'API production must precede the diagnostic version stamp');
+  assert.equal(steps.filter(s => s.run?.includes('prepareApiCapability')).length, 1);
+  // The pinned QLever identity stays immutable and no rc env/secret is added.
+  assert.equal(jobs['desktop-launch-diagnostic'].env.DIAGNOSTIC_ARTIFACT_ID, '13912079864');
+  assert.match(jobs['desktop-launch-diagnostic'].env.DIAGNOSTIC_ARTIFACT_SHA256, /^92710334875497ba/);
+  assert.equal(jobs['desktop-launch-diagnostic'].env.ORIGINAL_SOURCE_SHA, '021c809886629624934826f4aacf87ff59326932');
+  assert.equal(jobs['desktop-launch-diagnostic'].environment, undefined);
+});
+
+test('RC desktop job has artifact-read permission and calls the shared retainer', () => {
+  const job = read('candidate.yml').jobs.build_desktop_rc;
+  // contents-only yields HTTP 403 from the artifact API.
+  assert.equal(job.permissions.actions, 'read');
+  assert.equal(job.permissions.contents, 'read');
+  assert.equal(job.environment, 'rc', 'rc environment must be preserved');
+  const retain = job.steps.find(s => s.run?.includes('retain-qlever-materials.py'));
+  assert.ok(retain, 'shared retainer must be used');
+  assert.equal(retain.env.QLEVER_ARTIFACT_ID, '${{ needs.build_qlever_macos_runtime.outputs.artifact_id }}');
+  assert.equal(retain.env.QLEVER_ARTIFACT_DIGEST, '${{ needs.build_qlever_macos_runtime.outputs.artifact_digest }}');
+  assert.equal(retain.env.QLEVER_SOURCE_SHA, '${{ needs.build_qlever_macos_runtime.outputs.source_sha }}');
+  // No ad-hoc re-download/re-tar path beside the shared contract.
+  assert.ok(!job.steps.some(s => s.run?.includes('gh run download')));
+});
+
+test('stable job consumes the ACCEPTED candidate run through the shared retainer', () => {
+  const job = read('release.yml').jobs.build_desktop_macos;
+  assert.equal(job.permissions.actions, 'read');
+  const retain = job.steps.find(s => s.run?.includes('retain-qlever-materials.py'));
+  assert.ok(retain, 'stable must use the shared retainer, not an ad-hoc download');
+  assert.equal(retain.env.QLEVER_ARTIFACT_SOURCE_RUN_ID, '${{ needs.promotion_guard.outputs.candidate_run_id }}');
+  assert.equal(retain.env.QLEVER_SOURCE_SHA, '${{ github.sha }}');
+  // No artifact-id/digest inputs for the stable path: the accepted run + accepted
+  // source define the identity breadth, and the helper selects the single match.
+  assert.equal(retain.env.QLEVER_ARTIFACT_ID, undefined);
+  assert.equal(retain.env.QLEVER_ARTIFACT_DIGEST, undefined);
+  // No ad-hoc QLever download, no latest-run discovery, no native rebuild.
+  // (Other artifacts — e.g. the self-update acceptance evidence — legitimately
+  // keep their own `gh run download` and are out of this scope.)
+  assert.ok(!job.steps.some(s => (s.run ?? '').includes('qlever-local-runtime-darwin-arm64')),
+    'stable must not hand-roll the QLever artifact name');
+  assert.ok(!job.steps.some(s => /gh run list|--latest/i.test(s.run ?? '')));
+  // Same workspace-package prerequisite as the RC desktop job, before the build.
+  const packages = stepIndex(job.steps, s => s.run?.includes('bun run build:packages'));
+  const build = stepIndex(job.steps, s => s.run?.includes('bun run dist'));
+  assert.ok(packages >= 0 && build >= 0);
+  assert.ok(packages < build, 'workspace packages must be built before the desktop build');
+});

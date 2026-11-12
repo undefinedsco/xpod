@@ -1,5 +1,6 @@
 const crypto = require('node:crypto');
 const CHECK_NAME = 'runtime-mode-matrix';
+const INSTALLED_IMAGE_SOURCE_URL = 'https://github.com/undefinedsco/xpod';
 const MODES = ['cloud', 'local', 'standalone'];
 const CASES = ['renew', 'idle', 'expire'];
 const LIMITS = Object.freeze({ commandMs: 600_000, liveMs: 300_000, browserMs: 300_000, cleanupMs: 60_000, outputBytes: 4 * 1024 * 1024, artifactBytes: 16 * 1024 * 1024 });
@@ -47,7 +48,21 @@ function validateMatrixCommon(report, expected, { requireLive }) {
     requireFact(m.image.noCodeMounts === true && Array.isArray(m.image.mounts) && m.image.mounts.length > 0 && m.image.mounts.every(x => x.destination === '/app/data' && x.type === 'volume' || x.destination === '/app/config/main.json' && x.type === 'bind' && x.readOnly === true) && m.image.runtimeExecutables.length === 3 && m.image.runtimeExecutables.every(x => /\/bun$/.test(x)), 'Unverified service runtime');
     if (requireLive) {
       requireFact(m.live.mode === mode && m.live.keyCleanup === true && Number.isSafeInteger(m.live.selectedModels) && m.live.selectedModels > 0 && m.live.chatStatus === 200 && ['runtime', 'identity', 'podReadWrite', 'gatewayAuth', 'aiConnections', 'models', 'chat'].every(k => m.live.layers[k] === true), 'Mode live incomplete');
+      // A release run must have built the image from the accepted source.
+      requireFact(report.installedImageSourceSha === undefined
+        || report.installedImageSourceSha === report.sourceSha, 'Installed image source must be the accepted source');
+      requireFact(m.image.installedImageSourceSha === undefined
+        || m.image.installedImageSourceSha === report.sourceSha, 'Mode image source must be the accepted source');
     } else {
+      // The diagnostic runs NEWER runner code against an EXISTING published
+      // image, so the installed revision legitimately differs - but it must be a
+      // real full commit from the canonical repository, recorded distinctly, and
+      // it must be what every mode's image record actually shows.
+      requireFact(typeof report.runnerSourceSha === 'string' && /^[a-f0-9]{40}$/.test(report.runnerSourceSha), 'Diagnostic runner source invalid');
+      requireFact(report.runnerSourceSha === report.sourceSha, 'Diagnostic runner source mismatch');
+      requireFact(typeof report.installedImageSourceSha === 'string' && /^[a-f0-9]{40}$/.test(report.installedImageSourceSha), 'Installed image source must be a full 40-hex commit');
+      requireFact(report.installedImageSourceUrl === INSTALLED_IMAGE_SOURCE_URL, 'Installed image source URL must be canonical');
+      requireFact(report.installedImageSourceSha === m.image.installedImageSourceSha, 'Installed image source projection mismatch');
       // The diagnostic must NOT carry a fabricated live proof.
       requireFact(m.live === undefined, 'Diagnostic matrix must not claim a live layer');
     }
@@ -89,4 +104,4 @@ function validateSessionMatrixDiagnostic(report, expected) {
   return { 'session-matrix-diagnostic': 'passed' };
 }
 
-module.exports = { CHECK_NAME, MODES, CASES, LIMITS, hash, projectLive, validateMatrix, validateSessionMatrixDiagnostic, sessionExpectedInput, assertSafeJson };
+module.exports = { CHECK_NAME, INSTALLED_IMAGE_SOURCE_URL, MODES, CASES, LIMITS, hash, projectLive, validateMatrix, validateSessionMatrixDiagnostic, sessionExpectedInput, assertSafeJson };

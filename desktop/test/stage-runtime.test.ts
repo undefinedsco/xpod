@@ -3,7 +3,41 @@ import { expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { stageDesktopRuntime, promoteDesktopRuntime } from '../scripts/stage-runtime';
+import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
+import { stageDesktopRuntime, promoteDesktopRuntime, materializeCapabilitySeed, requiredServiceCapabilities, cssNativeMaterials } from '../scripts/stage-runtime';
+import { DEFAULT_SERVICE_MODULES, modulePackageName } from '../../packages/xpod-cli/src/module-catalog';
+const { EMBEDDED_SOURCE_RELATIVE_PATH, EMBEDDED_SOURCE_MANIFEST_RELATIVE_PATH } = createRequire(import.meta.url)('../../scripts/platform-binaries.cjs');
+
+function materialFixture(prefix: string): string {
+  const base = path.resolve(import.meta.dir, '../../.test-data/desktop-runtime-test');
+  mkdirSync(base, { recursive: true });
+  return mkdtempSync(path.join(base, prefix));
+}
+
+/** Virtual-repo fixtures cannot run real capability builders; this producer emits
+ * both SHARED default capabilities so the real requirement is still enforced. */
+function injectedCapabilities(version: string) {
+  return async (stageDir: string) => {
+    mkdirSync(stageDir, { recursive: true });
+    const produced: { id: 'css' | 'api'; packageRoot: string; version: string }[] = [];
+    for (const id of requiredServiceCapabilities()) {
+      const packageRoot = path.join(stageDir, id, 'package');
+      mkdirSync(packageRoot, { recursive: true });
+      const entry = 'entry.mjs';
+      const body = `console.log(${JSON.stringify(id)});\n`;
+      writeFileSync(path.join(packageRoot, entry), body);
+      const files = [{ path: entry, sha256: createHash('sha256').update(body).digest('hex'),
+        size: Buffer.byteLength(body), mode: 0o644 }];
+      writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({
+        name: modulePackageName(id, process.platform, process.arch), version,
+        xpodModule: { schemaVersion: 1, id, cliApiVersion: 1, platform: process.platform, arch: process.arch,
+          entry, files } }));
+      produced.push({ id, packageRoot, version });
+    }
+    return produced;
+  };
+}
 
 test('normal packed CLI resolves its installed client after temporary archives are removed', async () => {
   const base = path.resolve(import.meta.dir, '../../.test-data/desktop-runtime-test');
@@ -37,7 +71,7 @@ test('normal packed CLI resolves its installed client after temporary archives a
     expect(existsSync(path.join(root, 'packages/xpod-client/dist'))).toBe(false);
     mkdirSync(path.join(root, 'desktop'));
     const runtimeInput = makeRuntimeFixture(root);
-    await stageDesktopRuntime(root, undefined, runtimeInput, nativeStage());
+    await stageDesktopRuntime(root, undefined, runtimeInput, nativeStage(), injectedCapabilities('0.0.1'));
     const entry = path.join(root, 'desktop/runtime/node_modules/@undefineds.co/xpod-cli/dist/xpod.mjs');
     const result = spawnSync('bun', [entry], { cwd: root });
     expect(result.status).toBe(0);
@@ -45,7 +79,7 @@ test('normal packed CLI resolves its installed client after temporary archives a
     expect(existsSync(path.join(root, 'desktop/runtime/package.json'))).toBe(false);
     writeFileSync(path.join(root, 'desktop/runtime/sentinel'), 'previous runtime');
     await expect(stageDesktopRuntime(root, () => { throw new Error('build failed'); }, runtimeInput,
-      nativeStage())).rejects.toThrow('build failed');
+      nativeStage(), injectedCapabilities('0.0.1'))).rejects.toThrow('build failed');
     expect(readFileSync(path.join(root, 'desktop/runtime/sentinel'), 'utf8')).toBe('previous runtime');
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -99,6 +133,8 @@ function nativeStage(options: { readonly omitManifest?: boolean } = {}) {
     mkdirSync(path.join(qleverRoot, 'bin'), { recursive: true });
     writeFileSync(path.join(qleverRoot, 'bin', 'xpod_qlever_local_runtime'), 'native');
     if (!options.omitManifest) writeFileSync(path.join(qleverRoot, 'manifest.json'), '{"kind":"fixture"}');
+    mkdirSync(path.join(stageDir, EMBEDDED_SOURCE_RELATIVE_PATH), { recursive: true });
+    writeFileSync(path.join(stageDir, EMBEDDED_SOURCE_MANIFEST_RELATIVE_PATH), '{"kind":"source-fixture"}');
     writeFileSync(`${stageDir}-pack.json`, '[{"name":"@undefineds.co/xpod-darwin-arm64","version":"0.0.1","size":123}]');
     const budgetPath = `${stageDir}-pack-budget.json`;
     writeFileSync(budgetPath, '{"kind":"platform-package-publication-budget","ok":true,"packedBytes":123}');
@@ -145,7 +181,7 @@ function stageCase() {
 test('stage folds the accepted native platform package into the promoted runtime and retains measured evidence', async () => {
   const { root, runtimeInput, run } = stageCase();
   try {
-    await stageDesktopRuntime(root, run, runtimeInput, nativeStage());
+    await stageDesktopRuntime(root, run, runtimeInput, nativeStage(), injectedCapabilities('0.0.1'));
     const runtime = path.join(root, 'desktop/runtime');
     // Public CLI/client architecture is preserved, not replaced by the old server runtime.
     expect(existsSync(path.join(runtime, 'node_modules/@undefineds.co/xpod-cli/dist/xpod.mjs'))).toBe(true);
@@ -153,6 +189,7 @@ test('stage folds the accepted native platform package into the promoted runtime
     // The accepted native payload and its manifest are part of the promoted runtime.
     expect(readFileSync(path.join(runtime, 'qlever/bin/xpod_qlever_local_runtime'), 'utf8')).toBe('native');
     expect(existsSync(path.join(runtime, 'qlever/manifest.json'))).toBe(true);
+    expect(readFileSync(path.join(runtime, EMBEDDED_SOURCE_MANIFEST_RELATIVE_PATH), 'utf8')).toBe('{"kind":"source-fixture"}');
     // The producer's actual measured bytes are published beside the desktop build.
     expect(JSON.parse(readFileSync(path.join(root, 'desktop/runtime-pack.json'), 'utf8'))[0].size).toBe(123);
     expect(JSON.parse(readFileSync(path.join(root, 'desktop/runtime-pack-budget.json'), 'utf8')).packedBytes).toBe(123);
@@ -188,3 +225,83 @@ for (const [name, producer] of Object.entries(rejections)) {
     }
   });
 }
+
+
+
+
+test('a normal build must ship the SAME capabilities the CLI start binds by default', () => {
+  expect(requiredServiceCapabilities()).toEqual([...DEFAULT_SERVICE_MODULES]);
+  expect(requiredServiceCapabilities()).toEqual(['css', 'api']);
+});
+
+test('CSS native materials must be REAL originals with RELATIVE SourceFile refs', () => {
+  // Fixture mirrors the retained layout the acquisition path produces.
+  const root = materialFixture('materials-');
+  try {
+    const materials = path.join(root, '.test-data', 'qlever-runtime');
+    mkdirSync(path.join(materials, 'runtime'), { recursive: true });
+    const write = (rel: string, body: string) => {
+      const target = path.join(materials, rel);
+      mkdirSync(path.dirname(target), { recursive: true });
+      writeFileSync(target, body);
+    };
+    write('qlever-native-authority.json', JSON.stringify({
+      sourceSha: '021c809886629624934826f4aacf87ff59326932', artifactId: '13912079864',
+      digest: `sha256:${createHash('sha256').update('original zip bytes').digest('hex')}`,
+      target: `${process.platform}-${process.arch}` }));
+    write(`qlever-local-runtime-${process.platform}-${process.arch}.tar.gz`, 'original tar bytes');
+    write('qlever-local-acceptance.json', '{"schemaVersion":1}');
+    write('qlever-native-artifact.zip', 'original zip bytes');
+    write('runtime/manifest.json', JSON.stringify({ schemaVersion: 1 }));
+
+    const resolved = cssNativeMaterials(root);
+    // The source identity is the ARTIFACT's, never the runner's.
+    expect(resolved.sourceSha).toBe('021c809886629624934826f4aacf87ff59326932');
+    // SourceFile paths are relative to materialsRoot by contract.
+    for (const ref of [resolved.archive, resolved.originalZip, resolved.acceptance]) {
+      expect(path.isAbsolute(ref.path)).toBe(false);
+      expect(ref.path.startsWith('..')).toBe(false);
+    }
+    // The original ZIP is the unmodified original, not a repacked tar.
+    expect(resolved.originalZip.sha256).toBe(createHash('sha256').update('original zip bytes').digest('hex'));
+    expect(resolved.archive.sha256).toBe(createHash('sha256').update('original tar bytes').digest('hex'));
+    expect(resolved.manifest.path).toBe('manifest.json');
+    write('qlever-native-artifact.zip', 'changed zip bytes');
+    expect(() => cssNativeMaterials(root)).toThrow('differs from its artifact authority');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('CSS materials refuse to invent a descriptor when originals are missing', () => {
+  const root = materialFixture('materials-gap-');
+  try {
+    const materials = path.join(root, '.test-data', 'qlever-runtime');
+    mkdirSync(materials, { recursive: true });
+    // No authority at all.
+    expect(() => cssNativeMaterials(root)).toThrow('CSS native authority is missing');
+    // Authority present but no originals: still refuse, never fabricate.
+    writeFileSync(path.join(materials, 'qlever-native-authority.json'), JSON.stringify({
+      sourceSha: '021c809886629624934826f4aacf87ff59326932',
+      target: `${process.platform}-${process.arch}` }));
+    expect(() => cssNativeMaterials(root)).toThrow('CSS native original is missing');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('CSS materials refuse a target or source that does not match the artifact', () => {
+  const root = materialFixture('materials-bad-');
+  try {
+    const materials = path.join(root, '.test-data', 'qlever-runtime');
+    mkdirSync(path.join(materials, 'runtime'), { recursive: true });
+    writeFileSync(path.join(materials, 'qlever-native-authority.json'), JSON.stringify({
+      sourceSha: 'not-a-sha', target: `${process.platform}-${process.arch}` }));
+    expect(() => cssNativeMaterials(root)).toThrow('true source identity');
+    writeFileSync(path.join(materials, 'qlever-native-authority.json'), JSON.stringify({
+      sourceSha: '021c809886629624934826f4aacf87ff59326932', target: 'linux-x64' }));
+    expect(() => cssNativeMaterials(root)).toThrow('target differs');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

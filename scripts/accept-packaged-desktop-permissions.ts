@@ -22,8 +22,12 @@ import { completeOidcLogin, consentBindingProven, OidcApprovalError, type Browse
   type OidcApprovalCondition } from '../tests/helpers/browserSolidOidc';
 import { captureBrowserAiConnections, readBrowserXpodRuntime } from '../tests/helpers/browserXpodRuntime';
 
-const { verifyEvidence } = createRequire(import.meta.url)('./desktop-permission-acceptance.cjs') as {
+const { verifyEvidence, readArchiveRuntime } = createRequire(import.meta.url)('./desktop-permission-acceptance.cjs') as {
   verifyEvidence(record: unknown, expected: unknown): { valid: boolean; errors: unknown[] };
+  /** Reads the packaged CLI manifest from the SAME input archive; independent
+   * expectation for the launcher's own `--version`, never the observed output. */
+  readArchiveRuntime(archive: string): Promise<{ cliVersion: string; launcherSha256: string;
+    desktopVersion?: string }>;
 };
 
 type Stage = 'input' | 'launch' | 'provision' | 'pod-a' | 'operations-a' | 'switch' | 'pod-b' | 'operations-b' | 'cleanup' | 'verify';
@@ -570,7 +574,18 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
   advance('verify');
   record.cleanup = { ...fixtureCleanup, providerRemoved: true, keyRemoved: true, attributedGrantsRestored: true };
   record.completedAt = new Date().toISOString();
-  const result = verifyEvidence(record, { sourceSha: options.sourceSha, version: options.version, archive: fixture.archive,
+  // The launcher CLI is versioned independently of the desktop candidate, so the
+  // expected CLI version comes from this archive's own packaged CLI manifest -
+  // not from `options.version` and not from the observed `--version` output.
+  const archiveRuntime = await readArchiveRuntime(options.archive);
+  if (archiveRuntime.desktopVersion !== undefined && archiveRuntime.desktopVersion !== options.version) {
+    throw new DesktopAcceptanceError('evidence-contract', 'Desktop archive version differs from the declared candidate');
+  }
+  if (fixture.runtime.binarySha256 !== archiveRuntime.launcherSha256) {
+    throw new DesktopAcceptanceError('evidence-contract', 'Observed launcher is not the archived launcher');
+  }
+  const result = verifyEvidence(record, { sourceSha: options.sourceSha, version: options.version,
+    cliVersion: archiveRuntime.cliVersion, archive: fixture.archive,
     runtimeBinarySha256: fixture.runtime.binarySha256, resourceIds: AI_CONNECTIONS_SERVICE_RESOURCE_IDS });
   if (!result.valid) {
     await privateJson(options.privateDirectory, 'verification-private.json', { result, record });
