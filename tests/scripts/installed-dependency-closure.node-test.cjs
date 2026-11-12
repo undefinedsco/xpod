@@ -384,3 +384,74 @@ test('identical package content under two physical source paths keeps each own t
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// The production desktop builder is invoked under BUN (stageDesktopRuntime imports
+// buildPlatformPackage in Bun, so process.execPath spawns build-bun-single.js with
+// Bun). Bun's createRequire().resolve.paths() returned an EMPTY list for real
+// installed packages (node-fetch, undici), so the closure wrongly reported them
+// missing. The resolver is now a physical ancestor walk; this asserts it agrees
+// with the NODE ground truth on the same tree, under BOTH runtimes.
+test('installed dependency lookup agrees with Node semantics under both Node and Bun', () => {
+  fs.mkdirSync(path.join(root, '.test-data'), { recursive: true });
+  const dir = fs.mkdtempSync(path.join(root, '.test-data/lookup-parity-'));
+  try {
+    const nodeModules = path.join(dir, 'node_modules');
+    const writePackage = (target, manifest) => {
+      fs.mkdirSync(target, { recursive: true });
+      fs.writeFileSync(path.join(target, 'package.json'), JSON.stringify(manifest));
+      fs.writeFileSync(path.join(target, 'index.js'), 'module.exports = {};\n');
+    };
+    // Nearest-wins tree: a hoisted copy plus a nested, different version.
+    writePackage(path.join(nodeModules, '@fx/parent'), { name: '@fx/parent', version: '1.0.0', dependencies: { shared: '^2.0.0' } });
+    writePackage(path.join(nodeModules, '@fx/parent/node_modules/shared'), { name: 'shared', version: '2.0.0' });
+    writePackage(path.join(nodeModules, '@fx/other'), { name: '@fx/other', version: '1.0.0', dependencies: { shared: '^1.0.0' } });
+    writePackage(path.join(nodeModules, 'shared'), { name: 'shared', version: '1.0.0' });
+    writePackage(path.join(nodeModules, 'only-hoisted'), { name: 'only-hoisted', version: '3.0.0' });
+    // Bun's resolve.paths() returns an EMPTY list for specific REAL package names
+    // (node-fetch / undici), not for arbitrary names. A generic fixture therefore
+    // cannot pin the production failure: these packages must be present under
+    // their actual names so the old implementation provably breaks here.
+    writePackage(path.join(nodeModules, 'node-fetch'), { name: 'node-fetch', version: '3.3.2' });
+    writePackage(path.join(nodeModules, 'undici'), { name: 'undici', version: '6.19.2' });
+    // Nested differing copies prove the lookup still respects nearest-wins for
+    // these same names instead of collapsing to one global answer.
+    writePackage(path.join(nodeModules, '@fx/parent/node_modules/node-fetch'), { name: 'node-fetch', version: '2.7.0' });
+    writePackage(path.join(nodeModules, '@fx/parent/node_modules/undici'), { name: 'undici', version: '5.28.4' });
+
+    const script = path.join(dir, 'probe.cjs');
+    fs.writeFileSync(script, `
+      const path = require('node:path');
+      const { resolveInstalledDependency } = require(${JSON.stringify(path.join(root, 'scripts/lib/installed-dependency-closure.cjs'))});
+      const parent = ${JSON.stringify(path.join(nodeModules, '@fx/parent'))};
+      const other = ${JSON.stringify(path.join(nodeModules, '@fx/other'))};
+      const read = (dir, name) => {
+        const hit = resolveInstalledDependency(dir, name);
+        return hit ? JSON.parse(require('node:fs').readFileSync(path.join(hit.directory, 'package.json'), 'utf8')).version : 'MISSING';
+      };
+      console.log(JSON.stringify({
+        parentShared: read(parent, 'shared'),
+        otherShared: read(other, 'shared'),
+        hoisted: read(parent, 'only-hoisted'),
+        absent: read(parent, 'definitely-not-installed'),
+        nodeFetchNested: read(parent, 'node-fetch'),
+        undiciNested: read(parent, 'undici'),
+        nodeFetchHoisted: read(other, 'node-fetch'),
+        undiciHoisted: read(other, 'undici'),
+      }));
+    `);
+    const expected = {
+      parentShared: '2.0.0', otherShared: '1.0.0', hoisted: '3.0.0', absent: 'MISSING',
+      // The two names Bun's resolve.paths() cannot see must be FOUND, at the
+      // physically nearest version for each requester.
+      nodeFetchNested: '2.7.0', undiciNested: '5.28.4',
+      nodeFetchHoisted: '3.3.2', undiciHoisted: '6.19.2',
+    };
+    for (const runtime of ['node', 'bun']) {
+      const run = spawnSync(runtime, [script], { encoding: 'utf8', timeout: 30000 });
+      assert.equal(run.status, 0, `${runtime} failed: ${run.stderr}`);
+      assert.deepEqual(JSON.parse(run.stdout.trim()), expected, `${runtime} disagreed with nearest-physical semantics`);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

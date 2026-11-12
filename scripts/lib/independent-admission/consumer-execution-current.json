@@ -629,7 +629,7 @@
   },
   {
     "path": "scripts/agentfs-native-ci/mounted/native-authority.json",
-    "sha256": "68717749cdc736b418d21d92f19235dfd1252ee0f9c196bc5542482e48f30f5c"
+    "sha256": "4d979aac4353924b145f900a27b57290dbf837b5b8ee3fe12c25e087ab63c702"
   },
   {
     "path": "scripts/agentfs-native-ci/mounted/owned-installed-consumer.ts",

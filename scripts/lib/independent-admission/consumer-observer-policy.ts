@@ -533,6 +533,10 @@ const RC399_LIVE_RELEASE_INPUTS: Readonly<Record<string, string>> = Object.freez
   // desktop/package.json (already owned by these tails) moved with the desktop
   // runtime descriptor initializer.
   'desktop/package.json': 'a09bb65633addabdcd0ed8bd43e2dcbe8817949a21d6363f394007bf05e0057b',
+  // The CURRENT native authority moved to the reviewed 27cf producer tuple
+  // (run 42630283454, attempt 1). That path is already an owned row of this tail,
+  // so only its literal moves; every earlier declaration keeps its published bytes.
+  'scripts/agentfs-native-ci/mounted/native-authority.json': '4d979aac4353924b145f900a27b57290dbf837b5b8ee3fe12c25e087ab63c702',
 });
 function rc399ConsumerVariant<T extends GitHubSourceBindingGroup>(group: T): T {
   const rebind = (row: GitHubSourceBinding): GitHubSourceBinding => {

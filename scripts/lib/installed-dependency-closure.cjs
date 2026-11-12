@@ -23,19 +23,36 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { createRequire, isBuiltin } = require('node:module');
+const { isBuiltin } = require('node:module');
 
-/** Node's own ancestor chain of candidate package directories for `parentDir`. */
+/**
+ * Resolve an installed dependency to a physical package directory.
+ *
+ * This walks ancestor `node_modules` directories from the requesting package and
+ * returns the FIRST one that actually contains the package. That is precisely
+ * Node's installed-tree contract (nearest physical copy wins), so the same answer
+ * is produced on every host.
+ *
+ * It is implemented directly rather than via `createRequire().resolve.paths()`
+ * because Bun returns an empty path list for some real installed packages
+ * (measured: `node-fetch`, `undici`), which made the Bun-run production builder
+ * report "Installed runtime dependency is missing" for packages that are both
+ * installed and loadable. The lookup is deliberately physical and scoped: it
+ * never hoists, never merges content, and never guesses among ambiguous nested
+ * copies - it only reports the copy the requester would really load.
+ */
 function resolveInstalledDependency(parentDir, name) {
-  const search = createRequire(path.join(parentDir, 'package.json')).resolve.paths(name) || [];
-  for (const directory of search) {
-    const candidate = path.join(directory, ...name.split('/'));
+  let directory = parentDir;
+  for (;;) {
+    const candidate = path.join(directory, 'node_modules', ...name.split('/'));
     const manifestPath = path.join(candidate, 'package.json');
     if (fs.existsSync(manifestPath)) {
       return { directory: candidate, manifest: JSON.parse(fs.readFileSync(manifestPath, 'utf8')) };
     }
+    const parent = path.dirname(directory);
+    if (parent === directory) return undefined;
+    directory = parent;
   }
-  return undefined;
 }
 
 /**

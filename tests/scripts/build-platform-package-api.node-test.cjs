@@ -14,8 +14,30 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { PLATFORM_TARGETS } = require('../../scripts/platform-binaries.cjs');
 
 const MODULE = path.resolve(__dirname, '../../scripts/build-platform-package.cjs');
+
+/**
+ * An EXPLICIT declared target, taken from the producer's own table.
+ *
+ * `buildPlatformPackage('current')` resolves through getCurrentPlatformTarget(),
+ * which only knows the platform the table declares; on any other host (Linux CI,
+ * for instance) it returns undefined and the producer throws
+ * "Unsupported platform target" BEFORE attempting a child spawn. That is correct
+ * product behaviour, but it made this regression test platform-dependent: the
+ * spawn assertion could never be reached outside macOS arm64.
+ *
+ * An explicit target ref is resolved by identity only, so the first step is the
+ * real `run(process.execPath, ['scripts/build-bun-single.js', ...])` child spawn
+ * on every host. Target resolution is not mocked (the child spawn IS stubbed), no
+ * target is added, and no build happens: the stub fails that very spawn.
+ */
+const DECLARED_TARGET = PLATFORM_TARGETS[0];
+if (!DECLARED_TARGET || typeof DECLARED_TARGET.id !== 'string' || DECLARED_TARGET.id.length === 0) {
+  throw new Error('producer declares no platform target to exercise');
+}
+const DECLARED_TARGET_REF = DECLARED_TARGET.id;
 
 /**
  * Run a snippet in a fresh Node process with spawnSync stubbed to fail.
@@ -54,7 +76,7 @@ let caught;
 let finallyRan = false;
 (async () => {
   try {
-    await buildPlatformPackage('current', {
+    await buildPlatformPackage(${JSON.stringify(DECLARED_TARGET_REF)}, {
       stageDir: require('node:path').join(process.cwd(), '.test-data', 'm2-stage'),
       qleverRuntimeArtifactPath: process.env.__ARTIFACT__,
     });
@@ -88,7 +110,7 @@ test('the module no longer exits the process on a producer child failure', () =>
   const result = runIsolated(`
 const { buildPlatformPackage } = require(${JSON.stringify(MODULE)});
 process.stdout.write('BEFORE\\n');
-buildPlatformPackage('current', {
+buildPlatformPackage(${JSON.stringify(DECLARED_TARGET_REF)}, {
   stageDir: require('node:path').join(process.cwd(), '.test-data', 'm2-stage2'),
   qleverRuntimeArtifactPath: process.env.__ARTIFACT__,
 })
@@ -114,7 +136,7 @@ const childProcess = require('node:child_process');
 childProcess.spawnSync = () => ({ status: 3, signal: null, stdout: '', stderr: '' });
 `);
   const result = spawnSync(process.execPath, ['-r', preload, MODULE,
-    '--target', 'current',
+    '--target', DECLARED_TARGET_REF,
     '--stage-dir', path.join(dir, 'stage'),
     '--qlever-runtime-artifact', artifact], { encoding: 'utf8', timeout: 60_000 });
   fs.rmSync(dir, { recursive: true, force: true });
