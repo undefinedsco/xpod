@@ -3019,7 +3019,7 @@ const QLEVER_NORMAL_RC398_PLATFORM_GROUP:GitHubSourceBindingGroup=Object.freeze(
  * The workspace build+consumer precedes the candidate-version transform, and
  * the root outputs are compiled before desktop packaging on a cold runner.
  * Every published RC396/RC397/RC398 value above stays byte-exact. */
-const QLEVER_RC399_CANDIDATE_WORKFLOW_HASH='066efee0a9f6483a760fa02fcb77eabc54ec771508b4556641bc9e89202e446c';
+const QLEVER_RC399_CANDIDATE_WORKFLOW_HASH='f4295f934f6614c500700b596ffda917c6754fc2fed1b35d6ca170c51a5d4d6f';
 const QLEVER_NORMAL_RC399_CLEANUP_GROUP:GitHubSourceBindingGroup=Object.freeze({...QLEVER_NORMAL_RC398_PLATFORM_GROUP,
   secondarySelectors:Object.freeze((QLEVER_NORMAL_RC398_PLATFORM_GROUP.secondarySelectors??[]).map(row=>
     Object.freeze({...row,sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_RC399_CANDIDATE_WORKFLOW_HASH:row.sha256}))),
@@ -3358,7 +3358,7 @@ const RC399_LIVE_RELEASE_INPUTS:Readonly<Record<string,string>>=Object.freeze({
   // this CURRENT tail, so only those rows move. Every frozen SDK105/normalBuild3
   // group above keeps its published bytes.
   'scripts/run-npm-pack.cjs':'6e1c6144cc71a8399350a0873c9f3dfafc06a9a2967c0fe88b09c269e8aabe46',
-  '.github/workflows/ci.yml':'abe3be015f298062399602ab82f2ec549b58138aceaa88d06aa503d2f3af2a9b',
+  '.github/workflows/ci.yml':'1ed5a7223e97ea5b689c6707b599ce26b24a586770d313c1f399525d3132bb81',
 });
 const rc399LiveReleaseRow=(row:GitHubSourceBinding)=>Object.freeze({
   ...row,sha256:RC399_LIVE_RELEASE_INPUTS[row.path]??row.sha256,

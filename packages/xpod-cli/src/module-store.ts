@@ -12,6 +12,8 @@ import { checkInventoryFiles } from './module-inventory-workers';
 import { withModuleOwnedLock } from './module-owned-lock';
 
 const REGISTRY = 'https://registry.npmjs.org';
+/** Prefix for a seed import identity: the packaged package.json digest. */
+const SEED_INTEGRITY_PREFIX = 'seed-package-sha256-';
 const VERSION = /^\d+\.\d+\.\d+(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?$/;
 const safePath = (name: unknown): name is string => typeof name === 'string' && name.length > 0 && !name.includes('\\') && !path.isAbsolute(name)
   && name.split('/').every(part => part && part !== '.' && part !== '..');
@@ -26,11 +28,25 @@ export interface ModuleManifest {
   files: { path: string; sha256: string; size: number; mode: number }[];
 }
 export interface InstalledModule {
-  id: ModuleId; package: string; version: string; integrity: string; platform: string; arch: string;
+  id: ModuleId; package: string; version: string;
+  /**
+   * Identity of where these bytes came from, never a claim we cannot support:
+   * `sha512-…` = the producer archive integrity (registry install), or
+   * `seed-package-sha256-…` = the sha256 of the packaged `package.json` whose
+   * `xpodModule` inventory binds every file (seed import). Both are computed
+   * from bytes we actually read.
+   */
+  integrity: string;
+  platform: string; arch: string;
+  /** sha256 of the installed `package.json`; always the authority for verify(). */
   manifestSha256: string;
 }
 export interface StoreOptions {
   root?: string; platform?: string; arch?: string; fetch?: typeof fetch;
+  /** Read-only seed of packaged module artifacts shipped beside the runtime. */
+  seed?: string;
+  /** Packaged runtime: capabilities must already be present in `root`. */
+  offline?: boolean;
 }
 export interface AdmittedModule {
   readonly installed: InstalledModule;
@@ -44,8 +60,16 @@ export class ModuleStore {
   private readonly platform: string;
   private readonly arch: string;
   private readonly request: typeof fetch;
+  /** Read-only packaged seed; import source only, never written to. */
+  private readonly seed?: string;
+  /** Offline runtime: never fall back to a registry download. */
+  private readonly offline: boolean;
   public constructor(options: StoreOptions = {}) {
+    // A packaged desktop passes its OWNED mutable root plus the read-only seed it
+    // shipped with; nothing is ever written under the real HOME.
     this.root = path.resolve(options.root ?? path.join(homedir(), '.xpod', 'modules'));
+    this.seed = options.seed === undefined ? undefined : path.resolve(options.seed);
+    this.offline = options.offline === true;
     this.platform = options.platform ?? process.platform;
     this.arch = options.arch ?? process.arch;
     this.request = options.fetch ?? fetch;
@@ -62,7 +86,15 @@ export class ModuleStore {
     const definition = this.definition(row.id);
     if (!VERSION.test(row.version) || row.package !== modulePackageName(definition.id, this.platform, this.arch)
       || row.platform !== this.platform || row.arch !== this.arch) throw error('module_binding_invalid', 'Installed module identity is invalid.');
-    return path.join(this.root, row.id, `${this.platform}-${this.arch}`, row.version);
+    const seeded = row.integrity.startsWith(SEED_INTEGRITY_PREFIX);
+    if (seeded && (!/^[a-f0-9]{64}$/.test(row.manifestSha256)
+      || row.integrity !== `${SEED_INTEGRITY_PREFIX}${row.manifestSha256}`)) {
+      throw error('module_binding_invalid', 'Packaged module identity is invalid.');
+    }
+    // Two bundles can carry different bytes with the same package version. Keep
+    // both immutable trees; only their current pointer changes after admission.
+    const root = seeded ? path.join(this.root, 'packaged', row.manifestSha256) : this.root;
+    return path.join(root, row.id, `${this.platform}-${this.arch}`, row.version);
   }
   private pointer(id: ModuleId) { return path.join(this.root, id, `${this.platform}-${this.arch}`, 'current.json'); }
   private async verify(directory: string, row: InstalledModule, diagnostics = createModuleInstallDiagnostics()): Promise<ModuleManifest> {
@@ -203,13 +235,161 @@ export class ModuleStore {
     await this.withLock(definition.id, async () => { await rm(path.dirname(this.pointer(definition.id)), { recursive: true, force: true }); });
   }
   /** Admission and its locks remain valid until the entire consumer lifecycle completes. */
+  /**
+   * Resolve the ONE authoritative packaged artifact for a capability.
+   *
+   * The bundle must carry exactly one version directory per capability; more than
+   * one is an ambiguous build (never "pick the newest"), and the version itself is
+   * whatever the packaged manifest declares — we do not synthesise or compare it.
+   */
+  private async seedSource(id: ModuleId): Promise<{ from: string; version: string; manifestSha256: string } | undefined> {
+    if (!this.seed) return undefined;
+    const packageName = modulePackageName(id, this.platform, this.arch);
+    if (!packageName) return undefined;
+    const parent = path.join(this.seed, id, `${this.platform}-${this.arch}`);
+    let versions: string[];
+    try {
+      versions = (await readdir(parent, { withFileTypes: true }))
+        .filter(entry => entry.isDirectory() && VERSION.test(entry.name))
+        .map(entry => entry.name);
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      throw cause;
+    }
+    if (!versions.length) return undefined;
+    if (versions.length !== 1) throw error('module_seed_ambiguous', 'Packaged seed carries more than one version of a capability.');
+    const version = versions[0]!;
+    const from = path.join(parent, version);
+    let manifestSource: Buffer;
+    try { manifestSource = await readFile(path.join(from, 'package', 'package.json')); }
+    catch (cause) { if ((cause as NodeJS.ErrnoException).code === 'ENOENT') throw error('module_seed_invalid', 'Packaged seed capability has no manifest.'); throw cause; }
+    const pkg = JSON.parse(manifestSource.toString()) as { name?: unknown; version?: unknown; xpodModule?: ModuleManifest };
+    const manifest = pkg.xpodModule;
+    if (pkg.name !== packageName || pkg.version !== version || !manifest || manifest.id !== id
+      || manifest.platform !== this.platform || manifest.arch !== this.arch) {
+      throw error('module_seed_invalid', 'Packaged seed manifest does not describe this capability.');
+    }
+    // Identity derived from bytes we read, not from a guess about provenance.
+    return { from, version, manifestSha256: createHash('sha256').update(manifestSource).digest('hex') };
+  }
+
+  /**
+   * Import ONE packaged capability into this OWNED store from the read-only seed.
+   *
+   * The bundle stays immutable: nothing is written under the seed. The copy lands
+   * in `this.root` through the same manifest/inventory verification and the same
+   * owned lifecycle lock as a normal install, then publishes its pointer
+   * atomically. Returns undefined when the seed does not carry that capability.
+   */
+  private async seedStaged(id: ModuleId): Promise<InstalledModule | undefined> {
+    const source = await this.seedSource(id);
+    if (!source) return undefined;
+    const packageName = modulePackageName(id, this.platform, this.arch)!;
+    const row: InstalledModule = {
+      id, package: packageName, version: source.version, platform: this.platform, arch: this.arch,
+      // Honest identity: the digest of the packaged manifest that binds the tree.
+      integrity: `${SEED_INTEGRITY_PREFIX}${source.manifestSha256}`,
+      manifestSha256: source.manifestSha256,
+    };
+    return this.withLock(id, async () => {
+      const destination = this.directory(row);
+      // Reuse only when the installed tree IS the exact packaged artifacts. A
+      // changed same-version seed must be re-imported, never silently reused.
+      const existing = await this.current(id);
+      if (existing && existing.version === row.version && existing.manifestSha256 === row.manifestSha256) return existing;
+      const parent = path.dirname(destination);
+      await mkdir(parent, { recursive: true, mode: 0o700 });
+      const stage = await mkdtemp(path.join(parent, '.seed-'));
+      let primaryError: unknown;
+      let failed = false;
+      try {
+        const from = path.join(source.from, 'package');
+        await mkdir(path.join(stage, 'package'), { recursive: true, mode: 0o700 });
+        const copied: { target: string; mode: number }[] = [];
+        const copy = async (relative = ''): Promise<void> => {
+          for (const entry of await readdir(path.join(from, relative), { withFileTypes: true })) {
+            const name = relative ? `${relative}/${entry.name}` : entry.name;
+            const target = path.join(stage, 'package', name);
+            if (entry.isSymbolicLink()) throw error('module_link_rejected', 'Module artifacts cannot contain links.');
+            if (entry.isDirectory()) { await mkdir(target, { recursive: true, mode: 0o700 }); await copy(name); }
+            else if (entry.isFile()) {
+              await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+              // 0600 while writing; the verified mode is applied below.
+              await writeFile(target, await readFile(path.join(from, name)), { mode: 0o600, flag: 'wx' });
+              copied.push({ target, mode: 0o600 });
+            } else throw error('module_inventory_invalid', 'Module contains an unsupported member.');
+          }
+        };
+        await copy();
+        // Apply the manifest's declared modes BEFORE verify(): verify compares the
+        // on-disk mode against the manifest, so correcting afterwards is too late.
+        const pkg = JSON.parse(await readFile(path.join(stage, 'package', 'package.json'), 'utf8')) as { xpodModule?: ModuleManifest };
+        const declared = pkg.xpodModule;
+        if (!declared || !Array.isArray(declared.files)) throw error('module_inventory_invalid', 'Module manifest inventory is missing.');
+        const modes = new Map<string, number>();
+        for (const file of declared.files) {
+          if (!file || !safePath(file.path) || ![0o644, 0o755].includes(file.mode) || modes.has(file.path)) {
+            throw error('module_inventory_invalid', 'Module file permissions are invalid.');
+          }
+          modes.set(file.path, file.mode);
+        }
+        for (const entry of copied) {
+          const relative = path.relative(path.join(stage, 'package'), entry.target).split(path.sep).join('/');
+          const mode = relative === 'package.json' ? 0o644 : modes.get(relative);
+          if (mode === undefined) throw error('module_inventory_invalid', 'Module contains an unbound file.');
+          await chmod(entry.target, mode);
+        }
+        // The SAME verifier as a registry install; no second validator.
+        await this.verify(stage, row);
+        // A prior import may have published these exact bytes before its pointer
+        // write failed. Verify and reuse them; never delete an admitted tree.
+        let publish = true;
+        try { await lstat(destination); await this.verify(destination, row); publish = false; }
+        catch (cause) { if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') throw cause; }
+        if (publish) await rename(stage, destination);
+        await mkdir(path.dirname(this.pointer(id)), { recursive: true, mode: 0o700 });
+        const pending = `${this.pointer(id)}.tmp`;
+        await writeFile(pending, JSON.stringify(row), { mode: 0o600 });
+        await rename(pending, this.pointer(id));
+        return row;
+      } catch (cause) {
+        failed = true; primaryError = cause; throw cause;
+      } finally {
+        // No private waiver: a cleanup failure is surfaced, and both errors are
+        // retained exactly like a normal install.
+        try { await rm(stage, { recursive: true, force: true }); }
+        catch (cleanupError) {
+          if (failed) throw new AggregateError([primaryError, cleanupError],
+            `Module seed import failed (${primaryError instanceof Error ? primaryError.message : String(primaryError)}); staging cleanup failed (${String(cleanupError)})`);
+          throw cleanupError;
+        }
+      }
+    });
+  }
+
   public async withAdmittedModules<T>(ids: readonly string[], action: (modules: readonly AdmittedModule[]) => Promise<T>): Promise<T> {
     const definitions = ids.map(id => this.definition(id));
     if (new Set(definitions.map(row => row.id)).size !== definitions.length) {
       throw error('module_selection_invalid', 'Select each module only once.');
     }
     const selected: InstalledModule[] = [];
-    for (const definition of definitions) selected.push(await this.current(definition.id) ?? await this.install(definition.id));
+    for (const definition of definitions) {
+      // A packaged/offline runtime must never fall back to a registry download and
+      // must never keep running an OLDER capability after the app was updated. The
+      // packaged seed is the authority, so it is resolved first and the owned
+      // pointer is only reused when it IS that exact seed (same version AND same
+      // packaged manifest digest). Everything still goes through seedStaged()'s
+      // lock + the same verify().
+      if (this.offline) {
+        const seeded = await this.seedStaged(definition.id);
+        if (!seeded) throw error('module_not_staged', `Module ${definition.id} is not staged for this offline runtime.`);
+        selected.push(seeded);
+        continue;
+      }
+      const staged = await this.current(definition.id);
+      if (staged) { selected.push(staged); continue; }
+      selected.push(await this.install(definition.id));
+    }
     const ordered = [...selected].sort((a, b) => a.id.localeCompare(b.id));
     const admitted = new Map<ModuleId, AdmittedModule>();
     const acquire = async (index: number): Promise<T> => {
@@ -226,7 +406,17 @@ export class ModuleStore {
     return acquire(0);
   }
   public async run(id: string, args: string[]): Promise<number> {
-    const row = await this.current(id) ?? await this.install(id);
+    // Same selection rule as withAdmittedModules(): an offline runtime is bound to
+    // the packaged seed, never to a stale pointer and never to the registry.
+    const definition = this.definition(id);
+    let row: InstalledModule;
+    if (this.offline) {
+      const seeded = await this.seedStaged(definition.id);
+      if (!seeded) throw error('module_not_staged', `Module ${id} is not staged for this offline runtime.`);
+      row = seeded;
+    } else {
+      row = await this.current(definition.id) ?? await this.install(definition.id);
+    }
     return this.withLock(row.id, async () => {
       const directory = this.directory(row); const manifest = await this.verify(directory, row);
       return new Promise<number>((resolve, reject) => {

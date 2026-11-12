@@ -443,3 +443,219 @@ test('installation skips historical archive mtime restoration while retaining co
   const source = await readFile(filename, 'utf8'); await writeFile(filename, source.replace('process.exit', 'process.exiT'));
   expect(await f.store.current('afs').then(() => null, cause => cause.code)).toBe('module_file_changed');
 });
+
+
+/** Seed a read-only module tree exactly as the desktop build stages it. */
+async function seedFixture() {
+  const base = path.resolve('.test-data/cli-modules'); await mkdir(base, { recursive: true });
+  const root = await mkdtemp(path.join(base, 'seed-')); roots.push(root);
+  const seed = path.join(root, 'bundle', 'modules'); const store = path.join(root, 'owned', 'modules');
+  const version = '0.1.0'; const source = 'process.exit(0);\n';
+  const dir = path.join(seed, 'afs', 'darwin-arm64', version, 'package');
+  await mkdir(dir, { recursive: true });
+  await writeFile(path.join(dir, 'entry.mjs'), source);
+  await chmod(path.join(dir, 'entry.mjs'), 0o644);
+  const manifest: ModuleManifest = { schemaVersion: 1, id: 'afs', cliApiVersion: 1, platform: 'darwin', arch: 'arm64',
+    entry: 'entry.mjs', files: [{ path: 'entry.mjs', sha256: createHash('sha256').update(source).digest('hex'),
+      size: Buffer.byteLength(source), mode: 0o644 }] };
+  await writeFile(path.join(dir, 'package.json'), JSON.stringify({ name: '@undefineds.co/xpod-afs-darwin-arm64',
+    version, xpodModule: manifest }));
+  return { root, seed, store, version };
+}
+
+test('an owned store imports a packaged capability from a READ-ONLY seed', async () => {
+  const f = await seedFixture();
+  // Prove the bundle stays read-only: make the seed tree unwritable.
+  const { chmodSync } = await import('node:fs');
+  const freeze = (dir: string): void => {
+    for (const entry of require('node:fs').readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) freeze(full); else chmodSync(full, 0o444);
+    }
+  };
+  freeze(f.seed);
+  try {
+    const store = new ModuleStore({ root: f.store, seed: f.seed, offline: true, platform: 'darwin', arch: 'arm64' });
+    let admitted: readonly unknown[] = [];
+    await store.withAdmittedModules(['afs'], async modules => { admitted = modules; });
+    expect(admitted.length).toBe(1);
+    // The import landed in the OWNED store, not in the bundle.
+    expect(await store.current('afs')).toBeDefined();
+    expect(store.root).toBe(path.resolve(f.store));
+  } finally {
+    const relax = (dir: string): void => {
+      for (const entry of require('node:fs').readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) relax(full); else chmodSync(full, 0o644);
+      }
+    };
+    relax(f.seed);
+  }
+});
+
+test('an offline store fails closed when the seed lacks the capability', async () => {
+  const f = await seedFixture();
+  const empty = path.join(f.root, 'bundle-empty', 'modules'); await mkdir(empty, { recursive: true });
+  const store = new ModuleStore({ root: f.store, seed: empty, offline: true, platform: 'darwin', arch: 'arm64' });
+  const failure = await store.withAdmittedModules(['afs'], async () => {})
+    .then(() => undefined, error => error as { message?: string });
+  expect(String(failure?.message)).toContain('not staged');
+});
+
+test('a second admission reuses the already imported module', async () => {
+  const f = await seedFixture();
+  const store = new ModuleStore({ root: f.store, seed: f.seed, offline: true, platform: 'darwin', arch: 'arm64' });
+  await store.withAdmittedModules(['afs'], async () => {});
+  const first = await store.current('afs');
+  await store.withAdmittedModules(['afs'], async () => {});
+  expect(await store.current('afs')).toEqual(first!);
+});
+
+test('store options are per-instance and never read a process-wide snapshot', async () => {
+  const f = await seedFixture();
+  const previous = process.env.XPOD_MODULES_OFFLINE;
+  process.env.XPOD_MODULES_OFFLINE = '1';
+  try {
+    // An explicit non-offline store must still be able to use its own root even
+    // while the environment carries an unrelated flag.
+    const store = new ModuleStore({ root: f.store, platform: 'darwin', arch: 'arm64' });
+    expect(store.root).toBe(path.resolve(f.store));
+  } finally {
+    if (previous === undefined) delete process.env.XPOD_MODULES_OFFLINE;
+    else process.env.XPOD_MODULES_OFFLINE = previous;
+  }
+});
+
+
+/** Write one seed version directory with a real xpodModule manifest. */
+async function writeSeedVersion(seed: string, version: string, source: string, id: 'afs' = 'afs'): Promise<void> {
+  const dir = path.join(seed, id, 'darwin-arm64', version, 'package');
+  await mkdir(dir, { recursive: true });
+  const name = id === 'afs' ? '@undefineds.co/xpod-afs-darwin-arm64' : '@undefineds.co/xpod-api-darwin-arm64';
+  await writeFile(path.join(dir, 'entry.mjs'), source);
+  await chmod(path.join(dir, 'entry.mjs'), 0o644);
+  const manifest: ModuleManifest = { schemaVersion: 1, id, cliApiVersion: 1, platform: 'darwin', arch: 'arm64',
+    entry: 'entry.mjs', files: [{ path: 'entry.mjs', sha256: createHash('sha256').update(source).digest('hex'),
+      size: Buffer.byteLength(source), mode: 0o644 }] };
+  await writeFile(path.join(dir, 'package.json'), JSON.stringify({ name, version, xpodModule: manifest }));
+}
+
+test('a seed with more than one version directory is rejected as ambiguous', async () => {
+  const f = await seedFixture();
+  await writeSeedVersion(f.seed, '0.1.0-preview.9', 'process.exit(0);\n');
+  await writeSeedVersion(f.seed, '0.1.0-preview.10', 'process.exit(0);\n');
+  const store = new ModuleStore({ root: f.store, seed: f.seed, offline: true, platform: 'darwin', arch: 'arm64' });
+  const failure = await store.withAdmittedModules(['afs'], async () => {})
+    .then(() => null, cause => cause as { code?: string });
+  expect(failure?.code).toBe('module_seed_ambiguous');
+});
+
+test('an updated same-version seed re-imports instead of reusing stale bytes', async () => {
+  const f = await seedFixture();
+  const store = new ModuleStore({ root: f.store, seed: f.seed, offline: true, platform: 'darwin', arch: 'arm64' });
+  const oldEntry = await store.withAdmittedModules(['afs'], async modules => modules[0]!.entry);
+  const first = await store.current('afs');
+  // Same declared version, different packaged bytes: the seed is the authority.
+  await writeSeedVersion(f.seed, f.version, 'process.exit(7);\n');
+  const newEntry = await store.withAdmittedModules(['afs'], async modules => modules[0]!.entry);
+  const second = await store.current('afs');
+  expect(second?.version).toBe(first?.version);
+  expect(second?.manifestSha256).not.toBe(first?.manifestSha256);
+  expect(second?.integrity.startsWith('seed-package-sha256-')).toBe(true);
+  expect(newEntry).not.toBe(oldEntry);
+  expect(await readFile(oldEntry, 'utf8')).toBe('process.exit(0);\n');
+  expect(await readFile(newEntry, 'utf8')).toBe('process.exit(7);\n');
+});
+
+test('a failed seed publication preserves the prior selection and its executable', async () => {
+  const f = await seedFixture();
+  const options = { root: f.store, seed: f.seed, offline: true, platform: 'darwin', arch: 'arm64' };
+  const store = new ModuleStore(options);
+  const oldEntry = await store.withAdmittedModules(['afs'], async modules => modules[0]!.entry);
+  const previous = await store.current('afs');
+  await writeSeedVersion(f.seed, f.version, 'process.exit(7);\n');
+  const script = path.join(f.root, 'publication-fault.ts');
+  await writeFile(script, `
+import { mock } from 'bun:test';
+const original = { ...await import('node:fs/promises') };
+mock.module('node:fs/promises', () => ({ ...original, rename: async (from, to) => {
+  if (String(from).includes('/.seed-')) throw Object.assign(new Error('publication fault'), { code: 'EIO' });
+  return original.rename(from, to);
+} }));
+const { ModuleStore } = await import(${JSON.stringify(path.join(coreSource, 'module-store.ts'))});
+const store = new ModuleStore(${JSON.stringify(options)});
+let code;
+try { await store.withAdmittedModules(['afs'], async () => {}); } catch (error) { code = error.code; }
+console.log(JSON.stringify({ code, current: await store.current('afs') }));
+`);
+  const result = spawnSync('bun', [script], { encoding: 'utf8' });
+  expect(result.status).toBe(0);
+  expect(JSON.parse(result.stdout)).toEqual({ code: 'EIO', current: previous });
+  expect(await readFile(oldEntry, 'utf8')).toBe('process.exit(0);\n');
+});
+
+test('an upgraded seed version replaces the older selection without partial reuse', async () => {
+  const f = await seedFixture();
+  const first = new ModuleStore({ root: f.store, seed: f.seed, offline: true, platform: 'darwin', arch: 'arm64' });
+  const oldEntry = await first.withAdmittedModules(['afs'], async modules => modules[0]!.entry);
+  expect((await first.current('afs'))?.version).toBe(f.version);
+  // A new bundle carries exactly one newer version.
+  await rm(path.join(f.seed, 'afs', 'darwin-arm64', f.version), { recursive: true, force: true });
+  await writeSeedVersion(f.seed, '0.2.0', 'process.exit(0);\n');
+  const upgraded = new ModuleStore({ root: f.store, seed: f.seed, offline: true, platform: 'darwin', arch: 'arm64' });
+  await upgraded.withAdmittedModules(['afs'], async () => {});
+  const current = await upgraded.current('afs');
+  expect(current?.version).toBe('0.2.0');
+  // The old bytes are untouched on disk but are no longer the selection.
+  expect(await readFile(oldEntry, 'utf8'))
+    .toBe('process.exit(0);\n');
+});
+
+test('a seed whose manifest names another capability is rejected', async () => {
+  const f = await seedFixture();
+  const dir = path.join(f.seed, 'afs', 'darwin-arm64', f.version, 'package');
+  const pkg = JSON.parse(await readFile(path.join(dir, 'package.json'), 'utf8'));
+  pkg.name = '@undefineds.co/xpod-api-darwin-arm64';
+  await writeFile(path.join(dir, 'package.json'), JSON.stringify(pkg));
+  const store = new ModuleStore({ root: f.store, seed: f.seed, offline: true, platform: 'darwin', arch: 'arm64' });
+  const failure = await store.withAdmittedModules(['afs'], async () => {})
+    .then(() => null, cause => cause as { code?: string });
+  expect(failure?.code).toBe('module_seed_invalid');
+});
+
+test('an offline store never reaches the registry even with a working fetch', async () => {
+  const f = await seedFixture();
+  let calls = 0;
+  const store = new ModuleStore({ root: f.store, seed: f.seed, offline: true, platform: 'darwin', arch: 'arm64',
+    fetch: async () => { calls += 1; throw new Error('registry must not be contacted'); } });
+  await store.withAdmittedModules(['afs'], async () => {});
+  expect(calls).toBe(0);
+});
+
+test('the packaged store context is explicit, complete and per-call', async () => {
+  const { moduleStoreContext } = await import('../src/core');
+  // A normal developer CLI carries none of the three values.
+  expect(moduleStoreContext({})).toEqual({});
+  // A packaged runtime must supply the whole triple.
+  expect(moduleStoreContext({ XPOD_MODULES_ROOT: '/owned/modules', XPOD_MODULES_SEED: '/bundle/modules',
+    XPOD_MODULES_OFFLINE: '1' })).toEqual({ root: '/owned/modules', seed: '/bundle/modules', offline: true });
+  // Half a context is refused rather than degrading to $HOME or the registry.
+  expect(() => moduleStoreContext({ XPOD_MODULES_SEED: '/bundle/modules', XPOD_MODULES_OFFLINE: '1' }))
+    .toThrow(/XPOD_MODULES_ROOT/);
+  expect(() => moduleStoreContext({ XPOD_MODULES_ROOT: '/owned/modules', XPOD_MODULES_OFFLINE: '1' }))
+    .toThrow(/XPOD_MODULES_SEED/);
+  // Offline without the flag is refused: a packaged runtime must never fall back.
+  expect(() => moduleStoreContext({ XPOD_MODULES_ROOT: '/owned/modules', XPOD_MODULES_SEED: '/bundle/modules' }))
+    .toThrow(/XPOD_MODULES_OFFLINE/);
+});
+
+test('two stores built from different contexts never share state', async () => {
+  const { moduleStoreContext } = await import('../src/core');
+  const a = new ModuleStore({ ...moduleStoreContext({ XPOD_MODULES_ROOT: '/tmp/a', XPOD_MODULES_SEED: '/tmp/seed-a',
+    XPOD_MODULES_OFFLINE: '1' }), platform: 'darwin', arch: 'arm64' });
+  const b = new ModuleStore({ ...moduleStoreContext({ XPOD_MODULES_ROOT: '/tmp/b', XPOD_MODULES_SEED: '/tmp/seed-b',
+    XPOD_MODULES_OFFLINE: '1' }), platform: 'darwin', arch: 'arm64' });
+  expect(a.root).toBe(path.resolve('/tmp/a'));
+  expect(b.root).toBe(path.resolve('/tmp/b'));
+  expect(a.root).not.toBe(b.root);
+});

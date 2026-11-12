@@ -272,6 +272,9 @@ const sessionFailure = {schemaVersion: 1, diagnostic: {
   // is all zeros with present=0 - not an omitted key.
   restartObserver: {present: 0, authorizationCodes: 0, passwordPosts: 0,
     refreshTokens: 0, opaquePosts: 0, ready: 0, hostImported: 0, failed: 0},
+  // The closed schema also carries the bounded private-read class and the two
+  // readiness flags, so a real RC failure names WHAT failed, not just where.
+  privateRead: 'not-reached', privateReadStatus: 0, authenticated: 0, hostReady: 0,
 }};
 
 test('failed session exports its bounded checkpoint and excludes private output', async () => {

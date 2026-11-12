@@ -2,7 +2,7 @@
 'use strict';
 /** One fixed normal-producer dependency recipe; no independent admission. */
 const {spawnSync,execFileSync}=require('node:child_process');
-const {openSync,readSync,fstatSync,closeSync,lstatSync,constants}=require('node:fs');
+const {openSync,readSync,fstatSync,closeSync,lstatSync,constants,existsSync,rmSync}=require('node:fs');
 const path=require('node:path');
 const {isDeepStrictEqual:equal}=require('node:util');
 const limits=require('./lib/module-artifact-limits.json');
@@ -24,10 +24,24 @@ async function checkedGraph(sourceSha,target,file,root=process.cwd()){
  const {input,selection}=verifiedSelection(sourceSha,target,file,root);const {deriveApiProducerGraph}=await import('./lib/api-producer-graph.ts');const graph=deriveApiProducerGraph({...input,workspaceMode:'api-ui-root-minimal-v2'});
  if(!equal(graph.installSelection,selection)||!equal(graph.isolatedInstall.argv,selection.install))throw Error('Postinstall full graph differs from preselection');return {input,selection,graph};
 }
-module.exports={readBoundedJsonOriginal,verifiedSelection,checkedGraph};
+
+/** Start the producer install without the bootstrap checkout's hoisted packages.
+ * A frozen filtered install can otherwise reuse an incompatible physical tree;
+ * the subsequent exact-lock check still validates the newly installed closure.
+ */
+function prepareIsolatedDependencyTree(cwd) {
+ const tree=path.join(cwd,'node_modules');
+ if(!existsSync(tree))return false;
+ rmSync(tree,{recursive:true,force:true,maxRetries:3});
+ return true;
+}
+
+module.exports={readBoundedJsonOriginal,verifiedSelection,checkedGraph,prepareIsolatedDependencyTree};
 if(require.main===module)(async()=>{
  const [action,sha,target,file,...extra]=process.argv.slice(2);if(extra.length||!['install','verify'].includes(action)||!file||!path.isAbsolute(file)||!globalThis.Bun)throw Error('Fixed Bun install or verify arguments required');
  if(action==='install'){
-  const {selection}=verifiedSelection(sha,target,file);const result=spawnSync(process.execPath,selection.install.slice(1),{stdio:'inherit',env:process.env});if(result.error)throw result.error;if(result.signal)throw Error('Frozen install signalled: '+result.signal);if(result.status!==0)process.exit(result.status??1);
+  const {selection}=verifiedSelection(sha,target,file);
+  prepareIsolatedDependencyTree(process.cwd());
+  const result=spawnSync(process.execPath,selection.install.slice(1),{stdio:'inherit',env:process.env});if(result.error)throw result.error;if(result.signal)throw Error('Frozen install signalled: '+result.signal);if(result.status!==0)process.exit(result.status??1);
  }else{const {graph}=await checkedGraph(sha,target,file);process.stdout.write(JSON.stringify(graph)+'\n');}
 })().catch(error=>{console.error(error);process.exitCode=1;});

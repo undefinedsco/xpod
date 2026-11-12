@@ -1444,6 +1444,9 @@ jobs:
     runs-on: macos-15
     environment: rc
     permissions:
+      # The QLever retainer reads artifact metadata and the artifact ZIP through
+      # the GitHub artifact API; contents-only yields HTTP 403.
+      actions: read
       contents: read
     env:
       REF_NAME: ${{ github.ref_name }}
@@ -1458,15 +1461,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: actions/download-artifact@v4
-        with:
-          name: ${{ needs.build_qlever_macos_runtime.outputs.artifact_name }}
-          path: ${{ github.workspace }}/.test-data/qlever-runtime
+      # Retain the ORIGINAL QLever artifact ZIP and its true source identity. The
+      # verified API metadata (artifact id + digest + source) is the only identity
+      # authority; the untouched original bytes are preserved for the CSS
+      # capability producer. Reuses the SAME diagnostic extractor, no recompile.
+      - name: Retain the original QLever artifact and its verified identity
+        env:
+          QLEVER_ARTIFACT_ID: ${{ needs.build_qlever_macos_runtime.outputs.artifact_id }}
+          QLEVER_ARTIFACT_DIGEST: ${{ needs.build_qlever_macos_runtime.outputs.artifact_digest }}
+          QLEVER_SOURCE_SHA: ${{ needs.build_qlever_macos_runtime.outputs.source_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/diagnostics/retain-qlever-materials.py
       - run: bun install --frozen-lockfile
-      # Bun skips Electron's postinstall; bootstrap its binary for desktop tests
-      # and packaging on clean runners.
-      - name: Bootstrap the Electron vendor binary
-        run: node node_modules/electron/install.js
       # desktop/test imports packages/xpod-cli SOURCE, and that source resolves
       # @undefineds.co/xpod-client through its package `exports` -> dist/*. A cold
       # runner has no such dist yet, so build the workspace packages BEFORE the
@@ -1482,6 +1488,50 @@ jobs:
             --source-sha "$SOURCE_SHA" \
             --archive-dir "${RUNNER_TEMP}/package-consumer-archive/workspace" \
             --evidence "${RUNNER_TEMP}/workspace-consumer-evidence.json"
+      # Produce the API capability EXACTLY ONCE, on CLEAN source, BEFORE any
+      # version stamp. The canonical pipeline runs all native originals, notices,
+      # stage and pack; stage-runtime later CONSUMES the verified tree at
+      # .test-data/api-capability-<actual source SHA> instead of rebuilding dirty
+      # source. GH_TOKEN is read-only and grants the official native input; it is
+      # never printed. This is not a second pipeline and adds no job or lane.
+      - name: Produce the API capability from clean source (before any version stamp)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Publish the canonical owned path so a failure can retain the producer's
+          # own receipt/evidence without guessing the directory later.
+          XPOD_API_CAPABILITY_ROOT="$PWD/.test-data/api-capability-$(git rev-parse HEAD)"
+          echo "XPOD_API_CAPABILITY_ROOT=$XPOD_API_CAPABILITY_ROOT" >> "$GITHUB_ENV"
+          bun -e 'import { prepareApiCapability } from "./desktop/scripts/api-capability-producer.ts"; prepareApiCapability({ repoRoot: process.cwd() });'
+          test -d "$XPOD_API_CAPABILITY_ROOT"
+
+      # Restore root declarations after filtered API production, before stamping
+      # or compiling the root package. The finalized API receipt/archive is retained.
+      - name: Restore the normal full-frozen root dependency tree
+        run: bun scripts/restore-root-dependencies.ts "$PWD"
+      # Bun skips Electron's postinstall during the canonical root install, and the
+      # restore above replaces node_modules, so the vendor binary is initialized
+      # exactly once AFTER the final tree exists.
+      - name: Bootstrap the Electron vendor binary
+        run: node node_modules/electron/install.js
+
+
+      # Failure evidence only: the producer already writes its own receipt and
+      # evidence/ before exiting, so retain those narrow members (never a
+      # workspace/source/env dump). Diagnostic artifact, not qualification.
+      - name: Upload failed API preparation diagnostics separately
+        if: failure() && env.XPOD_API_CAPABILITY_ROOT != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-capability-diagnostics-candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.XPOD_API_CAPABILITY_ROOT }}/producer.receipt.json
+            ${{ env.XPOD_API_CAPABILITY_ROOT }}/evidence/
+            ${{ env.XPOD_API_CAPABILITY_ROOT }}/originals/prepare-inputs.receipt.safe.json
+          if-no-files-found: warn
+          retention-days: 30
+
       - name: Apply and verify the candidate version
         run: |
           node scripts/release-candidate.cjs \
@@ -1497,7 +1547,9 @@ jobs:
       # also type checks the desktop sources.
       - name: Run the desktop unit test suite
         working-directory: desktop
-        run: bun run test
+        run: |
+          bun x --no-install tsc --noEmit -p tsconfig.scripts.json
+          bun run test
       # M1 (cold runner): the desktop native producer (scripts/build-bun-single.js)
       # hard-requires dist/index.js + dist/components/components.jsonld, which a
       # fresh checkout does not have. Compile the root outputs BEFORE the desktop

@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { test } from 'vitest';
 import {
@@ -7,6 +7,7 @@ import {
   isExternalPhaseDiagnostic, failureSafeEnvelope, isFailureSafeEnvelope, FAILURE_SAFE_FILE,
   recordExternalFailure, assertRestartObserver, RESTART_SILENT_AUTHORIZATION_CODES,
   inspectRestartObserver, restartObserverDiagnostic, isRestartObserverDiagnostic,
+  privateReadOutcomeForStatus,
 } from './browserExternalPhase';
 
 /**
@@ -53,12 +54,13 @@ test('the projection is a fixed key set so extra fields cannot leak', () => {
     pageText: 'secret body text',
     token: 'SEKRET',
   } as never);
-  assert.equal(Object.keys(row).length, 8);
+  assert.equal(Object.keys(row).length, 12);
   assert.equal(JSON.stringify(row).includes('SEKRET'), false);
   assert.equal(JSON.stringify(row).includes('secret body text'), false);
   assert.deepEqual(Object.keys(row).sort(), [
-    'authorizationCodes', 'passwordPosts', 'phase', 'reason',
-    'refreshFailures', 'refreshGrants', 'requestCount', 'restartObserver',
+    'authenticated', 'authorizationCodes', 'hostReady', 'passwordPosts', 'phase',
+    'privateRead', 'privateReadStatus', 'reason', 'refreshFailures', 'refreshGrants',
+    'requestCount', 'restartObserver',
   ]);
   // The nested observer projection is itself a closed numeric key set.
   assert.equal(Object.keys(row.restartObserver).length, 8);
@@ -74,7 +76,8 @@ test('validator rejects the bounds-violating counters it used to accept', () => 
   }
   assert.equal(isExternalPhaseDiagnostic({ phase: 'renewal', reason: 'assertion-failed',
     authorizationCodes: 0, passwordPosts: 0, refreshGrants: 0, refreshFailures: 0, requestCount: 0,
-    restartObserver: restartObserverDiagnostic(undefined) }), true);
+    restartObserver: restartObserverDiagnostic(undefined),
+    privateRead: 'not-reached', privateReadStatus: 0, authenticated: 0, hostReady: 0 }), true);
 });
 
 test('failure.safe envelope is closed-schema and validator-admissible', () => {
@@ -270,4 +273,228 @@ test('an absent observer is present=0, never a fabricated present=1', () => {
   const absent = restartObserverDiagnostic(undefined);
   assert.equal(absent.present, 0);
   assert.equal(isRestartObserverDiagnostic(absent), true);
+});
+
+
+test('CONTROL FLOW: a private-read failure recorded after an early capture keeps the real snapshot', () => {
+  // This reproduces the ACTUAL ordering used by the spec, not a hand-built row:
+  // the observer is captured BEFORE the read, the read rejects, and the catch
+  // records with whatever snapshot was captured. The old order captured inside
+  // the catch and shipped present:0 even though the file existed on disk.
+  const root = path.resolve('.test-data/browser-external-phase');
+  mkdirSync(root, { recursive: true });
+  const dir = mkdtempSync(path.join(root, 'control-flow-'));
+  const observerFile = path.join(dir, 'restart-observer.safe.json');
+  writeFileSync(observerFile, JSON.stringify({
+    hostPid: 26396, ready: true, hostImported: true, failed: false,
+    authorizationCodes: 1, passwordPosts: 0, refreshTokens: 0, opaquePosts: 0,
+  }));
+  try {
+    // Mirrors captureObserver(): a single read, kept in a variable.
+    let restartObserver: Record<string, unknown> | undefined;
+    let phase = 'restart-private-read';
+    let privateReadStatus = 0;
+    let privateReadOutcome: string = 'not-reached';
+    const captureObserver = () => JSON.parse(readFileSync(observerFile, 'utf8'));
+    // --- the corrected order: capture first, then read ---
+    phase = 'observer-binding-read';
+    restartObserver = captureObserver();
+    phase = 'restart-private-read';
+    let failed = false;
+    try {
+      throw new Error('private read rejected');     // stands in for a 401/403 fetch
+    } catch {
+      failed = true;
+      privateReadStatus = 403;
+      privateReadOutcome = privateReadOutcomeForStatus(privateReadStatus);
+    }
+    assert.equal(failed, true);
+    assert.equal(phase, 'restart-private-read');
+    recordExternalFailure({
+      outputDirectory: dir, phase: 'restart-private-read', reason: 'assertion-failed',
+      observer: restartObserver as never, privateRead: privateReadOutcome as never,
+      privateReadStatus, authenticated: true, hostReady: true,
+    });
+    const onDisk = JSON.parse(readFileSync(path.join(dir, FAILURE_SAFE_FILE), 'utf8'));
+    // The snapshot captured BEFORE the failure is the one that ships.
+    assert.equal(onDisk.diagnostic.restartObserver.present, 1);
+    assert.equal(onDisk.diagnostic.restartObserver.hostImported, 1);
+    assert.equal(onDisk.diagnostic.restartObserver.authorizationCodes, 1);
+    assert.equal(onDisk.diagnostic.privateReadStatus, 403);
+    assert.equal(onDisk.diagnostic.phase, 'restart-private-read');
+
+    // --- the OLD order, for contrast: capture inside the catch, after a failed
+    // read that never captured. That yields absent, which is honest but useless.
+    const dir2 = mkdtempSync(path.join(root, 'old-order-'));
+    try {
+      recordExternalFailure({ outputDirectory: dir2, phase: 'restart-private-read',
+        reason: 'assertion-failed', observer: undefined });
+      const old = JSON.parse(readFileSync(path.join(dir2, FAILURE_SAFE_FILE), 'utf8'));
+      assert.equal(old.diagnostic.restartObserver.present, 0);
+      assert.notEqual(old.diagnostic.restartObserver.present,
+        onDisk.diagnostic.restartObserver.present);
+    } finally { rmSync(dir2, { recursive: true, force: true }); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a genuinely missing observer is still present:0 and still fails the gate', () => {
+  const row = externalPhaseDiagnostic({
+    phase: 'restart-private-read', reason: 'assertion-failed', observer: undefined,
+    privateRead: 'fetch-rejected', authenticated: true, hostReady: false,
+  });
+  assert.equal(row.restartObserver.present, 0);
+  assert.equal(row.privateRead, 'fetch-rejected');
+  // The observer contract itself must still reject this record.
+  assert.equal(inspectRestartObserver({ ready: false, hostImported: false, failed: false,
+    authorizationCodes: 0, passwordPosts: 0, opaquePosts: 0 }).ok, false);
+  assert.throws(() => assertRestartObserver({ ready: false, hostImported: false, failed: false,
+    authorizationCodes: 0, passwordPosts: 0, opaquePosts: 0 }));
+});
+
+test('private read status collapses to a closed class and never leaks text', () => {
+  assert.equal(privateReadOutcomeForStatus(200), 'ok');
+  assert.equal(privateReadOutcomeForStatus(204), 'ok');
+  assert.equal(privateReadOutcomeForStatus(401), 'client-error');
+  assert.equal(privateReadOutcomeForStatus(403), 'client-error');
+  assert.equal(privateReadOutcomeForStatus(500), 'server-error');
+  assert.equal(privateReadOutcomeForStatus(302), 'redirect');
+  assert.equal(privateReadOutcomeForStatus(undefined), 'not-reached');
+  // A smuggled string can never survive projection.
+  const row = externalPhaseDiagnostic({
+    phase: 'restart-private-read', reason: 'assertion-failed',
+    privateRead: 'GET https://id-rc.example/?token=SEKRET 401 Unauthorized' as never,
+  });
+  assert.equal(row.privateRead, 'not-reached');
+  assert.equal(JSON.stringify(row).includes('SEKRET'), false);
+  assert.equal(JSON.stringify(row).includes('401'), false);
+});
+
+test('new readiness flags reject raw booleans, strings and out-of-range values', () => {
+  const base = () => ({
+    phase: 'restart-private-read' as const, reason: 'assertion-failed' as const,
+    authorizationCodes: 0, passwordPosts: 0, refreshGrants: 0, refreshFailures: 0,
+    requestCount: 0, restartObserver: restartObserverDiagnostic(undefined),
+    privateRead: 'ok' as const, privateReadStatus: 200, authenticated: 1, hostReady: 0,
+  });
+  assert.equal(isExternalPhaseDiagnostic(base()), true);
+  for (const bad of [true, '1', 2, -1, 1.5, null]) {
+    assert.equal(isExternalPhaseDiagnostic({ ...base(), authenticated: bad }), false, String(bad));
+    assert.equal(isExternalPhaseDiagnostic({ ...base(), hostReady: bad }), false, String(bad));
+  }
+  // An out-of-enum private read is inadmissible.
+  assert.equal(isExternalPhaseDiagnostic({ ...base(), privateRead: 'HTTP/1.1 401' }), false);
+});
+
+/**
+ * BLOCKING-1 regression: the ACTUAL pipeline (recordExternalFailure -> file ->
+ * failureSafeEnvelope/export admission) must never turn an ABSENT observer into
+ * a present one. The earlier test only exercised externalPhaseDiagnostic, which
+ * is why the unconditional re-projection slipped through.
+ */
+test('a genuinely missing observer stays present:0 through the real file pipeline', () => {
+  const root = path.resolve('.test-data/browser-external-phase');
+  mkdirSync(root, { recursive: true });
+  const dir = mkdtempSync(path.join(root, 'absent-'));
+  try {
+    recordExternalFailure({
+      outputDirectory: dir, phase: 'restart-private-read', reason: 'assertion-failed',
+      authorizationCodes: 2, passwordPosts: 1, refreshGrants: 0, refreshFailures: 1,
+      requestCount: 255, observer: undefined,
+      privateRead: 'client-error', privateReadStatus: 403, authenticated: true, hostReady: false,
+    });
+    const onDisk = JSON.parse(readFileSync(path.join(dir, FAILURE_SAFE_FILE), 'utf8'));
+    // The honest absence must survive: present 0 and all-zero counters.
+    assert.equal(onDisk.diagnostic.restartObserver.present, 0);
+    assert.deepEqual(onDisk.diagnostic.restartObserver, {
+      present: 0, authorizationCodes: 0, passwordPosts: 0, refreshTokens: 0,
+      opaquePosts: 0, ready: 0, hostImported: 0, failed: 0,
+    });
+    // And it must still be exportable/admissible, not silently dropped.
+    assert.equal(isFailureSafeEnvelope(onDisk), true);
+    const reEnveloped = failureSafeEnvelope(onDisk.diagnostic);
+    assert.equal(reEnveloped.diagnostic.restartObserver.present, 0);
+    assert.equal(isFailureSafeEnvelope(reEnveloped), true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('envelope re-projection is idempotent for present:0, present:1 and injected junk', () => {
+  // present:0 -> stays absent, exactly once through the projectors.
+  const absent = externalPhaseDiagnostic({ phase: 'restart-private-read', reason: 'assertion-failed' });
+  const a1 = failureSafeEnvelope(absent).diagnostic;
+  const a2 = failureSafeEnvelope(a1).diagnostic;
+  assert.deepEqual(a1, a2);
+  assert.equal(a1.restartObserver.present, 0);
+
+  // present:1 -> keeps every real field across repeats.
+  const present = externalPhaseDiagnostic({
+    phase: 'restart-private-read', reason: 'assertion-failed',
+    observer: { hostPid: 26396, ready: true, hostImported: true, failed: false,
+      authorizationCodes: 1, passwordPosts: 0, refreshTokens: 0, opaquePosts: 0 },
+    privateRead: 'ok', privateReadStatus: 200,
+  });
+  const p1 = failureSafeEnvelope(present).diagnostic;
+  const p2 = failureSafeEnvelope(p1).diagnostic;
+  assert.deepEqual(p1, p2);
+  assert.equal(p1.restartObserver.present, 1);
+  assert.equal(p1.restartObserver.hostImported, 1);
+  assert.equal(p1.restartObserver.authorizationCodes, 1);
+
+  // Injected junk cannot become a present observer or leak text.
+  const junk = { ...absent, restartObserver: { present: 1, ready: 7, hostImported: 'yes',
+    failed: 'SEKRET', authorizationCodes: -3, passwordPosts: 1e9, refreshTokens: 1.5,
+    opaquePosts: 999999 } } as never;
+  const j = failureSafeEnvelope(junk).diagnostic;
+  assert.equal(j.restartObserver.present, 1); // declared present, but every field is clamped
+  assert.equal(j.restartObserver.ready, 0);
+  assert.equal(j.restartObserver.hostImported, 0);
+  assert.equal(j.restartObserver.failed, 0);
+  assert.equal(j.restartObserver.authorizationCodes, 0);
+  assert.equal(j.restartObserver.refreshTokens, 0);
+  assert.equal(JSON.stringify(j).includes('SEKRET'), false);
+  assert.equal(isFailureSafeEnvelope(failureSafeEnvelope(j)), true);
+});
+
+test('401 and 403 stay DISTINCT in the actual saved record, and only numbers ship', () => {
+  const root = path.resolve('.test-data/browser-external-phase');
+  mkdirSync(root, { recursive: true });
+  const statuses = [401, 403];
+  const saved: number[] = [];
+  try {
+    for (const status of statuses) {
+      const dir = mkdtempSync(path.join(root, `status-${status}-`));
+      try {
+        recordExternalFailure({ outputDirectory: dir, phase: 'restart-private-read',
+          reason: 'assertion-failed', privateRead: 'client-error', privateReadStatus: status });
+        const onDisk = JSON.parse(readFileSync(path.join(dir, FAILURE_SAFE_FILE), 'utf8'));
+        saved.push(onDisk.diagnostic.privateReadStatus);
+        assert.equal(isFailureSafeEnvelope(onDisk), true);
+        // 401 and 403 are the same coarse class but different numbers.
+        assert.equal(onDisk.diagnostic.privateRead, 'client-error');
+        assert.equal(JSON.stringify(onDisk).includes(String(status)), true);
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    }
+    assert.deepEqual(saved, statuses);
+    assert.notEqual(saved[0], saved[1]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('privateReadStatus accepts 0 and 100..599 only; fractions, strings and junk are rejected', () => {
+  const base = () => ({
+    phase: 'restart-private-read' as const, reason: 'assertion-failed' as const,
+    authorizationCodes: 0, passwordPosts: 0, refreshGrants: 0, refreshFailures: 0,
+    requestCount: 0, restartObserver: restartObserverDiagnostic(undefined),
+    privateRead: 'not-reached' as const, privateReadStatus: 0,
+    authenticated: 0, hostReady: 0,
+  });
+  assert.equal(isExternalPhaseDiagnostic(base()), true);          // 0 = no response
+  assert.equal(isExternalPhaseDiagnostic({ ...base(), privateReadStatus: 100 }), true);
+  assert.equal(isExternalPhaseDiagnostic({ ...base(), privateReadStatus: 599 }), true);
+  for (const bad of [99, 600, -1, 1.5, Number.NaN, '401', '403 Unauthorized', 10 ** 6, null]) {
+    assert.equal(isExternalPhaseDiagnostic({ ...base(), privateReadStatus: bad }), false, String(bad));
+  }
+  // Projection clamps anything inadmissible to 0 rather than passing it through.
+  const clamped = externalPhaseDiagnostic({ phase: 'restart-private-read',
+    reason: 'assertion-failed', privateReadStatus: '403 Unauthorized' as never });
+  assert.equal(clamped.privateReadStatus, 0);
+  assert.equal(JSON.stringify(clamped).includes('403 Unauthorized'), false);
 });

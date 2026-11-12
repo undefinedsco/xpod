@@ -11,7 +11,8 @@ import { setupAccount } from '../tests/integration/helpers/solidAccount';
 import { createCloudAccountPassword, prepareManagedLocalAcceptancePod, parseKeyFile } from './accept-live-gateway-login-chat';
 import { discoverSolidLocalRoute } from '../packages/solid-sdk/src/local-route-fetch';
 import { isFailureSafeEnvelope } from '../tests/helpers/browserExternalPhase';
-const { MODES, CASES, LIMITS, hash, projectLive, validateMatrix, assertSafeJson } = require('./lib/service-image-modes.cjs');
+const { MODES, CASES, LIMITS, hash, projectLive, validateMatrix, validateSessionMatrixDiagnostic, assertSafeJson,
+  INSTALLED_IMAGE_SOURCE_URL: installedImageSourceUrl } = require('./lib/service-image-modes.cjs');
 const { runOwnedModeCommand } = require('./lib/owned-mode-command.cjs');
 const { createModeEvidenceReader } = require('./lib/mode-evidence-reader.cjs');
 const { PROFILES, validateInput, validateReceipt } = require('./lib/service-image-session-contract.cjs');
@@ -92,6 +93,58 @@ export function platformBuiltinServiceEnvironment(
     DEFAULT_API_BASE: baseUrl,
     DEFAULT_API_KEY: '${XPOD_MATRIX_PLATFORM_API_KEY:?required}',
   };
+}
+
+/**
+ * Canonical public source URL for the installed image's revision.
+ * One value, no configuration alias.
+ */
+export const INSTALLED_IMAGE_SOURCE_URL = installedImageSourceUrl as string;
+
+/**
+ * Assert the immutable image identity and project its provenance.
+ *
+ * The runner's own checkout (`runnerSourceSha`) and the INSTALLED image's
+ * revision (`installedImageSourceSha`) are separate facts:
+ * - a release run builds the image from the accepted source, so both MUST match
+ *   (`requireSameOrigin: true`, the canonical default);
+ * - the session-matrix DIAGNOSTIC inspects an already-published image built from
+ *   an earlier staging commit while running newer runner code, so the two
+ *   legitimately differ. It records both fields distinctly and never relabels
+ *   the image as the newer runner.
+ *
+ * Every other identity check stays unconditional: exact `@digest` reference,
+ * RepoDigests membership, platform and id shape. Only the origin equality is
+ * policy-dependent, and it is never waived for a release run.
+ */
+export function assertImageProvenance(
+  image: { Os?: string; Architecture?: string; RepoDigests?: string[]; Id?: string; Config?: { Labels?: Record<string, string> } },
+  options: { image: string; platform: string; runnerSourceSha: string; requireSameOrigin: boolean },
+): { installedImageSourceSha: string; installedImageSourceUrl: string } {
+  const revision = image.Config?.Labels?.['org.opencontainers.image.revision'];
+  const sourceUrl = image.Config?.Labels?.['org.opencontainers.image.source'];
+  need(typeof revision === 'string' && /^[a-f0-9]{40}$/.test(revision), 'Image revision label must be a full 40-hex commit');
+  need(typeof sourceUrl === 'string' && sourceUrl === INSTALLED_IMAGE_SOURCE_URL, 'Image source label must be the canonical repository URL');
+  need(`${image.Os}/${image.Architecture}` === options.platform, 'Resolved image/platform mismatch');
+  need(Array.isArray(image.RepoDigests) && image.RepoDigests.includes(options.image), 'Resolved image/digest mismatch');
+  need(typeof image.Id === 'string' && /^sha256:[a-f0-9]{64}$/.test(image.Id), 'Resolved image id shape invalid');
+  if (options.requireSameOrigin) {
+    need(revision === options.runnerSourceSha, 'Image source revision mismatch');
+  }
+  return {
+    installedImageSourceSha: revision as string,
+    installedImageSourceUrl: sourceUrl as string,
+  };
+}
+
+/** Session diagnostics do not invoke inference, so they omit its unused key.
+ * The canonical release environment keeps the required credential. */
+export function platformBuiltinServiceEnvironmentForDiagnostic(
+  mode: string,
+  baseUrl: string,
+): Record<string, string> {
+  if (mode !== 'cloud') return {};
+  return { DEFAULT_API_BASE: baseUrl };
 }
 
 /** Only the owned Cloud container serves the deployment builtin; Local/Standalone use the custom
@@ -504,19 +557,28 @@ export function projectStartupFailure(input: {
   });
 }
 
-export async function runMatrix(options: { image: string; platform: string; sourceSha: string; runId: string; runAttempt: string; output: string; providerFile: string }): Promise<void> {
+export async function runMatrix(options: { image: string; platform: string; sourceSha: string; runId: string; runAttempt: string; output: string; providerFile: string; diagnosticSessionMatrix?: boolean }): Promise<void> {
+  // DIAGNOSTIC session-matrix: same canonical CASES×MODES order and topology as the
+  // release matrix, but it runs NO live/Chat/credential-read case and therefore
+  // needs no platform credential or provider fixture. It can never claim release
+  // qualification and its receipt kind is rejected by the release verifier.
+  const diagnosticSessionMatrix = options.diagnosticSessionMatrix === true;
   need(process.platform === 'linux', 'Owned host-network matrix requires Linux CI');
   need(/^.+@sha256:[a-f0-9]{64}$/.test(options.image) && /^[a-f0-9]{40}$/.test(options.sourceSha), 'Immutable inputs required');
   need(/^[1-9][0-9]*$/.test(options.runId) && /^[1-9][0-9]*$/.test(options.runAttempt), 'Exact run/attempt required');
   need(options.platform === 'linux/amd64' || options.platform === 'linux/arm64', 'Unsupported matrix platform');
-  const keyStat = await lstat(options.providerFile); need(keyStat.isFile() && !keyStat.isSymbolicLink() && keyStat.size <= 65536 && (keyStat.mode & 0o077) === 0, 'Private0600 provider file required');
-  const provider = parseKeyFile(await readFile(options.providerFile, 'utf8'));
-  need(provider, 'Explicit test provider configuration required');
-  // The same private fixture drives Local/Standalone Pod credentials and the owned Cloud
-  // container's deployment builtin. Only this public base URL is serialized; the key stays in
-  // process environment and is referenced from compose as an interpolation.
-  need(provider!.baseUrl, 'Provider fixture must declare a public baseUrl');
-  const platformBaseUrl = platformFixtureBaseUrl(provider!.baseUrl);
+  // The canonical release matrix REQUIRES the real platform credential. The
+  // diagnostic matrix executes no live case, so it requires none - but it also
+  // cannot satisfy the release verifier.
+  let provider: ReturnType<typeof parseKeyFile> = undefined;
+  if (!diagnosticSessionMatrix) {
+    const keyStat = await lstat(options.providerFile); need(keyStat.isFile() && !keyStat.isSymbolicLink() && keyStat.size <= 65536 && (keyStat.mode & 0o077) === 0, 'Private0600 provider file required');
+    provider = parseKeyFile(await readFile(options.providerFile, 'utf8'));
+    need(provider, 'Explicit test provider configuration required');
+    need(provider!.baseUrl, 'Provider fixture must declare a public baseUrl');
+  }
+  // Only the canonical path serialises a public platform base URL.
+  const platformBaseUrl = diagnosticSessionMatrix ? undefined : platformFixtureBaseUrl(provider!.baseUrl);
   const previousPlatformKey = process.env.XPOD_MATRIX_PLATFORM_API_KEY;
   const output = path.resolve(options.output); await mkdir(output, { recursive: false, mode: 0o700 });
   let exportedBytes = 0;
@@ -536,6 +598,24 @@ export async function runMatrix(options: { image: string; platform: string; sour
   process.once('SIGTERM', cancel); process.once('SIGINT', cancel);
   const commands: any[] = []; const deadline = Date.now() + 55 * 60_000;
   const report: any = { schemaVersion: 1, ...options, output: undefined, providerFile: undefined, status: 'failed', sources: {}, modes: [], commands, cleanup: {} };
+  if (diagnosticSessionMatrix) {
+    // Explicit, machine-checkable non-qualification. The release verifier reads
+    // matrix.safe.json through validateMatrix(), which requires the canonical
+    // kind and a passed live layer, so this receipt can never be accepted.
+    report.kind = 'session-matrix-diagnostic';
+    report.diagnosticOnly = true;
+    report.liveChatExcluded = true;
+    report.platformInferenceExcluded = true;
+    report.qualification = false;
+    report.notFullModeQualification = true;
+    report.configurationDifference = [
+      'canonical compose WITHOUT the unused Cloud platform-inference DEFAULT_API_KEY assignment (no fake key)',
+      "Cloud DEFAULT_API_BASE uses the tool's owned cloud URL because no provider fixture exists in diagnostic mode, NOT the canonical public platform URL",
+      'all 6 services, RDF storage, TTL policy, ports and isolation preserved',
+    ].join('; ');
+  } else {
+    report.kind = 'runtime-mode-matrix';
+  }
   let composeCreated = false; let copiedContainer = false;
   const copyName = `${project}-config`;
   async function command(label: string, binary: string, args: string[], cwd = repo, env = process.env, timeoutMs = LIMITS.commandMs, cleanup = false, terminationGraceMs = 1000): Promise<Buffer> {
@@ -552,8 +632,9 @@ export async function runMatrix(options: { image: string; platform: string; sour
   let configuration: any;
   try {
     // The key exists only in this process environment for the lifetime of the owned harness; the
-    // private compose file references it by interpolation.
-    process.env.XPOD_MATRIX_PLATFORM_API_KEY = provider!.apiKey;
+    // private compose file references it by interpolation. The diagnostic matrix injects no
+    // platform inference, so it must never require or fabricate this credential.
+    if (!diagnosticSessionMatrix) process.env.XPOD_MATRIX_PLATFORM_API_KEY = provider!.apiKey;
     for (const f of sources) report.sources[f] = await digest(path.join(repo, f));
     const actual = (await command('exact-checkout', 'git', ['rev-parse', 'HEAD'])).toString().trim(); need(actual === options.sourceSha, 'Checkout mismatch');
     const fs = await statfs(root); need(Number(fs.bavail) * Number(fs.bsize) >= 8 * 1024 ** 3, 'At least8GiB disk required before image pull');
@@ -572,9 +653,25 @@ export async function runMatrix(options: { image: string; platform: string; sour
     report.pullBudget = { compressedBytes, unpackReservationFactor: 4 };
     await docker('pull-exact-image', ['pull', '--platform', options.platform, options.image]);
     const image = JSON.parse((await docker('inspect-image', ['image', 'inspect', options.image])).toString())[0];
-    need(`${image.Os}/${image.Architecture}` === options.platform && image.RepoDigests.includes(options.image), 'Resolved image/platform mismatch');
-    need(image.Config.Labels?.['org.opencontainers.image.revision'] === options.sourceSha, 'Image source revision mismatch');
+    // Release builds the image from the accepted source, so origins must match.
+    // The diagnostic inspects an EXISTING published image built from an earlier
+    // staging commit; it records that actual revision separately instead of
+    // pretending the image came from the newer runner commit.
+    const imageProvenance = assertImageProvenance(image, {
+      image: options.image, platform: options.platform, runnerSourceSha: options.sourceSha,
+      requireSameOrigin: !diagnosticSessionMatrix,
+    });
     report.imageId = image.Id;
+    // Both paths record the INSTALLED image's real revision, so the validator can
+    // prove the release image really is the accepted source (previously only the
+    // diagnostic set it, leaving the canonical check permanently short-circuited
+    // on `undefined`).
+    report.installedImageSourceSha = imageProvenance.installedImageSourceSha;
+    report.installedImageSourceUrl = imageProvenance.installedImageSourceUrl;
+    if (diagnosticSessionMatrix) {
+      // Honest independent origins: runner checkout != installed image revision.
+      report.runnerSourceSha = options.sourceSha;
+    }
     await docker('create-owned-config-reader', ['create', '--name', copyName, options.image]); copiedContainer = true;
     await docker('copy-image-config', ['cp', `${copyName}:/app/config/main.json`, path.join(root, 'main.original.json')]);
     await docker('remove-owned-config-reader', ['rm', '--volumes', copyName]); copiedContainer = false;
@@ -584,6 +681,16 @@ export async function runMatrix(options: { image: string; platform: string; sour
     const ports: Record<string, number> = {}; for (const name of ['postgres', 'redis', 'minio', ...MODES]) ports[name] = await freePort();
     need(new Set(Object.values(ports)).size === 6, 'Port reservation collision');
     const urls = { cloud: `http://localhost:${ports.cloud}/`, local: `http://127.0.0.1:${ports.local}/`, standalone: `http://localhost:${ports.standalone}/` };
+    // Share actual image identity; diagnostic records carry no live-layer claim.
+    const modeRecordIdentity = (mode: string, facts: any) => ({
+      mode,
+      baseUrl: urls[mode as keyof typeof urls],
+      issuer: mode === 'local' ? urls.cloud : urls[mode as 'cloud' | 'standalone'],
+      image: facts,
+      sessions: [] as any[],
+      sessionBindings: {} as Record<string, any>,
+    });
+
     for (const name of ['postgres', 'redis', 'minio']) canonical.services[name].ports = [`127.0.0.1:${ports[name]}:${name === 'postgres' ? 5432 : name === 'redis' ? 6379 : 9000}`];
     for (const mode of MODES) {
       const service = canonical.services[mode]; service.image = options.image; service.platform = options.platform;
@@ -596,7 +703,9 @@ export async function runMatrix(options: { image: string; platform: string; sour
       if (mode === 'cloud') Object.assign(service.environment, { CSS_IDENTITY_DB_URL: `postgres://xpod:acceptance-only@127.0.0.1:${ports.postgres}/xpod`, CSS_SPARQL_ENDPOINT: `postgres://xpod:acceptance-only@127.0.0.1:${ports.postgres}/xpod`, CSS_REDIS_CLIENT: `127.0.0.1:${ports.redis}`, CSS_MINIO_ENDPOINT: `http://127.0.0.1:${ports.minio}`,
         // The owned Cloud container owns a deployment builtin connection that calls the real
         // public RC platform endpoint.
-        ...platformBuiltinServiceEnvironment(mode, platformBaseUrl) });
+        ...(diagnosticSessionMatrix
+          ? platformBuiltinServiceEnvironmentForDiagnostic(mode, platformBaseUrl ?? urls.cloud)
+          : platformBuiltinServiceEnvironment(mode, platformBaseUrl!)) });
       if (service.healthcheck) service.healthcheck.test = ['CMD', 'curl', '--fail', '--silent', `${urls[mode as keyof typeof urls]}.well-known/openid-configuration`];
     }
     configuration = canonical;
@@ -767,9 +876,27 @@ export async function runMatrix(options: { image: string; platform: string; sour
       need(pids.every(pid => Number.isSafeInteger(pid) && pid > 0), 'Runtime PID missing');
       const executables = (await docker(`runtime-exe-${mode}`, ['exec', id, 'readlink', ...pids.map(pid => `/proc/${pid}/exe`)])).toString().trim().split('\n');
       need(executables.length === 3 && executables.every(x => /\/bun$/.test(x)), 'Actual service runtime is not Bun');
-      return { reference: options.image, platform: options.platform, id: c.Image, repoDigests: image.RepoDigests, mounts, noCodeMounts: true, runtimeExecutables: executables };
+      return { reference: options.image, platform: options.platform, id: c.Image, repoDigests: image.RepoDigests,
+        // Project the INSTALLED image's real revision so the validator can prove
+        // every mode record agrees with the image authority, not with a flag.
+        installedImageSourceSha: imageProvenance.installedImageSourceSha,
+        mounts, noCodeMounts: true, runtimeExecutables: executables };
     }
-    for (const mode of MODES) {
+    if (diagnosticSessionMatrix) {
+      // No live case runs, so the LIVE loop cannot initialise the per-mode
+      // records. Build them from the ACTUAL inspected container facts in the
+      // canonical order - identity only, never a fabricated live proof - so the
+      // session loop below has a real record to append to.
+      for (const mode of MODES) {
+        if (mode === 'standalone') {
+          await compose('diagnostic-stop-managed', ['stop', '--timeout', '20', 'local', 'cloud']);
+          await compose('diagnostic-start-standalone', ['up', '-d', '--force-recreate', '--no-deps', '--wait', '--wait-timeout', '180', 'standalone']);
+        }
+        const facts = await inspectMode(mode);
+        modeReports[mode] = modeRecordIdentity(mode, facts);
+      }
+    }
+    for (const mode of diagnosticSessionMatrix ? [] : MODES) {
       if (mode === 'standalone') {
         await compose('stop-managed-base', ['stop', '--timeout', '20', 'local', 'cloud']);
         await compose('start-standalone-base', ['up', '-d', '--no-deps', '--wait', '--wait-timeout', '180', 'standalone']);
@@ -791,7 +918,7 @@ export async function runMatrix(options: { image: string; platform: string; sour
       const liveBytes = await liveReader.read(`live-gateway-login-chat-${mode}.json`);
       const live = JSON.parse(liveBytes.toString()); assertSafeJson(live);
       await writeSafe(`live-${mode}.original.json`, liveBytes);
-      modeReports[mode] = { mode, baseUrl: urls[mode as keyof typeof urls], issuer: mode === 'local' ? urls.cloud : urls[mode as 'cloud' | 'standalone'], image: facts, live: projectLive(live, mode), liveOriginalSHA256: hash(liveBytes), sessions: [], sessionBindings: {} };
+      modeReports[mode] = { ...modeRecordIdentity(mode, facts), live: projectLive(live, mode), liveOriginalSHA256: hash(liveBytes) };
     }
     for (const kind of CASES) {
       await compose(`stop-for-${kind}`, ['stop', '--timeout', '20', ...MODES]);
@@ -860,7 +987,16 @@ export async function runMatrix(options: { image: string; platform: string; sour
       report.cleanup.ownedCommandsClosed = commands.every(c => c.waitKnown && c.closeObserved && c.groupAbsent);
       for (const f of sources) need(await digest(path.join(repo, f)) === report.sources[f], 'Runner source changed');
       report.cancelled = cancellation.signal.aborted;
-      if (report.status === 'passed') validateMatrix(report, options);
+      if (report.status === 'passed') {
+        if (diagnosticSessionMatrix) {
+          // The SAME strict common checks as release (images, mounts, runtime,
+          // all 9 session receipts, every command-lifecycle field, sources,
+          // cleanup) minus the live layer. Returns a diagnostic-only result.
+          validateSessionMatrixDiagnostic(report, options);
+        } else {
+          validateMatrix(report, options);
+        }
+      }
     } catch { report.status = 'failed'; report.failure = 'owned-matrix-or-cleanup-incomplete'; }
     try {
       await writeSafe('matrix.safe.json', Buffer.from(JSON.stringify(report, null, 2) + '\n'));
@@ -893,7 +1029,28 @@ async function main(): Promise<void> {
     need(account?.email && account?.password && account?.webId && account?.podUrl, 'Owned browser account incomplete');
     await writeFile(process.argv[4], JSON.stringify({ email: account.email, password: account.password, webId: account.webId, podUrl: account.podUrl }), { mode: 0o600, flag: 'wx' }); return;
   }
-  need(action === 'run', 'Expected run or verify');
+  if (action === 'session-matrix-diagnostic') {
+    // DIAGNOSTIC entry point. Same immutable image/source/output contract as the
+    // existing isolated session diagnostic; deliberately NO platform credential,
+    // NO provider fixture, NO account/model credentials, NO release claim.
+    // ONE canonical diagnostic input contract. No MATRIX_*/GITHUB_SHA
+    // fallbacks: the diagnostic route must be given its own explicit values.
+    const image = process.env.XPOD_DIAGNOSTIC_IMAGE;
+    const sourceSha = process.env.XPOD_DIAGNOSTIC_SOURCE_SHA;
+    const output = file ?? process.env.XPOD_DIAGNOSTIC_OUTPUT;
+    need(typeof image === 'string' && image.length > 0, 'XPOD_DIAGNOSTIC_IMAGE required');
+    need(typeof sourceSha === 'string' && sourceSha.length > 0, 'XPOD_DIAGNOSTIC_SOURCE_SHA required');
+    need(typeof output === 'string' && output.length > 0, 'Diagnostic output root required');
+    const diagnosticImage: string = image as string;
+    const diagnosticSource: string = sourceSha as string;
+    await runMatrix({
+      image: diagnosticImage, platform: 'linux/amd64',
+      sourceSha: diagnosticSource, runId: process.env.GITHUB_RUN_ID!, runAttempt: process.env.GITHUB_RUN_ATTEMPT!,
+      providerFile: '', output, diagnosticSessionMatrix: true,
+    });
+    return;
+  }
+  need(action === 'run', 'Expected run, verify or session-matrix-diagnostic');
   await runMatrix({ image: process.env.XPOD_MATRIX_IMAGE!, platform: process.env.XPOD_MATRIX_PLATFORM!, sourceSha: process.env.GITHUB_SHA!, runId: process.env.GITHUB_RUN_ID!, runAttempt: process.env.GITHUB_RUN_ATTEMPT!, providerFile: process.env.XPOD_LIVE_PROVIDER_KEY_FILE!, output: file });
 }
 if (import.meta.main) main().catch(() => { console.error('Service image mode acceptance failed (private details withheld)'); process.exitCode = 1; });

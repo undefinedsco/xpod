@@ -13,6 +13,11 @@ import { githubOriginFacts, githubOriginOriginals, API_NOTICE_SOURCE_BINDINGS, A
 
 // These policies review actual phase-plan and supervisor implementations. The
 // producer remains the sole phase/command declaration; no parallel phase table.
+/** The reviewed CURRENT controlled-API producer. It is admitted as its own
+ * identity so the current tuple can be selected without rewriting any
+ * historical selector. */
+const CURRENT_CONTROLLED_API_PRODUCER='cad0d8896b244e22b5e3ffd531e5e6a029154114378f6077864576dc651e1fe1';
+
 export const moduleSourcePhasePolicy = Object.freeze({
   api: 'f6abdd37eee47c33a1df9f76b7e0fb99ce8efee88c5b40ddcaa1d7a0f66091e6',
   css: '78e2ec3c272233602083f81d574cfefc5f6c36e9200c1d92e6f7935bd6cac41f',
@@ -34,7 +39,7 @@ export function reviewedModuleSupervisorSource(module:'api'|'css'|'afs',readTrac
  const supervisor='scripts/agentfs-native-ci/supervise.py',actual=hash(readTracked(supervisor));
  if(actual===moduleSourcePhasePolicy.supervisor)return true;
  const versions=[API_ATTESTED_NOTICE_SOURCE_BINDINGS,API_SERVICE_BUILD_SOURCE_BINDINGS];
- const producers=module==='css'?[moduleSourcePhasePolicy.css,CSS_METADATA_REVALIDATION_PRODUCER,CSS_DIAGNOSTIC_CURRENT_PRODUCER]:[moduleSourcePhasePolicy[module]];
+ const producers=module==='css'?[moduleSourcePhasePolicy.css,CSS_METADATA_REVALIDATION_PRODUCER,CSS_DIAGNOSTIC_CURRENT_PRODUCER]:module==='api'?[moduleSourcePhasePolicy.api,CURRENT_CONTROLLED_API_PRODUCER]:[moduleSourcePhasePolicy[module]];
  return versions.some(bindings=>producers.some(producer=>{
  const expected=Object.freeze([
   ['scripts/'+module+'-module-producer.py',producer],
@@ -58,7 +63,7 @@ export const CSS_SOURCE_PARENT_VERSIONS = Object.freeze([
 ]);
 export function reviewedModuleProducerSource(module: 'api' | 'css' | 'afs', sha256: string): boolean {
   return module === 'css' ? CSS_SOURCE_PARENT_VERSIONS.some(row => row.producerSha256 === sha256)
-    : module === 'api' ? [moduleSourcePhasePolicy.api,API_NOTICE_SOURCE_BINDINGS.find(row=>row.path==='scripts/api-module-producer.py')!.sha256,'68ecfb5c66dd0f1882ef707e86a4c74df7d0406bb9bb68eb011bb20872ef23bf', 'bd668dc98e481496f8b2cf6a1ba97541caafc70f39acf8d8757226e4cedca588', '0169bfbf726dce149e5a0fa995fd06bbe618236f1829d0575ccb0bafeea8b450', '8cfb86a4fa5de62e2938e51e459ae9c5c3bbe95cf0aaad88d59de9a9b900e920', '6999603e280c8df1be5fe068eff34cf4c357dc99e9052914040ab6db330ce058', '14fbe7416ad1e1f19ca9384614b1b57404e2ed89d2a766172c490b11cc4667e8', 'eaeddab536d6e606042039cfe5290393d5c5a3e454fb590354cc35e5afe2975f'].includes(sha256) : sha256 === moduleSourcePhasePolicy[module];
+    : module === 'api' ? [moduleSourcePhasePolicy.api,CURRENT_CONTROLLED_API_PRODUCER,API_NOTICE_SOURCE_BINDINGS.find(row=>row.path==='scripts/api-module-producer.py')!.sha256,'68ecfb5c66dd0f1882ef707e86a4c74df7d0406bb9bb68eb011bb20872ef23bf', 'bd668dc98e481496f8b2cf6a1ba97541caafc70f39acf8d8757226e4cedca588', '0169bfbf726dce149e5a0fa995fd06bbe618236f1829d0575ccb0bafeea8b450', '8cfb86a4fa5de62e2938e51e459ae9c5c3bbe95cf0aaad88d59de9a9b900e920', '6999603e280c8df1be5fe068eff34cf4c357dc99e9052914040ab6db330ce058', '14fbe7416ad1e1f19ca9384614b1b57404e2ed89d2a766172c490b11cc4667e8', 'eaeddab536d6e606042039cfe5290393d5c5a3e454fb590354cc35e5afe2975f'].includes(sha256) : sha256 === moduleSourcePhasePolicy[module];
 }
 const PRE_PUBLIC_DESCRIPTOR_API_RECIPE = Object.freeze([
   {
@@ -293,9 +298,19 @@ const HISTORICAL_CONTROLLED_API_RECIPE = Object.freeze([
 /** Producer hash selects one whole recipe before any recipe file is read. */
 export function controlledApiSourceRecipe(readTracked:(name:string)=>Buffer,producerSha:string,target:string){
  const historical=producerSha==='6999603e280c8df1be5fe068eff34cf4c357dc99e9052914040ab6db330ce058';
- if(!historical&&![moduleSourcePhasePolicy.api,API_NOTICE_SOURCE_BINDINGS.find(row=>row.path==='scripts/api-module-producer.py')!.sha256,'68ecfb5c66dd0f1882ef707e86a4c74df7d0406bb9bb68eb011bb20872ef23bf','bd668dc98e481496f8b2cf6a1ba97541caafc70f39acf8d8757226e4cedca588','0169bfbf726dce149e5a0fa995fd06bbe618236f1829d0575ccb0bafeea8b450','8cfb86a4fa5de62e2938e51e459ae9c5c3bbe95cf0aaad88d59de9a9b900e920'].includes(producerSha)||historical&&target!=='linux-arm64')return fail('controlled producer/target recipe not reviewed');
+ // Compatibility between the TWO reviewed API producer identities only. The current
+ // producer selects its own CURRENT tuple (primary selector) plus the legacy tuples
+ // still published under the historical anchor; the historical anchor selects only
+ // the legacy tuples. Any other producer keeps its own exact identity and an unknown
+ // producer is still refused. The completion predicate and the full-row hash
+ // verification below are unchanged, so this widens WHICH tuples may be offered,
+ // never WHICH bytes are accepted.
+ const selectorIdentities=producerSha===CURRENT_CONTROLLED_API_PRODUCER
+  ?[CURRENT_CONTROLLED_API_PRODUCER,moduleSourcePhasePolicy.api]
+  :[producerSha];
+ if(!historical&&![moduleSourcePhasePolicy.api,CURRENT_CONTROLLED_API_PRODUCER,API_NOTICE_SOURCE_BINDINGS.find(row=>row.path==='scripts/api-module-producer.py')!.sha256,'68ecfb5c66dd0f1882ef707e86a4c74df7d0406bb9bb68eb011bb20872ef23bf','bd668dc98e481496f8b2cf6a1ba97541caafc70f39acf8d8757226e4cedca588','0169bfbf726dce149e5a0fa995fd06bbe618236f1829d0575ccb0bafeea8b450','8cfb86a4fa5de62e2938e51e459ae9c5c3bbe95cf0aaad88d59de9a9b900e920'].includes(producerSha)||historical&&target!=='linux-arm64')return fail('controlled producer/target recipe not reviewed');
  if(!historical){const policy=JSON.parse(readTracked('packages/xpod-api/scripts/inngest-controlled-build-policy.json').toString());if(!Object.prototype.hasOwnProperty.call(policy.targetDescriptors??{},target))return fail('controlled descriptor target not reviewed');}
- const candidates=[moduleSourcePhasePolicy.api,"988a1aaae9c786fefa4e0901f3a2de207401ea08f23c9154d941a640a6c70870","0169bfbf726dce149e5a0fa995fd06bbe618236f1829d0575ccb0bafeea8b450","bd668dc98e481496f8b2cf6a1ba97541caafc70f39acf8d8757226e4cedca588"].includes(producerSha)?API_WORKSPACE_SOURCE_GROUPS.filter(group=>group.selectors.some(row=>row.path==='scripts/api-module-producer.py'&&row.sha256===producerSha)).map(group=>group.sourceBindings):historical?[HISTORICAL_CONTROLLED_API_RECIPE]:producerSha==='68ecfb5c66dd0f1882ef707e86a4c74df7d0406bb9bb68eb011bb20872ef23bf'?[PRE_CATALOG_API_SOURCE_RECIPE,CONTROLLED_API_SOURCE_RECIPE]:[PRE_PUBLIC_DESCRIPTOR_API_RECIPE,PRE_BUDGET_API_SOURCE_RECIPE];
+ const candidates=[moduleSourcePhasePolicy.api,CURRENT_CONTROLLED_API_PRODUCER,"988a1aaae9c786fefa4e0901f3a2de207401ea08f23c9154d941a640a6c70870","0169bfbf726dce149e5a0fa995fd06bbe618236f1829d0575ccb0bafeea8b450","bd668dc98e481496f8b2cf6a1ba97541caafc70f39acf8d8757226e4cedca588"].includes(producerSha)?API_WORKSPACE_SOURCE_GROUPS.filter(group=>group.selectors.some(row=>row.path==='scripts/api-module-producer.py'&&selectorIdentities.includes(row.sha256))).map(group=>group.sourceBindings):historical?[HISTORICAL_CONTROLLED_API_RECIPE]:producerSha==='68ecfb5c66dd0f1882ef707e86a4c74df7d0406bb9bb68eb011bb20872ef23bf'?[PRE_CATALOG_API_SOURCE_RECIPE,CONTROLLED_API_SOURCE_RECIPE]:[PRE_PUBLIC_DESCRIPTOR_API_RECIPE,PRE_BUDGET_API_SOURCE_RECIPE];
  // The completion predicate includes the two ACTUAL manifest facts: without them a
  // newer tuple that differs only in package.json/bun.lock (e.g. a published
  // dependency bump) would tie every earlier recipe and silently select nothing.

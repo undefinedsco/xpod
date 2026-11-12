@@ -64,7 +64,7 @@
                 "value": "/var/lib/postgresql/data/pgdata"
               }
             ],
-            "image": "ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:635a5eee0ea1461c8cde8425fdf0ca7d0965bc083d8860bb7aa04498c9688986",
+            "image": "ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:6a5731d7df8b4d677d3de51c53961fa8f484f8a1f87e7fd667dd0db1ffa3e1db",
             "imagePullPolicy": "IfNotPresent",
             "livenessProbe": {
               "exec": {

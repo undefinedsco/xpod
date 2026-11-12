@@ -336,6 +336,7 @@ Apache-2.0 future 许可，生效日 2029-07-30）。发行必须随包附上**�
   `xpodEmbeddedSource` 路径（必须留在包根内）与存在性，重算 manifest 摘要，并把 archive、
   license、embed docs、docs sha 清单与 NOTICE 逐项对 pin/manifest 契约复核；不信任自报摘要。
 - 桌面 `desktop/package.json` 的 `extraResources: runtime` 直接携带平台包的 `SOURCE/`。
+- 桌面使用随包的 Bun + CLI 启动默认 CSS/API 能力，构建时必须封入两者的完整模块清单；首次启动不依赖 npm 下载。安装包中的模块只作只读 seed，导入 `userData` 下按 manifest 内容标识隔离的目录后，继续走同一套 ModuleStore 校验和生命周期锁。API 能力在候选版本改写前从干净源码生产，之后仅校验并消费其绑定产物；CSS 复用已验收的 QLever 原始 ZIP、tar、验收记录及真实 source SHA。两种模块的独立版本均以各自产物为准。
 - pin 是程序侧构建声明，不引入用户配置；升级 `inngest-cli` 时必须同步 pin 并重新验证。
 
 **§13 网络服务注意**：`EmbeddedInngestService` 默认以 `127.0.0.1` spawn Inngest dev/server，

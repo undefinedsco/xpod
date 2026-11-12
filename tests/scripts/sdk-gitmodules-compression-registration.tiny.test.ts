@@ -41,6 +41,12 @@ test('API compression discriminator selects complete old and new recipes without
  const preIndexedRead=(name:string)=>name==='scripts/lib/physical-module-archive.ts'?oldPhysical!:newRead(name);
  expect(controlledApiSourceRecipe(preIndexedRead,producer,'linux-x64').rows).toBe(api[21]!.sourceBindings);
  expect(controlledApiSourceRecipe(newRead,producer,'linux-x64').rows).toBe(api[22]!.sourceBindings);
- expect(controlledApiSourceRecipe(name=>fs.readFileSync(name),producer,'linux-x64').rows).toBe(api.at(-1)!.sourceBindings);
+ // The CURRENT physical tree is selected by the CURRENT physical producer, never by the
+ // historical f6ab anchor: f6ab selects only its own legacy tuples.
+ const physicalProducer=sha(fs.readFileSync('scripts/api-module-producer.py'));
+ expect(physicalProducer).not.toBe(producer);
+ expect(controlledApiSourceRecipe(name=>fs.readFileSync(name),physicalProducer,'linux-x64').rows).toBe(api.at(-1)!.sourceBindings);
+ // The historical anchor must NOT accept the current physical tree.
+ expect(()=>controlledApiSourceRecipe(name=>fs.readFileSync(name),producer,'linux-x64')).toThrow();
  expect(()=>controlledApiSourceRecipe(name=>name==='packages/xpod-api/scripts/sourcekit-producer.ts'?Buffer.from('wrong'):newRead(name),producer,'linux-x64')).toThrow();
 });

@@ -131,7 +131,16 @@ let quitConfirmationPending = false
 type DesktopQuitReason = 'explicit' | 'update-install'
 let quitReason: DesktopQuitReason = 'explicit'
 const runtimePreferences = new RuntimePreferences(desktopDataRoot)
-const runtimeManager = new RuntimeManager({ targetOrigin, packaged: app.isPackaged, autoRestart: runtimePreferences.read().autoRestart, resolveEnvironment: () => readRuntimeDataEnvironment(process.env.XPOD_ENV_FILE) })
+// Reuse the app's userData authority for the CLI's writable module store; the
+// installed resources remain the read-only source of packaged capabilities.
+const runtimeManager = new RuntimeManager({
+  targetOrigin,
+  packaged: app.isPackaged,
+  autoRestart: runtimePreferences.read().autoRestart,
+  resolveEnvironment: () => readRuntimeDataEnvironment(process.env.XPOD_ENV_FILE),
+  ownedDataRoot: desktopDataRoot,
+  ...(app.isPackaged ? { resourcesPath: process.resourcesPath } : {}),
+})
 // Squirrel pins an ad-hoc build's cdhash and cannot accept the next release.
 // Our detached installer verifies and swaps the bundle while retaining user data.
 const selfUpdater = new DesktopSelfUpdater({

@@ -5,6 +5,13 @@ export const MODULE_CATALOG = [
   { id: 'afs', commands: ['afs', 'agent-fs'], packagePrefix: '@undefineds.co/xpod-afs' },
 ] as const;
 export type ModuleId = typeof MODULE_CATALOG[number]['id'];
+/**
+ * Capabilities a NORMAL `xpod start` binds when the user selects none.
+ *
+ * This is the ONE shared declaration: the CLI default and the packaged desktop
+ * build both read it, so the shipped seed can never drift from what start admits.
+ */
+export const DEFAULT_SERVICE_MODULES = ['css', 'api'] as const satisfies readonly ModuleId[];
 export const MODULE_API_VERSION = 1;
 
 /** Supported artifact targets, shared by installation and release tooling. */

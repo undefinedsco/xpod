@@ -100,6 +100,9 @@ test('the appended tuples are exactly two genuine slices each and the deltas are
   'scripts/lib/independent-admission/qlever-sdk-origin-policy.ts',
   'scripts/lib/independent-admission/github-origin.ts',
   'scripts/lib/independent-admission/source-rules.ts',
+  // This generation extends the controlled-API producer admission, which moves the
+  // phase policy module itself.
+  'scripts/lib/independent-admission/module-source-phases.ts',
   'package.json','bun.lock']);
  // No role is added or dropped by the append, only the reviewed rows move.
  expect(tailSecondary.map(row=>row.path)).toEqual(priorSecondary.map(row=>row.path));
