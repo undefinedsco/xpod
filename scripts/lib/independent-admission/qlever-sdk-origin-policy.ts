@@ -3016,11 +3016,10 @@ const QLEVER_NORMAL_RC398_PLATFORM_GROUP:GitHubSourceBindingGroup=Object.freeze(
  * byte-exact published history; the new group clones it and rebinds ONLY the candidate-workflow
  * row it already owns. No SDK source/recipe, no proof axis and no other row moves. */
 /* The CURRENT-tail candidate binding follows the ACTUAL reviewed bytes.
- * This generation moves ONLY the workspace build+consumer ahead of the
- * candidate-version transform inside build_desktop_rc; no other byte of the
- * workflow changes. Every published RC396/RC397/RC398 value above stays
- * byte-exact. */
-const QLEVER_RC399_CANDIDATE_WORKFLOW_HASH='c174c5f94f2d4f5b460cc9ed9da11e675fd0c58658ed3eb9bde21d4cd881c8c6';
+ * The workspace build+consumer precedes the candidate-version transform, and
+ * the root outputs are compiled before desktop packaging on a cold runner.
+ * Every published RC396/RC397/RC398 value above stays byte-exact. */
+const QLEVER_RC399_CANDIDATE_WORKFLOW_HASH='066efee0a9f6483a760fa02fcb77eabc54ec771508b4556641bc9e89202e446c';
 const QLEVER_NORMAL_RC399_CLEANUP_GROUP:GitHubSourceBindingGroup=Object.freeze({...QLEVER_NORMAL_RC398_PLATFORM_GROUP,
   secondarySelectors:Object.freeze((QLEVER_NORMAL_RC398_PLATFORM_GROUP.secondarySelectors??[]).map(row=>
     Object.freeze({...row,sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_RC399_CANDIDATE_WORKFLOW_HASH:row.sha256}))),
@@ -3359,7 +3358,7 @@ const RC399_LIVE_RELEASE_INPUTS:Readonly<Record<string,string>>=Object.freeze({
   // this CURRENT tail, so only those rows move. Every frozen SDK105/normalBuild3
   // group above keeps its published bytes.
   'scripts/run-npm-pack.cjs':'6e1c6144cc71a8399350a0873c9f3dfafc06a9a2967c0fe88b09c269e8aabe46',
-  '.github/workflows/ci.yml':'c8b892f7323b88683434f4870e40fc74a5a904447a82379e72347903114f055f',
+  '.github/workflows/ci.yml':'abe3be015f298062399602ab82f2ec549b58138aceaa88d06aa503d2f3af2a9b',
 });
 const rc399LiveReleaseRow=(row:GitHubSourceBinding)=>Object.freeze({
   ...row,sha256:RC399_LIVE_RELEASE_INPUTS[row.path]??row.sha256,

@@ -10,7 +10,7 @@ import { recordOwnedHost, closeOwnedHost, cleanupOwnedHostGroup, hostGroupPassed
 import { startBrowserExternalRp } from '../helpers/browserExternalRp';
 import { completeOidcLogin, OidcApprovalError } from '../helpers/browserSolidOidc';
 import { fetchBrowserXpodPod, readBrowserXpodRuntime } from '../helpers/browserXpodRuntime';
-import { assertRestartObserver, recordExternalFailure, type ExternalPhase } from '../helpers/browserExternalPhase';
+import { assertRestartObserver, inspectRestartObserver, recordExternalFailure, type ExternalPhase, type RestartObserverInput } from '../helpers/browserExternalPhase';
 
 const external = externalRefreshFromEnvironment();
 
@@ -181,14 +181,24 @@ for (const mode of profiles) {
     let hostClosed = false;
     const hostGroups: OwnedHostGroup[] = [];
     const observerPath = (phase: 'initial' | 'restart') => path.join(externalRefreshPrivateRoot(external!.input), `${phase}-observer.safe.json`);
-    const readObserver = (phase: 'initial' | 'restart') => {
-      const value = JSON.parse(readFileSync(observerPath(phase), 'utf8'));
-      expect(value.ready).toBe(true); expect(value.hostImported).toBe(true);
-      expect(value.failed).toBe(false); expect(value.opaquePosts).toBe(0);
-      return value as { hostPid: number; authorizationCodes: number; passwordPosts: number; refreshTokens: number };
+    // Capture ONE parsed snapshot before any assertion. Assertions still run and
+    // still fail the spec, but the caller keeps the ACTUAL record so a bad
+    // ready/imported/failed/opaque flag is reported as present with its real
+    // counters instead of vanishing into `undefined`. No second read (no TOCTOU).
+    const captureObserver = (phase: 'initial' | 'restart') => {
+      const value = JSON.parse(readFileSync(observerPath(phase), 'utf8')) as Record<string, unknown>;
+      return { value, path: observerPath(phase) };
     };
+    const assertObserverSnapshot = (snapshot: { value: Record<string, unknown> }) => {
+      expect(snapshot.value.ready).toBe(true); expect(snapshot.value.hostImported).toBe(true);
+      expect(snapshot.value.failed).toBe(false); expect(snapshot.value.opaquePosts).toBe(0);
+      return snapshot.value as { hostPid: number; authorizationCodes: number; passwordPosts: number; refreshTokens: number };
+    };
+    const readObserver = (phase: 'initial' | 'restart') => assertObserverSnapshot(captureObserver(phase));
     let initialObserver: ReturnType<typeof readObserver> | undefined;
-    let restartObserver: ReturnType<typeof readObserver> | undefined;
+    // Wide enough to carry the FULL parsed record (including the ready/imported/
+    // failed/opaque flags) so a bad flag is reported with real values, not lost.
+    let restartObserver: RestartObserverInput | undefined;
     const tokens: TokenEvidence[] = [];
     const pending = new Set<Promise<void>>();
     const requests: Array<{ at: number; path: string; method: string; authorizationScheme: string }> = [];
@@ -358,11 +368,28 @@ for (const mode of profiles) {
         expect(restored.issuer).toBe(external.input.issuer);
         phase = 'restart-private-read';
         expect(await fetchBrowserXpodPod(page, resource)).toEqual({ status: 200, body: payload });
-        phase = 'observer-binding';
-        restartObserver = readObserver('restart');
         // Silent SSO restore: exactly one silent authorization code, never a
-        // password and never a second code. Centralised in the helper.
+        // password and never a second code. Every expectation below is unchanged;
+        // only the phase label is finer so a failure names the failing conjunct.
+        // Parse/read first (its own tag), then the per-conjunct observer check,
+        // then the two global-count comparisons.
+        // Read (and keep) the actual snapshot FIRST, so a record with bad flags is
+        // still reported as present with its real counters.
+        const restartSnapshot = captureObserver('restart');
+        restartObserver = restartSnapshot.value as RestartObserverInput;
+        // Name the failing conjunct BEFORE the read-level assertions run, otherwise
+        // a bad ready/imported/failed/opaque flag would be mislabelled as a code
+        // problem. No expectation value is relaxed: inspectRestartObserver covers
+        // the same conjuncts, and assertObserverSnapshot re-asserts them below.
+        const observerVerdict = inspectRestartObserver(restartObserver);
+        // import/failure/opaquePosts are read-level flags, never code problems.
+        if (observerVerdict.conjunct === 'passwordPosts') phase = 'observer-binding-restart-password';
+        else if (observerVerdict.conjunct === 'authorizationCodes') phase = 'observer-binding-restart-codes';
+        else phase = 'observer-binding-read';
+        // Authoritative assertions, unchanged in value:
+        assertObserverSnapshot(restartSnapshot);
         assertRestartObserver(restartObserver);
+        phase = 'observer-binding-global-counts';
         expect(tokens.filter(entry => entry.grant === 'authorization_code')).toHaveLength(codesBeforeRestart);
         expect(requests.filter(entry => entry.method === 'POST' && entry.path === '/.account/login/password/')).toHaveLength(passwordBeforeRestart);
         persistedHostRestored = true;
@@ -385,11 +412,15 @@ for (const mode of profiles) {
           reason: primaryFailure instanceof OidcApprovalError
             && primaryFailure.condition === 'login-timeout'
             ? 'approval-timed-out' : 'assertion-failed',
+          // These two are GLOBAL browser-session totals (the spec's accumulators),
+          // deliberately unchanged. The restart observer's OWN counters are carried
+          // separately below so they can never be mistaken for these totals.
           authorizationCodes: tokens.filter(entry => entry.grant === 'authorization_code').length,
           passwordPosts: requests.filter(entry => entry.method === 'POST' && entry.path === '/.account/login/password/').length,
           refreshGrants: tokens.filter(entry => entry.grant === 'refresh_token' && entry.status === 200).length,
           refreshFailures: tokens.filter(entry => entry.grant === 'refresh_token' && entry.status !== 200).length,
           requestCount: requests.length,
+          observer: restartObserver,
         }));
       }
       const windows = app?.windows().filter(candidate => !candidate.isClosed()) ?? [];

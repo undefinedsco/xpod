@@ -561,6 +561,17 @@ jobs:
             }
           '
 
+      # M1 (cold runner): this desktop job has no root build, but the desktop
+      # native producer hard-requires dist/index.js + dist/components/
+      # components.jsonld. Compile them explicitly BEFORE the DMG/ZIP build.
+      - name: Compile root package outputs required by the desktop native producer
+        run: |
+          set -euo pipefail
+          bun run build:ts
+          bun run build:components
+          test -s dist/runtime/index.js
+          test -s dist/components/components.jsonld
+
       - name: Build DMG and ZIP
         working-directory: desktop
         run: |
