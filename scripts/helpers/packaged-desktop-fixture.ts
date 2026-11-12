@@ -7,6 +7,32 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import type { ElectronApplication, Page } from '@playwright/test';
 
+/**
+ * Closed, literal launch subphases. These are the ONLY tokens this fixture may
+ * emit, so publishing a phase can never leak a path, URL, argument, message or
+ * environment value. Ordering mirrors the actual launch sequence.
+ */
+export type LaunchSubphase =
+  | 'install' | 'archive-hash' | 'version' | 'native-version' | 'electron'
+  | 'window' | 'gateway' | 'service-info' | 'bridge' | 'profile';
+
+const LAUNCH_SUBPHASES: ReadonlySet<string> = new Set<LaunchSubphase>([
+  'install', 'archive-hash', 'version', 'native-version', 'electron',
+  'window', 'gateway', 'service-info', 'bridge', 'profile',
+]);
+
+/** Guards an arbitrary value down to the closed enum, never coercing text. */
+export function isLaunchSubphase(value: unknown): value is LaunchSubphase {
+  return typeof value === 'string' && LAUNCH_SUBPHASES.has(value);
+}
+
+/** Emits one closed-enum token; a misbehaving observer must never mask a real
+ * launch error, so the call is isolated and failures are swallowed. */
+function emitSubphase(options: { onPhase?: (phase: LaunchSubphase) => void }, phase: LaunchSubphase): void {
+  if (!options.onPhase) return;
+  try { options.onPhase(phase); } catch { /* observer must not change launch semantics */ }
+}
+
 const execute = promisify(execFile);
 const { describeArchive } = createRequire(import.meta.url)('../desktop-permission-acceptance.cjs') as {
   describeArchive(file: string): Promise<{ size: number; sha256: string; sha512: string }>;
@@ -153,6 +179,8 @@ export async function closeOwnedPackagedApp(app: Pick<ElectronApplication, 'clos
  */
 export async function launchOwnedPackagedDesktop(options: {
   archive: string; version: string; issuer: string; evidenceDirectory: string;
+  /** Optional closed-enum progress observer; must not alter launch semantics. */
+  onPhase?: (phase: LaunchSubphase) => void;
 }): Promise<OwnedPackagedDesktop> {
   if (process.platform !== 'darwin') throw new Error('Packaged desktop acceptance requires macOS');
   if (!/^\d+\.\d+\.\d+(?:-rc\.\d+(?:\.\d+)?)?$/.test(options.version)) throw new Error('Invalid packaged version');
@@ -211,13 +239,16 @@ export async function launchOwnedPackagedDesktop(options: {
     return { appStopped: true, runtimeStopped: true, ownedDataRemoved: true, remainingOwnedPids: remaining as 0 };
   }
   try {
+    emitSubphase(options, 'install');
     installation = await installOwnedDesktop(path.resolve(options.archive), directory);
     appPath = installation.appPath;
     binary = path.join(appPath, 'Contents', 'Resources', 'runtime', 'xpod');
+    emitSubphase(options, 'archive-hash');
     const afterExtract = await describeArchive(options.archive);
     if (JSON.stringify(afterExtract) !== JSON.stringify(archive)) throw new Error('Desktop archive changed during extraction');
     const binaryInfo = await lstat(binary);
     if (!binaryInfo.isFile() || !(binaryInfo.mode & 0o111)) throw new Error('Bundled executable is missing');
+    emitSubphase(options, 'version');
     const bundleVersion = (await execute('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleShortVersionString', path.join(appPath, 'Contents', 'Info.plist')])).stdout.trim();
     if (bundleVersion !== options.version) throw new Error('Extracted desktop bundle version mismatch');
     const port = await freeLoopbackPort();
@@ -225,10 +256,12 @@ export async function launchOwnedPackagedDesktop(options: {
     const profile = path.join(directory, 'profile');
     const env = createPackagedFixtureEnvironment({ inherited: process.env, profile, port, issuer: options.issuer });
     // This first execution is itself an actual consumer of the extracted binary.
+    emitSubphase(options, 'native-version');
     const runtimeVersion = (await execute(binary, ['--version'], { env, cwd: directory, timeout: 60_000 })).stdout.trim();
     if (runtimeVersion !== options.version) throw new Error('Bundled runtime version mismatch');
     const binarySha256 = (await describeArchive(binary)).sha256;
     const { _electron } = await import('@playwright/test');
+    emitSubphase(options, 'electron');
     launchAttempted = true;
     app = await _electron.launch({ executablePath: path.join(appPath, 'Contents', 'MacOS', 'Xpod'), cwd: directory, env, timeout: 60_000 });
     appProcess = app.process();
@@ -240,16 +273,20 @@ export async function launchOwnedPackagedDesktop(options: {
     observer.unref();
     // The product's cold RuntimeManager startup already has a 60s budget;
     // its first window is created after that startup, not at Electron launch.
+    emitSubphase(options, 'window');
     const page = await app.firstWindow({ timeout: 60_000 });
+    emitSubphase(options, 'gateway');
     await waitFor(async () => {
       const response = await fetch(new URL('service/status', gateway), { signal: AbortSignal.timeout(1_000) }).catch(() => undefined);
       return response?.ok ? true : undefined;
     }, 'Packaged Local runtime did not become ready');
+    emitSubphase(options, 'service-info');
     const serviceInfo = await fetch(new URL('api/service-info', gateway), { signal: AbortSignal.timeout(5_000), redirect: 'error' });
     if (!serviceInfo.ok || (await serviceInfo.json() as { edition?: string }).edition !== 'local') {
       throw new Error('Owned packaged runtime does not report the Local edition');
     }
     await page.goto(new URL('device/services', gateway).href);
+    emitSubphase(options, 'bridge');
     const runtime = await page.evaluate(async () => {
       const bridge = (window as unknown as { xpodDesktop?: { deviceRuntime?: {
         getRuntimeSettings(): Promise<{ state: string; ownership: string; pid?: number }>;
@@ -261,6 +298,7 @@ export async function launchOwnedPackagedDesktop(options: {
     assertBundledRuntimeProcess({ binary, pid: runtimePid, ownership: runtime.ownership,
       command: runtimePid ? await processCommand(runtimePid) ?? '' : '' });
     if (runtime.state !== 'running') throw new Error('Packaged runtime is not running');
+    emitSubphase(options, 'profile');
     await assertOwnedRuntimeProfile(await readFile(path.join(profile, '.env'), 'utf8'), profile);
     await page.goto(new URL('ai-connections', gateway).href);
     return { app, page, gateway, directory, archive,

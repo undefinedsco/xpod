@@ -10,7 +10,7 @@ import { recordOwnedHost, closeOwnedHost, cleanupOwnedHostGroup, hostGroupPassed
 import { startBrowserExternalRp } from '../helpers/browserExternalRp';
 import { completeOidcLogin, OidcApprovalError } from '../helpers/browserSolidOidc';
 import { fetchBrowserXpodPod, readBrowserXpodRuntime } from '../helpers/browserXpodRuntime';
-import { assertRestartObserver, inspectRestartObserver, recordExternalFailure, type ExternalPhase, type RestartObserverInput } from '../helpers/browserExternalPhase';
+import { assertRestartObserver, inspectRestartObserver, recordExternalFailure, privateReadOutcomeForStatus, type ExternalPhase, type PrivateReadOutcome, type RestartObserverInput } from '../helpers/browserExternalPhase';
 
 const external = externalRefreshFromEnvironment();
 
@@ -170,6 +170,13 @@ for (const mode of profiles) {
     let app: ElectronApplication | undefined;
     let page: Page | undefined;
     let primaryFailure: unknown;
+    // Bounded facts about the private read that failed, so a failure is readable
+    // without ever persisting a status line, URL, header, token or message.
+    let privateReadOutcome: PrivateReadOutcome = 'not-reached';
+    // Actual numeric status of the failed read: 0 means no response arrived.
+    let privateReadStatus = 0;
+    let failureAuthenticated = false;
+    let failureHostReady = false;
     // Fixed-enum checkpoint so the EXTERNAL failure keeps its location without
     // exporting page text, messages, URLs, tokens or identifiers.
     let phase: ExternalPhase = 'preflight';
@@ -366,8 +373,30 @@ for (const mode of profiles) {
         expect(restored.podUrl).toBe(external.input.binding.podUrl);
         phase = 'restart-binding-issuer';
         expect(restored.issuer).toBe(external.input.issuer);
+        // Capture the ACTUAL restart snapshot before the private read, so a
+        // failure in that read cannot leave restartObserver undefined (present:0).
+        // The phase is the EXISTING observer-binding label, set BEFORE the capture,
+        // so an unreadable/missing observer file is reported as an observer-read
+        // failure rather than being mislabelled as the previous binding check.
+        // This changes only WHEN the file is read; every expected value below is
+        // unchanged and still asserted.
+        phase = 'observer-binding-read';
+        restartObserver = captureObserver('restart').value as RestartObserverInput;
+        failureAuthenticated = restored.status === 'authenticated';
+        failureHostReady = restartObserver.hostImported === true;
         phase = 'restart-private-read';
-        expect(await fetchBrowserXpodPod(page, resource)).toEqual({ status: 200, body: payload });
+        try {
+          const privateRead = await fetchBrowserXpodPod(page, resource);
+          // Record the ACTUAL numeric status (bounded, never text) plus its class.
+          privateReadStatus = privateRead.status;
+          privateReadOutcome = privateReadOutcomeForStatus(privateRead.status);
+          expect(privateRead).toEqual({ status: 200, body: payload });
+        } catch (error) {
+          // A rejected fetch has no status; the closed enum records that fact
+          // without the raw message. Assertion failures still propagate.
+          if (privateReadOutcome === 'not-reached') privateReadOutcome = 'fetch-rejected';
+          throw error;
+        }
         // Silent SSO restore: exactly one silent authorization code, never a
         // password and never a second code. Every expectation below is unchanged;
         // only the phase label is finer so a failure names the failing conjunct.
@@ -375,8 +404,7 @@ for (const mode of profiles) {
         // then the two global-count comparisons.
         // Read (and keep) the actual snapshot FIRST, so a record with bad flags is
         // still reported as present with its real counters.
-        const restartSnapshot = captureObserver('restart');
-        restartObserver = restartSnapshot.value as RestartObserverInput;
+        const restartSnapshot = { value: restartObserver as Record<string, unknown> };
         // Name the failing conjunct BEFORE the read-level assertions run, otherwise
         // a bad ready/imported/failed/opaque flag would be mislabelled as a code
         // problem. No expectation value is relaxed: inspectRestartObserver covers
@@ -421,6 +449,10 @@ for (const mode of profiles) {
           refreshFailures: tokens.filter(entry => entry.grant === 'refresh_token' && entry.status !== 200).length,
           requestCount: requests.length,
           observer: restartObserver,
+          privateRead: privateReadOutcome,
+          privateReadStatus,
+          authenticated: failureAuthenticated,
+          hostReady: failureHostReady,
         }));
       }
       const windows = app?.windows().filter(candidate => !candidate.isClosed()) ?? [];

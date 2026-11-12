@@ -54,6 +54,55 @@ export const EXTERNAL_REASONS = [
   'launch-failed',
 ] as const;
 
+/**
+ * Bounded description of the private read that failed.
+ *
+ * Only a status CLASS is recorded, never a status line, URL, header or token:
+ * - `ok`            the request returned 2xx
+ * - `client-error`  4xx
+ * - `server-error`  5xx
+ * - `redirect`      3xx
+ * - `other-status`  any other numeric status
+ * - `fetch-rejected` the fetch itself rejected (auth/network); the raw reason is
+ *                    never persisted, so this fixed code is all that survives
+ * - `not-reached`   the read was never attempted (an earlier phase failed)
+ */
+export const PRIVATE_READ_OUTCOMES = [
+  'not-reached',
+  'ok',
+  'redirect',
+  'client-error',
+  'server-error',
+  'other-status',
+  'fetch-rejected',
+] as const;
+
+export type PrivateReadOutcome = typeof PRIVATE_READ_OUTCOMES[number];
+
+/** Map a real HTTP status to the closed enum above; no text can pass through. */
+/**
+ * Bounded numeric HTTP status for the failed private read: an integer 100..599,
+ * or 0 when no response was received (fetch rejected / not attempted). Only the
+ * NUMBER survives - never a status line, reason phrase, URL, header or message.
+ * 401 and 403 therefore stay distinguishable, which the coarse class cannot do.
+ */
+export function privateReadStatusValue(status: unknown): number {
+  if (!Number.isSafeInteger(status)) return 0;
+  const value = status as number;
+  return value >= 100 && value <= 599 ? value : 0;
+}
+
+export function privateReadOutcomeForStatus(status: number | undefined): PrivateReadOutcome {
+  if (!Number.isSafeInteger(status)) return 'not-reached';
+  const value = status as number;
+  if (value >= 200 && value <= 299) return 'ok';
+  if (value >= 300 && value <= 399) return 'redirect';
+  if (value >= 400 && value <= 499) return 'client-error';
+  if (value >= 500 && value <= 599) return 'server-error';
+  if (value > 0) return 'other-status';
+  return 'not-reached';
+}
+
 export type ExternalReason = typeof EXTERNAL_REASONS[number];
 
 /**
@@ -91,6 +140,14 @@ export interface ExternalPhaseDiagnostic {
   requestCount: number;
   /** Restart observer's own counters/flags (zeros when absent). */
   restartObserver: RestartObserverDiagnostic;
+  /** Bounded class of the private read that failed; never a status line. */
+  privateRead: PrivateReadOutcome;
+  /** Actual numeric status 100..599, or 0 when no response was received. */
+  privateReadStatus: number;
+  /** 1 when the mounted host reported an authenticated session at failure. */
+  authenticated: number;
+  /** 1 when the restart host had imported the unchanged compiled host. */
+  hostReady: number;
 }
 
 const COUNTER_MAX = 10_000;
@@ -149,6 +206,10 @@ export function externalPhaseDiagnostic(input: {
   refreshFailures?: number;
   requestCount?: number;
   observer?: RestartObserverInput;
+  privateRead?: PrivateReadOutcome;
+  privateReadStatus?: number;
+  authenticated?: boolean;
+  hostReady?: boolean;
 }): ExternalPhaseDiagnostic {
   const phase = EXTERNAL_PHASES.includes(input.phase) ? input.phase : 'preflight';
   const reason = EXTERNAL_REASONS.includes(input.reason) ? input.reason : 'assertion-failed';
@@ -161,6 +222,12 @@ export function externalPhaseDiagnostic(input: {
     refreshFailures: counter(input.refreshFailures),
     requestCount: counter(input.requestCount),
     restartObserver: restartObserverDiagnostic(input.observer),
+    privateRead: PRIVATE_READ_OUTCOMES.includes(input.privateRead as PrivateReadOutcome)
+      ? input.privateRead as PrivateReadOutcome
+      : 'not-reached',
+    privateReadStatus: privateReadStatusValue(input.privateReadStatus),
+    authenticated: flag(input.authenticated),
+    hostReady: flag(input.hostReady),
   };
 }
 
@@ -195,7 +262,8 @@ export function isExternalPhaseDiagnostic(value: unknown): value is ExternalPhas
   if (!value || typeof value !== 'object') return false;
   const row = value as Record<string, unknown>;
   const keys = ['phase', 'reason', 'authorizationCodes', 'passwordPosts',
-    'refreshGrants', 'refreshFailures', 'requestCount', 'restartObserver'];
+    'refreshGrants', 'refreshFailures', 'requestCount', 'restartObserver',
+    'privateRead', 'privateReadStatus', 'authenticated', 'hostReady'];
   if (Object.keys(row).length !== keys.length) return false;
   if (!keys.every(key => Object.prototype.hasOwnProperty.call(row, key))) return false;
   if (!EXTERNAL_PHASES.includes(row.phase as ExternalPhase)
@@ -204,6 +272,14 @@ export function isExternalPhaseDiagnostic(value: unknown): value is ExternalPhas
   if (![row.authorizationCodes, row.passwordPosts, row.refreshGrants,
     row.refreshFailures, row.requestCount].every(value =>
     Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= COUNTER_MAX)) return false;
+  // The private-read class is a closed enum, never a status line or message.
+  if (!PRIVATE_READ_OUTCOMES.includes(row.privateRead as PrivateReadOutcome)) return false;
+  // 0 (no response) or a real integer status; fractions/strings/out-of-range fail.
+  if (!Number.isSafeInteger(row.privateReadStatus)
+    || (row.privateReadStatus as number) < 0 || (row.privateReadStatus as number) > 599
+    || (row.privateReadStatus as number) > 0 && (row.privateReadStatus as number) < 100) return false;
+  // Readiness flags are 0|1; anything else (a raw boolean, a string) is invalid.
+  if (![row.authenticated, row.hostReady].every(value => value === 0 || value === 1)) return false;
   return isRestartObserverDiagnostic(row.restartObserver);
 }
 
@@ -228,7 +304,41 @@ export function isFailureSafeEnvelope(value: unknown): value is { schemaVersion:
 export function failureSafeEnvelope(diagnostic: ExternalPhaseDiagnostic): {
   schemaVersion: 1; diagnostic: ExternalPhaseDiagnostic;
 } {
-  return { schemaVersion: 1, diagnostic: externalPhaseDiagnostic(diagnostic) };
+  // Re-project through the closed schema so only admissible values ship.
+  //
+  // CRITICAL: absence must survive re-projection. Passing a synthesised observer
+  // object for `present === 0` would make restartObserverDiagnostic() report
+  // present:1, i.e. fabricate an observer that never existed. When the record
+  // says absent we pass `undefined` through, so the honest present:0 survives.
+  const observed = diagnostic.restartObserver;
+  const observer: RestartObserverInput | undefined = observed.present === 1
+    ? {
+      ready: observed.ready === 1,
+      hostImported: observed.hostImported === 1,
+      failed: observed.failed === 1,
+      authorizationCodes: observed.authorizationCodes,
+      passwordPosts: observed.passwordPosts,
+      refreshTokens: observed.refreshTokens,
+      opaquePosts: observed.opaquePosts,
+    }
+    : undefined;
+  return {
+    schemaVersion: 1,
+    diagnostic: externalPhaseDiagnostic({
+      phase: diagnostic.phase,
+      reason: diagnostic.reason,
+      authorizationCodes: diagnostic.authorizationCodes,
+      passwordPosts: diagnostic.passwordPosts,
+      refreshGrants: diagnostic.refreshGrants,
+      refreshFailures: diagnostic.refreshFailures,
+      requestCount: diagnostic.requestCount,
+      observer,
+      privateRead: diagnostic.privateRead,
+      privateReadStatus: diagnostic.privateReadStatus,
+      authenticated: diagnostic.authenticated === 1,
+      hostReady: diagnostic.hostReady === 1,
+    }),
+  };
 }
 
 /**
@@ -249,6 +359,10 @@ export function recordExternalFailure(input: {
   refreshFailures?: number;
   requestCount?: number;
   observer?: RestartObserverInput;
+  privateRead?: PrivateReadOutcome;
+  privateReadStatus?: number;
+  authenticated?: boolean;
+  hostReady?: boolean;
 }): string {
   const diagnostic = externalPhaseDiagnostic(input);
   try {

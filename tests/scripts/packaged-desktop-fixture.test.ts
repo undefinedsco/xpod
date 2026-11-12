@@ -3,7 +3,8 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { assertBundledRuntimeProcess, createPackagedFixtureEnvironment,
   assertOwnedRuntimeProfile, isMissingProcessReport, readProcessInventory,
-  rememberProcessTree, remainingOwnedProcessIds, closeOwnedPackagedApp } from '../../scripts/helpers/packaged-desktop-fixture';
+  rememberProcessTree, remainingOwnedProcessIds, closeOwnedPackagedApp,
+  isLaunchSubphase } from '../../scripts/helpers/packaged-desktop-fixture';
 
 describe('owned packaged desktop permission fixture', () => {
   it('uses the captured OS process when close disposes the Electron channel', async () => {
@@ -150,4 +151,63 @@ describe('owned packaged desktop permission fixture', () => {
       expect(remainingOwnedProcessIds(owned, await readProcessInventory())).toEqual([]);
     }
   }, 10_000);
+});
+
+describe('launch subphase diagnostics', () => {
+  it('accepts only the closed literal enum and never coerces arbitrary text', () => {
+    // Every reviewed token is accepted.
+    for (const phase of ['install', 'archive-hash', 'version', 'native-version', 'electron',
+      'window', 'gateway', 'service-info', 'bridge', 'profile']) {
+      expect(isLaunchSubphase(phase)).toBe(true);
+    }
+    // Anything else - including plausible-looking but unreviewed values - is refused.
+    for (const bad of ['unknown', 'INSTALL', 'install ', '', 'launch', 'win\u0000dow',
+      '/Users/someone/secret', 'http://127.0.0.1:1/', '--token=abc', null, undefined, 1, {}, []]) {
+      expect(isLaunchSubphase(bad)).toBe(false);
+    }
+  });
+
+  it('rejects injection attempts aimed at the phase field', () => {
+    // A value that would leak a path, URL, argument or message must not pass.
+    const injections = [
+      '{"stage":"launch","phase":"install","error":"secret"}',
+      'install"; DROP TABLE x; --',
+      '\\n{"phase":"window"}',
+      'ghp_' + 'a'.repeat(36),
+      'C:\\Users\\runner\\secret',
+    ];
+    for (const value of injections) expect(isLaunchSubphase(value)).toBe(false);
+  });
+
+  it('keeps the phase vocabulary immutable', () => {
+    // The guard must not be satisfiable by mutating a shared store.
+    const before = isLaunchSubphase('install');
+    expect(() => { (globalThis as any).__phase = 'injected'; }).not.toThrow();
+    expect(isLaunchSubphase('install')).toBe(before);
+    expect(isLaunchSubphase('injected')).toBe(false);
+  });
+});
+
+describe('launch subphase boundary placement', () => {
+  it('declares the bridge and profile phases the fixture actually emits', async () => {
+    // Guard against a phase being declared but never emitted (the RC410 review
+    // caught exactly that). Read the fixture source: every non-optional phase
+    // must appear inside an emitSubphase(...) call.
+    const { readFile } = await import('node:fs/promises');
+    const source = await readFile(new URL('../../scripts/helpers/packaged-desktop-fixture.ts', import.meta.url), 'utf8');
+    for (const phase of ['install', 'archive-hash', 'version', 'native-version', 'electron',
+      'window', 'gateway', 'service-info', 'bridge', 'profile']) {
+      expect(source.includes(`emitSubphase(options, '${phase}')`)).toBe(true);
+    }
+    // bridge is emitted immediately before the bridge evaluate, and profile right
+    // before the actual profile assertion - not merely somewhere earlier.
+    const bridgeAt = source.indexOf("emitSubphase(options, 'bridge')");
+    const evaluateAt = source.indexOf('await page.evaluate');
+    const profileAt = source.indexOf("emitSubphase(options, 'profile')");
+    const assertAt = source.indexOf('await assertOwnedRuntimeProfile');
+    expect(bridgeAt).toBeGreaterThan(0);
+    expect(bridgeAt).toBeLessThan(evaluateAt);
+    expect(profileAt).toBeGreaterThan(0);
+    expect(profileAt).toBeLessThan(assertAt);
+  });
 });

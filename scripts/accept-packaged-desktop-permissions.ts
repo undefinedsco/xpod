@@ -10,7 +10,8 @@ import { AI_CONNECTIONS_SERVICE_RESOURCE_IDS } from '@undefineds.co/ai-connectio
 import { discoverSolidLocalRoute } from '@undefineds.co/solid-sdk/local-route-fetch';
 import { createCloudAccountPassword, prepareManagedLocalAcceptancePods, parseKeyFile } from './accept-live-gateway-login-chat';
 import { createPlatformProviderForAccount } from './prepare-rc-platform-provider';
-import { launchOwnedPackagedDesktop, type OwnedPackagedDesktop } from './helpers/packaged-desktop-fixture';
+import { launchOwnedPackagedDesktop, isLaunchSubphase, type LaunchSubphase,
+  type OwnedPackagedDesktop } from './helpers/packaged-desktop-fixture';
 import { acceptMountedPodPermissions, attributeMountedOperation, MountedPermissionError,
   observeOwnedPodTraffic, type MountedPermissionCondition, type MountedPodPermissionPhase } from './helpers/packaged-desktop-permissions';
 import { createConfirmedMountedProvider, createMountedKeyInUi, acceptMountedFirstChat, acceptHeldSolidCredential,
@@ -169,15 +170,20 @@ export class DesktopAcceptanceError extends Error {
   readonly code: DesktopFailureCode;
   /** Optional closed-vocabulary sub-condition, never raw diagnostic text. */
   readonly evidence?: DesktopFailureEvidence;
-  constructor(code: DesktopFailureCode, detail: string, evidence?: DesktopFailureEvidence) {
+  /** The original error for PRIVATE debugging; describeFailure never reads it. */
+  override readonly cause?: unknown;
+  constructor(code: DesktopFailureCode, detail: string, evidence?: DesktopFailureEvidence, cause?: unknown) {
     super(detail);
     this.name = 'DesktopAcceptanceError';
     this.code = code;
     this.evidence = evidence;
+    this.cause = cause;
   }
 }
 
-export interface PublishedDesktopFailure { code: DesktopFailureCode; explanation: string; evidence?: DesktopFailureEvidence }
+export interface PublishedDesktopFailure { code: DesktopFailureCode; explanation: string; evidence?: DesktopFailureEvidence;
+  /** Only ever a closed-enum launch subphase token, never raw text. */
+  phase?: LaunchSubphase }
 
 /** The only failure data allowed in a public artifact or CI log. Anything that
  * is not one of our reviewed typed failures degrades to the generic code, so an
@@ -215,7 +221,8 @@ export function publishedFailures(errors: unknown[]): PublishedDesktopFailure[] 
 }
 
 function privateError(error: unknown): unknown {
-  const cause = error instanceof OidcApprovalError || error instanceof MountedPermissionError || error instanceof PackagedOperationError ? error.cause : undefined;
+  const cause = error instanceof OidcApprovalError || error instanceof MountedPermissionError
+    || error instanceof PackagedOperationError || error instanceof DesktopAcceptanceError ? error.cause : undefined;
   return error instanceof Error ? { name: error.name, message: error.message, stack: error.stack,
     ...(cause === undefined ? {} : { cause: privateError(cause) }),
     ...(error instanceof AggregateError ? { errors: error.errors.map(privateError) } : {}) }
@@ -301,6 +308,8 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
   let key: Awaited<ReturnType<typeof createMountedKeyInUi>> | undefined;
   let fixtureCleanup: Awaited<ReturnType<OwnedPackagedDesktop['close']>> | undefined;
   let record: Record<string, unknown> | undefined;
+  /** Last CLOSED-ENUM launch subphase reached; published only as an enum token. */
+  let launchPhase: LaunchSubphase | undefined;
   let taskSnapshot: LiveTaskEvidence | undefined;
   const advance = (next: Stage): void => { stage = next; console.log(JSON.stringify({ stage })); };
   await mkdir(options.privateDirectory, { recursive: true, mode: 0o700 });
@@ -316,8 +325,30 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
       }
     }
     advance('launch');
-    fixture = await launchOwnedPackagedDesktop({ archive: options.archive, version: options.version,
-      issuer: options.issuer, evidenceDirectory: options.privateDirectory });
+    try {
+      fixture = await launchOwnedPackagedDesktop({ archive: options.archive, version: options.version,
+        issuer: options.issuer, evidenceDirectory: options.privateDirectory,
+        // Closed enum only: the fixture can never hand back a path, URL, argv or
+        // message here, so this line is safe to publish.
+        onPhase: (phase) => {
+          if (!isLaunchSubphase(phase)) return;
+          launchPhase = phase;
+          console.log(JSON.stringify({ stage: 'launch', phase }));
+        } });
+    } catch (error) {
+      // The fixture raises bare Errors, which the reviewed mapping would degrade
+      // to `unclassified`. Attribute ONLY those to the already-audited
+      // `packaged-launch` code: any error that already carries a reviewed type
+      // (a permission/consent/operation failure surfacing through launch) must
+      // keep its own precise code, so this reclassification can never mask it.
+      if (describeFailure(error).code !== 'unclassified') throw error;
+      // Public projection is the fixed code + enum phase. The ORIGINAL error is
+      // preserved as `cause` so privateError() still records its real message and
+      // stack in the 0600 evidence file - public sanitisation must not blind
+      // private debugging.
+      throw new DesktopAcceptanceError('packaged-launch',
+        error instanceof Error ? error.message : 'packaged launch failed', undefined, error);
+    }
     const { page, gateway } = fixture;
     advance('provision');
     const status = await (await fetch(new URL('provision/status', gateway), { signal: AbortSignal.timeout(35_000) })).json() as {
@@ -523,11 +554,16 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
     // reviewed failure codes; the raw errors stay in the 600-mode private file.
     await writeFile(path.join(options.privateDirectory, SAFE_FAILURE_FILE), JSON.stringify({ schemaVersion: 1,
       kind: 'desktop-permission-failure', sourceSha: options.sourceSha, version: options.version, stage: failed,
+      ...(failed === 'launch' && isLaunchSubphase(launchPhase) ? { phase: launchPhase } : {}),
       failures: publishedFailures(failures),
       ...(taskSnapshot ? { task: summarizeLiveTaskFailure(taskSnapshot) } : {}) }, null, 2) + '\n', { mode: 0o644 });
     // The stdout projection must name the real reviewed code, so a CI run stays
     // diagnosable without the private evidence upload.
     const published = describeFailure(primaryFailure ?? failures[0]);
+    if (launchPhase !== undefined && isLaunchSubphase(launchPhase)) {
+      console.log(JSON.stringify({ runner: 'desktop-permission-acceptance', failed: true,
+        code: published.code, phase: launchPhase, explanation: DESKTOP_FAILURE_EXPLANATIONS[published.code] }));
+    }
     throw new DesktopAcceptanceError(published.code,
       `Packaged desktop permission acceptance failed at stage=${failed}; private evidence retained`, published.evidence);
   }
