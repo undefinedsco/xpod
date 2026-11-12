@@ -1,5 +1,6 @@
 import {describe,it,expect} from 'bun:test';
 import {createRequire} from 'node:module';
+import {parse as parseYaml} from 'yaml';
 import {existsSync,mkdirSync,mkdtempSync,readFileSync,writeFileSync,rmSync} from 'node:fs';
 import path from 'node:path';
 const require=createRequire(import.meta.url);
@@ -85,4 +86,46 @@ describe('exact-identity enforcement is unchanged by the isolation',()=>{
         .toThrow('exact lock identity');
     }finally{rmSync(root,{recursive:true,force:true});}
   });
+});
+
+/**
+ * The desktop bootstrap is the SINGLE Electron initialization. Bun skips Electron's
+ * postinstall during the canonical root install, and the root restore replaces
+ * node_modules afterwards, so the binary must be initialized after the final tree
+ * exists - never before. These assertions pin the order without executing the step.
+ */
+describe('desktop Electron bootstrap follows the root dependency restore',()=>{
+  const workflows:[string,string][]=[
+    ['ci.yml','desktop-launch-diagnostic'],
+    ['candidate.yml','build_desktop_rc'],
+    ['release.yml','build_desktop_macos'],
+  ];
+  const stepsOf=(file:string,job:string)=>{
+    const doc=parseYaml(readFileSync(path.join(import.meta.dir,'../../.github/workflows',file),'utf8')) as any;
+    return doc.jobs[job].steps as any[];
+  };
+  const BOOTSTRAP='node node_modules/electron/install.js';
+  const RESTORE='bun scripts/restore-root-dependencies.ts';
+
+  for(const [file,job] of workflows){
+    it(`${file} initializes Electron exactly once, after the restore`,()=>{
+      const steps=stepsOf(file,job);
+      const bootstraps=steps.filter(step=>String(step.run??'').includes(BOOTSTRAP));
+      expect(bootstraps).toHaveLength(1);
+      const restoreAt=steps.findIndex(step=>String(step.run??'').includes(RESTORE));
+      const bootstrapAt=steps.indexOf(bootstraps[0]!);
+      expect(restoreAt).toBeGreaterThanOrEqual(0);
+      // The restore wipes node_modules; a bootstrap before it would be discarded.
+      expect(bootstrapAt).toBeGreaterThan(restoreAt);
+    });
+
+    it(`${file} bootstraps before the root compile and desktop packaging`,()=>{
+      const steps=stepsOf(file,job);
+      const bootstrapAt=steps.findIndex(step=>String(step.run??'').includes(BOOTSTRAP));
+      const consumerAt=steps.findIndex(step=>/Compile root package outputs|Build desktop with|stage desktop/i.test(String(step.name??'')));
+      expect(bootstrapAt).toBeGreaterThanOrEqual(0);
+      expect(consumerAt).toBeGreaterThanOrEqual(0);
+      expect(consumerAt).toBeGreaterThan(bootstrapAt);
+    });
+  }
 });

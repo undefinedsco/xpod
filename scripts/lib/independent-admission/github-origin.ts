@@ -1306,8 +1306,18 @@ const API33_REBOUND:Readonly<Record<string,string>>=Object.freeze({
   'desktop/package.json':'a09bb65633addabdcd0ed8bd43e2dcbe8817949a21d6363f394007bf05e0057b',
   'scripts/check-dependency-state.ts':apiRc393DependencyStateHash,
   'scripts/lib/api-producer-graph.ts':apiRc393ProducerGraphHash,
+  // The reviewed controlled-phase recipe and the CLI catalog split moved these
+  // three owned rows of THIS current tuple. Earlier tuples keep their bytes.
+  'scripts/api-module-producer.py':'cad0d8896b244e22b5e3ffd531e5e6a029154114378f6077864576dc651e1fe1',
+  'scripts/api-producer-dependencies.cjs':'1d44cef0154861d3d2d8692dbc860081ae9d8826707ccab8f58155995139878d',
+  'packages/xpod-cli/src/module-catalog.ts':'8b6f022e9b1a40f6687782539f99e1a12e3d3fb0728ad19a6dc726f83cfb347e',
 });
 const apiRc393Tuple=Object.freeze({...apiRc159Tuple,name:'api-current-bun-postinstall-hook',
+  // The CURRENT tuple publishes the CURRENT producer as its PRIMARY selector so the
+  // reviewed tuple is selectable by its own identity. Every predecessor (API32 and
+  // earlier, and API33's own parents) keeps `f6abdd37...` byte-exact.
+  selectors:Object.freeze((apiRc159Tuple.selectors??[]).map(row=>Object.freeze({...row,
+    sha256:API33_REBOUND[row.path]??row.sha256}))),
   secondarySelectors:Object.freeze((apiRc159Tuple.secondarySelectors??[]).map(row=>Object.freeze({...row,
     sha256:row.path==='package.json'?apiRc393PackageHash
       :row.path==='bun.lock'?apiRc393LockHash:row.sha256}))),
@@ -1748,6 +1758,12 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
       // unchanged, so this is a new reviewed workflow identity over the same
       // contract. Every earlier reviewed version above stays byte-exact.
       {workflowSha256:'abe3be015f298062399602ab82f2ec549b58138aceaa88d06aa503d2f3af2a9b',
+      jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // Restore root declarations after the filtered desktop API producer. The
+      // regular caller jobs and publication contract remain unchanged; register
+      // the reviewed workflow bytes without changing any historical identity.
+      {workflowSha256:'1ed5a7223e97ea5b689c6707b599ce26b24a586770d313c1f399525d3132bb81',
       jobName:()=>callerNames[0]!,
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,

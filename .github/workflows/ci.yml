@@ -888,8 +888,6 @@ jobs:
             "${RUNNER_TEMP}/qlever-artifact.json"
           test -f .test-data/qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
       - run: bun install --frozen-lockfile
-      - name: Bootstrap the Electron vendor binary
-        run: node node_modules/electron/install.js
       # SAME order as candidate.yml: workspace packages first, then the existing
       # candidate version helper (never a hand-rolled version writer), then the
       # cold root compile/components that the native producer hard-requires.
@@ -910,6 +908,17 @@ jobs:
           echo "XPOD_API_CAPABILITY_ROOT=$XPOD_API_CAPABILITY_ROOT" >> "$GITHUB_ENV"
           bun -e 'import { prepareApiCapability } from "./desktop/scripts/api-capability-producer.ts"; prepareApiCapability({ repoRoot: process.cwd() });'
           test -d "$XPOD_API_CAPABILITY_ROOT"
+
+      # Restore root declarations after filtered API production, before stamping
+      # or compiling the root package. The finalized API receipt/archive is retained.
+      - name: Restore the normal full-frozen root dependency tree
+        run: bun scripts/restore-root-dependencies.ts "$PWD"
+      # Bun skips Electron's postinstall during the canonical root install, and the
+      # restore above replaces node_modules, so the vendor binary is initialized
+      # exactly once AFTER the final tree exists.
+      - name: Bootstrap the Electron vendor binary
+        run: node node_modules/electron/install.js
+
 
       # Failure evidence only: the producer already writes its own receipt and
       # evidence/ before exiting, so retain those narrow members (never a

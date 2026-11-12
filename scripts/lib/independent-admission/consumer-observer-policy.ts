@@ -510,7 +510,7 @@ function rc398ConsumerVariant<T extends GitHubSourceBindingGroup>(group: T): T {
  * origin policy bytes (one appended candidate-workflow version). One shared variant per
  * family is appended; every published group and both RC398 variants stay byte-exact.
  * Only this new variant uses the held-FD live controller self-reference. */
-const QLEVER_RC399_POLICY_SHA256='f6d9a1c19e7e3368b979d305fe2cf911da44af37fa4be1ce36d236dff515190a';
+const QLEVER_RC399_POLICY_SHA256='80ecdf2376c3dc2fb42d682f1114fb5f74f97722cb8402d5f5a67670d1cfc559';
 /** Live bytes of the release inputs this generation's dependency declaration and its
  * already-owned policy rows actually moved. Only these rows move; every earlier tuple
  * keeps its published bytes. */
@@ -524,9 +524,9 @@ const RC399_LIVE_RELEASE_INPUTS: Readonly<Record<string, string>> = Object.freez
   'scripts/lib/root-registry-supply.cjs': 'c8b2445bba41efd24156129587cdb12489cf75a6d193dd1e3f38c5f1239bdb59',
   'scripts/run-npm-pack.cjs': '6e1c6144cc71a8399350a0873c9f3dfafc06a9a2967c0fe88b09c269e8aabe46',
   'scripts/lib/owned-mode-command.cjs': '8ebb1a1b5ed3ee841ea2eabcd7275cbe879c74661dfc4dc0a60e22cb38cfa66a',
-  '.github/workflows/ci.yml': 'abe3be015f298062399602ab82f2ec549b58138aceaa88d06aa503d2f3af2a9b',
+  '.github/workflows/ci.yml': '1ed5a7223e97ea5b689c6707b599ce26b24a586770d313c1f399525d3132bb81',
   // github-origin owns the API group definition changed by the same append.
-  'scripts/lib/independent-admission/github-origin.ts': '50bbab0151655766bb9a38e8a0c7b01e457709c9eb4c9cb1a177294bf6e8d6ef',
+  'scripts/lib/independent-admission/github-origin.ts': '45595008c083913356c64b87d11f1b11c63431efa4b89937ffc6c4ca0eea4a79',
   // CLI16 is the declared in-place current CLI tuple in this same generation; its
   // verifier module is an already-owned row of the consumer/CI tails.
   'scripts/lib/independent-admission/source-rules.ts': '4bad2440d95b29d04abd6a78f24cd9c262ae0a6faeacd8c252050888a23b168b',
@@ -537,6 +537,17 @@ const RC399_LIVE_RELEASE_INPUTS: Readonly<Record<string, string>> = Object.freez
   // (run 42630283454, attempt 1). That path is already an owned row of this tail,
   // so only its literal moves; every earlier declaration keeps its published bytes.
   'scripts/agentfs-native-ci/mounted/native-authority.json': '4d979aac4353924b145f900a27b57290dbf837b5b8ee3fe12c25e087ab63c702',
+  // The reviewed CLI catalog split moved these two owned module rows. Only the
+  // current tail rebinds them; every published group keeps its frozen bytes.
+  'packages/xpod-cli/src/module-catalog.ts': '8b6f022e9b1a40f6687782539f99e1a12e3d3fb0728ad19a6dc726f83cfb347e',
+  'packages/xpod-cli/src/module-store.ts': '7440a66ce89564472566fe9106397f218edbacec34ef851e8572c159a84be6e7',
+  // The reviewed API controlled-phase recipe moved the producer and its dependency
+  // declaration. These are the same owned rows; only the current tail moves.
+  'scripts/api-module-producer.py': 'cad0d8896b244e22b5e3ffd531e5e6a029154114378f6077864576dc651e1fe1',
+  'scripts/api-producer-dependencies.cjs': '1d44cef0154861d3d2d8692dbc860081ae9d8826707ccab8f58155995139878d',
+  // This generation extends the controlled API recipe, which moves the phase policy
+  // module itself - another already-owned row of these tails.
+  'scripts/lib/independent-admission/module-source-phases.ts': 'c666324e9c0f22d5854d9dfa681720642f2a7eca27a7e0d9973dbb4091da6637',
 });
 function rc399ConsumerVariant<T extends GitHubSourceBindingGroup>(group: T): T {
   const rebind = (row: GitHubSourceBinding): GitHubSourceBinding => {

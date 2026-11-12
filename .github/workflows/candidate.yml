@@ -1473,10 +1473,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/diagnostics/retain-qlever-materials.py
       - run: bun install --frozen-lockfile
-      # Bun skips Electron's postinstall; bootstrap its binary for desktop tests
-      # and packaging on clean runners.
-      - name: Bootstrap the Electron vendor binary
-        run: node node_modules/electron/install.js
       # desktop/test imports packages/xpod-cli SOURCE, and that source resolves
       # @undefineds.co/xpod-client through its package `exports` -> dist/*. A cold
       # runner has no such dist yet, so build the workspace packages BEFORE the
@@ -1509,6 +1505,17 @@ jobs:
           echo "XPOD_API_CAPABILITY_ROOT=$XPOD_API_CAPABILITY_ROOT" >> "$GITHUB_ENV"
           bun -e 'import { prepareApiCapability } from "./desktop/scripts/api-capability-producer.ts"; prepareApiCapability({ repoRoot: process.cwd() });'
           test -d "$XPOD_API_CAPABILITY_ROOT"
+
+      # Restore root declarations after filtered API production, before stamping
+      # or compiling the root package. The finalized API receipt/archive is retained.
+      - name: Restore the normal full-frozen root dependency tree
+        run: bun scripts/restore-root-dependencies.ts "$PWD"
+      # Bun skips Electron's postinstall during the canonical root install, and the
+      # restore above replaces node_modules, so the vendor binary is initialized
+      # exactly once AFTER the final tree exists.
+      - name: Bootstrap the Electron vendor binary
+        run: node node_modules/electron/install.js
+
 
       # Failure evidence only: the producer already writes its own receipt and
       # evidence/ before exiting, so retain those narrow members (never a

@@ -217,7 +217,7 @@
   },
   {
     "path": "packages/xpod-cli/src/module-catalog.ts",
-    "sha256": "d52e3222f056d68b6c3eae261e25a196a23e5f7c43e9f027c918eedb9b0ce33e"
+    "sha256": "8b6f022e9b1a40f6687782539f99e1a12e3d3fb0728ad19a6dc726f83cfb347e"
   },
   {
     "path": "packages/xpod-cli/src/module-install-diagnostics.ts",
@@ -233,7 +233,7 @@
   },
   {
     "path": "packages/xpod-cli/src/module-store.ts",
-    "sha256": "63dc162e77c881cb68d18a742234fc8bceb729314ca79b8a88e41022de9e4c16"
+    "sha256": "7440a66ce89564472566fe9106397f218edbacec34ef851e8572c159a84be6e7"
   },
   {
     "path": "packages/xpod-cli/src/native-target.ts",
@@ -661,11 +661,11 @@
   },
   {
     "path": "scripts/api-module-producer.py",
-    "sha256": "f6abdd37eee47c33a1df9f76b7e0fb99ce8efee88c5b40ddcaa1d7a0f66091e6"
+    "sha256": "cad0d8896b244e22b5e3ffd531e5e6a029154114378f6077864576dc651e1fe1"
   },
   {
     "path": "scripts/api-producer-dependencies.cjs",
-    "sha256": "f6e9deb9a758523e57afa8fa5c7253ecec679d1c6d2c929ae7c22ea9c649685e"
+    "sha256": "1d44cef0154861d3d2d8692dbc860081ae9d8826707ccab8f58155995139878d"
   },
   {
     "path": "scripts/build-afs-from-producer.ts",
@@ -941,7 +941,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "50bbab0151655766bb9a38e8a0c7b01e457709c9eb4c9cb1a177294bf6e8d6ef"
+    "sha256": "45595008c083913356c64b87d11f1b11c63431efa4b89937ffc6c4ca0eea4a79"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",
@@ -1057,7 +1057,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/module-source-phases.ts",
-    "sha256": "0f0152796a6b8c0eee8ac7dc7fdcb419b002e0320439a1661b20927c1c9f2614"
+    "sha256": "c666324e9c0f22d5854d9dfa681720642f2a7eca27a7e0d9973dbb4091da6637"
   },
   {
     "path": "scripts/lib/independent-admission/native-admission-requirements.ts",
@@ -1221,7 +1221,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "f6d9a1c19e7e3368b979d305fe2cf911da44af37fa4be1ce36d236dff515190a"
+    "sha256": "80ecdf2376c3dc2fb42d682f1114fb5f74f97722cb8402d5f5a67670d1cfc559"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -2033,7 +2033,7 @@
   },
   {
     "path": ".github/workflows/ci.yml",
-    "sha256": "abe3be015f298062399602ab82f2ec549b58138aceaa88d06aa503d2f3af2a9b"
+    "sha256": "1ed5a7223e97ea5b689c6707b599ce26b24a586770d313c1f399525d3132bb81"
   },
   {
     "path": "qlever/tests/test_sdk90_metadata_open.py",
