@@ -29,7 +29,15 @@ export const EXTERNAL_PHASES = [
   'restart-binding-pod',
   'restart-binding-issuer',
   'restart-private-read',
+  // The observer-binding checkpoint historically collapsed FOUR independent
+  // conjuncts behind one label, so an RC failure could not name which one fired.
+  // These finer labels keep every assertion and its expected value identical and
+  // only sharpen WHERE the run stopped.
   'observer-binding',
+  'observer-binding-read',
+  'observer-binding-restart-codes',
+  'observer-binding-restart-password',
+  'observer-binding-global-counts',
   'final-private-read',
   'cleanup-final',
 ] as const;
@@ -48,15 +56,41 @@ export const EXTERNAL_REASONS = [
 
 export type ExternalReason = typeof EXTERNAL_REASONS[number];
 
+/**
+ * The restart observer's OWN startup counters, projected separately.
+ *
+ * These are deliberately NOT merged into the global totals above: `authorizationCodes`
+ * and `passwordPosts` at the top level are whole-browser-session totals, whereas a
+ * restart observer counts only the restarted host. Conflating them was exactly the
+ * ambiguity that made an earlier RC failure unreadable.
+ *
+ * Encoded as small non-negative integers so the envelope stays identifier-free:
+ * `authorizationCodes` / `passwordPosts` / `refreshTokens` / `opaquePosts` are the
+ * observer's counters, and the booleans are its flags. `present` is 0 when the
+ * observer file was absent or unparsable (its read error is then only "no data").
+ */
+export interface RestartObserverDiagnostic {
+  present: number;
+  authorizationCodes: number;
+  passwordPosts: number;
+  refreshTokens: number;
+  opaquePosts: number;
+  ready: number;
+  hostImported: number;
+  failed: number;
+}
+
 export interface ExternalPhaseDiagnostic {
   phase: ExternalPhase;
   reason: ExternalReason;
-  /** Monotonic counters only; never identifiers. */
+  /** Monotonic counters only; never identifiers. GLOBAL session totals. */
   authorizationCodes: number;
   passwordPosts: number;
   refreshGrants: number;
   refreshFailures: number;
   requestCount: number;
+  /** Restart observer's own counters/flags (zeros when absent). */
+  restartObserver: RestartObserverDiagnostic;
 }
 
 const COUNTER_MAX = 10_000;
@@ -71,6 +105,41 @@ function counter(value: unknown): number {
  * Project the checkpoint. Any unknown phase/reason collapses to a safe member,
  * so a caller cannot smuggle free text through this envelope.
  */
+export interface RestartObserverInput {
+  /** Recorded host process id; present in the on-disk record, not projected. */
+  hostPid?: number;
+  ready?: boolean; hostImported?: boolean; failed?: boolean;
+  authorizationCodes?: number; passwordPosts?: number;
+  refreshTokens?: number; opaquePosts?: number;
+}
+
+/** Booleans become 0/1 integers so the envelope stays a fixed numeric shape. */
+function flag(value: unknown): number {
+  return value === true ? 1 : 0;
+}
+
+/**
+ * Project the restart observer's own counters. A missing/unparsable observer
+ * yields all zeros with `present: 0`, which is honest ("no data") rather than a
+ * fabricated success or a silently inflated count.
+ */
+export function restartObserverDiagnostic(observer: RestartObserverInput | undefined): RestartObserverDiagnostic {
+  if (!observer || typeof observer !== 'object') {
+    return { present: 0, authorizationCodes: 0, passwordPosts: 0, refreshTokens: 0,
+      opaquePosts: 0, ready: 0, hostImported: 0, failed: 0 };
+  }
+  return {
+    present: 1,
+    authorizationCodes: counter(observer.authorizationCodes),
+    passwordPosts: counter(observer.passwordPosts),
+    refreshTokens: counter(observer.refreshTokens),
+    opaquePosts: counter(observer.opaquePosts),
+    ready: flag(observer.ready),
+    hostImported: flag(observer.hostImported),
+    failed: flag(observer.failed),
+  };
+}
+
 export function externalPhaseDiagnostic(input: {
   phase: ExternalPhase;
   reason: ExternalReason;
@@ -79,6 +148,7 @@ export function externalPhaseDiagnostic(input: {
   refreshGrants?: number;
   refreshFailures?: number;
   requestCount?: number;
+  observer?: RestartObserverInput;
 }): ExternalPhaseDiagnostic {
   const phase = EXTERNAL_PHASES.includes(input.phase) ? input.phase : 'preflight';
   const reason = EXTERNAL_REASONS.includes(input.reason) ? input.reason : 'assertion-failed';
@@ -90,6 +160,7 @@ export function externalPhaseDiagnostic(input: {
     refreshGrants: counter(input.refreshGrants),
     refreshFailures: counter(input.refreshFailures),
     requestCount: counter(input.requestCount),
+    restartObserver: restartObserverDiagnostic(input.observer),
   };
 }
 
@@ -102,20 +173,38 @@ export function describeExternalPhase(diagnostic: ExternalPhaseDiagnostic): stri
   return `external session failed at ${JSON.stringify(diagnostic)}`;
 }
 
+/** Exactly the eight numeric keys, each a bounded non-negative integer. */
+export function isRestartObserverDiagnostic(value: unknown): value is RestartObserverDiagnostic {
+  if (!value || typeof value !== 'object') return false;
+  const row = value as Record<string, unknown>;
+  const keys = ['present', 'authorizationCodes', 'passwordPosts', 'refreshTokens',
+    'opaquePosts', 'ready', 'hostImported', 'failed'];
+  if (Object.keys(row).length !== keys.length) return false;
+  if (!keys.every(key => Object.prototype.hasOwnProperty.call(row, key))) return false;
+  // present/ready/hostImported/failed are 0|1 flags; a value like 2 is NOT valid.
+  const flags = ['present', 'ready', 'hostImported', 'failed'];
+  if (!flags.every(key => row[key] === 0 || row[key] === 1)) return false;
+  // Counters stay non-negative and bounded.
+  const counters = ['authorizationCodes', 'passwordPosts', 'refreshTokens', 'opaquePosts'];
+  return counters.every(key => Number.isSafeInteger(row[key])
+    && (row[key] as number) >= 0 && (row[key] as number) <= COUNTER_MAX);
+}
+
 /** True when the value is exactly a well-formed projection (tests use this). */
 export function isExternalPhaseDiagnostic(value: unknown): value is ExternalPhaseDiagnostic {
   if (!value || typeof value !== 'object') return false;
   const row = value as Record<string, unknown>;
   const keys = ['phase', 'reason', 'authorizationCodes', 'passwordPosts',
-    'refreshGrants', 'refreshFailures', 'requestCount'];
+    'refreshGrants', 'refreshFailures', 'requestCount', 'restartObserver'];
   if (Object.keys(row).length !== keys.length) return false;
   if (!keys.every(key => Object.prototype.hasOwnProperty.call(row, key))) return false;
   if (!EXTERNAL_PHASES.includes(row.phase as ExternalPhase)
     || !EXTERNAL_REASONS.includes(row.reason as ExternalReason)) return false;
   // Same bound as `counter()`: a negative or oversized value is NOT admissible.
-  return [row.authorizationCodes, row.passwordPosts, row.refreshGrants,
+  if (![row.authorizationCodes, row.passwordPosts, row.refreshGrants,
     row.refreshFailures, row.requestCount].every(value =>
-    Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= COUNTER_MAX);
+    Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= COUNTER_MAX)) return false;
+  return isRestartObserverDiagnostic(row.restartObserver);
 }
 
 /** Bounded on-disk envelope. Exactly these keys, nothing caller-supplied. */
@@ -159,6 +248,7 @@ export function recordExternalFailure(input: {
   refreshGrants?: number;
   refreshFailures?: number;
   requestCount?: number;
+  observer?: RestartObserverInput;
 }): string {
   const diagnostic = externalPhaseDiagnostic(input);
   try {
@@ -184,18 +274,58 @@ export function recordExternalFailure(input: {
  */
 export const RESTART_SILENT_AUTHORIZATION_CODES = 1;
 
+/**
+ * Which restart conjunct failed. Diagnostic only: the thrown Error messages are
+ * unchanged, so callers and tests that match on message text keep working. The
+ * caller uses this to emit a finer fixed phase label, never to relax a check.
+ */
+export type RestartObserverConjunct =
+  | 'import'
+  | 'failure'
+  | 'authorizationCodes'
+  | 'passwordPosts'
+  | 'opaquePosts';
+
+export interface RestartObserverResult {
+  ok: boolean;
+  conjunct?: RestartObserverConjunct;
+}
+
+/**
+ * Same assertions as `assertRestartObserver`, but reports the failing conjunct
+ * instead of throwing. Used by the E2E harness to pick a precise fixed phase tag
+ * while still failing the run. This does NOT accept a bad observer.
+ */
+export function inspectRestartObserver(observer: {
+  ready?: boolean; hostImported?: boolean; failed?: boolean;
+  authorizationCodes?: number; passwordPosts?: number;
+  refreshTokens?: number; opaquePosts?: number;
+}): RestartObserverResult {
+  if (observer.ready !== true || observer.hostImported !== true) return { ok: false, conjunct: 'import' };
+  if (observer.failed !== false) return { ok: false, conjunct: 'failure' };
+  if (observer.authorizationCodes !== RESTART_SILENT_AUTHORIZATION_CODES) {
+    return { ok: false, conjunct: 'authorizationCodes' };
+  }
+  if (observer.passwordPosts !== 0) return { ok: false, conjunct: 'passwordPosts' };
+  if (observer.opaquePosts !== 0) return { ok: false, conjunct: 'opaquePosts' };
+  return { ok: true };
+}
+
 export function assertRestartObserver(observer: {
   ready?: boolean; hostImported?: boolean; failed?: boolean;
   authorizationCodes?: number; passwordPosts?: number;
   refreshTokens?: number; opaquePosts?: number;
 }): void {
-  if (observer.ready !== true || observer.hostImported !== true) {
-    throw new Error('restart observer did not import the host');
+  // Delegates to the single classifier so the throwing and reporting paths can
+  // never disagree about which conjunct failed or whether the observer is valid.
+  const verdict = inspectRestartObserver(observer);
+  if (verdict.ok) return;
+  switch (verdict.conjunct) {
+    case 'import': throw new Error('restart observer did not import the host');
+    case 'failure': throw new Error('restart observer reported failure');
+    case 'authorizationCodes':
+      throw new Error(`restart observer authorizationCodes must be exactly ${RESTART_SILENT_AUTHORIZATION_CODES} (silent SSO restore)`);
+    case 'passwordPosts': throw new Error('restart restored by password, not silent SSO');
+    case 'opaquePosts': throw new Error('restart observed opaque token traffic');
   }
-  if (observer.failed !== false) throw new Error('restart observer reported failure');
-  if (observer.authorizationCodes !== RESTART_SILENT_AUTHORIZATION_CODES) {
-    throw new Error(`restart observer authorizationCodes must be exactly ${RESTART_SILENT_AUTHORIZATION_CODES} (silent SSO restore)`);
-  }
-  if (observer.passwordPosts !== 0) throw new Error('restart restored by password, not silent SSO');
-  if (observer.opaquePosts !== 0) throw new Error('restart observed opaque token traffic');
 }

@@ -267,6 +267,11 @@ async function withSessionEvidence(run: (directory: string) => Promise<void>): P
 const sessionFailure = {schemaVersion: 1, diagnostic: {
   phase: 'restart-runtime', reason: 'assertion-failed', authorizationCodes: 1,
   passwordPosts: 1, refreshGrants: 1, refreshFailures: 0, requestCount: 181,
+  // The closed schema gained this 8th field. A failure recorded before a restart
+  // observer existed legitimately has no observer data, so the honest projection
+  // is all zeros with present=0 - not an omitted key.
+  restartObserver: {present: 0, authorizationCodes: 0, passwordPosts: 0,
+    refreshTokens: 0, opaquePosts: 0, ready: 0, hostImported: 0, failed: 0},
 }};
 
 test('failed session exports its bounded checkpoint and excludes private output', async () => {
@@ -289,6 +294,13 @@ test('session export drops malformed, oversized and out-of-schema failure data',
       '{invalid-json',
       JSON.stringify({...sessionFailure, token: 'private-test-key'}),
       JSON.stringify({...sessionFailure, diagnostic: {...sessionFailure.diagnostic, requestCount: -1}}),
+      // The OLD 7-key shape (no restartObserver) must stay inadmissible: the schema
+      // is closed at exactly 8 keys, so accepting it would silently weaken the
+      // contract this fixture was updated to satisfy.
+      JSON.stringify({schemaVersion: 1, diagnostic: {
+        phase: 'restart-runtime', reason: 'assertion-failed', authorizationCodes: 1,
+        passwordPosts: 1, refreshGrants: 1, refreshFailures: 0, requestCount: 181,
+      }}),
       ' '.repeat(4097) + JSON.stringify(sessionFailure),
     ]) {
       await writeFile(path.join(directory, 'failure.safe.json'), bytes, {mode: 0o600});

@@ -1498,6 +1498,18 @@ jobs:
       - name: Run the desktop unit test suite
         working-directory: desktop
         run: bun run test
+      # M1 (cold runner): the desktop native producer (scripts/build-bun-single.js)
+      # hard-requires dist/index.js + dist/components/components.jsonld, which a
+      # fresh checkout does not have. Compile the root outputs BEFORE the desktop
+      # build. This is the SAME step that previously ran after it - moved, not
+      # duplicated; the packed tarball still consumes the same outputs.
+      - name: Compile root package outputs consumed by the packed tarball
+        run: |
+          set -euo pipefail
+          bun run build:ts
+          bun run build:components
+          test -s dist/runtime/index.js
+          test -s dist/components/components.jsonld
       - name: Build desktop with the accepted native runtime
         working-directory: desktop
         env:
@@ -1518,14 +1530,6 @@ jobs:
             fi
           done
           echo "Account document assets verified"
-      # Packing consumes generated root outputs; desktop builds do not emit them.
-      - name: Compile root package outputs consumed by the packed tarball
-        run: |
-          set -euo pipefail
-          bun run build:ts
-          bun run build:components
-          test -s dist/runtime/index.js
-          test -s dist/components/components.jsonld
       - name: Verify root npm package boundary
         env:
           XPOD_INCLUDE_PLATFORM_PACKAGES: 'true'

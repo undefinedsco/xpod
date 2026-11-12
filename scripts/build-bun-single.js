@@ -11,6 +11,8 @@ const { createSingleBinaryEntry } = require('./lib/bun-single-runtime-entry.cjs'
 const { stageRuntimeEsmPackages } = require('./lib/runtime-esm-packages.cjs');
 const { shouldCopyBundledDependency } = require('./run-npm-pack.cjs');
 const { createRequire } = require('node:module');
+const { stageInstalledDependencyClosure } = require('./lib/installed-dependency-closure.cjs');
+const { encodeArchive } = require('./lib/bun-single-archive.cjs');
 
 const repoRoot = path.resolve(__dirname, '..');
 const distRoot = path.join(repoRoot, 'dist');
@@ -23,6 +25,11 @@ const RUNTIME_WORKSPACE_PACKAGES = [
 const CANONICAL_RUNTIME_PACKAGES = [
   '@undefineds.co/xpod-afs', '@undefineds.co/xpod-client', 'drizzle-orm',
 ];
+// Packages the runtime loads by bare specifier even though the ROOT manifest does
+// not declare them; the service bundle already keeps them external, so their
+// installed closure has to be staged or startup fails on a missing module.
+const STAGED_ENTRY_PACKAGES = ['@inrupt/solid-client-authn-node'];
+
 const COMMON_BUNDLE_EXTERNALS = [
   ...CANONICAL_RUNTIME_PACKAGES,
   '@inrupt/solid-client-authn-node',
@@ -462,7 +469,9 @@ async function main() {
     });
   }
 
-  for (const packageName of CANONICAL_RUNTIME_PACKAGES) {
+  // Entry packages are staged here too: the closure treats canonical names as
+  // already-present, so anything it is seeded with must exist in the stage first.
+  for (const packageName of [...CANONICAL_RUNTIME_PACKAGES, ...STAGED_ENTRY_PACKAGES]) {
     const packageDir = resolvePackageDir(packageName);
     if (!fs.existsSync(path.join(packageDir, 'package.json'))) throw new Error(`Canonical runtime package is missing: ${packageName}`);
     fs.cpSync(packageDir, resolveStageDir(packageName), {
@@ -471,43 +480,25 @@ async function main() {
     });
   }
 
-  // An external public package keeps its own runtime dependencies. Stage those
-  // installed objects too, including optional peers explicitly selected by the
-  // service manifest; unselected database adapters remain optional.
-  const stagedRuntimeNames = new Set([...CANONICAL_RUNTIME_PACKAGES, '@inrupt/solid-client-authn-node']);
-  const runtimeQueue = CANONICAL_RUNTIME_PACKAGES.map(resolvePackageDir);
-  const visitedRuntimeSources = new Set();
-  while (runtimeQueue.length) {
-    const sourceRoot = fs.realpathSync(runtimeQueue.shift());
-    if (visitedRuntimeSources.has(sourceRoot)) continue;
-    visitedRuntimeSources.add(sourceRoot);
-    const manifest = readJson(path.join(sourceRoot, 'package.json'));
-    const names = new Set(Object.keys(manifest.dependencies || {}));
-    for (const name of Object.keys(manifest.peerDependencies || {})) {
-      if (rootPackage.dependencies?.[name] || rootPackage.optionalDependencies?.[name]) names.add(name);
-    }
-    for (const name of names) {
-      const search = createRequire(path.join(sourceRoot, 'package.json')).resolve.paths(name) || [];
-      const found = search.map((directory) => path.join(directory, name)).find((directory) => fs.existsSync(path.join(directory, 'package.json')));
-      if (!found) throw new Error(`Installed runtime dependency is missing: ${manifest.name} -> ${name}`);
-      const dependency = readJson(path.join(found, 'package.json'));
-      const destination = resolveStageDir(name);
-      if (fs.existsSync(path.join(destination, 'package.json'))) {
-        if (readJson(path.join(destination, 'package.json')).version !== dependency.version) throw new Error(`Conflicting canonical runtime dependency: ${name}`);
-        if (!CANONICAL_RUNTIME_PACKAGES.includes(name) && name !== '@inrupt/solid-client-authn-node') {
-          // Component discovery may already have staged a derived main bundle.
-          // Retain its host manifest and add every original public runtime file.
-          fs.cpSync(found, destination, { recursive: true, dereference: true,
-            filter: (sourcePath) => path.relative(found, sourcePath) !== 'package.json' && shouldCopyBundledDependency(found, sourcePath) });
-        }
-      } else {
-        fs.cpSync(found, destination, { recursive: true, dereference: true,
-          filter: (sourcePath) => shouldCopyBundledDependency(found, sourcePath) });
-      }
-      stagedRuntimeNames.add(name);
-      if (!CANONICAL_RUNTIME_PACKAGES.includes(name) && name !== '@inrupt/solid-client-authn-node') runtimeQueue.push(found);
-    }
-  }
+  // An external public package keeps its own runtime dependencies. Stage the
+  // installed closure with Node's package-relative resolution, so two parents
+  // that really resolved different versions of one name keep both: a copy
+  // hoisted to the install root lands in the hoist slot, a copy nested under its
+  // parent stays nested there. Optional peers selected by the service manifest
+  // are followed; unselected database adapters remain absent.
+  // A public package may keep its own manifest while still needing its OWN
+  // runtime dependency closure staged: @inrupt/solid-client-authn-node declares
+  // openid-client/jose/uuid, and the packaged Gateway resolves them at startup.
+  // 'Externally kept' therefore means 'not expanded as a nested copy target from
+  // its parents', never 'do not traverse its dependencies'.
+  const { rootNames: stagedRuntimeNames } = stageInstalledDependencyClosure({
+    stageRoot,
+    repoRoot,
+    rootPackageJson: rootPackage,
+    canonicalPackages: [...CANONICAL_RUNTIME_PACKAGES, ...STAGED_ENTRY_PACKAGES],
+    resolvePackageDir,
+    shouldCopy: shouldCopyBundledDependency,
+  });
 
   await stageRuntimeEsmPackages({ nodeModulesRoot: path.join(repoRoot, 'node_modules'), stageRoot, compileTarget });
 
@@ -535,19 +526,21 @@ async function main() {
     plugins: [kyUniversalBrowserPlugin, sharedDataFactoryPlugin(cliOutputPath), sharedLoggerFactoryPlugin(cliOutputPath)],
   });
 
-  const manifest = [];
+  // Raw-payload container: small JSON metadata (path/mode/length) plus the RAW
+  // file bytes, then Brotli. The previous representation base64-inflated every
+  // file BEFORE compressing it, which both wasted space and hid repetition from
+  // the compressor. Compression, not file removal, is what has to shrink here.
+  const entries = [];
   for (const sourcePath of iterFiles(stageRoot)) {
     const relativePath = path.relative(stageRoot, sourcePath).split(path.sep).join(path.posix.sep);
-    const content = fs.readFileSync(sourcePath);
-    manifest.push({
+    entries.push({
       path: relativePath,
-      contentBase64: content.toString('base64'),
       mode: fs.statSync(sourcePath).mode & 0o777,
+      content: fs.readFileSync(sourcePath),
     });
   }
-
-  manifest.sort((left, right) => left.path.localeCompare(right.path));
-  const compressedManifest = zlib.brotliCompressSync(Buffer.from(JSON.stringify(manifest)), {
+  const { container } = encodeArchive(entries);
+  const compressedManifest = zlib.brotliCompressSync(container, {
     params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 9 },
   });
   const manifestSha = crypto.createHash('sha256').update(compressedManifest).digest('hex');

@@ -6,6 +6,7 @@ import {
   EXTERNAL_PHASES, EXTERNAL_REASONS, externalPhaseDiagnostic, describeExternalPhase,
   isExternalPhaseDiagnostic, failureSafeEnvelope, isFailureSafeEnvelope, FAILURE_SAFE_FILE,
   recordExternalFailure, assertRestartObserver, RESTART_SILENT_AUTHORIZATION_CODES,
+  inspectRestartObserver, restartObserverDiagnostic, isRestartObserverDiagnostic,
 } from './browserExternalPhase';
 
 /**
@@ -52,29 +53,35 @@ test('the projection is a fixed key set so extra fields cannot leak', () => {
     pageText: 'secret body text',
     token: 'SEKRET',
   } as never);
-  assert.equal(Object.keys(row).length, 7);
+  assert.equal(Object.keys(row).length, 8);
   assert.equal(JSON.stringify(row).includes('SEKRET'), false);
   assert.equal(JSON.stringify(row).includes('secret body text'), false);
   assert.deepEqual(Object.keys(row).sort(), [
     'authorizationCodes', 'passwordPosts', 'phase', 'reason',
-    'refreshFailures', 'refreshGrants', 'requestCount',
+    'refreshFailures', 'refreshGrants', 'requestCount', 'restartObserver',
   ]);
+  // The nested observer projection is itself a closed numeric key set.
+  assert.equal(Object.keys(row.restartObserver).length, 8);
 });
 
 test('validator rejects the bounds-violating counters it used to accept', () => {
   // These are exactly the loopholes ROOT named: negative and huge integers.
   for (const bad of [-1, 10_001, Number.MAX_SAFE_INTEGER]) {
     const row = { phase: 'renewal', reason: 'assertion-failed', authorizationCodes: bad,
-      passwordPosts: 0, refreshGrants: 0, refreshFailures: 0, requestCount: 0 };
+      passwordPosts: 0, refreshGrants: 0, refreshFailures: 0, requestCount: 0,
+      restartObserver: restartObserverDiagnostic(undefined) };
     assert.equal(isExternalPhaseDiagnostic(row), false, String(bad));
   }
   assert.equal(isExternalPhaseDiagnostic({ phase: 'renewal', reason: 'assertion-failed',
-    authorizationCodes: 0, passwordPosts: 0, refreshGrants: 0, refreshFailures: 0, requestCount: 0 }), true);
+    authorizationCodes: 0, passwordPosts: 0, refreshGrants: 0, refreshFailures: 0, requestCount: 0,
+    restartObserver: restartObserverDiagnostic(undefined) }), true);
 });
 
 test('failure.safe envelope is closed-schema and validator-admissible', () => {
-  const env = failureSafeEnvelope({ phase: 'restart-private-read', reason: 'assertion-failed',
-    authorizationCodes: 1, passwordPosts: 1, refreshGrants: 1, refreshFailures: 0, requestCount: 12 });
+  const env = failureSafeEnvelope(externalPhaseDiagnostic({ phase: 'restart-private-read', reason: 'assertion-failed',
+    authorizationCodes: 1, passwordPosts: 1, refreshGrants: 1, refreshFailures: 0, requestCount: 12,
+    observer: { ready: true, hostImported: true, failed: false,
+      authorizationCodes: 1, passwordPosts: 0, refreshTokens: 0, opaquePosts: 0 } }));
   assert.equal(FAILURE_SAFE_FILE, 'failure.safe.json');
   assert.deepEqual(Object.keys(env).sort(), ['diagnostic', 'schemaVersion']);
   assert.equal(isFailureSafeEnvelope(env), true);
@@ -160,4 +167,107 @@ test('restart still rejects password login, zero codes, extra codes and bad flag
   rejects({ hostImported: false }, /import/u);
   rejects({ failed: true }, /failure/u);
   rejects({ opaquePosts: 1 }, /opaque/u);
+});
+
+test('restart observer counters are reported separately from global totals', () => {
+  // The exact RC409 ambiguity: global totals 2 codes / 1 password on an expire
+  // run are NORMAL, while the restarted host must show 1 code / 0 password.
+  const diag = externalPhaseDiagnostic({
+    phase: 'observer-binding-restart-codes', reason: 'assertion-failed',
+    authorizationCodes: 2, passwordPosts: 1, refreshGrants: 0, refreshFailures: 1, requestCount: 256,
+    observer: { ready: true, hostImported: true, failed: false,
+      authorizationCodes: 1, passwordPosts: 0, refreshTokens: 0, opaquePosts: 0 },
+  });
+  // Global projection keeps the whole-session numbers.
+  assert.equal(diag.authorizationCodes, 2);
+  assert.equal(diag.passwordPosts, 1);
+  // The observer projection reports the restarted host only.
+  assert.deepEqual(diag.restartObserver, {
+    present: 1, authorizationCodes: 1, passwordPosts: 0, refreshTokens: 0,
+    opaquePosts: 0, ready: 1, hostImported: 1, failed: 0,
+  });
+  assert.equal(isExternalPhaseDiagnostic(diag), true);
+});
+
+test('a missing restart observer is reported as absent, not as a passing zero', () => {
+  const diag = externalPhaseDiagnostic({
+    phase: 'observer-binding-read', reason: 'assertion-failed', observer: undefined,
+  });
+  assert.equal(diag.restartObserver.present, 0);
+  // Zeros alone must never be confused with a valid 0-code observer, because
+  // present=0 is the explicit "no data" marker.
+  assert.equal(isRestartObserverDiagnostic(diag.restartObserver), true);
+  assert.notDeepEqual(diag.restartObserver, restartObserverDiagnostic({
+    ready: true, hostImported: true, failed: false,
+    authorizationCodes: 0, passwordPosts: 0, refreshTokens: 0, opaquePosts: 0,
+  }));
+});
+
+test('observer projection rejects out-of-range or extra keys', () => {
+  const base = restartObserverDiagnostic({ ready: true, hostImported: true, failed: false,
+    authorizationCodes: 1, passwordPosts: 0, refreshTokens: 0, opaquePosts: 0 });
+  assert.equal(isRestartObserverDiagnostic({ ...base, authorizationCodes: -1 }), false);
+  assert.equal(isRestartObserverDiagnostic({ ...base, authorizationCodes: 10_001 }), false);
+  assert.equal(isRestartObserverDiagnostic({ ...base, token: 'SEKRET' } as never), false);
+  assert.equal(isRestartObserverDiagnostic({ ...base, ready: undefined } as never), false);
+});
+
+test('inspectRestartObserver names each failing conjunct and never accepts a bad observer', () => {
+  const base = { ready: true, hostImported: true, failed: false,
+    authorizationCodes: 1, passwordPosts: 0, refreshTokens: 0, opaquePosts: 0 };
+  assert.deepEqual(inspectRestartObserver(base), { ok: true });
+  const cases: Array<[object, string]> = [
+    [{ ready: false }, 'import'],
+    [{ hostImported: false }, 'import'],
+    [{ failed: true }, 'failure'],
+    [{ authorizationCodes: 0 }, 'authorizationCodes'],
+    [{ authorizationCodes: 2 }, 'authorizationCodes'],
+    [{ passwordPosts: 1 }, 'passwordPosts'],
+    [{ opaquePosts: 1 }, 'opaquePosts'],
+  ];
+  for (const [over, conjunct] of cases) {
+    assert.deepEqual(inspectRestartObserver({ ...base, ...over }), { ok: false, conjunct });
+    // The throwing path must agree with the reporting path, always.
+    assert.throws(() => assertRestartObserver({ ...base, ...over }));
+  }
+});
+
+test('observer flags must be 0 or 1 while counters stay bounded', () => {
+  const base = restartObserverDiagnostic({ ready: true, hostImported: true, failed: false,
+    authorizationCodes: 1, passwordPosts: 0, refreshTokens: 0, opaquePosts: 0 });
+  assert.equal(isRestartObserverDiagnostic(base), true);
+  // A flag of 2 must be inadmissible even though it is a safe integer.
+  for (const flagKey of ['present', 'ready', 'hostImported', 'failed'] as const) {
+    assert.equal(isRestartObserverDiagnostic({ ...base, [flagKey]: 2 }), false, flagKey);
+  }
+  // Counters remain plain bounded non-negative integers.
+  assert.equal(isRestartObserverDiagnostic({ ...base, authorizationCodes: 2 }), true);
+  assert.equal(isRestartObserverDiagnostic({ ...base, authorizationCodes: 10_001 }), false);
+  assert.equal(isRestartObserverDiagnostic({ ...base, passwordPosts: -1 }), false);
+});
+
+test('a parsed observer with a BAD flag keeps present=1 and its actual counters', () => {
+  // This is the read-failure data that was previously lost: the record parsed, so
+  // it must be reported as present with its real values even though the spec will
+  // (correctly) fail on the bad flag.
+  const bad = restartObserverDiagnostic({ ready: false, hostImported: true, failed: true,
+    authorizationCodes: 3, passwordPosts: 1, refreshTokens: 2, opaquePosts: 4 });
+  assert.equal(bad.present, 1);
+  assert.equal(bad.ready, 0);
+  assert.equal(bad.hostImported, 1);
+  assert.equal(bad.failed, 1);
+  assert.equal(bad.authorizationCodes, 3);
+  assert.equal(bad.passwordPosts, 1);
+  assert.equal(bad.opaquePosts, 4);
+  assert.equal(isRestartObserverDiagnostic(bad), true, 'a bad-flag record is still a valid projection');
+  // And it still fails the real contract.
+  assert.deepEqual(inspectRestartObserver({ ready: false, hostImported: true, failed: true,
+    authorizationCodes: 3, passwordPosts: 1, refreshTokens: 2, opaquePosts: 4 }),
+  { ok: false, conjunct: 'import' });
+});
+
+test('an absent observer is present=0, never a fabricated present=1', () => {
+  const absent = restartObserverDiagnostic(undefined);
+  assert.equal(absent.present, 0);
+  assert.equal(isRestartObserverDiagnostic(absent), true);
 });

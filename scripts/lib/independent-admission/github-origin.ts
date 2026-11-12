@@ -1741,6 +1741,14 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
       // selectable; unknown hashes are still refused.
       {workflowSha256:'c8b892f7323b88683434f4870e40fc74a5a904447a82379e72347903114f055f',
       jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // APPEND-ONLY: current ci.yml adds the isolated manual standalone-expire
+      // session diagnostic (its own concurrency group, no Environment, no shared
+      // RC). The four regular CI jobs and the manual publication route are
+      // unchanged, so this is a new reviewed workflow identity over the same
+      // contract. Every earlier reviewed version above stays byte-exact.
+      {workflowSha256:'abe3be015f298062399602ab82f2ec549b58138aceaa88d06aa503d2f3af2a9b',
+      jobName:()=>callerNames[0]!,
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,
     sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS,

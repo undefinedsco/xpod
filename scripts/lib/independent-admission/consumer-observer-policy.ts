@@ -510,7 +510,7 @@ function rc398ConsumerVariant<T extends GitHubSourceBindingGroup>(group: T): T {
  * origin policy bytes (one appended candidate-workflow version). One shared variant per
  * family is appended; every published group and both RC398 variants stay byte-exact.
  * Only this new variant uses the held-FD live controller self-reference. */
-const QLEVER_RC399_POLICY_SHA256='25c3842e6c77eee9487f7c00230f8dc4c84fe4a2e5bccaa4da5b806da993d286';
+const QLEVER_RC399_POLICY_SHA256='f6d9a1c19e7e3368b979d305fe2cf911da44af37fa4be1ce36d236dff515190a';
 /** Live bytes of the release inputs this generation's dependency declaration and its
  * already-owned policy rows actually moved. Only these rows move; every earlier tuple
  * keeps its published bytes. */
@@ -524,15 +524,19 @@ const RC399_LIVE_RELEASE_INPUTS: Readonly<Record<string, string>> = Object.freez
   'scripts/lib/root-registry-supply.cjs': 'c8b2445bba41efd24156129587cdb12489cf75a6d193dd1e3f38c5f1239bdb59',
   'scripts/run-npm-pack.cjs': '6e1c6144cc71a8399350a0873c9f3dfafc06a9a2967c0fe88b09c269e8aabe46',
   'scripts/lib/owned-mode-command.cjs': '8ebb1a1b5ed3ee841ea2eabcd7275cbe879c74661dfc4dc0a60e22cb38cfa66a',
-  '.github/workflows/ci.yml': 'c8b892f7323b88683434f4870e40fc74a5a904447a82379e72347903114f055f',
+  '.github/workflows/ci.yml': 'abe3be015f298062399602ab82f2ec549b58138aceaa88d06aa503d2f3af2a9b',
   // github-origin owns the API group definition changed by the same append.
-  'scripts/lib/independent-admission/github-origin.ts': '3f40e787a5ae590dc60592d9f5491709104e4ea07513a9c6fbdd8e7b0a5c9bb3',
+  'scripts/lib/independent-admission/github-origin.ts': '50bbab0151655766bb9a38e8a0c7b01e457709c9eb4c9cb1a177294bf6e8d6ef',
   // CLI16 is the declared in-place current CLI tuple in this same generation; its
   // verifier module is an already-owned row of the consumer/CI tails.
   'scripts/lib/independent-admission/source-rules.ts': '4bad2440d95b29d04abd6a78f24cd9c262ae0a6faeacd8c252050888a23b168b',
   // desktop/package.json (already owned by these tails) moved with the desktop
   // runtime descriptor initializer.
   'desktop/package.json': 'a09bb65633addabdcd0ed8bd43e2dcbe8817949a21d6363f394007bf05e0057b',
+  // The CURRENT native authority moved to the reviewed 27cf producer tuple
+  // (run 42630283454, attempt 1). That path is already an owned row of this tail,
+  // so only its literal moves; every earlier declaration keeps its published bytes.
+  'scripts/agentfs-native-ci/mounted/native-authority.json': '4d979aac4353924b145f900a27b57290dbf837b5b8ee3fe12c25e087ab63c702',
 });
 function rc399ConsumerVariant<T extends GitHubSourceBindingGroup>(group: T): T {
   const rebind = (row: GitHubSourceBinding): GitHubSourceBinding => {

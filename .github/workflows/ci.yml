@@ -4,21 +4,25 @@ on:
   workflow_dispatch:
     inputs:
       operation:
-        description: 'Explicit independent product publication control route'
+        description: 'Explicit route: publication control, or the manual session diagnostic'
         required: true
         type: choice
-        options: [independent-publication]
+        options: [independent-publication, session-diagnostic]
+      diagnostic_image:
+        description: 'Session diagnostic only: immutable repo@sha256 app image'
+        required: false
+        type: string
       source_sha:
-        description: 'Reviewed immutable staging source SHA'
-        required: true
+        description: 'independent-publication only: reviewed immutable staging source SHA'
+        required: false
         type: string
       producer_coordinates:
-        description: 'Complete immutable product selector request; no approvals'
-        required: true
+        description: 'independent-publication only: complete immutable product selector request'
+        required: false
         type: string
       mode:
-        description: 'Prepare evidence, or explicitly publish after all gates'
-        required: true
+        description: 'independent-publication only: prepare evidence, or publish after all gates'
+        required: false
         type: choice
         options: [prepare, publish]
         default: prepare
@@ -28,7 +32,15 @@ on:
     branches: [main, staging]
 
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && 'independent-publication-control' || format('ci-{0}', github.ref) }}
+  # The diagnostic gets its OWN queue so it can run beside PR CI without sharing
+  # (or blocking) the independent-publication control lock. Legacy stays as-is.
+  group: >-
+    ${{
+      github.event_name == 'workflow_dispatch' && inputs.operation == 'session-diagnostic'
+        && format('session-diagnostic-{0}', github.ref)
+        || (github.event_name == 'workflow_dispatch' && 'independent-publication-control'
+            || format('ci-{0}', github.ref))
+    }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
@@ -659,7 +671,10 @@ jobs:
         run: bun run test:integration:full
 
   publication-control:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+    # The independent-publication route validation is meaningful ONLY for its own
+    # operation. Narrowing the guard keeps that route's semantics intact while
+    # letting the manual session diagnostic dispatch without failing here.
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.operation == 'independent-publication' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -682,7 +697,17 @@ jobs:
   independent-publication:
     name: independent-publication
     needs: publication-control
-    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/staging' && inputs.operation == 'independent-publication' && (inputs.mode == 'prepare' || inputs.mode == 'publish') }}
+    # The dispatch INPUTS became optional at the UI level only so the diagnostic
+    # route is not forced to supply publication-only fields. This guard therefore
+    # re-asserts them strictly: without a real source SHA and selector the route
+    # must NOT run. The publication validator below re-checks the same values.
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch'
+          && github.ref == 'refs/heads/staging'
+          && inputs.operation == 'independent-publication'
+          && (inputs.mode == 'prepare' || inputs.mode == 'publish')
+          && inputs.source_sha != ''
+          && inputs.producer_coordinates != '' }}
     permissions:
       contents: read
       actions: read
@@ -693,3 +718,81 @@ jobs:
       mode: ${{ inputs.mode }}
     secrets:
       NPM_TOKEN: ${{ inputs.mode == 'publish' && secrets.NPM_TOKEN || '' }}
+
+  session-diagnostic:
+    name: session-diagnostic (standalone-expire, manual, NOT release acceptance)
+    # Manual, feature-branch-safe diagnostic ONLY. It never sets
+    # runtime-mode-matrix, never satisfies the candidate 9-profile requirement and
+    # never claims release validity. Its receipt kind is not accepted by the
+    # release verifier.
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.operation == 'session-diagnostic' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Validate the immutable diagnostic image input
+        env:
+          DIAGNOSTIC_IMAGE: ${{ inputs.diagnostic_image }}
+        run: |
+          set -euo pipefail
+          [[ "$DIAGNOSTIC_IMAGE" =~ ^ghcr\.io/undefinedsco/xpod@sha256:[a-f0-9]{64}$ ]] \
+            || { echo "::error::diagnostic_image must be ghcr.io/undefinedsco/xpod@sha256:<64hex>"; exit 1; }
+      - run: bun install --frozen-lockfile
+      - run: bun run build:packages && bun run --cwd desktop bundle
+      - run: bun x --no-install playwright install --with-deps chromium
+      - name: Prepare owned Linux Electron display and installed runtime
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes xvfb libgtk-3-0t64 libnss3 libxss1 libgbm1 libasound2t64
+          electron_install_attempts=3
+          for electron_install_attempt in 1 2 3; do
+            if node node_modules/electron/install.js; then
+              break
+            fi
+            if [ "$electron_install_attempt" -eq "$electron_install_attempts" ]; then
+              echo "Electron install failed after ${electron_install_attempts} attempts" >&2
+              exit 1
+            fi
+            electron_install_delay=$((electron_install_attempt * 2))
+            echo "Electron install attempt ${electron_install_attempt}/${electron_install_attempts} failed; retrying in ${electron_install_delay}s" >&2
+            sleep "$electron_install_delay"
+          done
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const { execFileSync } = require('node:child_process');
+          const executable = require('electron');
+          fs.accessSync(executable, fs.constants.X_OK);
+          if (execFileSync('ldd', [executable], { encoding: 'utf8' }).includes('not found')) {
+            throw new Error('Installed Electron system dependencies are incomplete');
+          }
+          execFileSync('which', ['xvfb-run'], { stdio: 'ignore' });
+          NODE
+      - name: Run the owned standalone-expire session diagnostic
+        env:
+          XPOD_DIAGNOSTIC_IMAGE: ${{ inputs.diagnostic_image }}
+          XPOD_DIAGNOSTIC_SOURCE_SHA: ${{ github.sha }}
+          XPOD_DIAGNOSTIC_OUTPUT: ${{ github.workspace }}/.test-data/standalone-expire-diagnostic
+        # Bun is the declared toolchain and the script asserts it: running it with
+        # Node would make every child spawn (`bun <script>`) invalid.
+        run: xvfb-run --auto-servernum bun scripts/diagnose-standalone-expire-session.cjs
+      - name: Upload the allowlisted safe diagnostic projection only
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: standalone-expire-diagnostic-${{ github.sha }}
+          path: ${{ github.workspace }}/.test-data/standalone-expire-diagnostic/diagnostic.report.json
+          if-no-files-found: error
+          retention-days: 14

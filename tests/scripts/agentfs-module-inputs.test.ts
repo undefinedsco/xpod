@@ -303,7 +303,7 @@ describe('module mounted input preparation', () => {
   });
   it('binds all four exact reviewed native artifacts and rejects unsupported targets', () => {
     for (const target of ['linux-arm64', 'darwin-arm64', 'linux-x64', 'darwin-x64']) {
-      const facts = nativeFacts(target); expect(facts.run).toBe('38104482639'); expect(facts.source).toBe('5f037c09bd54980c68406d4a1aa534af14fcbd70');
+      const facts = nativeFacts(target); expect(facts.run).toBe('42630283454'); expect(facts.source).toBe('27cf348d21769b50880d99c72a2e5edb4763b4b0');
       expect(facts.zipSHA256).toMatch(/^[a-f0-9]{64}$/); expect(facts.pins.PRODUCT_SHA).toBe(facts.source);
     }
     expect(() => nativeFacts('linux-riscv64')).toThrow('unsupported');
