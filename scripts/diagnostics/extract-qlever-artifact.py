@@ -1,11 +1,17 @@
-"""Hash-verify then safely extract the pinned QLever runtime artifact.
+"""Hash-verify then extract ONLY the two selected members of the pinned QLever artifact.
 
 DIAGNOSTIC_NOT_QUALIFICATION.
 
-The retained GitHub metadata digest only proves what the API *says*. The bytes
-actually downloaded are hashed here and must match the pinned sha256 EXACTLY
-before anything is extracted. Extraction is then restricted: only regular files,
-no traversal, no links, bounded member count and total uncompressed size.
+This is a CONSUMER SELECTION for the non-qualification launch diagnostic, not a
+reduction of what the full publication carries: the complete original ZIP is
+retained untouched, and nothing is repacked or truncated.
+
+The exact pinned sha256 already authenticates every byte of the archive, so no
+arbitrary member-count or total-size ceiling is imposed. Extraction is limited
+instead by ACTUAL IDENTITY: exactly one regular top-level
+`qlever-local-runtime-darwin-arm64.tar.gz` and exactly one regular top-level
+`qlever-local-acceptance.json`. Everything else (native-materials/, source kits,
+companion proofs, raw logs) is deliberately NOT extracted.
 """
 import hashlib
 import json
@@ -13,14 +19,12 @@ import os
 import sys
 import zipfile
 
-# Actual artifact metadata reports ~358MB uncompressed; allow modest headroom.
-MAX_TOTAL_BYTES = 512 * 1024 * 1024
-MAX_MEMBERS = 4096
 EXPECTED_ARTIFACT_ID = '13912079864'
+SELECTED = ('qlever-local-runtime-darwin-arm64.tar.gz', 'qlever-local-acceptance.json')
 
 
 def fail(message: str) -> 'NoReturn':  # type: ignore[name-defined]
-    # Never print raw untrusted metadata: a fixed message only.
+    # Fixed message only: never echo untrusted archive metadata.
     print(f'QLever artifact rejected: {message}', file=sys.stderr)
     raise SystemExit(1)
 
@@ -34,7 +38,7 @@ def sha256_file(path: str) -> str:
 
 
 def main(zip_path: str, destination: str, expected_sha: str, meta_path: str) -> int:
-    # 1. The metadata must already name the expected artifact id (defence in depth).
+    # 1. Metadata must name the expected artifact id (defence in depth).
     try:
         meta = json.load(open(meta_path))
     except (OSError, ValueError):
@@ -45,53 +49,58 @@ def main(zip_path: str, destination: str, expected_sha: str, meta_path: str) -> 
     # 2. The DOWNLOADED bytes must hash to the pinned digest before extraction.
     if not os.path.isfile(zip_path):
         fail('downloaded archive is missing')
-    actual = sha256_file(zip_path)
-    if actual != expected_sha:
+    if sha256_file(zip_path) != expected_sha:
         fail('downloaded archive sha256 does not match the pinned digest')
 
-    # 3. Bounded, type-safe, traversal-safe extraction.
+    # 3. Select the exact two members and validate their identity/type.
     try:
         archive = zipfile.ZipFile(zip_path)
     except zipfile.BadZipFile:
         fail('downloaded archive is not a zip')
-    members = archive.infolist()
-    if len(members) > MAX_MEMBERS:
-        fail('too many archive members')
-    total = 0
-    planned = []
-    for member in members:
-        name = member.filename
-        if not name or name.startswith('/') or '..' in name.split('/') or '\\' in name:
-            fail('archive member path is unsafe')
-        # Reject links and any non-regular entry.
-        mode = (member.external_attr >> 16) & 0o170000
-        if mode and mode not in (0o100000, 0o040000):
-            fail('archive member is not a regular file')
-        if member.is_dir():
-            continue
-        total += member.file_size
-        if total > MAX_TOTAL_BYTES:
-            fail('archive uncompressed size exceeds the bound')
-        planned.append(member)
 
-    os.makedirs(destination, exist_ok=True)
-    for member in planned:
-        target = os.path.realpath(os.path.join(destination, member.filename))
-        root = os.path.realpath(destination)
-        if not (target == root or target.startswith(root + os.sep)):
-            fail('archive member escapes the destination')
-        os.makedirs(os.path.dirname(target), exist_ok=True)
-        with archive.open(member) as source, open(target, 'wb') as sink:
-            remaining = member.file_size
-            while remaining > 0:
-                chunk = source.read(min(1024 * 1024, remaining))
+    inventory = {}
+    for info in archive.infolist():
+        name = info.filename
+        # The diagnostic consumes top-level files only: a nested path can never be
+        # one of the selected members, so it is ignored rather than extracted.
+        if name not in SELECTED:
+            continue
+        if name in inventory:
+            fail('selected member appears more than once')
+        if info.is_dir():
+            fail('selected member is a directory')
+        mode = (info.external_attr >> 16) & 0o170000
+        if mode and mode != 0o100000:
+            fail('selected member is not a regular file')
+        # Path constant: no separators, no traversal, no absolute path.
+        if '/' in name or '\\' in name or name.startswith('.') or '..' in name:
+            fail('selected member path is not a constant top-level name')
+        inventory[name] = info
+
+    for name in SELECTED:
+        if name not in inventory:
+            fail('selected member is missing')
+
+    root = os.path.realpath(destination)
+    os.makedirs(root, exist_ok=True)
+    written = []
+    for name in SELECTED:
+        info = inventory[name]
+        target = os.path.realpath(os.path.join(root, name))
+        if os.path.dirname(target) != root:
+            fail('selected member escapes the destination')
+        with archive.open(info) as source, open(target, 'wb') as sink:
+            while True:
+                chunk = source.read(1024 * 1024)
                 if not chunk:
                     break
-                remaining -= len(chunk)
                 sink.write(chunk)
-            if remaining != 0:
-                fail('archive member was truncated')
-    print(f'QLever artifact extracted: {len(planned)} files, {total} bytes')
+        if os.path.getsize(target) != info.file_size:
+            fail('selected member size differs from the archive record')
+        written.append((name, info.file_size, sha256_file(target)))
+
+    for name, size, digest in written:
+        print(f'extracted {name} bytes={size} sha256={digest}')
     return 0
 
 

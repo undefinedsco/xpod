@@ -7,7 +7,7 @@ on:
         description: 'Explicit route: publication control, or the manual session diagnostic'
         required: true
         type: choice
-        options: [independent-publication, session-diagnostic, desktop-launch-diagnostic]
+        options: [independent-publication, session-diagnostic, session-matrix-diagnostic, desktop-launch-diagnostic]
       diagnostic_image:
         description: 'Session diagnostic only: immutable repo@sha256 app image'
         required: false
@@ -38,6 +38,8 @@ concurrency:
     ${{
       github.event_name == 'workflow_dispatch' && inputs.operation == 'desktop-launch-diagnostic'
         && format('desktop-launch-diagnostic-{0}', github.ref)
+        || (github.event_name == 'workflow_dispatch' && inputs.operation == 'session-matrix-diagnostic'
+        && format('session-matrix-diagnostic-{0}', github.ref))
         || (github.event_name == 'workflow_dispatch' && inputs.operation == 'session-diagnostic'
         && format('session-diagnostic-{0}', github.ref))
         || (github.event_name == 'workflow_dispatch' && 'independent-publication-control'
@@ -722,14 +724,14 @@ jobs:
       NPM_TOKEN: ${{ inputs.mode == 'publish' && secrets.NPM_TOKEN || '' }}
 
   session-diagnostic:
-    name: session-diagnostic (standalone-expire, manual, NOT release acceptance)
+    name: ${{ inputs.operation }} (manual, NOT release acceptance)
     # Manual, feature-branch-safe diagnostic ONLY. It never sets
     # runtime-mode-matrix, never satisfies the candidate 9-profile requirement and
     # never claims release validity. Its receipt kind is not accepted by the
     # release verifier.
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.operation == 'session-diagnostic' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.operation == 'session-diagnostic' || inputs.operation == 'session-matrix-diagnostic') }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: ${{ inputs.operation == 'session-matrix-diagnostic' && 60 || 40 }}
     permissions:
       contents: read
       packages: read
@@ -782,20 +784,40 @@ jobs:
           }
           execFileSync('which', ['xvfb-run'], { stdio: 'ignore' });
           NODE
-      - name: Run the owned standalone-expire session diagnostic
+      - name: Run the owned session diagnostic
         env:
+          DIAGNOSTIC_OPERATION: ${{ inputs.operation }}
           XPOD_DIAGNOSTIC_IMAGE: ${{ inputs.diagnostic_image }}
           XPOD_DIAGNOSTIC_SOURCE_SHA: ${{ github.sha }}
-          XPOD_DIAGNOSTIC_OUTPUT: ${{ github.workspace }}/.test-data/standalone-expire-diagnostic
+          XPOD_DIAGNOSTIC_OUTPUT: ${{ github.workspace }}/.test-data/${{ inputs.operation == 'session-matrix-diagnostic' && 'session-matrix-diagnostic' || 'standalone-expire-diagnostic' }}
         # Bun is the declared toolchain and the script asserts it: running it with
         # Node would make every child spawn (`bun <script>`) invalid.
-        run: xvfb-run --auto-servernum bun scripts/diagnose-standalone-expire-session.cjs
+        run: |
+          set -euo pipefail
+          case "$DIAGNOSTIC_OPERATION" in
+            session-diagnostic)
+              xvfb-run --auto-servernum bun scripts/diagnose-standalone-expire-session.cjs
+              ;;
+            session-matrix-diagnostic)
+              xvfb-run --auto-servernum bun scripts/accept-service-image-modes.ts session-matrix-diagnostic "$XPOD_DIAGNOSTIC_OUTPUT"
+              ;;
+            *) exit 2 ;;
+          esac
       - name: Upload the allowlisted safe diagnostic projection only
-        if: ${{ always() }}
+        if: ${{ always() && inputs.operation == 'session-diagnostic' }}
         uses: actions/upload-artifact@v4
         with:
           name: standalone-expire-diagnostic-${{ github.sha }}
           path: ${{ github.workspace }}/.test-data/standalone-expire-diagnostic/diagnostic.report.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload the safe nine-session diagnostic originals
+        if: ${{ always() && inputs.operation == 'session-matrix-diagnostic' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: session-matrix-diagnostic-${{ github.sha }}
+          path: ${{ github.workspace }}/.test-data/session-matrix-diagnostic/
           if-no-files-found: error
           retention-days: 14
 

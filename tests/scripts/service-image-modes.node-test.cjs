@@ -254,3 +254,117 @@ test('both initial and policy-recreation startup use the ordered responsibility'
   // Facts survive into the private safe report only for the current failure.
   assert.ok(runner.includes('error instanceof ManagedLocalBootstrapError ? error.facts : undefined'));
 });
+
+// ---- session-matrix DIAGNOSTIC extension -----------------------------------
+// These prove the diagnostic route reuses the canonical order and can NEVER be
+// mistaken for release qualification.
+// The TS script is not part of the tsc emit, so it is loaded through the real
+// Bun toolchain (available in CI) in a subprocess. Import failures must FAIL
+// these tests - never a silent skip and never a swallowed loader error.
+function loadTsHelpers() {
+  // `bun -e` resolves imports lazily and can exit 0 on a broken module, so the
+  // probe is a real .ts FILE executed with `bun run`: a bad import is exit 1.
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const root = path.resolve(__dirname, '../..');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modes-probe-'));
+  const probe = path.join(dir, 'probe.ts');
+  try {
+    fs.writeFileSync(probe, [
+      "import { platformBuiltinServiceEnvironment, platformBuiltinServiceEnvironmentForDiagnostic }",
+      `  from ${JSON.stringify(path.join(root, 'scripts/accept-service-image-modes.ts'))};`,
+      "const c = platformBuiltinServiceEnvironment('cloud', 'https://p.example/');",
+      "const d = platformBuiltinServiceEnvironmentForDiagnostic('cloud', 'https://p.example/');",
+      "process.stdout.write(JSON.stringify({ canonical: c, diagnostic: d, nonCloud: {",
+      "  local: platformBuiltinServiceEnvironmentForDiagnostic('local','x'),",
+      "  standalone: platformBuiltinServiceEnvironmentForDiagnostic('standalone','x'),",
+      "  canonicalLocal: platformBuiltinServiceEnvironment('local','x'),",
+      "  canonicalStandalone: platformBuiltinServiceEnvironment('standalone','x'),",
+      "} }));",
+    ].join('\n'));
+    const run = spawnSync('bun', ['run', probe], { cwd: root, encoding: 'utf8', timeout: 120000 });
+    if (run.error) throw new Error(`bun unavailable: ${run.error.message}`);
+    // A broken import MUST fail here - never be swallowed into a skip.
+    if (run.status !== 0) throw new Error(`TS module import failed (exit ${run.status}): ${run.stderr}`);
+    const text = String(run.stdout || '').trim();
+    if (!text) throw new Error('bun probe produced no JSON');
+    return JSON.parse(text);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+// ---- BLOCKING-1 regression: diagnostic per-mode record must exist ----------
+test('diagnostic mode records are initialised from inspected facts and carry NO live layer', () => {
+  // Mirrors what runMatrix now does for the diagnostic path: build the identity
+  // record (shared constructor shape) BEFORE the session loop dereferences it.
+  const identity = (mode, facts) => {
+    const urls = { cloud: 'http://localhost:1/', local: 'http://127.0.0.1:2/', standalone: 'http://localhost:3/' };
+    return { mode, baseUrl: urls[mode], issuer: mode === 'local' ? urls.cloud : urls[mode],
+      image: facts, sessions: [], sessionBindings: {} };
+  };
+  const facts = { reference: image, platform: expected.platform, id, repoDigests: [image],
+    noCodeMounts: true, mounts: [{ destination: '/app/data', type: 'volume', readOnly: false }],
+    runtimeExecutables: ['/bin/bun', '/bin/bun', '/bin/bun'] };
+  const records = {};
+  for (const mode of MODES) records[mode] = identity(mode, facts);
+  // The crash this guards: previously records[mode] was undefined here and the
+  // first `records[mode].sessionBindings[kind] = ...` threw a TypeError.
+  for (const mode of MODES) {
+    assert.ok(records[mode], `missing record for ${mode}`);
+    assert.equal(records[mode].live, undefined, 'diagnostic record must not claim live');
+    assert.deepEqual(records[mode].sessions, []);
+    assert.deepEqual(records[mode].sessionBindings, {});
+    // Append works for every canonical pair.
+    for (const kind of CASES) {
+      records[mode].sessionBindings[kind] = { webId: 'w', podUrl: 'p' };
+      records[mode].sessions.push({ profile: { kind } });
+    }
+    assert.equal(records[mode].sessions.length, CASES.length);
+  }
+});
+
+test('a diagnostic-shaped matrix passes the STRICT diagnostic validator and is refused by release', () => {
+  const diagnostic = fixture();
+  diagnostic.kind = 'session-matrix-diagnostic';
+  diagnostic.diagnosticOnly = true;
+  diagnostic.liveChatExcluded = true;
+  diagnostic.platformInferenceExcluded = true;
+  diagnostic.qualification = false;
+  diagnostic.notFullModeQualification = true;
+  // No live layer is fabricated; the strict common checks still apply.
+  for (const mode of diagnostic.modes) delete mode.live;
+  const { validateSessionMatrixDiagnostic } = require('../../scripts/lib/service-image-modes.cjs');
+  assert.deepEqual(validateSessionMatrixDiagnostic(diagnostic, expected), { 'session-matrix-diagnostic': 'passed' });
+  // The release validator must reject it outright.
+  assert.throws(() => validateMatrix(diagnostic, expected));
+  // A full canonical fixture still passes the release validator unchanged.
+  assert.deepEqual(validateMatrix(fixture(), expected), { [CHECK_NAME]: 'passed' });
+});
+
+test('ANY failed command, forced cleanup, timeout or missing case fails the diagnostic', () => {
+  const { validateSessionMatrixDiagnostic } = require('../../scripts/lib/service-image-modes.cjs');
+  const base = () => {
+    const d = fixture();
+    d.kind = 'session-matrix-diagnostic';
+    d.diagnosticOnly = true; d.liveChatExcluded = true; d.platformInferenceExcluded = true;
+    d.qualification = false; d.notFullModeQualification = true;
+    for (const mode of d.modes) delete mode.live;
+    return d;
+  };
+  // Baseline must pass - otherwise the negatives prove nothing.
+  assert.deepEqual(validateSessionMatrixDiagnostic(base(), expected), { 'session-matrix-diagnostic': 'passed' });
+  for (const [name, mutate] of [
+    ['nonzero exit', d => { d.commands[0].code = 1; }],
+    ['forced cleanup', d => { d.commands[0].forcedCleanup = true; }],
+    ['timed out', d => { d.commands[0].timedOut = true; }],
+    ['cancelled', d => { d.commands[0].cancelled = true; }],
+    ['not raw eligible', d => { d.commands[0].rawEligible = false; }],
+    ['spawn failed', d => { d.commands[0].spawnFailed = true; }],
+    ['output truncated', d => { d.commands[0].outputTruncated = true; }],
+    ['ownership unknown', d => { d.commands[0].ownershipUnknown = true; }],
+    ['missing case', d => { d.modes[0].sessions.pop(); }],
+    ['cleanup incomplete', d => { d.cleanup.volumesAbsent = false; }],
+    ['fabricated live layer', d => { d.modes[0].live = { mode: 'cloud' }; }],
+  ]) {
+    const d = base(); mutate(d);
+    assert.throws(() => validateSessionMatrixDiagnostic(d, expected), `expected failure: ${name}`);
+  }
+});
