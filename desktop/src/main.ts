@@ -33,6 +33,7 @@ import {
 } from './update-manager.js'
 import { DesktopSelfUpdater, UPDATE_RELAUNCH_ENV } from './self-updater.js'
 import { loadDesktopUrlWithoutStaleCache } from './navigation-cache.js'
+import { runStartupSequence } from './startup-sequence.js'
 import { canCancelDesktopLogin, cancelDesktopLogin, shouldCancelDesktopLoginOnClose } from './login-recovery.js'
 import { navigateDesktopProduct } from './product-navigation.js'
 import { desktopProtocolRoute, desktopProtocolRouteFromArgv, resumeDesktopProtocolNavigation, XPOD_DESKTOP_PROTOCOL } from './product-protocol.js'
@@ -828,11 +829,20 @@ if (!hasSingleInstanceLock) {
     app.setAboutPanelOptions({ applicationName: 'Xpod', applicationVersion: app.getVersion(), version: `Electron ${process.versions.electron}`, copyright: `© ${new Date().getFullYear()} Xpod` })
     tray = createTray()
     updateManager.start()
-    await runtimeManager.ensureRunning().catch(() => undefined)
-    await refreshTrayStatus(tray)
-    if (acceptanceMode) app.emit('xpod:acceptance:tray-ready')
-    ensureWindow()
-    if (pendingProtocolRoute) presentProtocolReturn()
+    // Create the BrowserWindow without waiting for runtime readiness, so the
+    // window exists while the runtime is still starting. Existing navigation
+    // recovery and readiness guards remain responsible for loading and showing.
+    runStartupSequence({
+      createWindow: () => {
+        ensureWindow()
+        if (pendingProtocolRoute) presentProtocolReturn()
+      },
+      startRuntime: () => runtimeManager.ensureRunning(),
+      refreshTray: () => refreshTrayStatus(tray as Tray),
+      onSettled: () => {
+        if (acceptanceMode) app.emit('xpod:acceptance:tray-ready')
+      },
+    })
 
     app.on('activate', () => {
       ensureWindow()
