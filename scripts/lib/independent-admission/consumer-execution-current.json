@@ -2033,7 +2033,7 @@
   },
   {
     "path": ".github/workflows/ci.yml",
-    "sha256": "1ed5a7223e97ea5b689c6707b599ce26b24a586770d313c1f399525d3132bb81"
+    "sha256": "8d592e68f636c52605d5e839aef1e78f44f4d20b7adea27f31728785218514c0"
   },
   {
     "path": "qlever/tests/test_sdk90_metadata_open.py",

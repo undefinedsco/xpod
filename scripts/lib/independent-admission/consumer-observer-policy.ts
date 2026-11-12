@@ -524,7 +524,7 @@ const RC399_LIVE_RELEASE_INPUTS: Readonly<Record<string, string>> = Object.freez
   'scripts/lib/root-registry-supply.cjs': 'c8b2445bba41efd24156129587cdb12489cf75a6d193dd1e3f38c5f1239bdb59',
   'scripts/run-npm-pack.cjs': '6e1c6144cc71a8399350a0873c9f3dfafc06a9a2967c0fe88b09c269e8aabe46',
   'scripts/lib/owned-mode-command.cjs': '8ebb1a1b5ed3ee841ea2eabcd7275cbe879c74661dfc4dc0a60e22cb38cfa66a',
-  '.github/workflows/ci.yml': '1ed5a7223e97ea5b689c6707b599ce26b24a586770d313c1f399525d3132bb81',
+  '.github/workflows/ci.yml': '8d592e68f636c52605d5e839aef1e78f44f4d20b7adea27f31728785218514c0',
   // github-origin owns the API group definition changed by the same append.
   'scripts/lib/independent-admission/github-origin.ts': '45595008c083913356c64b87d11f1b11c63431efa4b89937ffc6c4ca0eea4a79',
   // CLI16 is the declared in-place current CLI tuple in this same generation; its
