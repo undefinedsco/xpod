@@ -107,8 +107,7 @@ export function prepareApiCapability(options: PrepareApiCapabilityOptions): Prep
   const run = options.runProducer ?? runLocalProducer
   const result = run(request)
   if (result.status !== 0) {
-    const detail = (result.stderr || result.stdout || '').trim().split('\n').slice(-4).join(' ')
-    throw new Error(`API capability production failed: ${detail.slice(0, 800)}`)
+    throw new Error(`API capability production failed: ${describeProducerFailure(outputDir, result.status)}`)
   }
   return readBack(repoRoot, outputDir, sourceSha)
 }
@@ -161,6 +160,95 @@ function runLocalProducer(request: LocalProducerRequest): ProducerRun {
   })
   if (result.error) throw result.error
   return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' }
+}
+
+/**
+ * The CANONICAL producer phase names (scripts/api-module-producer.py phase_plan).
+ * Fixed allow-list: a phase name from a receipt is only ever projected when it is
+ * one of these, so no arbitrary caller/child text can reach the message.
+ */
+const CANONICAL_PHASES = new Set([
+  'install-selection', 'install', 'postinstall', 'declarations', 'install-graph',
+  'shared-packages', 'dependency-state',
+  'api-build', 'native-inputs', 'stage', 'native-material', 'notices', 'pack',
+  'pack-result', 'notice-verifier-acquire', 'inngest-controlled-acquire',
+  'inngest-controlled-prepare', 'inngest-controlled-go-version',
+  'inngest-controlled-node-version', 'inngest-controlled-pnpm-version',
+  'inngest-controlled-ui-install', 'inngest-controlled-inputs',
+  'inngest-controlled-ui-build', 'inngest-controlled-ui-materialize',
+  'inngest-controlled-go-build', 'inngest-controlled-finalize',
+])
+
+/** The producer's ONLY fixed failure shape for an unclosed phase. */
+const UNCLOSED_PHASE = /^ValueError: API phase did not close successfully: ([a-z0-9-]{1,48})$/u
+const HEX64 = /^[a-f0-9]{64}$/u
+/** Bound how many phase rows are described (the plan is far smaller). */
+const MAX_PHASES = 24
+
+/**
+ * Bounded, structured description of a FAILED production run.
+ *
+ * The producer writes its own `producer.receipt.json` plus `evidence/` before it
+ * exits. This projects ONLY fixed, allow-listed facts:
+ * - `failedPhase`: parsed from the producer's single fixed error pattern and
+ *   additionally required to be a canonical phase name;
+ * - per-phase `receipt`/`raw` sha256 (validated as 64 hex, truncated for display);
+ *   NOTE: `phases` contains EVERY phase that returned from run_stage, INCLUDING
+ *   the failing one (the append happens before the closed_phase() check);
+ * - the failed phase's real exit/closure fields read from its OWN
+ *   `evidence/<phase>.receipt.json` (the same fields `closed_phase` inspects).
+ *
+ * It NEVER prints `receipt.failure` verbatim (it can embed paths or secrets), nor
+ * child stdout/stderr, env, or any source tree. Missing evidence says
+ * `unavailable` instead of guessing or inventing a schema.
+ */
+export function describeProducerFailure(outputDir: string, exitCode: number | null): string {
+  const parts = ['phase=api-capability', `producerExit=${exitCode === null ? 'null' : String(exitCode)}`]
+  const receiptPath = path.join(outputDir, 'producer.receipt.json')
+  let receipt: any
+  try {
+    receipt = JSON.parse(readFileSync(receiptPath, 'utf8'))
+  } catch {
+    // The producer writes the receipt in `finally`; absence means the process
+    // died earlier, which is itself the actionable fact.
+    return `${parts.join(' ')} receipt=absent`
+  }
+  const phases = Array.isArray(receipt?.phases) ? receipt.phases.slice(0, MAX_PHASES) : []
+  parts.push(`phases=${phases.length}`)
+
+  // The failure text is only ever used as a PATTERN input; it is never echoed.
+  const message = typeof receipt?.failure === 'string' ? receipt.failure : ''
+  const match = UNCLOSED_PHASE.exec(message.trim())
+  const failedPhase = match !== null && CANONICAL_PHASES.has(match[1]!) ? match[1]! : undefined
+  parts.push(`failedPhase=${failedPhase ?? 'unavailable'}`)
+
+  for (const phase of phases) {
+    if (!phase || typeof phase.name !== 'string' || !CANONICAL_PHASES.has(phase.name)) continue
+    const receiptSha = typeof phase.receipt?.sha256 === 'string' && HEX64.test(phase.receipt.sha256)
+      ? phase.receipt.sha256.slice(0, 12) : 'none'
+    const rawSha = typeof phase.raw?.sha256 === 'string' && HEX64.test(phase.raw.sha256)
+      ? phase.raw.sha256.slice(0, 12) : 'none'
+    let closure = 'closure=unavailable'
+    if (phase.name === failedPhase) {
+      // The real exit/closure facts live in the phase's OWN receipt, written by
+      // supervise.run_stage — the same fields closed_phase() inspects.
+      try {
+        const phaseReceipt = JSON.parse(readFileSync(path.join(outputDir, 'evidence', `${phase.name}.receipt.json`), 'utf8'))
+        const exit = Number.isSafeInteger(phaseReceipt?.exit) ? String(phaseReceipt.exit) : 'null'
+        const signal = phaseReceipt?.signal === null || typeof phaseReceipt?.signal === 'number' ? String(phaseReceipt.signal) : 'unavailable'
+        const flag = (value: unknown) => (value === true ? '1' : value === false ? '0' : 'unavailable')
+        closure = `exit=${exit} signal=${signal}`
+          + ` actualWait=${flag(phaseReceipt?.actualWait)}`
+          + ` groupAbsent=${flag(phaseReceipt?.ownedGroupAbsentAfterWait)}`
+          + ` rawClosed=${flag(phaseReceipt?.rawClosedBeforeHash)}`
+          + ` resourceStop=${phaseReceipt?.resourceStop === null ? 'none' : 'present'}`
+          + ` supervisorError=${phaseReceipt?.supervisorError === null ? 'none' : 'present'}`
+          + ` cleanupErrors=${Array.isArray(phaseReceipt?.cleanupErrors) ? phaseReceipt.cleanupErrors.length : 'unavailable'}`
+      } catch { /* leave closure=unavailable */ }
+    }
+    parts.push(`[${phase.name} receipt=${receiptSha} raw=${rawSha} ${closure}]`)
+  }
+  return parts.join(' ')
 }
 
 /**

@@ -168,3 +168,120 @@ test('stable job consumes the ACCEPTED candidate run through the shared retainer
   assert.ok(packages >= 0 && build >= 0);
   assert.ok(packages < build, 'workspace packages must be built before the desktop build');
 });
+
+// ---- FAILURE-EVIDENCE retention after an API preparation failure -------------
+// The approved canonical pattern (api-module-product.yml) uploads only the
+// producer's own receipt/evidence, never a workspace or env dump. These assert
+// the same narrow contract in each desktop job.
+const FAILURE_UPLOAD = 'Upload failed API preparation diagnostics separately';
+
+test('all three desktop jobs retain the producer receipt/evidence on API failure', () => {
+  const jobs = [
+    ['candidate.yml', 'build_desktop_rc'],
+    ['ci.yml', 'desktop-launch-diagnostic'],
+    ['release.yml', 'build_desktop_macos'],
+  ];
+  for (const [file, jobName] of jobs) {
+    const job = read(file).jobs[jobName];
+    const upload = job.steps.find(s => s.name === FAILURE_UPLOAD);
+    assert.ok(upload, `${file}:${jobName} must retain failure evidence`);
+    // Runs ONLY on failure, and only when the owned root was published.
+    assert.match(String(upload.if), /^failure\(\)/);
+    assert.match(String(upload.if), /XPOD_API_CAPABILITY_ROOT != ''/);
+    // Never fail the job for missing evidence; the real failure must stand.
+    assert.equal(upload.with['if-no-files-found'], 'warn');
+    const paths = String(upload.with.path);
+    // Exactly the approved narrow members.
+    for (const member of ['producer.receipt.json', 'evidence/', 'originals/prepare-inputs.receipt.safe.json']) {
+      assert.ok(paths.includes(member), `${file}:${jobName} must retain ${member}`);
+    }
+    // No broad tree, dependency cache, environment or credential dump.
+    assert.doesNotMatch(paths, /node_modules|workspace|\bsrc\/|\.env|token|secret/i);
+    // The artifact is explicitly a diagnostic, not desktop qualification.
+    assert.match(String(upload.with.name), /diagnostics/);
+    // The prep step must PUBLISH the canonical root, otherwise the upload can
+    // never resolve it and the reason is lost again.
+    const prep = job.steps.find(s => s.run?.includes('prepareApiCapability'));
+    assert.ok(prep, `${file}:${jobName} must run the API preparation`);
+    assert.match(String(prep.run), /XPOD_API_CAPABILITY_ROOT="\$PWD\/\.test-data\/api-capability-\$\(git rev-parse HEAD\)"/);
+    assert.match(String(prep.run), /GITHUB_ENV/);
+  }
+});
+
+test('the API failure reporter projects only allow-listed facts and leaks nothing', () => {
+  const { spawnSync } = require('node:child_process');
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const root = path.resolve(__dirname, '../..');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fail-reporter-'));
+  try {
+    const probe = path.join(dir, 'probe.ts');
+    fs.writeFileSync(probe, [
+      `import { describeProducerFailure } from ${JSON.stringify(path.join(root, 'desktop/scripts/api-capability-producer.ts'))};`,
+      `import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';`,
+      `import { tmpdir } from 'node:os';`,
+      `import path from 'node:path';`,
+      `const mk = () => { const d = mkdtempSync(path.join(tmpdir(), 'fr-')); mkdirSync(path.join(d, 'evidence'), { recursive: true }); return d; };`,
+      `const out: any = {};`,
+      // A: absent receipt
+      `{ const d = mk(); out.absent = describeProducerFailure(d, 1); rmSync(d, { recursive: true, force: true }); }`,
+      // B: realistic dependency-state failure with the REAL phase receipt fields
+      `{ const d = mk();`,
+      `  writeFileSync(path.join(d, 'producer.receipt.json'), JSON.stringify({`,
+      `    status: 'failed',`,
+      `    failure: 'ValueError: API phase did not close successfully: dependency-state',`,
+      `    phases: [`,
+      `      { name: 'install', receipt: { sha256: 'a'.repeat(64) }, raw: { sha256: 'b'.repeat(64) } },`,
+      `      { name: 'dependency-state', receipt: { sha256: 'c'.repeat(64) }, raw: { sha256: 'd'.repeat(64) } },`,
+      `    ],`,
+      `  }));`,
+      `  writeFileSync(path.join(d, 'evidence', 'dependency-state.receipt.json'), JSON.stringify({`,
+      `    exit: 1, signal: null, actualWait: true, ownedGroupAbsentAfterWait: true,`,
+      `    rawClosedBeforeHash: true, resourceStop: null, supervisorError: null, cleanupErrors: [],`,
+      `  }));`,
+      `  out.real = describeProducerFailure(d, 1); rmSync(d, { recursive: true, force: true }); }`,
+      // C: malicious positions — failure text, phase.name and digests all carry a secret
+      `{ const d = mk();`,
+      `  writeFileSync(path.join(d, 'producer.receipt.json'), JSON.stringify({`,
+      `    status: 'failed',`,
+      `    failure: 'ValueError: API phase did not close successfully: SECRET-TOKEN-VALUE /Users/secret/path',`,
+      `    phases: [`,
+      `      { name: 'SECRET-TOKEN-VALUE', receipt: { sha256: 'SECRET-TOKEN-VALUE' }, raw: { sha256: 'SECRET-TOKEN-VALUE' } },`,
+      `      { name: 'dependency-state', receipt: { sha256: 'SECRET-TOKEN-VALUE' }, raw: { sha256: 'e'.repeat(64) } },`,
+      `    ],`,
+      `    env: { GH_TOKEN: 'SECRET-TOKEN-VALUE' }, token: 'SECRET-TOKEN-VALUE',`,
+      `  }));`,
+      `  writeFileSync(path.join(d, 'evidence', 'dependency-state.receipt.json'), JSON.stringify({ exit: 0, signal: null }));`,
+      `  out.malicious = describeProducerFailure(d, 1); rmSync(d, { recursive: true, force: true }); }`,
+      // D: failure text that is NOT the fixed pattern must never be echoed
+      `{ const d = mk();`,
+      `  writeFileSync(path.join(d, 'producer.receipt.json'), JSON.stringify({`,
+      `    status: 'failed', failure: 'OSError: /Users/secret/path SECRET-TOKEN-VALUE', phases: [],`,
+      `  }));`,
+      `  out.freeform = describeProducerFailure(d, 1); rmSync(d, { recursive: true, force: true }); }`,
+      `process.stdout.write(JSON.stringify(out));`,
+    ].join('\n'));
+    const run = spawnSync('bun', ['run', probe], { cwd: root, encoding: 'utf8', timeout: 120000 });
+    assert.equal(run.status, 0, run.stderr);
+    const { absent, real, malicious, freeform } = JSON.parse(String(run.stdout).trim());
+
+    // Missing receipt is reported honestly.
+    assert.match(absent, /receipt=absent/);
+
+    // Realistic dependency-state failure: phase, digests and REAL closure fields.
+    assert.match(real, /failedPhase=dependency-state/);
+    assert.match(real, /producerExit=1/);
+    assert.match(real, /\[dependency-state receipt=cccccccccccc raw=dddddddddddd exit=1 signal=null actualWait=1 groupAbsent=1 rawClosed=1 resourceStop=none supervisorError=none cleanupErrors=0\]/);
+
+    // A non-canonical phase name and non-hex digests are refused, not echoed.
+    assert.match(malicious, /failedPhase=unavailable/);
+    assert.doesNotMatch(malicious, /SECRET/);
+    assert.doesNotMatch(malicious, /secret\/path/);
+    assert.match(malicious, /\[dependency-state receipt=none raw=eeeeeeeeeeee/);
+
+    // Free-form failure text is never printed.
+    assert.match(freeform, /failedPhase=unavailable/);
+    assert.doesNotMatch(freeform, /SECRET/);
+    assert.doesNotMatch(freeform, /Users\/secret/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

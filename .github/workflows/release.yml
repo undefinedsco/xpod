@@ -571,7 +571,26 @@ jobs:
       - name: Produce the API capability from clean source
         run: |
           set -euo pipefail
+          XPOD_API_CAPABILITY_ROOT="$PWD/.test-data/api-capability-$(git rev-parse HEAD)"
+          echo "XPOD_API_CAPABILITY_ROOT=$XPOD_API_CAPABILITY_ROOT" >> "$GITHUB_ENV"
           bun -e 'import { prepareApiCapability } from "./desktop/scripts/api-capability-producer.ts"; prepareApiCapability({ repoRoot: process.cwd() });'
+          test -d "$XPOD_API_CAPABILITY_ROOT"
+
+      # Failure evidence only: the producer already writes its own receipt and
+      # evidence/ before exiting, so retain those narrow members (never a
+      # workspace/source/env dump). Diagnostic artifact, not qualification.
+      - name: Upload failed API preparation diagnostics separately
+        if: failure() && env.XPOD_API_CAPABILITY_ROOT != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-capability-diagnostics-release-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.XPOD_API_CAPABILITY_ROOT }}/producer.receipt.json
+            ${{ env.XPOD_API_CAPABILITY_ROOT }}/evidence/
+            ${{ env.XPOD_API_CAPABILITY_ROOT }}/originals/prepare-inputs.receipt.safe.json
+          if-no-files-found: warn
+          retention-days: 30
+
 
       - name: Validate desktop version
         run: |

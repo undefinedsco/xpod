@@ -904,8 +904,28 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # Publish the canonical owned path so a failure can retain the producer's
+          # own receipt/evidence without guessing the directory later.
+          XPOD_API_CAPABILITY_ROOT="$PWD/.test-data/api-capability-$(git rev-parse HEAD)"
+          echo "XPOD_API_CAPABILITY_ROOT=$XPOD_API_CAPABILITY_ROOT" >> "$GITHUB_ENV"
           bun -e 'import { prepareApiCapability } from "./desktop/scripts/api-capability-producer.ts"; prepareApiCapability({ repoRoot: process.cwd() });'
-          test -d ".test-data/api-capability-$(git rev-parse HEAD)"
+          test -d "$XPOD_API_CAPABILITY_ROOT"
+
+      # Failure evidence only: the producer already writes its own receipt and
+      # evidence/ before exiting, so retain those narrow members (never a
+      # workspace/source/env dump). Diagnostic artifact, not qualification.
+      - name: Upload failed API preparation diagnostics separately
+        if: failure() && env.XPOD_API_CAPABILITY_ROOT != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-capability-diagnostics-ci-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.XPOD_API_CAPABILITY_ROOT }}/producer.receipt.json
+            ${{ env.XPOD_API_CAPABILITY_ROOT }}/evidence/
+            ${{ env.XPOD_API_CAPABILITY_ROOT }}/originals/prepare-inputs.receipt.safe.json
+          if-no-files-found: warn
+          retention-days: 30
+
       - name: Apply and verify the candidate version with the existing helper
         run: |
           set -euo pipefail
