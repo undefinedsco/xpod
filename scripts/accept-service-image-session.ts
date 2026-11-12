@@ -76,7 +76,8 @@ async function run(filename: string): Promise<void> {
     'tests/helpers/browserSolidOidc.ts', 'tests/helpers/browserXpodRuntime.ts',
     'packages/solid-sdk/src/local-route-fetch.ts', 'scripts/lib/owned-mode-command.cjs',
     'tests/helpers/runOwnedSessionCommand.ts', 'tests/helpers/ownedElectronHost.ts',
-    'tests/helpers/desktopSessionObserver.cjs', 'tests/helpers/browserExternalPhase.ts',
+    'tests/helpers/desktopSessionObserver.cjs', 'tests/helpers/desktopSessionObserverSnapshot.cjs',
+    'tests/helpers/browserExternalPhase.ts',
   ].map(relative => [relative, sha(readFileSync(path.join(root, relative)))]));
   const bytes = readFileSync(observation);
   const receipt = { schemaVersion: 1, status: 'passed', sourceSha: input.sourceSha, mode: input.mode,

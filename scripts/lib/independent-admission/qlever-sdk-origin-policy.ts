@@ -3358,7 +3358,7 @@ const RC399_LIVE_RELEASE_INPUTS:Readonly<Record<string,string>>=Object.freeze({
   // this CURRENT tail, so only those rows move. Every frozen SDK105/normalBuild3
   // group above keeps its published bytes.
   'scripts/run-npm-pack.cjs':'6e1c6144cc71a8399350a0873c9f3dfafc06a9a2967c0fe88b09c269e8aabe46',
-  '.github/workflows/ci.yml':'1ed5a7223e97ea5b689c6707b599ce26b24a586770d313c1f399525d3132bb81',
+  '.github/workflows/ci.yml':'8d592e68f636c52605d5e839aef1e78f44f4d20b7adea27f31728785218514c0',
 });
 const rc399LiveReleaseRow=(row:GitHubSourceBinding)=>Object.freeze({
   ...row,sha256:RC399_LIVE_RELEASE_INPUTS[row.path]??row.sha256,

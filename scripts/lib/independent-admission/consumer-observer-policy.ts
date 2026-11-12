@@ -510,7 +510,7 @@ function rc398ConsumerVariant<T extends GitHubSourceBindingGroup>(group: T): T {
  * origin policy bytes (one appended candidate-workflow version). One shared variant per
  * family is appended; every published group and both RC398 variants stay byte-exact.
  * Only this new variant uses the held-FD live controller self-reference. */
-const QLEVER_RC399_POLICY_SHA256='80ecdf2376c3dc2fb42d682f1114fb5f74f97722cb8402d5f5a67670d1cfc559';
+const QLEVER_RC399_POLICY_SHA256='5c06d3b04ced2ff66b40b728cf8d9777154c04d9c9121964a8052dc41be930b8';
 /** Live bytes of the release inputs this generation's dependency declaration and its
  * already-owned policy rows actually moved. Only these rows move; every earlier tuple
  * keeps its published bytes. */
@@ -524,9 +524,9 @@ const RC399_LIVE_RELEASE_INPUTS: Readonly<Record<string, string>> = Object.freez
   'scripts/lib/root-registry-supply.cjs': 'c8b2445bba41efd24156129587cdb12489cf75a6d193dd1e3f38c5f1239bdb59',
   'scripts/run-npm-pack.cjs': '6e1c6144cc71a8399350a0873c9f3dfafc06a9a2967c0fe88b09c269e8aabe46',
   'scripts/lib/owned-mode-command.cjs': '8ebb1a1b5ed3ee841ea2eabcd7275cbe879c74661dfc4dc0a60e22cb38cfa66a',
-  '.github/workflows/ci.yml': '1ed5a7223e97ea5b689c6707b599ce26b24a586770d313c1f399525d3132bb81',
+  '.github/workflows/ci.yml': '8d592e68f636c52605d5e839aef1e78f44f4d20b7adea27f31728785218514c0',
   // github-origin owns the API group definition changed by the same append.
-  'scripts/lib/independent-admission/github-origin.ts': '45595008c083913356c64b87d11f1b11c63431efa4b89937ffc6c4ca0eea4a79',
+  'scripts/lib/independent-admission/github-origin.ts': '1d9f59f69d9a69007654340840c548d0e9617ee4ae6e615c70d824afe15120f1',
   // CLI16 is the declared in-place current CLI tuple in this same generation; its
   // verifier module is an already-owned row of the consumer/CI tails.
   'scripts/lib/independent-admission/source-rules.ts': '4bad2440d95b29d04abd6a78f24cd9c262ae0a6faeacd8c252050888a23b168b',

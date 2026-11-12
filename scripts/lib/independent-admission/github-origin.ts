@@ -1763,7 +1763,7 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
       // Restore root declarations after the filtered desktop API producer. The
       // regular caller jobs and publication contract remain unchanged; register
       // the reviewed workflow bytes without changing any historical identity.
-      {workflowSha256:'1ed5a7223e97ea5b689c6707b599ce26b24a586770d313c1f399525d3132bb81',
+      {workflowSha256:'8d592e68f636c52605d5e839aef1e78f44f4d20b7adea27f31728785218514c0',
       jobName:()=>callerNames[0]!,
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,
