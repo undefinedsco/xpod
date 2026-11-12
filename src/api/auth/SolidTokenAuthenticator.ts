@@ -183,11 +183,17 @@ export class SolidTokenAuthenticator implements Authenticator {
       if (!configuredCanonicalUrl) {
         throw error;
       }
-      return await this.verify(authorization, {
-        header: dpopHeader,
-        method,
-        url: configuredCanonicalUrl,
-      }) as unknown as Record<string, unknown>;
+      try {
+        return await this.verify(authorization, {
+          header: dpopHeader,
+          method,
+          url: configuredCanonicalUrl,
+        }) as unknown as Record<string, unknown>;
+      } catch {
+        // Retain the primary diagnostic when both attempts fail: reporting the
+        // retry's htu mismatch would hide the reason the caller actually failed.
+        throw error;
+      }
     }
   }
 
