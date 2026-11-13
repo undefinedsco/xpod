@@ -11,7 +11,7 @@ import { registerTaskRoutes } from '../../src/api/handlers/TaskHandler';
 import { expect, it, vi } from 'vitest';
 import { AiConnectionsInvocationKeyIssuer } from '../../src/api/ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import { AesInvocationTokenCodec } from '../../src/api/ai-gateway/auth/InvocationTokenCodec';
-import { acceptPackagedDesktopPermissions, assertOwnedTaskRows, DesktopAcceptanceError, describeFailure,
+import { acceptPackagedDesktopPermissions, assertOwnedTaskRows, DesktopAcceptanceError, describeFailure, failureLine,
   publishedFailures, requirePackagedInvocationKey, rendererOwnerFetch, requestPackagedForeignRun,
   summarizeStartupTelemetry } from '../../scripts/accept-packaged-desktop-permissions';
 import { acceptMountedPodPermissions, attributeMountedOperation, MountedPermissionError } from '../../scripts/helpers/packaged-desktop-permissions';
@@ -264,6 +264,30 @@ it('preserves mounted attribution through the driver final failure projection', 
     verify.mockRestore(); launch.mockRestore();
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+it('emits ONE safe closed failure line for a pod-permission failure with no launch phase', () => {
+  const secret = 'bearer secret-token-value https://local.example/private';
+  const failure = new MountedPermissionError('service-access', `rejected: ${secret}`, undefined, 'foreign-pod');
+  const published = describeFailure(failure);
+  // The REAL projection the acceptor prints, not a re-implementation.
+  const line = failureLine(published, [failure], undefined, undefined);
+  const wire = JSON.stringify(line);
+  expect(line).toMatchObject({ runner: 'desktop-permission-acceptance', failed: true, code: 'pod-permission' });
+  expect(line.detail).toBe('foreign-pod');
+  expect(line.evidence).toBe('service-access');
+  // No launch phase => no launch-only fields, and the line is still emitted.
+  expect(line.phase).toBeUndefined();
+  expect(line.explanation).toBeUndefined();
+  // Privacy: nothing from the underlying message reaches the line.
+  expect(wire).not.toContain('secret-token-value');
+  expect(wire).not.toMatch(/https?:\/\//u);
+  // Only the reviewed closed key set appears.
+  expect(Object.keys(line).sort()).toEqual(['code', 'detail', 'evidence', 'failed', 'runner']);
+  // A failure with no closed detail still yields a safe line.
+  const plain = failureLine(describeFailure(new MountedPermissionError('grant-apply', secret)), [], undefined, undefined);
+  expect(plain.detail).toBeUndefined();
+  expect(JSON.stringify(plain)).not.toContain('secret-token-value');
 });
 
 it('retains safe startup telemetry through the real launch error wrapper', async () => {

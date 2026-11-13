@@ -27,6 +27,7 @@ function client(models: AiGatewayModel[]): AiConnectionsClient {
   return {
     webId: WEB_ID,
     apiBase: 'https://pod.example',
+    podBaseUrl: 'https://pod.example/',
     getServiceAccess: vi.fn(async () => ({ status: 'granted' })),
     listProviders: vi.fn(async () => []),
     listModels: vi.fn(async () => models),

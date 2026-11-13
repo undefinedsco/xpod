@@ -289,6 +289,7 @@ function createAcceptanceClient(state: ReturnType<typeof createAcceptanceState>)
   return {
     webId: WEB_ID,
     apiBase: 'https://pod.example',
+    podBaseUrl: 'https://pod.example/',
     getServiceAccess: vi.fn(async () => ({ status: 'granted' })),
     listProviders: vi.fn(async () => [state.provider()]),
     listModels: vi.fn(async () => state.models.map((item) => ({ ...item }))),

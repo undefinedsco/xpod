@@ -13,7 +13,8 @@ import { createPlatformProviderForAccount } from './prepare-rc-platform-provider
 import { launchOwnedPackagedDesktop, isLaunchSubphase, readGatewayTelemetry, type GatewayTelemetry, type LaunchSubphase,
   type OwnedPackagedDesktop } from './helpers/packaged-desktop-fixture';
 import { acceptMountedPodPermissions, attributeMountedOperation, MountedPermissionError,
-  observeOwnedPodTraffic, type MountedPermissionCondition, type MountedPodPermissionPhase } from './helpers/packaged-desktop-permissions';
+  observeOwnedPodTraffic, type MountedPermissionCondition, type MountedPermissionDetail,
+  type MountedPodPermissionPhase } from './helpers/packaged-desktop-permissions';
 import { createConfirmedMountedProvider, createMountedKeyInUi, acceptMountedFirstChat, acceptHeldSolidCredential,
   attributePackagedOperation, PackagedOperationError, type PackagedOperationCondition } from './helpers/packaged-desktop-operations';
 import { verifyPackagedSourceCheckout } from './helpers/packaged-desktop-source';
@@ -261,6 +262,38 @@ export function summarizeStartupTelemetry(telemetry: GatewayTelemetry | undefine
       pointerPresent: row.pointerPresent, anyPackagedTree: row.anyPackagedTree }));
   }
   return out;
+}
+
+/** The closed detail token of a mounted-permission failure, if one exists. */
+function closedMountedDetail(errors: unknown[]): MountedPermissionDetail | undefined {
+  for (const error of errors) {
+    if (error instanceof MountedPermissionError && error.detail !== undefined) return error.detail;
+  }
+  return undefined;
+}
+
+/**
+ * The ONE safe failure line for the job log.
+ *
+ * Emitted for EVERY failed stage, not only launch: a pod-permission or
+ * operation failure must be observable too. Only reviewed closed tokens appear
+ * (code, evidence sub-condition, detail enum, phase); never a message, body,
+ * URL or token.
+ */
+export function failureLine(published: PublishedDesktopFailure, failures: unknown[],
+  launchPhase: LaunchSubphase | undefined,
+  launchTelemetry: GatewayTelemetry | undefined): Record<string, unknown> {
+  const detail = closedMountedDetail(failures);
+  const launch = isLaunchSubphase(launchPhase);
+  return { runner: 'desktop-permission-acceptance', failed: true,
+    code: published.code,
+    ...(published.evidence === undefined ? {} : { evidence: published.evidence }),
+    ...(detail === undefined ? {} : { detail }),
+    ...(launch ? { phase: launchPhase } : {}),
+    ...(launch
+      ? { explanation: DESKTOP_FAILURE_EXPLANATIONS[published.code],
+          ...(launchTelemetry ? { telemetry: summarizeStartupTelemetry(launchTelemetry) } : {}) }
+      : {}) };
 }
 
 function privateError(error: unknown): unknown {
@@ -607,11 +640,12 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
     // diagnosable without the private evidence upload. Only closed enums leave
     // this process: no child text, path, argv, URL or message.
     const published = describeFailure(primaryFailure ?? failures[0]);
-    if (launchPhase !== undefined && isLaunchSubphase(launchPhase)) {
-      console.log(JSON.stringify({ runner: 'desktop-permission-acceptance', failed: true,
-        code: published.code, phase: launchPhase, explanation: DESKTOP_FAILURE_EXPLANATIONS[published.code],
-        ...(launchTelemetry ? { telemetry: summarizeStartupTelemetry(launchTelemetry) } : {}) }));
-    }
+    // UNCONDITIONAL safe line: a failure that never reached the launch phase
+    // (pod-permission/operation stages) must still be observable in the job log.
+    // Only closed tokens leave this process: the reviewed code, the closed
+    // evidence sub-condition, and the closed detail enum. Never a message, body,
+    // URL or token.
+    console.log(JSON.stringify(failureLine(published, failures, launchPhase, launchTelemetry)));
     throw new DesktopAcceptanceError(published.code,
       `Packaged desktop permission acceptance failed at stage=${failed}; private evidence retained`, published.evidence);
   }
