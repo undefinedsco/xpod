@@ -12,7 +12,8 @@ import { expect, it, vi } from 'vitest';
 import { AiConnectionsInvocationKeyIssuer } from '../../src/api/ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import { AesInvocationTokenCodec } from '../../src/api/ai-gateway/auth/InvocationTokenCodec';
 import { acceptPackagedDesktopPermissions, assertOwnedTaskRows, DesktopAcceptanceError, describeFailure,
-  publishedFailures, requirePackagedInvocationKey, rendererOwnerFetch, requestPackagedForeignRun } from '../../scripts/accept-packaged-desktop-permissions';
+  publishedFailures, requirePackagedInvocationKey, rendererOwnerFetch, requestPackagedForeignRun,
+  summarizeStartupTelemetry } from '../../scripts/accept-packaged-desktop-permissions';
 import { acceptMountedPodPermissions, attributeMountedOperation, MountedPermissionError } from '../../scripts/helpers/packaged-desktop-permissions';
 import { attributeOidcOperation, OidcApprovalError } from '../../tests/helpers/browserSolidOidc';
 
@@ -513,4 +514,74 @@ it('keeps an injected cleanup failure visible in the safe record shape', () => {
   const failed = evaluate(true);
   expect(failed.cleanup).toBe('failed');
   expect(failed.cleanup === 'closed').toBe(false);
+});
+
+
+it('publishes the startup cause as closed enums and never as child text', () => {
+  // The projection is allowlist-only: every field is an enum, integer or boolean,
+  // so a hostile child stream can never reach the job log through it.
+  const projected = summarizeStartupTelemetry({
+    probes: 237, lastOutcome: 'connect-failed', elapsedMs: 60_083, appAlive: true,
+    startupLastEmittedTerminal: true, runtimeChildPresent: false,
+    startupLastEmittedAgeMs: 1_250,
+    startupLastEmitted: { schemaVersion: 1, sequence: 4, emittedAtMs: 1_700_000_000_000,
+      event: 'exited', managerState: 'failed', ownership: 'desktop',
+      childSeen: false, pidPresent: false, exitCode: 1, outputClass: 'eaddrinuse' },
+    modulePresence: [{ id: 'css', pointerPresent: true, anyPackagedTree: true },
+      { id: 'api', pointerPresent: false, anyPackagedTree: true }],
+  })!;
+  expect(projected).toMatchObject({ probes: 237, lastOutcome: 'connect-failed',
+    startupLastEmitted: { event: 'exited', managerState: 'failed', exitCode: 1, outputClass: 'eaddrinuse' },
+    startupLastEmittedTerminal: true, runtimeChildPresent: false, startupLastEmittedAgeMs: 1_250 });
+  // The emission identity is preserved so a stale frame stays provably stale.
+  expect(Object.keys(projected.startupLastEmitted as object).sort()).toEqual(['childSeen', 'emittedAtMs',
+    'event', 'exitCode', 'managerState', 'outputClass', 'ownership', 'pidPresent', 'sequence']);
+  // The old at-timeout names must never reappear: they claim a live observation.
+  expect(JSON.stringify(projected)).not.toMatch(/startupAtTimeout|startupTerminal|"startup":/u);
+  // Absent telemetry stays absent, never fabricated.
+  expect(summarizeStartupTelemetry(undefined)).toBeUndefined();
+  // A launch that failed BEFORE any gateway probe must still publish the frame:
+  // the startup observation is independent of probe count.
+  const early = summarizeStartupTelemetry({ probes: 0,
+    startupLastEmitted: { schemaVersion: 1, sequence: 2, emittedAtMs: 1_700_000_000_000,
+      event: 'spawn-error', managerState: 'failed', ownership: 'none',
+      childSeen: false, pidPresent: false, errorClass: 'enoent' },
+    startupLastEmittedAgeMs: 0, startupLastEmittedTerminal: true })!;
+  expect(early).toMatchObject({ probes: 0, startupLastEmitted: { event: 'spawn-error',
+    errorClass: 'enoent' }, startupLastEmittedTerminal: true });
+});
+
+it('keeps a still-starting launch distinguishable from an exited child in the safe record', async () => {
+  const parent = path.join(process.cwd(), '.test-data', 'packaged-desktop-runner');
+  await mkdir(parent, { recursive: true });
+  const directory = await mkdtemp(path.join(parent, 'startup-cause-'));
+  const verify = vi.spyOn(packagedSource, 'verifyPackagedSourceCheckout').mockResolvedValue(undefined);
+  const launch = vi.spyOn(packagedFixture, 'launchOwnedPackagedDesktop');
+  try {
+    const cases = [
+      { startupLastEmitted: { schemaVersion: 1, sequence: 1, emittedAtMs: 1_700_000_000_000,
+          event: 'spawned', managerState: 'starting',
+          ownership: 'desktop', childSeen: true, pidPresent: true },
+        startupLastEmittedAgeMs: 59_500, startupLastEmittedTerminal: false },
+      { startupLastEmitted: { schemaVersion: 1, sequence: 2, emittedAtMs: 1_700_000_059_000,
+          event: 'exited', managerState: 'failed',
+          ownership: 'desktop', childSeen: false, pidPresent: false, exitCode: 1, outputClass: 'sqlite' },
+        startupLastEmittedAgeMs: 500, startupLastEmittedTerminal: true },
+    ];
+    for (const [index, cause] of cases.entries()) {
+      const rejection = new Error('synthetic-private-child-detail');
+      Object.defineProperty(rejection, 'gatewayTelemetry', { value: { probes: 237,
+        lastOutcome: 'connect-failed', elapsedMs: 60_083, appAlive: true, ...cause } });
+      launch.mockRejectedValue(rejection);
+      await expect(acceptPackagedDesktopPermissions({ archive: 'synthetic-launch-rejection', version: '0.4.31',
+        sourceSha: 'a'.repeat(40), issuer: 'https://id.example/', privateDirectory: directory,
+        evidenceFile: path.join(directory, `public-${index}.json`) })).rejects.toThrow('private evidence retained');
+      const safe = JSON.parse(await readFile(path.join(directory, 'failure-safe.json'), 'utf8'));
+      expect(safe.launchTelemetry).toMatchObject(cause);
+      expect(JSON.stringify(safe)).not.toContain('synthetic-private-child-detail');
+    }
+  } finally {
+    verify.mockRestore(); launch.mockRestore();
+    await rm(directory, { recursive: true, force: true });
+  }
 });

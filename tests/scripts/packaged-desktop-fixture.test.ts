@@ -7,7 +7,8 @@ import { assertBundledRuntimeProcess, createPackagedFixtureEnvironment,
   isLaunchSubphase, expectedOwnedRuntimeArgv, waitForOwnedRuntime,
   classifyGatewayProbe, summarizeSnapshot, createGatewayTelemetry,
   waitForGatewayReady, readGatewayTelemetry, observeSnapshotBounded,
-  SNAPSHOT_OBSERVATION_MS } from '../../scripts/helpers/packaged-desktop-fixture';
+  SNAPSHOT_OBSERVATION_MS, readStartupDiagnostic, readModulePresence } from '../../scripts/helpers/packaged-desktop-fixture';
+import { STARTUP_DIAGNOSTIC_FILE } from '../../desktop/src/runtime-manager';
 import { desktopDataDirectory } from '../../desktop/src/user-env';
 
 describe('owned packaged desktop permission fixture', () => {
@@ -430,5 +431,96 @@ describe('bounded gateway telemetry', () => {
     Object.defineProperty(leaked, 'gatewayTelemetry', { enumerable: false, value: { probes: 1, errorMessage: 'secret' } });
     expect(readGatewayTelemetry(leaked)).toBeUndefined();
     expect(readGatewayTelemetry(new Error('plain'))).toBeUndefined();
+  });
+});
+
+describe('acceptance-only startup observation', () => {
+  it('reads a closed frame from the owned profile and rejects anything else', async () => {
+    const { mkdtemp, rm, writeFile } = await import('node:fs/promises');
+    const os = await import('node:os');
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'xpod-fixture-startup-'));
+    try {
+      // Absent file: an absent observation, never a guess.
+      expect(await readStartupDiagnostic(directory)).toBeUndefined();
+      const file = path.join(directory, STARTUP_DIAGNOSTIC_FILE);
+      const frame = { schemaVersion: 1, sequence: 3, emittedAtMs: 1_700_000_000_000,
+        event: 'exited', managerState: 'failed', ownership: 'desktop',
+        childSeen: false, pidPresent: false, exitCode: 1, outputClass: 'module-not-found' };
+      await writeFile(file, JSON.stringify(frame));
+      expect(await readStartupDiagnostic(directory)).toMatchObject({ event: 'exited', exitCode: 1,
+        sequence: 3, emittedAtMs: 1_700_000_000_000 });
+      // Hostile extras are refused whole, never partially published.
+      await writeFile(file, JSON.stringify({ ...frame, message: '/private/secret', argv: ['--token=x'] }));
+      expect(await readStartupDiagnostic(directory)).toBeUndefined();
+      // Oversize input is refused before parsing.
+      await writeFile(file, 'x'.repeat(4_096));
+      expect(await readStartupDiagnostic(directory)).toBeUndefined();
+      // A forged enum is refused.
+      await writeFile(file, JSON.stringify({ ...frame, outputClass: 'raw child text /private' }));
+      expect(await readStartupDiagnostic(directory)).toBeUndefined();
+      // A frame without the emission identity cannot be proved fresh, so it is
+      // refused rather than silently read as an at-timeout state.
+      const { sequence: _s, emittedAtMs: _e, ...withoutEmission } = frame;
+      await writeFile(file, JSON.stringify(withoutEmission));
+      expect(await readStartupDiagnostic(directory)).toBeUndefined();
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
+  it('reports module admission PRESENCE from bounded readdirs only', async () => {
+    const { mkdtemp, mkdir, rm, writeFile } = await import('node:fs/promises');
+    const os = await import('node:os');
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'xpod-fixture-modules-'));
+    try {
+      // Missing root: false facts, no throw.
+      expect(await readModulePresence(path.join(directory, 'modules'), ['css', 'api']))
+        .toEqual([{ pointerPresent: false, anyPackagedTree: false },
+          { pointerPresent: false, anyPackagedTree: false }]);
+      const root = path.join(directory, 'modules');
+      await mkdir(path.join(root, 'css', 'darwin-arm64'), { recursive: true });
+      await mkdir(path.join(root, 'packaged', 'sha256'), { recursive: true });
+      await writeFile(path.join(root, 'css', 'darwin-arm64', 'current.json'), '{}');
+      expect(await readModulePresence(root, ['css', 'api'])).toEqual([
+        { pointerPresent: true, anyPackagedTree: true },
+        { pointerPresent: false, anyPackagedTree: true },
+      ]);
+      // A real ModuleStore platform dir contains VERSION subdirectories and the
+      // pointer at this level: the presence check must still find it.
+      await rm(path.join(root, 'css'), { recursive: true, force: true });
+      await mkdir(path.join(root, 'css', 'darwin-arm64', '0.1.0-preview.1'), { recursive: true });
+      await writeFile(path.join(root, 'css', 'darwin-arm64', 'current.json'), '{}');
+      expect((await readModulePresence(root, ['css']))[0]).toEqual({ pointerPresent: true, anyPackagedTree: true });
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
+  it('projects startup facts only through the closed telemetry shape', () => {
+    const error = new Error('synthetic private launch detail');
+    const startupLastEmitted = { schemaVersion: 1, sequence: 7, emittedAtMs: 1_700_000_000_000,
+      event: 'exited', managerState: 'failed',
+      ownership: 'desktop', childSeen: false, pidPresent: false, exitCode: 2, outputClass: 'eaddrinuse' };
+    Object.defineProperty(error, 'gatewayTelemetry', { value: { probes: 3, lastOutcome: 'connect-failed',
+      appAlive: true, startupLastEmitted, startupLastEmittedAgeMs: 45_000, startupLastEmittedTerminal: true,
+      runtimeChildPresent: true,
+      modulePresence: [{ id: 'css', pointerPresent: true, anyPackagedTree: true },
+        { id: 'api', pointerPresent: false, anyPackagedTree: true }] } });
+    const projected = readGatewayTelemetry(error)!;
+    expect(projected.startupLastEmitted).toMatchObject({ event: 'exited', exitCode: 2, sequence: 7 });
+    expect(projected.startupLastEmittedTerminal).toBe(true);
+    // Staleness is carried explicitly, so no consumer can read the frame as fresh.
+    expect(projected.startupLastEmittedAgeMs).toBe(45_000);
+    expect(projected.modulePresence?.[1]).toEqual({ id: 'api', pointerPresent: false, anyPackagedTree: true });
+    // A stale frame is still reported honestly as LAST EMITTED, not as timeout state.
+    expect(Object.keys(projected).sort()).not.toContain('startupAtTimeout');
+    const wire = JSON.stringify(projected);
+    expect(wire).not.toContain('synthetic private launch detail');
+    // A forged nested frame invalidates the whole projection instead of leaking.
+    const forged = new Error('x');
+    Object.defineProperty(forged, 'gatewayTelemetry', { value: { probes: 1,
+      startupLastEmitted: { ...startupLastEmitted, message: '/private/secret' } } });
+    expect(readGatewayTelemetry(forged)).toBeUndefined();
+    // A forged module row (unreviewed id) is refused too.
+    const forgedRow = new Error('x');
+    Object.defineProperty(forgedRow, 'gatewayTelemetry', { value: { probes: 1,
+      modulePresence: [{ id: 'afs', pointerPresent: true, anyPackagedTree: true }] } });
+    expect(readGatewayTelemetry(forgedRow)).toBeUndefined();
   });
 });
