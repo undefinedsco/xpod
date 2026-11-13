@@ -526,10 +526,10 @@ const RC399_LIVE_RELEASE_INPUTS: Readonly<Record<string, string>> = Object.freez
   'scripts/lib/owned-mode-command.cjs': '8ebb1a1b5ed3ee841ea2eabcd7275cbe879c74661dfc4dc0a60e22cb38cfa66a',
   '.github/workflows/ci.yml': '9b98ea92fd971bc11790cbcf36fddbe724ac6f01668831cf646804510726adc0',
   // github-origin owns the API group definition changed by the same append.
-  'scripts/lib/independent-admission/github-origin.ts': '4c6971ae56b46b463ffab103c297b0a02dceb4fa4944bb116c291372ecd8aa5c',
+  'scripts/lib/independent-admission/github-origin.ts': '46b955b80d45e3f12ca2e7c2a7bde88618f4337671f94a0403ff68c6eebd8f7c',
   // The reviewed API preview workflow gained same-PR preview cancellation; the
   // live tail follows the new exact bytes so inherited API selectors rebind too.
-  '.github/workflows/api-module-product.yml': '2db71cbf4f6f46a433c397866585374d91b76c89bf79f173b5aae181dc2087b6',
+  '.github/workflows/api-module-product.yml': '91f8945206ed87a1621a5a37b2762aa2aacfde988b3fa775fe398568a9910377',
   // The AFS reuse stage-contract fix moves this owned original; only the current
   // tail rebinds it, while every published group keeps its frozen bytes.
   'scripts/agentfs-native-ci/accept.py': 'c79c1e76ede8f3acfd800792909b181acc0231b3cde125a16b1a6f51932a73bc',

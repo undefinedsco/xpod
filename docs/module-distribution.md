@@ -160,3 +160,21 @@ Gateway 的 API host、API path、web product 和 API WebSocket 路径属于 API
 `POST /service/stop` 返回 `202 {accepted:true}`，仅确认请求被接受。异步关闭失败会记录错误并保留所有权；HTTP 成功不能当作子进程或监听器已关闭的证据。
 
 这条入口、独立 producer 与 CLI 安装锁接线已分别验收，真实组合运行的产物来源见上表；平台模块的 registry 发布与正式发行资格仍单独验证。
+
+## 独立模块 producer 的 CI 调度边界
+
+PR 与 `staging` 上默认只自动运行**便宜的 contract 检查**（target 投影、producer 单测、
+owned container identity 回归）。API/CSS 预览与 AFS 挂载 producer 改为显式 `workflow_dispatch`：
+
+- `api-module-product.yml`：`contract` 自动；`products` 手动（该工作流没有 pending-native-sources job）。
+- `css-module-product.yml`：`contract` 自动；`native`、`products`、`pending-native-sources` 手动。
+- `css-native-products.yml`：保留已有工作流字节与 SDK 来源契约；仓库暂时停用整个独立原生构建
+  工作流，日常契约仍由必需 CI 的 Bun 检查覆盖。独立 CSS 发布需要时，先显式启用并在已评审的
+  `staging` 上手动运行，核对实际 run SHA；运行及发布结束且无其他调用方后再停用。
+  工作流停用期间也不能直接手动触发，须先启用。
+- `agentfs-module-mounted-acceptance.yml`：PR/push 自动跑快速 `contract`（含 owned container
+  identity 回归）；实际 FUSE/NFS `mounted-module` 手动。
+
+人工运行必须指定**已评审的 staging SHA（及 target）**，并在独立模块发布前完成；
+自动 contract 不能替代 producer，服务 RC 的 29 项服务门禁也不覆盖每一次独立模块发布。
+候选服务 Trixie SDK 仍随 candidate 自动运行，不受本调度影响。

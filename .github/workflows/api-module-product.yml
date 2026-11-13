@@ -40,6 +40,8 @@ jobs:
 
   products:
     name: products (${{ matrix.target }})
+    # Expensive independent producer: explicit workflow_dispatch only.
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     needs: contract
     strategy:
       fail-fast: false

@@ -25,7 +25,7 @@
   },
   {
     "path": ".github/workflows/api-module-product.yml",
-    "sha256": "2db71cbf4f6f46a433c397866585374d91b76c89bf79f173b5aae181dc2087b6"
+    "sha256": "91f8945206ed87a1621a5a37b2762aa2aacfde988b3fa775fe398568a9910377"
   },
   {
     "path": "Dockerfile",
@@ -941,7 +941,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "4c6971ae56b46b463ffab103c297b0a02dceb4fa4944bb116c291372ecd8aa5c"
+    "sha256": "46b955b80d45e3f12ca2e7c2a7bde88618f4337671f94a0403ff68c6eebd8f7c"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",
