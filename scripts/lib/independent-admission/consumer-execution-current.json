@@ -233,7 +233,7 @@
   },
   {
     "path": "packages/xpod-cli/src/module-store.ts",
-    "sha256": "735aa972cc5efc8465ebca145fff03a83f0eb8d0d2c2bb33ba961793e3b1fcaa"
+    "sha256": "e8349c72f95a7976a23a93e5e747aa43bc302927d9e22697f63fc1d7ecd89dd2"
   },
   {
     "path": "packages/xpod-cli/src/native-target.ts",

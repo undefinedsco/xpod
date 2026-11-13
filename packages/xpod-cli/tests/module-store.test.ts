@@ -528,7 +528,7 @@ test('store options are per-instance and never read a process-wide snapshot', as
 
 
 /** Write one seed version directory with a real xpodModule manifest. */
-async function writeSeedVersion(seed: string, version: string, source: string, id: 'afs' = 'afs'): Promise<void> {
+async function writeSeedVersion(seed: string, version: string, source: string, id: 'afs' | 'api' = 'afs'): Promise<void> {
   const dir = path.join(seed, id, 'darwin-arm64', version, 'package');
   await mkdir(dir, { recursive: true });
   const name = id === 'afs' ? '@undefineds.co/xpod-afs-darwin-arm64' : '@undefineds.co/xpod-api-darwin-arm64';
@@ -658,4 +658,65 @@ test('two stores built from different contexts never share state', async () => {
   expect(a.root).toBe(path.resolve('/tmp/a'));
   expect(b.root).toBe(path.resolve('/tmp/b'));
   expect(a.root).not.toBe(b.root);
+});
+
+test('offline admission preserves the requested callback order', async () => {
+  const f = await seedFixture();
+  await writeSeedVersion(f.seed, f.version, 'process.exit(0);\n', 'api');
+  const store = new ModuleStore({ root: f.store, seed: f.seed, offline: true, platform: 'darwin', arch: 'arm64' });
+  const seen = await store.withAdmittedModules(['api', 'afs'], async modules => modules.map(row => row.installed.id));
+  expect(seen).toEqual(['api', 'afs']);
+});
+
+test('a corrupted warm tree is rejected instead of being silently re-imported', async () => {
+  const f = await seedFixture();
+  const store = new ModuleStore({ root: f.store, seed: f.seed, offline: true, platform: 'darwin', arch: 'arm64' });
+  await store.withAdmittedModules(['afs'], async () => {});
+  const current = await store.current('afs');
+  const record = await readFile(path.join(store.root, 'afs/darwin-arm64/current.json'), 'utf8');
+  const entry = path.join(store.root, 'packaged', current!.manifestSha256, 'afs/darwin-arm64', f.version, 'package/entry.mjs');
+  await writeFile(entry, 'process.exit(9);\n');
+  const failure = await store.withAdmittedModules(['afs'], async () => {}).then(() => null, cause => cause as { code?: string });
+  expect(failure?.code).toBe('module_file_changed');
+  expect(await readFile(path.join(store.root, 'afs/darwin-arm64/current.json'), 'utf8')).toBe(record);
+});
+
+test('a second offline admission is refused while the first action runs, then succeeds', async () => {
+  const f = await seedFixture();
+  const store = new ModuleStore({ root: f.store, seed: f.seed, offline: true, platform: 'darwin', arch: 'arm64' });
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let entered!: () => void;
+  const firstEntered = new Promise<void>(resolve => { entered = resolve; });
+  const first = store.withAdmittedModules(['afs'], async () => { entered(); await gate; });
+  await firstEntered;
+  let consumed = false;
+  const second = await store.withAdmittedModules(['afs'], async () => { consumed = true; })
+    .then(() => null, cause => cause as { code?: string });
+  expect(consumed).toBe(false);
+  expect(second?.code).toBe('module_busy');
+  release(); await first;
+  await store.withAdmittedModules(['afs'], async () => { consumed = true; });
+  expect(consumed).toBe(true);
+});
+
+test('inverse two-module offline admissions fail fast without overlapping', async () => {
+  const f = await seedFixture();
+  await writeSeedVersion(f.seed, f.version, 'process.exit(0);\n', 'api');
+  const store = new ModuleStore({ root: f.store, seed: f.seed, offline: true, platform: 'darwin', arch: 'arm64' });
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let entered = false;
+  const forward = store.withAdmittedModules(['api', 'afs'], async modules => {
+    expect(modules.map(row => row.installed.id)).toEqual(['api', 'afs']);
+    entered = true; await gate;
+  });
+  while (!entered) await new Promise(resolve => setTimeout(resolve, 5));
+  // The inverse request must not enter a second action, and must fail fast on the
+  // held module lock rather than waiting on the first action.
+  const inverseFailure = await store.withAdmittedModules(['afs', 'api'], async () => {}).then(() => null, cause => cause as { code?: string });
+  expect(inverseFailure?.code).toBe('module_busy');
+  release(); await forward;
+  const inverse = await store.withAdmittedModules(['afs', 'api'], async modules => modules.map(row => row.installed.id));
+  expect(inverse).toEqual(['afs', 'api']);
 });
