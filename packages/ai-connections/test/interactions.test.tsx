@@ -36,6 +36,7 @@ function client(overrides: Partial<AiConnectionsClient> = {}): AiConnectionsClie
   return {
     webId: WEB_ID,
     apiBase: 'https://pod.example',
+    podBaseUrl: 'https://pod.example/',
     getServiceAccess: vi.fn(async () => ({ status: 'granted' })),
     listProviders: vi.fn(async () => []),
     listModels: vi.fn(async () => []),

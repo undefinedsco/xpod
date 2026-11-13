@@ -12,7 +12,10 @@ function mountedFixture() {
     session: { getSnapshot: () => ({ status: 'authenticated', webId: binding.webId }) },
     permissions: { revokeAgentAccess: revoke }, pod: { status: 'ready', current: binding },
   }, capabilities: {} };
-  const controller = { client: { webId: binding.webId }, authorizeService: vi.fn() };
+  // The client carries its OWN immutable Pod binding; apiBase alone (origin only)
+  // cannot distinguish two Pods of the same owner on one Gateway.
+  const controller = { client: { webId: binding.webId,
+    apiBase: new URL(binding.podUrl).origin, podBaseUrl: binding.podUrl }, authorizeService: vi.fn() };
   const runtime = { state: { status: 'authenticated' }, session: host.solid.session, fetch: vi.fn(), currentPod: binding };
   const appletFiber = (value: typeof host) => ({ memoizedState: {
     memoizedState: [value, []], next: { memoizedState: [{ layout: 'two-pane', controller }, []] },
@@ -49,6 +52,58 @@ it('retains only the exact committed mounted host, including its existing grant 
     host.solid.session.getSnapshot = () => ({ status: 'anonymous', webId: binding.webId });
     await expect(captureBrowserAiConnections(page, binding)).rejects.toThrow('Missing mounted host');
     expect(revoke).not.toHaveBeenCalled();
+  } finally { fixture.close(); }
+});
+
+it('refuses a same-origin same-webId client bound to a DIFFERENT Pod', async () => {
+  const fixture = mountedFixture();
+  const { binding, controller } = fixture;
+  const page = fixture.page as unknown as Page;
+  try {
+    // Sanity: the correct Pod binding IS accepted.
+    await expect(captureBrowserAiConnections(page, binding)).resolves.toBeDefined();
+    // Same owner, same Gateway origin, same webId, different Pod path. The
+    // origin-only apiBase is identical, so only podBaseUrl can catch this.
+    const foreign = { ...controller, client: { ...controller.client,
+      podBaseUrl: 'https://local.example/a/' } };
+    expect(new URL(foreign.client.podBaseUrl).origin).toBe(new URL(binding.podUrl).origin);
+    expect(foreign.client.apiBase).toBe(controller.client.apiBase);
+    expect(foreign.client.webId).toBe(controller.client.webId);
+    expect(foreign.client.podBaseUrl).not.toBe(binding.podUrl);
+    // Swap the mounted controller for the foreign-client one.
+    Object.defineProperty(controller, 'client', { value: foreign.client, configurable: true });
+    await expect(captureBrowserAiConnections(page, binding)).rejects.toThrow('Missing mounted host');
+    // Restoring the correct binding makes capture succeed again.
+    Object.defineProperty(controller, 'client', { value: fixture.controller.client, configurable: true });
+  } finally { fixture.close(); }
+});
+
+it('accepts trailing-slash variance on the same root but refuses a different webId', async () => {
+  const fixture = mountedFixture();
+  const { binding, controller, host } = fixture;
+  const page = fixture.page as unknown as Page;
+  try {
+    // Same root written without the trailing slash is still the same Pod.
+    Object.defineProperty(controller, 'client', { value: { ...controller.client,
+      podBaseUrl: binding.podUrl.replace(/\/$/u, '') }, configurable: true });
+    await expect(captureBrowserAiConnections(page, binding)).resolves.toBeDefined();
+    // Same Pod root but a different owner identity must never be accepted.
+    Object.defineProperty(controller, 'client', { value: { ...controller.client,
+      podBaseUrl: binding.podUrl, webId: 'https://id.example/card#other' }, configurable: true });
+    await expect(captureBrowserAiConnections(page, binding)).rejects.toThrow('Missing mounted host');
+    expect(host.solid.pod.current.podUrl).toBe(binding.podUrl);
+  } finally { fixture.close(); }
+});
+
+it('refuses a client that exposes no Pod binding at all', async () => {
+  const fixture = mountedFixture();
+  const { binding, controller } = fixture;
+  const page = fixture.page as unknown as Page;
+  try {
+    Object.defineProperty(controller, 'client', { value: { webId: binding.webId,
+      apiBase: new URL(binding.podUrl).origin }, configurable: true });
+    // A client that cannot prove its Pod must never satisfy the binding check.
+    await expect(captureBrowserAiConnections(page, binding)).rejects.toThrow('Missing mounted host');
   } finally { fixture.close(); }
 });
 

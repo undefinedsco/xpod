@@ -341,7 +341,18 @@ export interface AiProviderConnectionSummary {
 
 export interface AiConnectionsClient {
   readonly webId: string
+  /** Gateway origin only; two different Pods on one Gateway share it. */
   readonly apiBase: string
+  /**
+   * The EXACT Pod base this client was constructed with, normalized as a root.
+   *
+   * `apiBase` is only the origin, so it cannot distinguish two Pods of the same
+   * owner on one Gateway. Callers that must prove which Pod a client is bound to
+   * (host assembly, acceptance harness) compare THIS value and never re-derive a
+   * Pod from `apiBase`. It is REQUIRED: a client that cannot state its Pod
+   * binding must not exist, so no caller can fall back to a permissive match.
+   */
+  readonly podBaseUrl: string
   getServiceAccess(): Promise<unknown>
   listProviders(): Promise<AiProviderSummary[]>
   listAuthorizationMethods?(): Promise<AiProviderAuthorizationMethodsSummary[]>

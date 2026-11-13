@@ -20,6 +20,10 @@ import {
 
 // Hosts wrap the client so a thrown failure reads as a sentence; the tests below
 // assert what a user would see, so they wrap it the same way.
+/** The real decorated path production uses; it must preserve the binding. */
+function wrappedPod(client: { podBaseUrl: string }): string {
+  return withDisplayableErrors(client as never).podBaseUrl
+}
 const createAiConnectionsClient: typeof createCoreClient = (options) =>
   withDisplayableErrors(createCoreClient(options))
 
@@ -39,6 +43,48 @@ describe('AI Connection management client', () => {
     ['other/linx', 'smart', false], ['org/linx-lite', 'fast', false], ['linx-lite', 'smart', false],
   ] as const)('matches only the published namespace for %s as %s', (id, role, expected) => {
     expect(matchesPlatformModelRole(id, role)).toBe(expected)
+  })
+
+  it('sends the SAME normalized Pod root on the wire that it reports as its binding', async () => {
+    const sent: string[] = []
+    const client = createCoreClient({ webId: WEB_ID, podBaseUrl: 'https://pod.example/alice/a',
+      authenticatedFetch: (async (_input: unknown, init: { headers?: Record<string, string> }) => {
+        sent.push(String(init?.headers?.['X-Xpod-Pod-Url']))
+        return jsonResponse({ data: [] })
+      }) as unknown as typeof fetch })
+    // The raw constructor argument has no trailing slash; both the getter and
+    // the header must carry the SAME normalized root.
+    expect(client.podBaseUrl).toBe('https://pod.example/alice/a/')
+    await client.listProviders()
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toBe(client.podBaseUrl)
+  })
+
+  it('exposes an immutable normalized Pod root that distinguishes same-origin Pods', () => {
+    const fetchStub = (async () => jsonResponse({})) as unknown as typeof fetch
+    const make = (podBaseUrl: string) => createAiConnectionsClient({ webId: WEB_ID, podBaseUrl, authenticatedFetch: fetchStub })
+    const a = make('https://pod.example/alice/a/')
+    const b = make('https://pod.example/alice/b/')
+    const noSlash = make('https://pod.example/alice/a')
+    // Origin is identical for both Pods, so it can never prove identity.
+    expect(a.apiBase).toBe(b.apiBase)
+    expect(a.webId).toBe(b.webId)
+    // The full normalized root is the identity, and it is slash-insensitive.
+    expect(a.podBaseUrl).toBe('https://pod.example/alice/a/')
+    expect(a.podBaseUrl).not.toBe(b.podBaseUrl)
+    expect(noSlash.podBaseUrl).toBe(a.podBaseUrl)
+    // The BINDING is immutable (non-configurable accessor) and never re-derived
+    // from apiBase, while the client object itself stays extensible so
+    // decoration and vi.spyOn keep working.
+    expect(() => { (a as { podBaseUrl: string }).podBaseUrl = b.podBaseUrl }).toThrow()
+    expect(a.podBaseUrl).toBe('https://pod.example/alice/a/')
+    expect(Object.isFrozen(a)).toBe(false)
+    expect(() => { (a as unknown as Record<string, unknown>).extra = 1 }).not.toThrow()
+    // A decorated/wrapped client is still bound to the same Pod.
+    expect(wrappedPod(a)).toBe('https://pod.example/alice/a/')
+    for (const bad of ['https://pod.example/a/?x=1', 'https://pod.example/a/#f', 'https://pod.example/a/ ']) {
+      expect(() => make(bad)).toThrow()
+    }
   })
 
   it('reads the complete Gateway catalog without weakening attributable model lists', async () => {
