@@ -1807,6 +1807,16 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
       // and selectable; unknown or mixed versions are still refused.
       {workflowSha256:'9b98ea92fd971bc11790cbcf36fddbe724ac6f01668831cf646804510726adc0',
       jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // APPEND-ONLY: current ci.yml reuses the existing reviewed manual
+      // desktop-launch-diagnostic job to replay the original desktop artifact
+      // instead of rebuilding it. The four required caller jobs, the manual
+      // publication route and every parent permission stay unchanged, so this is
+      // a new reviewed workflow identity over the same contract. Every earlier
+      // reviewed version above stays byte-exact and selectable; unknown or mixed
+      // versions are still refused.
+      {workflowSha256:'dd16a795ab4ae2413916084f07af4e5a961745da63ff00a709b44a0c5ceaf754',
+      jobName:()=>callerNames[0]!,
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,
     sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS,
