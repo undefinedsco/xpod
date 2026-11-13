@@ -32,6 +32,23 @@ import {
  * The HTTP client itself: one factory over the Pod base URL and an authenticated
  * fetch, with every response normalised by `normalize.ts`.
  */
+/**
+ * Canonical Pod-root form for binding identity: absolute http(s), no credentials,
+ * no query/fragment/whitespace, and a trailing slash on the path. Two Pods of one
+ * owner share an origin, so identity must be this full root — never the origin.
+ */
+export function normalizeAiConnectionsPodBase(podBaseUrl: string): string {
+  if (podBaseUrl !== podBaseUrl.trim() || /[\s\\?#]/u.test(podBaseUrl)) {
+    throw new Error('Current Pod URL must be a canonical root')
+  }
+  const url = new URL(podBaseUrl)
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
+    throw new Error('Current Pod URL must use HTTP or HTTPS')
+  }
+  if (!url.pathname.endsWith('/')) url.pathname += '/'
+  return url.href
+}
+
 export function resolveAiConnectionsApiBase(podBaseUrl: string): string {
   const parsed = new URL(podBaseUrl)
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
@@ -100,7 +117,7 @@ export function createAiConnectionsClient({
       mode: 'cors',
       headers: {
         accept: 'application/json',
-        'X-Xpod-Pod-Url': podBaseUrl,
+        'X-Xpod-Pod-Url': podBinding,
         ...(body ? { 'content-type': 'application/json' } : {}),
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
@@ -134,9 +151,15 @@ export function createAiConnectionsClient({
       : []
   }
 
-  return {
+  const podBinding = normalizeAiConnectionsPodBase(podBaseUrl)
+  const client: AiConnectionsClient = {
     webId,
     apiBase,
+    // Immutable by construction: a non-configurable accessor over the SAME
+    // normalized binding that is sent on the wire, so the stated Pod and the
+    // request Pod can never differ. Only this property is pinned; the rest of
+    // the client stays a normal, extensible object (decoration and spies work).
+    get podBaseUrl(): string { return podBinding },
 
     getServiceAccess() {
       return request<unknown>('/api/applets/service-access/ai-connections', 'GET')
@@ -427,4 +450,6 @@ export function createAiConnectionsClient({
       return parseCustomModelList(payload.data)
     },
   }
+  Object.defineProperty(client, 'podBaseUrl', { enumerable: true, configurable: false })
+  return client
 }

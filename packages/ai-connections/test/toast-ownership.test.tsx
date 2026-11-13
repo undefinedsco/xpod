@@ -55,6 +55,7 @@ function client(): AiConnectionsClient {
   return {
     webId: 'https://pod.example/alice/profile/card#me',
     apiBase: 'https://pod.example',
+    podBaseUrl: 'https://pod.example/',
     listModels: vi.fn(async () => []),
     listGatewayKeys: vi.fn(async () => []),
     createGatewayKey: vi.fn(async () => ({
