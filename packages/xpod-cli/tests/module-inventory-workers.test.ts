@@ -46,3 +46,31 @@ test('inventory workers handle empty/small lists and synchronous or undefined fa
   try { await checkInventoryFiles([1], async () => { throw undefined; }); } catch (error) { failed = true; expect(error).toBeUndefined(); }
   expect(failed).toBe(true);
 });
+
+test('inventory workers accept an explicit fanout and refuse a non-positive bound instead of skipping work', async () => {
+  // An explicit higher fanout is honoured.
+  const items = Array.from({ length: 24 }, (_, i) => i);
+  let active = 0; let peak = 0;
+  await checkInventoryFiles(items, async () => {
+    active++; peak = Math.max(peak, active);
+    await new Promise(resolve => setTimeout(resolve, 1));
+    active--;
+  }, 8);
+  expect(peak).toBe(8);
+  // The credential-free default is still four when omitted.
+  let defaultPeak = 0; let defaultActive = 0;
+  await checkInventoryFiles(items, async () => {
+    defaultActive++; defaultPeak = Math.max(defaultPeak, defaultActive);
+    await new Promise(resolve => setTimeout(resolve, 1));
+    defaultActive--;
+  });
+  expect(defaultPeak).toBe(4);
+  // Zero/NaN/fractional fanouts must never silently run NOTHING: that would skip
+  // the integrity check entirely and look like success.
+  for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    let ran = 0;
+    await expect(checkInventoryFiles([1, 2, 3], async () => { ran++; }, bad))
+      .rejects.toThrow(/positive safe integer/u);
+    expect(ran).toBe(0);
+  }
+});

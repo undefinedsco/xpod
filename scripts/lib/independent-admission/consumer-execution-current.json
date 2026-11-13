@@ -225,7 +225,7 @@
   },
   {
     "path": "packages/xpod-cli/src/module-inventory-workers.ts",
-    "sha256": "2f314ac1a1784bf33d373dd30a8e35b8b716afdbaa3dcc1bec5d73cdc2ac6ff1"
+    "sha256": "108e9c14e8c8ad4d5487396f197a96abef2c5084861a65a4fa9351cfd910c667"
   },
   {
     "path": "packages/xpod-cli/src/module-owned-lock.ts",
@@ -233,7 +233,7 @@
   },
   {
     "path": "packages/xpod-cli/src/module-store.ts",
-    "sha256": "e8349c72f95a7976a23a93e5e747aa43bc302927d9e22697f63fc1d7ecd89dd2"
+    "sha256": "42ed0a2d11b9fae6162d032cf494a0907dd046a38747c9115dc333128b7f1513"
   },
   {
     "path": "packages/xpod-cli/src/native-target.ts",

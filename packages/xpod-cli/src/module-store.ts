@@ -14,6 +14,8 @@ import { withModuleOwnedLock } from './module-owned-lock';
 const REGISTRY = 'https://registry.npmjs.org';
 /** Prefix for a seed import identity: the packaged package.json digest. */
 const SEED_INTEGRITY_PREFIX = 'seed-package-sha256-';
+/** Fixed global file-copy fanout for seed staging. Not user-configurable. */
+const SEED_COPY_CONCURRENCY = 8;
 const VERSION = /^\d+\.\d+\.\d+(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?$/;
 const safePath = (name: unknown): name is string => typeof name === 'string' && name.length > 0 && !name.includes('\\') && !path.isAbsolute(name)
   && name.split('/').every(part => part && part !== '.' && part !== '..');
@@ -313,26 +315,38 @@ export class ModuleStore {
       const from = path.join(source.from, 'package');
       const staged = path.join(stage, 'package');
       await mkdir(staged, { recursive: true, mode: 0o700 });
-      // Each directory is created before it is recursed into, so a file's parent
-      // already exists; only the canonical relative name is retained.
+      // Walk first, mutate second: the walk only validates member kinds and
+      // records canonical work items, so directory creation always precedes the
+      // files that live in them and no task can race a parent mkdir.
       const copied: { target: string; relative: string }[] = [];
-      const copy = async (relative = ''): Promise<void> => {
+      const directories: string[] = [];
+      const files: { source: string; target: string; relative: string }[] = [];
+      const walk = async (relative = ''): Promise<void> => {
         for (const entry of await readdir(path.join(from, relative), { withFileTypes: true })) {
           const name = relative ? `${relative}/${entry.name}` : entry.name;
           const target = path.join(staged, name);
           if (entry.isSymbolicLink()) throw error('module_link_rejected', 'Module artifacts cannot contain links.');
-          if (entry.isDirectory()) { await mkdir(target, { recursive: true, mode: 0o700 }); await copy(name); }
-          else if (entry.isFile()) {
-            // The private mkdtemp stage is 0700, so the copy is only visible to its
-            // owner. COPYFILE_FICLONE is opportunistic (never FORCE): unsupported
-            // filesystems fall back to a normal byte copy inside libuv. EXCL keeps
-            // the existing no-overwrite guarantee; the temporary 0600 is then
-            // replaced by the manifest's exact mode and fully verified below.
-            await copyFile(path.join(from, name), target, fsConstants.COPYFILE_EXCL | fsConstants.COPYFILE_FICLONE);
-            await chmod(target, 0o600);
-            copied.push({ target, relative: name });
-          } else throw error('module_inventory_invalid', 'Module contains an unsupported member.');
+          if (entry.isDirectory()) { directories.push(target); await walk(name); }
+          else if (entry.isFile()) files.push({ source: path.join(from, name), target, relative: name });
+          else throw error('module_inventory_invalid', 'Module contains an unsupported member.');
         }
+      };
+      const copy = async (): Promise<void> => {
+        await walk();
+        for (const directory of directories) await mkdir(directory, { recursive: true, mode: 0o700 });
+        // The SAME bounded fanout primitive that verifies inventory, at a higher
+        // explicit bound. It is a single flat list, so the bound is global for the
+        // module and cannot multiply with tree depth. A failure stops scheduling
+        // and drains every started copy before the throw, so cleanup never races
+        // one. The private mkdtemp stage is 0700, so a copy is only visible to its
+        // owner. COPYFILE_FICLONE stays opportunistic (never FORCE) and EXCL keeps
+        // the existing no-overwrite guarantee. No intermediate per-file chmod is
+        // needed: the manifest's exact mode is applied once below and fully
+        // verified against the same manifest.
+        await checkInventoryFiles(files, async file => {
+          await copyFile(file.source, file.target, fsConstants.COPYFILE_EXCL | fsConstants.COPYFILE_FICLONE);
+          copied.push({ target: file.target, relative: file.relative });
+        }, SEED_COPY_CONCURRENCY);
       };
       await copy();
       // Apply the manifest's declared modes BEFORE verify(): verify compares the
