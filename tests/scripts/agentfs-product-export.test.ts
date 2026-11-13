@@ -198,8 +198,32 @@ describe('AgentFS mounted development workflow entry contract', () => {
   });
   it('retains read-only isolated evidence jobs without shared RC or deployment writes', () => {
     expect(workflow.permissions).toEqual({ contents: 'read', packages: 'read', actions: 'read' });
-    expect(Object.keys(workflow.jobs)).toEqual(['mounted-module']);
+    // The reviewed scheduling change adds ONE cheap automatic contract job and
+    // keeps the heavy mounted matrix. No third job is expected.
+    expect(Object.keys(workflow.jobs)).toEqual(['contract', 'mounted-module']);
+    const contract = workflow.jobs['contract'];
     const job = workflow.jobs['mounted-module'];
+    // The fast contract shares the workflow's read-only permissions, is automatic
+    // on the existing PR/push events, and must not gain deploy/RC capability.
+    expect(contract.permissions).toBeUndefined();
+    expect(contract.environment).toBeUndefined();
+    expect(contract.secrets).toBeUndefined();
+    expect(contract['timeout-minutes']).toBe(5);
+    expect(contract.if).toBeUndefined();
+    const contractBody = JSON.stringify(contract);
+    expect(contractBody).not.toMatch(/pull_request_target|secrets\.|gh (?:release|workflow run)|git push|(?:npm|bun) publish|kubectl|deployments:|id-token:/);
+    // The owned container identity regression runs ONCE, in the contract job.
+    const identitySteps = (workflow: any) => ['contract', 'mounted-module']
+      .flatMap((name: string) => workflow.jobs[name].steps)
+      .filter((step: any) => step.run === 'python3 tests/scripts/agentfs_linux_cidfile_test.py -v');
+    expect(identitySteps(workflow)).toHaveLength(1);
+    expect(contract.steps.some((step: any) => step.run === 'python3 tests/scripts/agentfs_linux_cidfile_test.py -v')).toBe(true);
+    // The heavy matrix is manual-only and depends on the contract.
+    expect(job.if).toBe("${{ github.event_name == 'workflow_dispatch' }}");
+    expect(job.needs).toBe('contract');
+    // Its own toolchain survives the move (distinct runner, hashlib.file_digest).
+    expect(job.steps.filter((step: any) => step.uses === 'actions/setup-python@v5')).toHaveLength(1);
+    expect(job.steps.find((step: any) => step.uses === 'actions/setup-python@v5').with['python-version']).toBe('3.12');
     expect(job.permissions).toBeUndefined();
     expect(job.environment).toBeUndefined();
     expect(job.secrets).toBeUndefined();

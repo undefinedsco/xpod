@@ -113,21 +113,40 @@ test('candidate produces the API capability ONCE on clean source BEFORE the vers
   assert.doesNotMatch(steps[api].run, /echo\s+.*GH_TOKEN|set\s+-x/);
 });
 
-test('diagnostic produces the API capability ONCE on clean source BEFORE its version stamp', () => {
+test('diagnostic reuses the retained prebuilt app instead of rebuilding API/native/desktop', () => {
   const { jobs } = read('ci.yml');
-  const steps = jobs['desktop-launch-diagnostic'].steps;
-  const api = stepIndex(steps, s => s.run?.includes('prepareApiCapability'));
-  const stamp = stepIndex(steps, s => s.run?.includes('applyRootVersion'));
-  const packages = stepIndex(steps, s => s.run?.includes('bun run build:packages'));
-  assert.ok(api >= 0 && stamp >= 0 && packages >= 0);
-  assert.ok(packages < api, 'API production must follow workspace package build');
-  assert.ok(api < stamp, 'API production must precede the diagnostic version stamp');
-  assert.equal(steps.filter(s => s.run?.includes('prepareApiCapability')).length, 1);
-  // The pinned QLever identity stays immutable and no rc env/secret is added.
-  assert.equal(jobs['desktop-launch-diagnostic'].env.DIAGNOSTIC_ARTIFACT_ID, '13912079864');
-  assert.match(jobs['desktop-launch-diagnostic'].env.DIAGNOSTIC_ARTIFACT_SHA256, /^92710334875497ba/);
-  assert.equal(jobs['desktop-launch-diagnostic'].env.ORIGINAL_SOURCE_SHA, '021c809886629624934826f4aacf87ff59326932');
-  assert.equal(jobs['desktop-launch-diagnostic'].environment, undefined);
+  const job = jobs['desktop-launch-diagnostic'];
+  const steps = job.steps;
+  // No build pipeline remains in this diagnostic route.
+  for (const marker of ['prepareApiCapability', 'applyRootVersion', 'bun run build:packages',
+    'build:ts', 'build:components', 'bun run dist', 'electron/install.js',
+    'restore-root-dependencies']) {
+    assert.equal(steps.filter(s => s.run?.includes(marker)).length, 0,
+      `${marker} must not run in the retained-artifact diagnostic`);
+  }
+  // Immutable retained origin, never a rebuilt archive.
+  assert.equal(job.env.DIAGNOSTIC_ARTIFACT_ID, '14027002959');
+  assert.equal(job.env.DIAGNOSTIC_ARTIFACT_SHA256,
+    '1c631b05304f0f74bb169ca89c66331f17a211d16103cc23c438d61d67e131d5');
+  assert.equal(job.env.DIAGNOSTIC_ARTIFACT_SIZE, '1574941283');
+  assert.equal(job.env.DIAGNOSTIC_RUN_ID, '43399663838');
+  assert.equal(job.env.DIAGNOSTIC_RUN_SOURCE_SHA, '759379b8d5a3b82cf008e6e42c5742b0305c4dd6');
+  assert.equal(job.env.ORIGINAL_SOURCE_SHA, undefined);
+  assert.equal(job.env.ORIGINAL_APP_SHA, undefined);
+  assert.equal(job.env.ORIGINAL_APP_DIGEST, undefined);
+  // Verification happens before the launch, and only a small safe record is kept.
+  const verify = steps.findIndex(s => s.run?.includes('verify-retained-desktop-artifact.py extract'));
+  const launch = steps.findIndex(s => s.run?.includes('desktop-launch-diagnostic.ts'));
+  assert.ok(verify >= 0 && launch > verify);
+  const upload = steps.find(s => s.uses === 'actions/upload-artifact@v4');
+  const uploaded = String(upload.with.path);
+  assert.ok(!uploaded.includes('*-mac.zip') && !uploaded.includes('*.dmg'));
+  assert.ok(uploaded.includes('desktop-launch-diagnostic/diagnostic-safe.json'));
+  // Timeout only shrank; the original 60s launch budget lives in the helper.
+  assert.ok(job['timeout-minutes'] <= 20);
+  assert.equal(job.permissions.contents, 'read');
+  assert.equal(job.permissions.actions, 'read');
+  assert.equal(job.environment, undefined);
 });
 
 test('RC desktop job has artifact-read permission and calls the shared retainer', () => {
@@ -176,9 +195,10 @@ test('stable job consumes the ACCEPTED candidate run through the shared retainer
 const FAILURE_UPLOAD = 'Upload failed API preparation diagnostics separately';
 
 test('all three desktop jobs retain the producer receipt/evidence on API failure', () => {
+  // The ci.yml diagnostic no longer produces an API capability at all: it launches
+  // the RETAINED archive. Only the two real build jobs keep the API failure upload.
   const jobs = [
     ['candidate.yml', 'build_desktop_rc'],
-    ['ci.yml', 'desktop-launch-diagnostic'],
     ['release.yml', 'build_desktop_macos'],
   ];
   for (const [file, jobName] of jobs) {

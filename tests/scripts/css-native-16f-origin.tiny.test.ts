@@ -26,9 +26,17 @@ const CONCURRENCY_BLOCK='concurrency:\n'
   +'  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}\n'
   +"  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n\n";
 
-/** The reviewed 16f bytes: current file minus exactly the added concurrency block. */
+/** The reviewed 16f bytes: current file minus exactly the two later reviewed
+ * additions - the same-PR concurrency block and the dispatch-only guards on the
+ * expensive producers. The restored text must hash to the historical literal. */
+const DISPATCH_GUARDS=[
+  "    # Expensive native producer: explicit workflow_dispatch only.\n    if: ${{ github.event_name == 'workflow_dispatch' }}\n",
+  "    # Expensive independent producer: explicit workflow_dispatch only.\n    if: ${{ github.event_name == 'workflow_dispatch' }}\n",
+  "    # Report-only diagnostic matrix; explicit workflow_dispatch only.\n    if: ${{ github.event_name == 'workflow_dispatch' }}\n",
+];
 function historical16f():Buffer{
-  const text=read(NORMAL_WORKFLOW).toString('utf8');
+  let text=read(NORMAL_WORKFLOW).toString('utf8');
+  for(const guard of DISPATCH_GUARDS)text=text.split(guard).join('');
   const stripped=text.replace(CONCURRENCY_BLOCK,'');
   expect(stripped).not.toBe(text);
   return Buffer.from(stripped);

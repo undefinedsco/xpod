@@ -10,7 +10,7 @@ import { AI_CONNECTIONS_SERVICE_RESOURCE_IDS } from '@undefineds.co/ai-connectio
 import { discoverSolidLocalRoute } from '@undefineds.co/solid-sdk/local-route-fetch';
 import { createCloudAccountPassword, prepareManagedLocalAcceptancePods, parseKeyFile } from './accept-live-gateway-login-chat';
 import { createPlatformProviderForAccount } from './prepare-rc-platform-provider';
-import { launchOwnedPackagedDesktop, isLaunchSubphase, type LaunchSubphase,
+import { launchOwnedPackagedDesktop, isLaunchSubphase, readGatewayTelemetry, type LaunchSubphase,
   type OwnedPackagedDesktop } from './helpers/packaged-desktop-fixture';
 import { acceptMountedPodPermissions, attributeMountedOperation, MountedPermissionError,
   observeOwnedPodTraffic, type MountedPermissionCondition, type MountedPodPermissionPhase } from './helpers/packaged-desktop-permissions';
@@ -314,6 +314,7 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
   let record: Record<string, unknown> | undefined;
   /** Last CLOSED-ENUM launch subphase reached; published only as an enum token. */
   let launchPhase: LaunchSubphase | undefined;
+  let launchTelemetry: ReturnType<typeof readGatewayTelemetry>;
   let taskSnapshot: LiveTaskEvidence | undefined;
   const advance = (next: Stage): void => { stage = next; console.log(JSON.stringify({ stage })); };
   await mkdir(options.privateDirectory, { recursive: true, mode: 0o700 });
@@ -340,6 +341,7 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
           console.log(JSON.stringify({ stage: 'launch', phase }));
         } });
     } catch (error) {
+      launchTelemetry = readGatewayTelemetry(error);
       // The fixture raises bare Errors, which the reviewed mapping would degrade
       // to `unclassified`. Attribute ONLY those to the already-audited
       // `packaged-launch` code: any error that already carries a reviewed type
@@ -560,6 +562,7 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
       kind: 'desktop-permission-failure', sourceSha: options.sourceSha, version: options.version, stage: failed,
       ...(failed === 'launch' && isLaunchSubphase(launchPhase) ? { phase: launchPhase } : {}),
       failures: publishedFailures(failures),
+      ...(failed === 'launch' && launchTelemetry ? { launchTelemetry } : {}),
       ...(taskSnapshot ? { task: summarizeLiveTaskFailure(taskSnapshot) } : {}) }, null, 2) + '\n', { mode: 0o644 });
     // The stdout projection must name the real reviewed code, so a CI run stays
     // diagnosable without the private evidence upload.

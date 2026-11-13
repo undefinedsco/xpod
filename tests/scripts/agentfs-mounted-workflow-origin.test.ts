@@ -41,8 +41,28 @@ const OLDEST_REVIEWED='c6420bc5699a84a8adf98a19841cb09e3df155370622d1b7e982cd080
 const CONCURRENCY_BLOCK = 'concurrency:\n'
   + '  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}\n'
   + "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n\n";
+/** The reviewed independent-producer scheduling change added a `contract` job and
+ * made the heavy matrix dispatch-only. Strip EXACTLY those reviewed additions; the
+ * inverse must reconstruct the last published bytes bit-for-bit. */
+const CONTRACT_BLOCK = workflowBytes.toString('utf8').slice(
+  workflowBytes.toString('utf8').indexOf('  # Cheap, always-on PR/push contract.'),
+  workflowBytes.toString('utf8').indexOf('  mounted-module:'));
+const DISPATCH_GATE = '    # Actual FUSE/NFS mounted acceptance is expensive and needs a real host:\n'
+  + '    # explicit workflow_dispatch only, after the automatic contract passes.\n'
+  + "    if: ${{ github.event_name == 'workflow_dispatch' }}\n    needs: contract\n";
+const TOOLCHAIN_NOTE = '      # Different runner from the fast `contract` job: this job keeps its own\n'
+  + '      # exact Python 3.12 toolchain (hashlib.file_digest) rather than relying on\n'
+  + '      # whatever the hosted image defaults to. Only the cidfile REGRESSION moved.\n';
 function reviewedHistoryText():string{
-  const text=workflowBytes.toString('utf8');
+  let text=workflowBytes.toString('utf8');
+  text=text.replace(CONTRACT_BLOCK,'').replace(DISPATCH_GATE,'').replace(TOOLCHAIN_NOTE,'');
+  // The cidfile regression step itself was MOVED to the fast contract, so the
+  // historical heavy job owns it again (immediately after the Python setup).
+  const pythonSetup='      - uses: actions/setup-python@v5\n        with:\n          python-version: \'3.12\'\n';
+  expect(text.split(pythonSetup)).toHaveLength(2);
+  text=text.replace(pythonSetup, pythonSetup
+    + '      - name: Owned container identity publication regression\n'
+    + '        run: python3 tests/scripts/agentfs_linux_cidfile_test.py -v\n');
   const stripped=text.replace(CONCURRENCY_BLOCK,'');
   expect(stripped).not.toBe(text);
   return stripped;
@@ -112,6 +132,18 @@ describe('AgentFS mounted-module darwin-arm64 runner registration',()=>{
     expect(facts?.workflowPath).toBe(WORKFLOW);
     expect(facts?.workflowSourceSha256).toBe(CURRENT);
     expect(facts?.target).toBe(target);
+  });
+
+  it('keeps the historical heavy job/step closure for the new manual-only version',()=>{
+    // The manual workflow still runs the SAME product job and steps; the new
+    // `contract` job does NOT become an accepted ancestor for old runs.
+    expect(new Set(AFS_MODULE_MOUNTED_WORKFLOW_SHA256S).size).toBe(AFS_MODULE_MOUNTED_WORKFLOW_SHA256S.length);
+    expect(AFS_MODULE_MOUNTED_WORKFLOW_SHA256S).toHaveLength(5);
+    expect(workflowBytes.toString('utf8')).toContain(
+      "    if: ${{ github.event_name == 'workflow_dispatch' }}");
+    expect(workflowBytes.toString('utf8')).toContain("    needs: contract");
+    // Every historically reviewed digest still resolves to the same job name.
+    expect(AFS_MODULE_MOUNTED_WORKFLOW_SHA256S.slice(1)).toContain(MACOS_14_HISTORY);
   });
 
   it('the same observer still admits the previously reviewed macOS 14 bytes',async()=>{

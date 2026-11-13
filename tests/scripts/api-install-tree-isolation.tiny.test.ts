@@ -94,9 +94,24 @@ describe('exact-identity enforcement is unchanged by the isolation',()=>{
  * node_modules afterwards, so the binary must be initialized after the final tree
  * exists - never before. These assertions pin the order without executing the step.
  */
+describe('retained-artifact diagnostic skips build/restore/bootstrap',()=>{
+  const doc=parseYaml(readFileSync(path.join(import.meta.dir,'../../.github/workflows/ci.yml'),'utf8')) as any;
+  const steps=doc.jobs['desktop-launch-diagnostic'].steps as any[];
+  it('runs no API producer, restore or Electron vendor bootstrap',()=>{
+    for(const marker of ['prepareApiCapability','restore-root-dependencies','electron/install.js',
+      'bun run build:packages','applyRootVersion','bun run dist']){
+      expect(steps.filter(step=>String(step.run??'').includes(marker))).toHaveLength(0);
+    }
+    // It still installs the frozen TS deps and uses the App's own Electron.
+    expect(steps.some(step=>String(step.run??'').includes('bun install --frozen-lockfile'))).toBe(true);
+  });
+});
+
 describe('desktop Electron bootstrap follows the root dependency restore',()=>{
+  // The ci.yml diagnostic launches RETAINED app bytes: it installs root TS deps
+  // only and never runs the API capability producer, restore or Electron vendor
+  // bootstrap. The two real build jobs keep the full ordering contract.
   const workflows:[string,string][]=[
-    ['ci.yml','desktop-launch-diagnostic'],
     ['candidate.yml','build_desktop_rc'],
     ['release.yml','build_desktop_macos'],
   ];
