@@ -2,12 +2,13 @@ import { installOwnedDesktop } from './packaged-desktop-installation';
 import { execFile, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
 import { createRequire } from 'node:module';
-import { lstat, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, rm, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import type { ElectronApplication, Page } from '@playwright/test';
-import { resolveRuntimeLaunchCommand, desktopRuntimeArguments,
-  type RuntimeLaunchCommand } from '../../desktop/src/runtime-manager';
+import { resolveRuntimeLaunchCommand, desktopRuntimeArguments, STARTUP_DIAGNOSTIC_FILE,
+  sanitizeStartupDiagnostic, type RuntimeLaunchCommand,
+  type RuntimeStartupDiagnostic } from '../../desktop/src/runtime-manager';
 // Same authority the app uses to default its owned data directory. The expected
 // argv must be derived from this, never from an observed process listing.
 import { desktopDataDirectory } from '../../desktop/src/user-env';
@@ -221,9 +222,12 @@ export function assertOwnedRuntimeProfile(content: string, profile: string): voi
   }
 }
 
-const TELEMETRY_KEYS = ['probes', 'lastOutcome', 'lastHttpStatus', 'lastSnapshot', 'appAlive', 'elapsedMs'] as const;
+const TELEMETRY_KEYS = ['probes', 'lastOutcome', 'lastHttpStatus', 'lastSnapshot', 'appAlive',
+  'elapsedMs', 'startupLastEmitted', 'startupLastEmittedAgeMs', 'startupLastEmittedTerminal',
+  'runtimeChildPresent', 'modulePresence'] as const;
 const TELEMETRY_OUTCOMES = new Set(['ok', 'http-error', 'timeout', 'connect-failed', 'malformed']);
 const TELEMETRY_STATES = new Set(['stopped', 'starting', 'running', 'failed']);
+const MODULE_IDS = ['css', 'api'] as const;
 
 /** Project an arbitrary error's attached telemetry down to the safe closed
  * shape. Anything unexpected is dropped rather than forwarded, so a raw
@@ -256,12 +260,101 @@ export function readGatewayTelemetry(error: unknown): GatewayTelemetry | undefin
     if (!Number.isSafeInteger(row.elapsedMs) || (row.elapsedMs as number) < 0) return undefined;
     out.elapsedMs = row.elapsedMs as number;
   }
+  if (row.startupLastEmitted !== undefined) {
+    const startup = sanitizeStartupDiagnostic(row.startupLastEmitted);
+    if (!startup) return undefined;
+    out.startupLastEmitted = startup;
+  }
+  if (row.startupLastEmittedAgeMs !== undefined) {
+    if (!Number.isSafeInteger(row.startupLastEmittedAgeMs) || (row.startupLastEmittedAgeMs as number) < 0) return undefined;
+    out.startupLastEmittedAgeMs = row.startupLastEmittedAgeMs as number;
+  }
+  if (row.startupLastEmittedTerminal !== undefined) {
+    if (typeof row.startupLastEmittedTerminal !== 'boolean') return undefined;
+    out.startupLastEmittedTerminal = row.startupLastEmittedTerminal;
+  }
+  if (row.runtimeChildPresent !== undefined) {
+    if (typeof row.runtimeChildPresent !== 'boolean') return undefined;
+    out.runtimeChildPresent = row.runtimeChildPresent;
+  }
+  if (row.modulePresence !== undefined) {
+    const rows = row.modulePresence;
+    if (!Array.isArray(rows) || rows.length > MODULE_IDS.length) return undefined;
+    const projected: NonNullable<GatewayTelemetry['modulePresence']> = [];
+    for (const item of rows) {
+      if (!item || typeof item !== 'object') return undefined;
+      const candidate = item as Record<string, unknown>;
+      if (Object.keys(candidate).some(key => !['id', 'pointerPresent', 'anyPackagedTree'].includes(key))) return undefined;
+      if (typeof candidate.id !== 'string' || !(MODULE_IDS as readonly string[]).includes(candidate.id)
+        || typeof candidate.pointerPresent !== 'boolean' || typeof candidate.anyPackagedTree !== 'boolean') return undefined;
+      projected.push({ id: candidate.id, pointerPresent: candidate.pointerPresent,
+        anyPackagedTree: candidate.anyPackagedTree });
+    }
+    out.modulePresence = projected;
+  }
   return Object.freeze(out);
 }
 
-/** Closed-enum result of ONE bounded gateway probe. No URL, header, body or
- * error message is ever retained; `httpStatus` exists only when a response
- * actually arrived. */
+/**
+ * Read the acceptance-only startup observation the App writes under its OWN
+ * userData root, WITHOUT the product-origin IPC bridge.
+ *
+ * The bridge is intentionally unreachable when the gateway never answers, so a
+ * failed launch previously could not tell "child never spawned" from "child
+ * exited" from "child still starting". This file is written by the App only
+ * when XPOD_DESKTOP_ACCEPTANCE=1 and only contains the closed runtime-manager
+ * shape: no path, argv, URL, environment, token or child message.
+ *
+ * Missing/unreadable/malformed input yields `undefined` (an absent observation,
+ * never a guess) and never changes the original launch error.
+ */
+export async function readStartupDiagnostic(profile: string): Promise<RuntimeStartupDiagnostic | undefined> {
+  try {
+    const source = await readFile(path.join(profile, STARTUP_DIAGNOSTIC_FILE), 'utf8');
+    // A frame is small by construction; refuse anything else before parsing.
+    if (source.length > 2_048) return undefined;
+    return sanitizeStartupDiagnostic(JSON.parse(source));
+  } catch { return undefined; }
+}
+
+/** Cheap PRESENCE-only module view: directory entries, never a tree walk. */
+export interface ModulePresence {
+  /** The module's own `current.json` pointer is visible. */
+  pointerPresent: boolean;
+  /**
+   * GLOBAL fact, not a per-id one: the shared `packaged/` store has at least one
+   * entry. It is repeated on every row only for display and must never be read
+   * as "this id was admitted".
+   */
+  anyPackagedTree: boolean;
+}
+
+/**
+ * Presence-only admission check under the authoritative owned module root.
+ *
+ * At most `1 + 2 * ids.length` readdirs, no recursion, no hashing, no callbacks.
+ * A missing root reports false rather than throwing, and a read failure is
+ * never promoted into an observation.
+ */
+export async function readModulePresence(root: string, ids: readonly string[]): Promise<ModulePresence[]> {
+  const anyPackagedTree = await readdir(path.join(root, 'packaged'))
+    .then(entries => entries.length > 0).catch(() => false);
+  const rows: ModulePresence[] = [];
+  for (const id of ids) {
+    let pointerPresent = false;
+    try {
+      const platformDir = await readdir(path.join(root, id), { withFileTypes: true }).catch(() => []);
+      const target = platformDir.find(entry => entry.isDirectory() && !entry.name.startsWith('.'));
+      if (target) {
+        const files = await readdir(path.join(root, id, target.name), { withFileTypes: true }).catch(() => []);
+        pointerPresent = files.some(entry => entry.isFile() && entry.name === 'current.json');
+      }
+    } catch { /* presence stays false, never guessed */ }
+    rows.push({ pointerPresent, anyPackagedTree });
+  }
+  return rows;
+}
+
 export type GatewayProbeOutcome =
   | 'ok' | 'http-error' | 'timeout' | 'connect-failed' | 'malformed';
 
@@ -279,6 +372,23 @@ export interface GatewayTelemetry {
   appAlive?: boolean;
   /** Total elapsed ms from gateway-phase entry to the final observation. */
   elapsedMs?: number;
+  /** LAST EMITTED runtime-manager frame read from the App's acceptance file at
+   * failure time. It is NOT a live re-observation: `emittedAtMs`/`sequence` say
+   * when it was written, and `ageMs` how stale it was when read. */
+  startupLastEmitted?: RuntimeStartupDiagnostic;
+  /** How old that frame already was when the fixture read it (>= 0). */
+  startupLastEmittedAgeMs?: number;
+  /** Terminal-ness of THAT EMITTED FRAME ONLY. Never a claim about the live
+   * manager at timeout. */
+  startupLastEmittedTerminal?: boolean;
+  /** Fresh (re-observed) runtime-child identity: `true` only after a successful
+   * inventory re-sample that proves the exact owned argv is present; `false`
+   * only from that same fresh sample. OMITTED when the sample was incomplete,
+   * stale or not attempted. Never inferred from App liveness or the file. */
+  runtimeChildPresent?: boolean;
+  /** Presence-only admission facts under the owned module root. `anyPackagedTree`
+   * is a GLOBAL fact (one shared `packaged/` directory), repeated for display. */
+  modulePresence?: { id: string; pointerPresent: boolean; anyPackagedTree: boolean }[];
 }
 
 /** Aggregate-only accumulator. It keeps the LAST value of each bounded field,
@@ -477,16 +587,21 @@ export async function launchOwnedPackagedDesktop(options: {
   let appProcess: ChildProcess | undefined;
   let launchAttempted = false;
   let runtimePid: number | undefined;
+  /** Owned profile, available only once the fixture created it. */
+  let ownedProfile: string | undefined;
   let closed = false;
   let observer: ReturnType<typeof setInterval> | undefined;
   let observation: Promise<void> | undefined;
   let observationFailed = false;
+  /** Wall-clock ms of the last SUCCESSFUL owned-tree sample. */
+  let lastObservationAtMs = 0;
   const owned = new Map<number, string>();
   const telemetry = createGatewayTelemetry();
   async function observeTree(): Promise<void> {
     const pid = appProcess?.pid;
     if (!pid) throw new Error('Missing owned App pid');
     rememberProcessTree(await readProcessInventory(), pid, owned);
+    lastObservationAtMs = Date.now();
   }
   async function close(): Promise<{ appStopped: true; runtimeStopped: true; ownedDataRemoved: true; remainingOwnedPids: 0 }> {
     if (closed) throw new Error('Packaged fixture was already closed');
@@ -575,6 +690,7 @@ export async function launchOwnedPackagedDesktop(options: {
     const port = await freeLoopbackPort();
     const gateway = `http://127.0.0.1:${port}/`;
     const profile = path.join(directory, 'profile');
+    ownedProfile = profile;
     const env = createPackagedFixtureEnvironment({ inherited: process.env, profile, port, issuer: options.issuer });
     // This first execution is itself an actual consumer of the extracted binary.
     // The prefix comes from the SAME resolved launch spec with `start` replaced by
@@ -686,12 +802,51 @@ export async function launchOwnedPackagedDesktop(options: {
     try {
       const appAlive = appProcess === undefined ? undefined
         : appProcess.exitCode === null && appProcess.signalCode === null;
-      if (telemetry.probes > 0 && error && typeof error === 'object') {
+      if (error && typeof error === 'object') {
+        // LAST EMITTED frame, explicitly labelled with its own emission time and
+        // an age measured against the failure clock. It is never reported as the
+        // live manager state at timeout.
+        const readAtMs = Date.now();
+        const startupLastEmitted = ownedProfile ? await readStartupDiagnostic(ownedProfile) : undefined;
+        let runtimeChildPresent: boolean | undefined;
+        let modulePresence: Awaited<ReturnType<typeof readModulePresence>> | undefined;
+        if (ownedProfile) {
+          // Re-observe the ACTUAL owned identity once. `true` requires a FRESH
+          // owned-map sample (within one observer interval plus slack) AND an
+          // exact-argv match. `false` is never published: a child spawned after
+          // the last sample would otherwise be reported absent. Unproven stays
+          // OMITTED, and App liveness/the file are never used as evidence.
+          try {
+            const expected = ownedArgv?.join(' ').trim().replace(/\s+/gu, ' ');
+            const freshSample = lastObservationAtMs > 0 && readAtMs - lastObservationAtMs <= 1_000;
+            if (expected && freshSample && owned.size > 0) {
+              const inventory = await readProcessInventory();
+              const live = new Set(inventory.map(row => row.pid));
+              for (const pid of owned.keys()) {
+                if (pid === appProcess?.pid || !live.has(pid)) continue;
+                const command = await processCommand(pid).catch(() => undefined);
+                if (command?.trim().replace(/\s+/gu, ' ') === expected) { runtimeChildPresent = true; break; }
+              }
+            }
+          } catch { /* ownership stays unobserved, never guessed */ }
+          try { modulePresence = await readModulePresence(path.join(ownedProfile, 'modules'), MODULE_IDS); }
+          catch { /* presence stays unobserved */ }
+        }
         Object.defineProperty(error, 'gatewayTelemetry', {
           value: Object.freeze({
             ...telemetry,
             ...(telemetry.lastSnapshot ? { lastSnapshot: { ...telemetry.lastSnapshot } } : {}),
             ...(appAlive === undefined ? {} : { appAlive }),
+            ...(startupLastEmitted
+              ? {
+                  startupLastEmitted,
+                  startupLastEmittedAgeMs: Math.max(0, readAtMs - startupLastEmitted.emittedAtMs),
+                  startupLastEmittedTerminal: startupLastEmitted.managerState === 'failed'
+                    || startupLastEmitted.managerState === 'stopped',
+                }
+              : {}),
+            ...(runtimeChildPresent === undefined ? {} : { runtimeChildPresent }),
+            ...(modulePresence ? { modulePresence: modulePresence.map((row, index) => ({ id: MODULE_IDS[index]!, ...row })) } : {}),
           }),
           enumerable: false, configurable: false, writable: false });
       }

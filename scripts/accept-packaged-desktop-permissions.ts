@@ -10,7 +10,7 @@ import { AI_CONNECTIONS_SERVICE_RESOURCE_IDS } from '@undefineds.co/ai-connectio
 import { discoverSolidLocalRoute } from '@undefineds.co/solid-sdk/local-route-fetch';
 import { createCloudAccountPassword, prepareManagedLocalAcceptancePods, parseKeyFile } from './accept-live-gateway-login-chat';
 import { createPlatformProviderForAccount } from './prepare-rc-platform-provider';
-import { launchOwnedPackagedDesktop, isLaunchSubphase, readGatewayTelemetry, type LaunchSubphase,
+import { launchOwnedPackagedDesktop, isLaunchSubphase, readGatewayTelemetry, type GatewayTelemetry, type LaunchSubphase,
   type OwnedPackagedDesktop } from './helpers/packaged-desktop-fixture';
 import { acceptMountedPodPermissions, attributeMountedOperation, MountedPermissionError,
   observeOwnedPodTraffic, type MountedPermissionCondition, type MountedPodPermissionPhase } from './helpers/packaged-desktop-permissions';
@@ -222,6 +222,45 @@ export function publishedFailures(errors: unknown[]): PublishedDesktopFailure[] 
     if (!existing || (!existing.evidence && failure.evidence)) published.set(failure.code, failure);
   }
   return [...published.values()];
+}
+
+/**
+ * Closed, publishable projection of the launch telemetry.
+ *
+ * Everything here is an enum, a bounded integer or a boolean already projected
+ * by the fixture; there is deliberately no free-form field. This projection can
+ * only DESCRIBE a failure: it never feeds a pass/fail decision.
+ */
+export function summarizeStartupTelemetry(telemetry: GatewayTelemetry | undefined): Record<string, unknown> | undefined {
+  if (!telemetry) return undefined;
+  const out: Record<string, unknown> = { probes: telemetry.probes };
+  if (telemetry.lastOutcome !== undefined) out.lastOutcome = telemetry.lastOutcome;
+  if (telemetry.lastHttpStatus !== undefined) out.lastHttpStatus = telemetry.lastHttpStatus;
+  if (telemetry.elapsedMs !== undefined) out.elapsedMs = telemetry.elapsedMs;
+  if (telemetry.appAlive !== undefined) out.appAlive = telemetry.appAlive;
+  if (telemetry.startupLastEmittedAgeMs !== undefined) out.startupLastEmittedAgeMs = telemetry.startupLastEmittedAgeMs;
+  if (telemetry.startupLastEmittedTerminal !== undefined) out.startupLastEmittedTerminal = telemetry.startupLastEmittedTerminal;
+  if (telemetry.runtimeChildPresent !== undefined) out.runtimeChildPresent = telemetry.runtimeChildPresent;
+  // Deliberately named "lastEmitted": this is the LAST FRAME THE APP WROTE, with
+  // its own emission time and staleness. It is NOT re-observed live manager state
+  // and must never be read as the state at timeout.
+  if (telemetry.startupLastEmitted) {
+    const startup = telemetry.startupLastEmitted;
+    out.startupLastEmitted = {
+      sequence: startup.sequence, emittedAtMs: startup.emittedAtMs,
+      event: startup.event, managerState: startup.managerState, ownership: startup.ownership,
+      childSeen: startup.childSeen, pidPresent: startup.pidPresent,
+      ...(startup.exitCode === undefined ? {} : { exitCode: startup.exitCode }),
+      ...(startup.signal === undefined ? {} : { signal: startup.signal }),
+      ...(startup.errorClass === undefined ? {} : { errorClass: startup.errorClass }),
+      ...(startup.outputClass === undefined ? {} : { outputClass: startup.outputClass }),
+    };
+  }
+  if (telemetry.modulePresence) {
+    out.modules = telemetry.modulePresence.map(row => ({ id: row.id,
+      pointerPresent: row.pointerPresent, anyPackagedTree: row.anyPackagedTree }));
+  }
+  return out;
 }
 
 function privateError(error: unknown): unknown {
@@ -565,11 +604,13 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
       ...(failed === 'launch' && launchTelemetry ? { launchTelemetry } : {}),
       ...(taskSnapshot ? { task: summarizeLiveTaskFailure(taskSnapshot) } : {}) }, null, 2) + '\n', { mode: 0o644 });
     // The stdout projection must name the real reviewed code, so a CI run stays
-    // diagnosable without the private evidence upload.
+    // diagnosable without the private evidence upload. Only closed enums leave
+    // this process: no child text, path, argv, URL or message.
     const published = describeFailure(primaryFailure ?? failures[0]);
     if (launchPhase !== undefined && isLaunchSubphase(launchPhase)) {
       console.log(JSON.stringify({ runner: 'desktop-permission-acceptance', failed: true,
-        code: published.code, phase: launchPhase, explanation: DESKTOP_FAILURE_EXPLANATIONS[published.code] }));
+        code: published.code, phase: launchPhase, explanation: DESKTOP_FAILURE_EXPLANATIONS[published.code],
+        ...(launchTelemetry ? { telemetry: summarizeStartupTelemetry(launchTelemetry) } : {}) }));
     }
     throw new DesktopAcceptanceError(published.code,
       `Packaged desktop permission acceptance failed at stage=${failed}; private evidence retained`, published.evidence);

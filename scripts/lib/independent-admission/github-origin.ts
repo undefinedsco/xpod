@@ -1817,6 +1817,12 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
       // versions are still refused.
       {workflowSha256:'dd16a795ab4ae2413916084f07af4e5a961745da63ff00a709b44a0c5ceaf754',
       jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // APPEND-ONLY: restore the original manual cold desktop diagnostic so new
+      // startup observations are embedded in the App. Regular CI callers, the
+      // publication route and all parent permissions remain unchanged.
+      {workflowSha256:'1ed635dc234c374b1304bde07c2daeab03832794ddad698db1ce4200e767af87',
+      jobName:()=>callerNames[0]!,
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,
     sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS,
