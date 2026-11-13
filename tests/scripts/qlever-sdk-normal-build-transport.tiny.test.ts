@@ -96,7 +96,11 @@ function scenario(options:{
 }
 
 test('normal SDK observer reaches real origin validation with proofArtifact instead of transport failure',async()=>{
-  const value=scenario();
+  // The policy pins the CURRENT candidate workflow bytes, and the fixture's
+  // default serves the COMMITTED HEAD copy. Read the live tree here so the
+  // scenario reaches metadata/job/artifact validation instead of stopping at
+  // the reviewed-workflow gate.
+  const value=scenario({currentSource:true});
   const observation=await value.observe();
   const facts=githubOriginFacts(observation);
   expect(facts?.runId).toBe(value.runId);
@@ -113,10 +117,14 @@ test('normal SDK observer selects the current source group for the future cold p
 });
 
 test('the additional proof artifact link is still fetched and enforced',async()=>{
-  await expect(scenario({proofDigest:'e'.repeat(64)}).observe()).rejects.toThrow(/additional proof artifact/);
-  await expect(scenario({proofRunId:1}).observe()).rejects.toThrow(/additional proof artifact/);
-  await expect(scenario({proofHeadSha:'f'.repeat(40)}).observe()).rejects.toThrow(/additional proof artifact/);
-  await expect(scenario({proofCreatedAt:'2026-10-17T00:03:00Z'}).observe()).rejects.toThrow(/additional proof artifact/);
+  // Live workflow bytes as above, so each tampered tuple reaches the ADDITIONAL
+  // PROOF validation rather than the reviewed-workflow gate. The assertion is
+  // unchanged: a mismatched proof digest/run/head/time must still be refused.
+  const current={currentSource:true};
+  await expect(scenario({...current,proofDigest:'e'.repeat(64)}).observe()).rejects.toThrow(/additional proof artifact/);
+  await expect(scenario({...current,proofRunId:1}).observe()).rejects.toThrow(/additional proof artifact/);
+  await expect(scenario({...current,proofHeadSha:'f'.repeat(40)}).observe()).rejects.toThrow(/additional proof artifact/);
+  await expect(scenario({...current,proofCreatedAt:'2026-10-17T00:03:00Z'}).observe()).rejects.toThrow(/additional proof artifact/);
 });
 
 test('transport key validation stays strict for every observer',async()=>{

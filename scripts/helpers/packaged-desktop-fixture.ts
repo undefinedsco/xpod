@@ -6,6 +6,34 @@ import { lstat, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import type { ElectronApplication, Page } from '@playwright/test';
+import { resolveRuntimeLaunchCommand, desktopRuntimeArguments,
+  type RuntimeLaunchCommand } from '../../desktop/src/runtime-manager';
+
+/**
+ * Closed, literal launch subphases. These are the ONLY tokens this fixture may
+ * emit, so publishing a phase can never leak a path, URL, argument, message or
+ * environment value. Ordering mirrors the actual launch sequence.
+ */
+export type LaunchSubphase =
+  | 'install' | 'archive-hash' | 'version' | 'native-version' | 'electron'
+  | 'window' | 'gateway' | 'service-info' | 'bridge' | 'profile';
+
+const LAUNCH_SUBPHASES: ReadonlySet<string> = new Set<LaunchSubphase>([
+  'install', 'archive-hash', 'version', 'native-version', 'electron',
+  'window', 'gateway', 'service-info', 'bridge', 'profile',
+]);
+
+/** Guards an arbitrary value down to the closed enum, never coercing text. */
+export function isLaunchSubphase(value: unknown): value is LaunchSubphase {
+  return typeof value === 'string' && LAUNCH_SUBPHASES.has(value);
+}
+
+/** Emits one closed-enum token; a misbehaving observer must never mask a real
+ * launch error, so the call is isolated and failures are swallowed. */
+function emitSubphase(options: { onPhase?: (phase: LaunchSubphase) => void }, phase: LaunchSubphase): void {
+  if (!options.onPhase) return;
+  try { options.onPhase(phase); } catch { /* observer must not change launch semantics */ }
+}
 
 const execute = promisify(execFile);
 const { describeArchive } = createRequire(import.meta.url)('../desktop-permission-acceptance.cjs') as {
@@ -32,6 +60,7 @@ export function createPackagedFixtureEnvironment(options: {
     XPOD_DESKTOP_ACCEPTANCE: '1', XPOD_DESKTOP_ALLOW_PARALLEL_ACCEPTANCE: '1',
     XPOD_DESKTOP_USER_DATA_DIR: options.profile,
     XPOD_BUN_SINGLE_CACHE_DIR: path.join(options.profile, 'runtime-cache'),
+    BUN_RUNTIME_TRANSPILER_CACHE_PATH: path.join(options.profile, 'bun-transpiler-cache'),
     // These existing API settings confine CLI configuration apply/rollback;
     // HOME remains the host's standard runtime input, not a configuration target.
     XPOD_AI_CLIENT_CONFIGURATION_ENABLED: 'true',
@@ -41,13 +70,40 @@ export function createPackagedFixtureEnvironment(options: {
   });
 }
 
+/**
+ * The EXACT owned process identity the product constructs for this install.
+ *
+ * Built from the resolver command plus the product's own desktopRuntimeArguments
+ * factory, so the expected argv has no hand-written flag list and no permissive
+ * matching: the executable must be this exact path, followed by `start`, followed
+ * by exactly the arguments the product would pass.
+ */
+export function expectedOwnedRuntimeArgv(input: {
+  command: string; args: string[]; targetOrigin: string; env: NodeJS.ProcessEnv;
+}): string[] {
+  return [input.command, ...desktopRuntimeArguments(input.args, input.targetOrigin, input.env)];
+}
+
 export function assertBundledRuntimeProcess(input: {
   binary: string; command: string; pid?: number; ownership: string;
+  /** The exact argv the product would spawn; required for identity proof. */
+  expectedArgv?: readonly string[];
 }): void {
-  if (input.ownership !== 'desktop' || !Number.isSafeInteger(input.pid) || (input.pid ?? 0) < 1
-    || input.command.trim() !== `${input.binary} start --foreground`) {
+  if (input.ownership !== 'desktop' || !Number.isSafeInteger(input.pid) || (input.pid ?? 0) < 1) {
     throw new Error('Runtime is not the owned extracted packaged binary');
   }
+  if (!input.expectedArgv || input.expectedArgv.length < 2) {
+    throw new Error('Runtime is not the owned extracted packaged binary');
+  }
+  if (input.expectedArgv[0] !== input.binary) {
+    throw new Error('Runtime is not the owned extracted packaged binary');
+  }
+  // Exact argv equality, with only whitespace normalised: a foreign entry with
+  // the same basename, a prefix-similar binary, a different subcommand or any
+  // extra/disallowed argument all fail.
+  const actual = input.command.trim().replace(/\s+/gu, ' ');
+  const expected = input.expectedArgv.join(' ').trim().replace(/\s+/gu, ' ');
+  if (actual !== expected) throw new Error('Runtime is not the owned extracted packaged binary');
 }
 
 async function freeLoopbackPort(): Promise<number> {
@@ -61,7 +117,10 @@ async function freeLoopbackPort(): Promise<number> {
 }
 
 async function processCommand(pid: number): Promise<string | undefined> {
-  try { return (await execute('/bin/ps', ['-p', String(pid), '-o', 'command='])).stdout.trim(); }
+  // -ww asks for the FULL command width: the owned argv now contains long staged
+  // paths plus --baseUrl, which a truncated ps line would mis-report as a
+  // different command and wrongly fail the strict identity comparison.
+  try { return (await execute('/bin/ps', ['-ww', '-p', String(pid), '-o', 'command='])).stdout.trim(); }
   catch (error) { if (isMissingProcessReport(error)) return undefined; throw error; }
 }
 
@@ -153,6 +212,8 @@ export async function closeOwnedPackagedApp(app: Pick<ElectronApplication, 'clos
  */
 export async function launchOwnedPackagedDesktop(options: {
   archive: string; version: string; issuer: string; evidenceDirectory: string;
+  /** Optional closed-enum progress observer; must not alter launch semantics. */
+  onPhase?: (phase: LaunchSubphase) => void;
 }): Promise<OwnedPackagedDesktop> {
   if (process.platform !== 'darwin') throw new Error('Packaged desktop acceptance requires macOS');
   if (!/^\d+\.\d+\.\d+(?:-rc\.\d+(?:\.\d+)?)?$/.test(options.version)) throw new Error('Invalid packaged version');
@@ -162,6 +223,12 @@ export async function launchOwnedPackagedDesktop(options: {
   let installation: Awaited<ReturnType<typeof installOwnedDesktop>> | undefined;
   let appPath = '';
   let binary = '';
+  /** Staged CLI entry that the packaged bun executes (may stay empty). */
+  let runtimeEntry = '';
+  /** The exact product-resolved launch (command + args prefix). */
+  let launchCommand: RuntimeLaunchCommand | undefined;
+  /** The exact argv the product spawns for this owned runtime. */
+  let ownedArgv: string[] | undefined;
   let app: ElectronApplication | undefined;
   let appProcess: ChildProcess | undefined;
   let launchAttempted = false;
@@ -198,7 +265,11 @@ export async function launchOwnedPackagedDesktop(options: {
     if (runtimePid !== undefined) {
       await waitFor(async () => {
         const command = await processCommand(runtimePid!);
-        return command !== `${binary} start --foreground` ? true : undefined;
+        // Same EXACT expected-owned-process identity used for the live assertion,
+        // so a changed command is recognised instead of matching a prefix.
+        const expected = ownedArgv;
+        return command?.trim().replace(/\s+/gu, ' ') !== expected!.join(' ').trim().replace(/\s+/gu, ' ')
+          ? true : undefined;
       }, 'Owned packaged runtime did not stop');
     }
     const remaining = await waitFor(async () => {
@@ -211,13 +282,49 @@ export async function launchOwnedPackagedDesktop(options: {
     return { appStopped: true, runtimeStopped: true, ownedDataRemoved: true, remainingOwnedPids: remaining as 0 };
   }
   try {
+    emitSubphase(options, 'install');
     installation = await installOwnedDesktop(path.resolve(options.archive), directory);
     appPath = installation.appPath;
-    binary = path.join(appPath, 'Contents', 'Resources', 'runtime', 'xpod');
+    // Resolve the packaged program with the PRODUCT's own resolver, exactly as
+    // RuntimeManager does. `packaged: true` forbids the system-Bun fallback, so a
+    // missing staged program fails closed instead of silently resolving a host
+    // toolchain. No second path/args table is maintained here.
+    // RuntimeManager passes the app's Resources directory; the resolver appends
+    // `runtime/...`, so this must be Contents/Resources, not Contents.
+    const resourcesPath = path.join(appPath, 'Contents', 'Resources');
+    const launch = resolveRuntimeLaunchCommand({
+      env: {},                      // filtered owned env only; never the host env
+      packaged: true,
+      resourcesPath,
+      // The packaged branch must not consult the host: no system Bun fallback.
+      resolveBunCommand: () => undefined,
+    });
+    if (!launch) throw new Error('Bundled runtime launcher is missing');
+    // The resolver's answer has to be a physical regular file inside the
+    // installed bundle - not merely a string that happens to look right.
+    const installedRoot = path.resolve(appPath) + path.sep;
+    const commandPath = path.resolve(launch.command);
+    if (!commandPath.startsWith(installedRoot)) throw new Error('Bundled runtime launcher escapes the installed bundle');
+    const commandInfo = await lstat(commandPath).catch(() => undefined);
+    if (!commandInfo?.isFile() || !(commandInfo.mode & 0o111)) throw new Error('Bundled executable is missing');
+    // The CLI entry is the first non-flag argument after `start`, as the product
+    // constructs it; it must also be a regular file inside the bundle.
+    const entryArg = launch.args.find(value => !value.startsWith('-'));
+    if (!entryArg) throw new Error('Bundled runtime entry is missing');
+    const entryPath = path.resolve(commandPath, '..', entryArg);
+    const resolvedEntry = path.resolve(entryPath);
+    if (!resolvedEntry.startsWith(installedRoot)) throw new Error('Bundled runtime entry escapes the installed bundle');
+    const entryInfo = await lstat(resolvedEntry).catch(() => undefined);
+    if (!entryInfo?.isFile()) throw new Error('Bundled runtime entry is missing');
+    launchCommand = launch;
+    binary = commandPath;
+    runtimeEntry = resolvedEntry;
+    emitSubphase(options, 'archive-hash');
     const afterExtract = await describeArchive(options.archive);
     if (JSON.stringify(afterExtract) !== JSON.stringify(archive)) throw new Error('Desktop archive changed during extraction');
     const binaryInfo = await lstat(binary);
     if (!binaryInfo.isFile() || !(binaryInfo.mode & 0o111)) throw new Error('Bundled executable is missing');
+    emitSubphase(options, 'version');
     const bundleVersion = (await execute('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleShortVersionString', path.join(appPath, 'Contents', 'Info.plist')])).stdout.trim();
     if (bundleVersion !== options.version) throw new Error('Extracted desktop bundle version mismatch');
     const port = await freeLoopbackPort();
@@ -225,10 +332,30 @@ export async function launchOwnedPackagedDesktop(options: {
     const profile = path.join(directory, 'profile');
     const env = createPackagedFixtureEnvironment({ inherited: process.env, profile, port, issuer: options.issuer });
     // This first execution is itself an actual consumer of the extracted binary.
-    const runtimeVersion = (await execute(binary, ['--version'], { env, cwd: directory, timeout: 60_000 })).stdout.trim();
-    if (runtimeVersion !== options.version) throw new Error('Bundled runtime version mismatch');
+    // The prefix comes from the SAME resolved launch spec with `start` replaced by
+    // `--version`, so no second argument table exists.
+    emitSubphase(options, 'native-version');
+    const versionArgs = [...launch.args];
+    const startAt = versionArgs.indexOf('start');
+    if (startAt < 0) throw new Error('Bundled runtime entry has no start subcommand');
+    versionArgs[startAt] = '--version';
+    const runtimeVersion = (await execute(launch.command, versionArgs, { env, cwd: directory, timeout: 60_000 })).stdout.trim();
+    // The CLI carries its OWN package version (0.1.0-preview.N), not the desktop
+    // candidate version; the product never compares the two. Assert instead that
+    // --version really executed the staged CLI and that its answer matches the
+    // CLI manifest shipped in the same bundle - a real binding, not a guess.
+    if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$/u.test(runtimeVersion)) {
+      throw new Error('Bundled runtime version is not a valid CLI version');
+    }
+    const cliManifestPath = path.join(runtimeEntry, '..', '..', 'package.json');
+    const cliManifest = JSON.parse(await readFile(cliManifestPath, 'utf8')) as { name?: string; version?: string };
+    if (cliManifest.name !== '@undefineds.co/xpod-cli' || cliManifest.version !== runtimeVersion) {
+      throw new Error('Bundled runtime version differs from the staged CLI manifest');
+    }
     const binarySha256 = (await describeArchive(binary)).sha256;
+    ownedArgv = expectedOwnedRuntimeArgv({ command: launch.command, args: launch.args, targetOrigin: gateway, env });
     const { _electron } = await import('@playwright/test');
+    emitSubphase(options, 'electron');
     launchAttempted = true;
     app = await _electron.launch({ executablePath: path.join(appPath, 'Contents', 'MacOS', 'Xpod'), cwd: directory, env, timeout: 60_000 });
     appProcess = app.process();
@@ -240,16 +367,20 @@ export async function launchOwnedPackagedDesktop(options: {
     observer.unref();
     // The product's cold RuntimeManager startup already has a 60s budget;
     // its first window is created after that startup, not at Electron launch.
+    emitSubphase(options, 'window');
     const page = await app.firstWindow({ timeout: 60_000 });
+    emitSubphase(options, 'gateway');
     await waitFor(async () => {
       const response = await fetch(new URL('service/status', gateway), { signal: AbortSignal.timeout(1_000) }).catch(() => undefined);
       return response?.ok ? true : undefined;
     }, 'Packaged Local runtime did not become ready');
+    emitSubphase(options, 'service-info');
     const serviceInfo = await fetch(new URL('api/service-info', gateway), { signal: AbortSignal.timeout(5_000), redirect: 'error' });
     if (!serviceInfo.ok || (await serviceInfo.json() as { edition?: string }).edition !== 'local') {
       throw new Error('Owned packaged runtime does not report the Local edition');
     }
     await page.goto(new URL('device/services', gateway).href);
+    emitSubphase(options, 'bridge');
     const runtime = await page.evaluate(async () => {
       const bridge = (window as unknown as { xpodDesktop?: { deviceRuntime?: {
         getRuntimeSettings(): Promise<{ state: string; ownership: string; pid?: number }>;
@@ -259,8 +390,10 @@ export async function launchOwnedPackagedDesktop(options: {
     });
     runtimePid = runtime.pid;
     assertBundledRuntimeProcess({ binary, pid: runtimePid, ownership: runtime.ownership,
+      expectedArgv: ownedArgv,
       command: runtimePid ? await processCommand(runtimePid) ?? '' : '' });
     if (runtime.state !== 'running') throw new Error('Packaged runtime is not running');
+    emitSubphase(options, 'profile');
     await assertOwnedRuntimeProfile(await readFile(path.join(profile, '.env'), 'utf8'), profile);
     await page.goto(new URL('ai-connections', gateway).href);
     return { app, page, gateway, directory, archive,

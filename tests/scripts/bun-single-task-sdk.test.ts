@@ -20,6 +20,7 @@ describe('single-binary Task SDK', () => {
     try {
       const { stageRuntimeEsmPackages } = require('../../scripts/lib/runtime-esm-packages.cjs');
       const { createSingleBinaryEntry } = require('../../scripts/lib/bun-single-runtime-entry.cjs');
+      const { encodeArchive } = require('../../scripts/lib/bun-single-archive.cjs');
       await stageRuntimeEsmPackages({ nodeModulesRoot: path.join(root, 'node_modules'), stageRoot });
       // Exercise the real lazy loader without pulling unrelated service startup into
       // this packaging regression. Same AST extraction pattern as the logger test.
@@ -45,9 +46,9 @@ describe('single-binary Task SDK', () => {
       fs.writeFileSync(path.join(stageRoot, 'dist/__cli__.cjs'), cli.code);
       const files = (directory: string): string[] => fs.readdirSync(directory, { withFileTypes: true })
         .flatMap(entry => entry.isDirectory() ? files(path.join(directory, entry.name)) : [path.join(directory, entry.name)]);
-      const manifest = files(stageRoot).map(file => ({ path: path.relative(stageRoot, file).split(path.sep).join('/'),
-        contentBase64: fs.readFileSync(file).toString('base64'), mode: fs.statSync(file).mode & 0o777 }));
-      const archive = brotliCompressSync(Buffer.from(JSON.stringify(manifest)), {
+      const entries = files(stageRoot).map(file => ({ path: path.relative(stageRoot, file).split(path.sep).join('/'),
+        content: fs.readFileSync(file), mode: fs.statSync(file).mode & 0o777 }));
+      const archive = brotliCompressSync(encodeArchive(entries).container, {
         params: { [constants.BROTLI_PARAM_QUALITY]: 4 },
       });
       const entry = path.join(temporary, 'entry.ts');

@@ -60,11 +60,13 @@ async function signDpopProof(input: {
   htm: string;
   publicKey: KeyLike;
   privateKey: KeyLike;
+  /** Bind the proof to a different token than the one presented. */
+  athFor?: string;
 }): Promise<string> {
   return new SignJWT({
     htu: input.htu,
     htm: input.htm,
-    ath: createHash('sha256').update(input.accessToken).digest('base64url'),
+    ath: createHash('sha256').update(input.athFor ?? input.accessToken).digest('base64url'),
   })
     .setProtectedHeader({
       alg: 'ES256',
@@ -645,6 +647,83 @@ describe('SolidTokenAuthenticator internal dereference', () => {
       } as never);
 
       expect(result.success).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('retains the primary ath failure when the canonical retry also fails', async() => {
+    // The canonical retry re-verifies the same proof against the configured origin.
+    // Its htu mismatch must not replace the real reason the caller failed.
+    stubCanonicalFetch();
+    const apiUrl = 'https://api.acceptance-local.nodes.acceptance.test/v1/models';
+    const proofKeys = await generateKeyPair('ES256');
+    const accessToken = await signAccessToken({
+      issuer: canonicalIssuer,
+      webId: canonicalWebId,
+      dpopJkt: await calculateJwkThumbprint(await exportJWK(proofKeys.publicKey)),
+    });
+    const proof = await signDpopProof({
+      accessToken,
+      athFor: 'a-different-access-token',
+      htu: apiUrl,
+      htm: 'GET',
+      publicKey: proofKeys.publicKey,
+      privateKey: proofKeys.privateKey,
+    });
+
+    try {
+      const authenticator = new SolidTokenAuthenticator({
+        publicBaseUrl: canonicalIssuer,
+        internalBaseUrl: `${internalOrigin}/.oidc/token`,
+      });
+      const warn = vi.spyOn((authenticator as unknown as { logger: { warn: (message: string) => void } }).logger, 'warn')
+        .mockImplementation(() => undefined);
+      try {
+        const result = await authenticator.authenticate({
+          method: 'GET',
+          url: '/v1/models',
+          headers: {
+            authorization: `DPoP ${accessToken}`,
+            dpop: proof,
+            host: 'api.acceptance-local.nodes.acceptance.test',
+            'x-forwarded-host': 'api.acceptance-local.nodes.acceptance.test',
+            'x-forwarded-proto': 'https',
+          },
+        } as never);
+        expect(result.success).toBe(false);
+        const reported = warn.mock.calls.map(call => String(call[0])).join(' | ');
+        expect(reported).toContain('ath parameter');
+        expect(reported).not.toContain('htu parameter');
+      } finally {
+        warn.mockRestore();
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('still rejects a proof whose htu names the wrong path on the api alias', async() => {
+    stubCanonicalFetch();
+    const { accessToken, proof } = await signedCanonicalRequest('GET', 'https://api.acceptance-local.nodes.acceptance.test/v1/other');
+
+    try {
+      const authenticator = new SolidTokenAuthenticator({
+        publicBaseUrl: canonicalIssuer,
+        internalBaseUrl: `${internalOrigin}/.oidc/token`,
+      });
+      const result = await authenticator.authenticate({
+        method: 'GET',
+        url: '/v1/models',
+        headers: {
+          authorization: `DPoP ${accessToken}`,
+          dpop: proof,
+          host: 'api.acceptance-local.nodes.acceptance.test',
+          'x-forwarded-host': 'api.acceptance-local.nodes.acceptance.test',
+          'x-forwarded-proto': 'https',
+        },
+      } as never);
+      expect(result.success).toBe(false);
     } finally {
       vi.unstubAllGlobals();
     }

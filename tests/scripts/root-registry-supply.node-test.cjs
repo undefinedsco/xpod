@@ -113,6 +113,46 @@ test('original publication dependency/bundle metadata cannot be repaired or sile
   const metadata = { name: value.manifest.name, versions: { '1.0.0': version } }; helper.verifyPublicationMetadata(value, metadata);
   for (const field of ['dependencies', 'bundleDependencies']) { const changed = structuredClone(metadata); delete changed.versions['1.0.0'][field]; assert.throws(() => helper.verifyPublicationMetadata(value, changed), /metadata changed/); }
 });
+test('npm synthesized wildcard for an original bundled+optional name is modelled, and nothing broader', () => {
+  const bytes = Buffer.from('synthetic-normalized'), sriValue = sri(bytes);
+  const original = { name: '@fixture/root', version: '1.0.0',
+    optionalDependencies: { '@fixture/bundled': '1.2.3' }, bundledDependencies: ['@fixture/bundled'] };
+  const value = { bytes, integrity: sriValue, manifest: original };
+  const dist = { integrity: sriValue, shasum: crypto.createHash('sha1').update(bytes).digest('hex') };
+  const metadata = version => ({ name: original.name, versions: { '1.0.0': { name: original.name, version: '1.0.0', dist, ...version } } });
+
+  // The exact shape npm 10.9.4 serves: synthesized required '*' + preserved exact optional.
+  helper.verifyPublicationMetadata(value, metadata({ dependencies: { '@fixture/bundled': '*' },
+    optionalDependencies: { '@fixture/bundled': '1.2.3' }, bundledDependencies: ['@fixture/bundled'] }));
+
+  // Old originals that already carried a real required edge are unaffected.
+  const exact = { name: '@fixture/root', version: '1.0.0', dependencies: { '@fixture/other': '4.5.6' }, bundledDependencies: ['@fixture/other'] };
+  const exactValue = { bytes, integrity: sriValue, manifest: exact };
+  helper.verifyPublicationMetadata(exactValue, { name: exact.name,
+    versions: { '1.0.0': { ...exact, dist } } });
+
+  // Nothing broader may be normalized.
+  const cases = [
+    ['changed optional version', { dependencies: { '@fixture/bundled': '*' }, optionalDependencies: { '@fixture/bundled': '9.9.9' }, bundledDependencies: ['@fixture/bundled'] }],
+    ['wildcard for a name that is not optional', { dependencies: { '@fixture/unlisted': '*' }, optionalDependencies: { '@fixture/bundled': '1.2.3' }, bundledDependencies: ['@fixture/bundled'] }],
+    ['wildcard range instead of *', { dependencies: { '@fixture/bundled': '>=1.0.0' }, optionalDependencies: { '@fixture/bundled': '1.2.3' }, bundledDependencies: ['@fixture/bundled'] }],
+    ['additional unrelated dependency', { dependencies: { '@fixture/bundled': '*', '@fixture/extra': '1.0.0' }, optionalDependencies: { '@fixture/bundled': '1.2.3' }, bundledDependencies: ['@fixture/bundled'] }],
+    ['synthesized edge for a name missing from the bundle list', { dependencies: { '@fixture/bundled': '*' }, optionalDependencies: { '@fixture/bundled': '1.2.3' }, bundledDependencies: [] }],
+    ['dropped optional declaration', { dependencies: { '@fixture/bundled': '*' }, bundledDependencies: ['@fixture/bundled'] }],
+    ['dropped synthesized dependency', { dependencies: {}, optionalDependencies: { '@fixture/bundled': '1.2.3' }, bundledDependencies: ['@fixture/bundled'] }],
+  ];
+  for (const [label, version] of cases) assert.throws(() => helper.verifyPublicationMetadata(value, metadata(version)), /metadata changed|identity\/dist changed/, label);
+
+  // Identity/dist tampering is still fatal alongside the normalization.
+  const wrongDist = structuredClone(metadata({ dependencies: { '@fixture/bundled': '*' },
+    optionalDependencies: { '@fixture/bundled': '1.2.3' }, bundledDependencies: ['@fixture/bundled'] }));
+  wrongDist.versions['1.0.0'].dist.shasum = '0'.repeat(40);
+  assert.throws(() => helper.verifyPublicationMetadata(value, wrongDist), /identity\/dist changed/);
+  const bare = { name: original.name, version: original.version };
+  assert.throws(() => helper.verifyPublicationMetadata({ ...value, manifest: bare },
+    metadata({ dependencies: {} })), /metadata changed/);
+});
+
 test('bounded original reader rejects symlinks, hardlinks and actual FIFOs without blocking', () => fixture(({ evidence }) => {
   const file = path.join(evidence, 'original'); fs.writeFileSync(file, 'original');
   const link = path.join(evidence, 'link'); fs.symlinkSync(file, link); assert.throws(() => helper.readRegular(link), /Invalid supply original/);

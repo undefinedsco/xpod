@@ -1,6 +1,9 @@
 import {test, expect} from 'bun:test';
+import {mkdir, mkdtemp, rm, writeFile} from 'node:fs/promises';
+import path from 'node:path';
 import {
   assertManagedLocalRegistration,
+  exportSessionSafeEvidence,
   awaitReadiness,
   isRetryableReadinessError,
   ManagedLocalBootstrapError,
@@ -253,4 +256,60 @@ test('the matrix harness serializes the platform base URL but never the platform
   const canary = await readFile(path.resolve('scripts/accept-live-gateway-login-chat.ts'), 'utf8');
   expect(canary).toContain("projectModelsAndChat(gatewayKey, ['linx-lite'], 'linx-lite')");
   expect(canary).not.toContain("projectModelsAndChat(gatewayKey, ['linx-lite'])");
+});
+
+async function withSessionEvidence(run: (directory: string) => Promise<void>): Promise<void> {
+  await mkdir(path.resolve('.test-data'), {recursive: true});
+  const directory = await mkdtemp(path.resolve('.test-data/session-export-'));
+  try { await run(directory); } finally { await rm(directory, {recursive: true, force: true}); }
+}
+
+const sessionFailure = {schemaVersion: 1, diagnostic: {
+  phase: 'restart-runtime', reason: 'assertion-failed', authorizationCodes: 1,
+  passwordPosts: 1, refreshGrants: 1, refreshFailures: 0, requestCount: 181,
+  // The closed schema gained this 8th field. A failure recorded before a restart
+  // observer existed legitimately has no observer data, so the honest projection
+  // is all zeros with present=0 - not an omitted key.
+  restartObserver: {present: 0, authorizationCodes: 0, passwordPosts: 0,
+    refreshTokens: 0, opaquePosts: 0, ready: 0, hostImported: 0, failed: 0},
+  // The closed schema also carries the bounded private-read class and the two
+  // readiness flags, so a real RC failure names WHAT failed, not just where.
+  privateRead: 'not-reached', privateReadStatus: 0, authenticated: 0, hostReady: 0,
+}};
+
+test('failed session exports its bounded checkpoint and excludes private output', async () => {
+  await withSessionEvidence(async directory => {
+    const safe = path.join(directory, 'safe');
+    await mkdir(safe, {mode: 0o700});
+    await writeFile(path.join(safe, 'failure.safe.json'), JSON.stringify(sessionFailure), {mode: 0o600});
+    await writeFile(path.join(directory, 'stdout.private.log'), 'private-test-key', {mode: 0o600});
+    const exported = new Map<string, Buffer>();
+    await exportSessionSafeEvidence(safe, async (name, bytes) => { exported.set(name, bytes); }, 'session-cloud-renew');
+    expect([...exported.keys()]).toEqual([path.join('session-cloud-renew', 'failure.safe.json')]);
+    expect(JSON.parse(exported.values().next().value!.toString())).toEqual(sessionFailure);
+    expect([...exported.values()].some(bytes => bytes.includes('private-test-key'))).toBe(false);
+  });
+});
+
+test('session export drops malformed, oversized and out-of-schema failure data', async () => {
+  await withSessionEvidence(async directory => {
+    for (const bytes of [
+      '{invalid-json',
+      JSON.stringify({...sessionFailure, token: 'private-test-key'}),
+      JSON.stringify({...sessionFailure, diagnostic: {...sessionFailure.diagnostic, requestCount: -1}}),
+      // The OLD 7-key shape (no restartObserver) must stay inadmissible: the schema
+      // is closed at exactly 8 keys, so accepting it would silently weaken the
+      // contract this fixture was updated to satisfy.
+      JSON.stringify({schemaVersion: 1, diagnostic: {
+        phase: 'restart-runtime', reason: 'assertion-failed', authorizationCodes: 1,
+        passwordPosts: 1, refreshGrants: 1, refreshFailures: 0, requestCount: 181,
+      }}),
+      ' '.repeat(4097) + JSON.stringify(sessionFailure),
+    ]) {
+      await writeFile(path.join(directory, 'failure.safe.json'), bytes, {mode: 0o600});
+      const exported: string[] = [];
+      await exportSessionSafeEvidence(directory, async name => { exported.push(name); }, 'session-cloud-renew');
+      expect(exported).toEqual([]);
+    }
+  });
 });

@@ -77,9 +77,11 @@ test('RC389: only the allowed current axes grew, and the historical five did not
   // RC391 generations), never shrink and never jump by an unbounded amount.
   // dd7 baseline -> current: api/cli never grew; consumer-side axes grew only by the
   // RC159 + RC389 + RC391 appends (consumer/sdkConsumer/linuxConsumer +2, CI +4).
-  // dd7 baseline -> current: API/CLI each gained exactly ONE reviewed tuple (API33 for
-  // the root postinstall hook, CLI16 for the same package.json change).
-  if(name==='api'||name==='cli'){expect(delta).toBe(1);continue;}
+  // dd7 baseline -> current: API gained ONE reviewed tuple (API33, root postinstall
+  // hook) and CLI gained TWO (CLI16 for the same package.json change, CLI17 for the
+  // c998509f direct componentsjs/rdf-parse declaration). Exact counts come from the
+  // single shared CURRENT fixture, never a second literal.
+  if(name==='api'||name==='cli'){expect(delta).toBe(CURRENT_SOURCE_GROUP_COUNTS[name]-BASE_COUNTS[name]!);continue;}
   // sdkConsumer/linuxConsumer are NOT service-consumer append axes: each generation
   // is an explicit SDK/Linux append, so they stay at the frozen dd7 delta plus the
   // RC396 candidate-workflow variant. Asserting them explicitly prevents the
@@ -92,9 +94,9 @@ test('RC389: only the allowed current axes grew, and the historical five did not
  expect(families.ci!.length-BASE_COUNTS.ci!).toBe(CURRENT_SOURCE_GROUP_COUNTS.ci-BASE_COUNTS.ci!);
  expect(families.sdkConsumer!.length-BASE_COUNTS.sdkConsumer!).toBe(CURRENT_SOURCE_GROUP_COUNTS.sdkConsumer-BASE_COUNTS.sdkConsumer!);
  expect(families.linuxConsumer!.length-BASE_COUNTS.linuxConsumer!).toBe(CURRENT_SOURCE_GROUP_COUNTS.linuxConsumer-BASE_COUNTS.linuxConsumer!);
- // ONE reviewed current tuple above the dd7 baseline for each (API33 / CLI16).
- expect(families.api!.length).toBe(BASE_COUNTS.api+1);
- expect(families.cli!.length).toBe(BASE_COUNTS.cli+1);
+ // Exact current totals above the dd7 baseline, from the one shared fixture.
+ expect(families.api!.length).toBe(CURRENT_SOURCE_GROUP_COUNTS.api);
+ expect(families.cli!.length).toBe(CURRENT_SOURCE_GROUP_COUNTS.cli);
 });
 
 test('RC389: the shared fixture counts agree with the real arrays',()=>{

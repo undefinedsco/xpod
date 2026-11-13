@@ -1291,8 +1291,8 @@ const apiRc159Tuple=Object.freeze({...apiCurrentSharedParserGroup,name:'api-curr
  *
  * API32 above keeps its exact published bytes; API33 clones it and rebinds ONLY the
  * drifted rows, appending the one new owned original. No published tuple is rewritten. */
-const apiRc393PackageHash='9a8aa57d082c0bf28cedcb0f27ebb9245419a271e53efb1aa7bf42a80a76fef0';
-const apiRc393LockHash='dd41359d7fa5df0f5d32e030ede320c5ef7e395d6aa3f495aa6c9e0914037722';
+const apiRc393PackageHash='5b22bfea56abce62244dcb9930446a68d91cfd684b31c99c770081eaa24536c1';
+const apiRc393LockHash='b7fa5ccb7ea73679a345aeafafa0dfe2a03c119d721d31abab3c02e82a483808';
 const apiRc393DependencyStateHash='012ba511fbb68b441a25821933d53a49a47aa5ad39c64a3b25c5dc58ba4a0950';
 const apiRc393UndiciEntryHash='d3e118347eef031adda164a503b0ba0eb1a709ff228c7c33f94e108b42767158';
 /** The graph fix in this same unpublished API33 closes over its own verifier bytes:
@@ -1301,10 +1301,23 @@ const apiRc393UndiciEntryHash='d3e118347eef031adda164a503b0ba0eb1a709ff228c7c33f
 const apiRc393ProducerGraphHash='03cefdca16320bd190bdfab612f67b9077f51c8c22b6a73d47b5faf71524f84d';
 const API33_REBOUND:Readonly<Record<string,string>>=Object.freeze({
   'package.json':apiRc393PackageHash,
+  // desktop/package.json (already an owned row of this CURRENT tuple) moved when
+  // the desktop build gained the explicit Bun runtime descriptor initializer.
+  'desktop/package.json':'a09bb65633addabdcd0ed8bd43e2dcbe8817949a21d6363f394007bf05e0057b',
   'scripts/check-dependency-state.ts':apiRc393DependencyStateHash,
   'scripts/lib/api-producer-graph.ts':apiRc393ProducerGraphHash,
+  // The reviewed controlled-phase recipe and the CLI catalog split moved these
+  // three owned rows of THIS current tuple. Earlier tuples keep their bytes.
+  'scripts/api-module-producer.py':'cad0d8896b244e22b5e3ffd531e5e6a029154114378f6077864576dc651e1fe1',
+  'scripts/api-producer-dependencies.cjs':'1d44cef0154861d3d2d8692dbc860081ae9d8826707ccab8f58155995139878d',
+  'packages/xpod-cli/src/module-catalog.ts':'8b6f022e9b1a40f6687782539f99e1a12e3d3fb0728ad19a6dc726f83cfb347e',
 });
 const apiRc393Tuple=Object.freeze({...apiRc159Tuple,name:'api-current-bun-postinstall-hook',
+  // The CURRENT tuple publishes the CURRENT producer as its PRIMARY selector so the
+  // reviewed tuple is selectable by its own identity. Every predecessor (API32 and
+  // earlier, and API33's own parents) keeps `f6abdd37...` byte-exact.
+  selectors:Object.freeze((apiRc159Tuple.selectors??[]).map(row=>Object.freeze({...row,
+    sha256:API33_REBOUND[row.path]??row.sha256}))),
   secondarySelectors:Object.freeze((apiRc159Tuple.secondarySelectors??[]).map(row=>Object.freeze({...row,
     sha256:row.path==='package.json'?apiRc393PackageHash
       :row.path==='bun.lock'?apiRc393LockHash:row.sha256}))),
@@ -1728,6 +1741,29 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
       // zero-skip regression gate. Same registered caller/job contract and the
       // same exact source group; every earlier reviewed version remains exact.
       {workflowSha256:'7752a8dd9a38c32e90881078d581cef7b7ef163713259a0fa1c38043e3887c15',
+      jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // APPEND-ONLY: current ci.yml pins the runtime toolchain to ubuntu-24.04 with
+      // a bounded compiler install and routes apt through the reviewed HTTPS mirror
+      // list. The registered caller jobs, artifact names and the manual publication
+      // route are unchanged, so this is a new reviewed workflow identity over the
+      // same contract. Every earlier reviewed version above stays byte-exact and
+      // selectable; unknown hashes are still refused.
+      {workflowSha256:'c8b892f7323b88683434f4870e40fc74a5a904447a82379e72347903114f055f',
+      jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // APPEND-ONLY: current ci.yml adds the isolated manual standalone-expire
+      // session diagnostic (its own concurrency group, no Environment, no shared
+      // RC). The four regular CI jobs and the manual publication route are
+      // unchanged, so this is a new reviewed workflow identity over the same
+      // contract. Every earlier reviewed version above stays byte-exact.
+      {workflowSha256:'abe3be015f298062399602ab82f2ec549b58138aceaa88d06aa503d2f3af2a9b',
+      jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // Restore root declarations after the filtered desktop API producer. The
+      // regular caller jobs and publication contract remain unchanged; register
+      // the reviewed workflow bytes without changing any historical identity.
+      {workflowSha256:'8d592e68f636c52605d5e839aef1e78f44f4d20b7adea27f31728785218514c0',
       jobName:()=>callerNames[0]!,
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,

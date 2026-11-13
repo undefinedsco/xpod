@@ -89,3 +89,199 @@ test('PR CI runs all Node release and tooling suites before the unit suite', () 
   assert.ok(nodeTests >= 0);
   assert.ok(unitTests > nodeTests);
 });
+
+// ---- RC410 final wiring: clean-source API preparation + artifact custody ----
+const stepIndex = (steps, predicate) => steps.findIndex(predicate);
+
+test('candidate produces the API capability ONCE on clean source BEFORE the version stamp', () => {
+  const { jobs } = read('candidate.yml');
+  const steps = jobs.build_desktop_rc.steps;
+  const api = stepIndex(steps, s => s.run?.includes('prepareApiCapability'));
+  const stamp = stepIndex(steps, s => s.run?.includes('--apply-root-version'));
+  const packages = stepIndex(steps, s => s.run?.includes('bun run build:packages'));
+  assert.ok(api >= 0, 'API capability production step must exist');
+  assert.ok(stamp >= 0, 'version stamp step must exist');
+  assert.ok(packages >= 0, 'workspace packages step must exist');
+  // Order: packages -> API production -> version stamp. The producer refuses a
+  // dirty tree, so preparing after any rewrite is invalid by construction.
+  assert.ok(packages < api, 'API production must follow workspace package build');
+  assert.ok(api < stamp, 'API production must precede the version stamp');
+  // Exactly one canonical pipeline: no duplicated producer invocation.
+  assert.equal(steps.filter(s => s.run?.includes('prepareApiCapability')).length, 1);
+  // Read-only official native input acquisition, never echoed.
+  assert.equal(steps[api].env?.GH_TOKEN, '${{ github.token }}');
+  assert.doesNotMatch(steps[api].run, /echo\s+.*GH_TOKEN|set\s+-x/);
+});
+
+test('diagnostic produces the API capability ONCE on clean source BEFORE its version stamp', () => {
+  const { jobs } = read('ci.yml');
+  const steps = jobs['desktop-launch-diagnostic'].steps;
+  const api = stepIndex(steps, s => s.run?.includes('prepareApiCapability'));
+  const stamp = stepIndex(steps, s => s.run?.includes('applyRootVersion'));
+  const packages = stepIndex(steps, s => s.run?.includes('bun run build:packages'));
+  assert.ok(api >= 0 && stamp >= 0 && packages >= 0);
+  assert.ok(packages < api, 'API production must follow workspace package build');
+  assert.ok(api < stamp, 'API production must precede the diagnostic version stamp');
+  assert.equal(steps.filter(s => s.run?.includes('prepareApiCapability')).length, 1);
+  // The pinned QLever identity stays immutable and no rc env/secret is added.
+  assert.equal(jobs['desktop-launch-diagnostic'].env.DIAGNOSTIC_ARTIFACT_ID, '13912079864');
+  assert.match(jobs['desktop-launch-diagnostic'].env.DIAGNOSTIC_ARTIFACT_SHA256, /^92710334875497ba/);
+  assert.equal(jobs['desktop-launch-diagnostic'].env.ORIGINAL_SOURCE_SHA, '021c809886629624934826f4aacf87ff59326932');
+  assert.equal(jobs['desktop-launch-diagnostic'].environment, undefined);
+});
+
+test('RC desktop job has artifact-read permission and calls the shared retainer', () => {
+  const job = read('candidate.yml').jobs.build_desktop_rc;
+  // contents-only yields HTTP 403 from the artifact API.
+  assert.equal(job.permissions.actions, 'read');
+  assert.equal(job.permissions.contents, 'read');
+  assert.equal(job.environment, 'rc', 'rc environment must be preserved');
+  const retain = job.steps.find(s => s.run?.includes('retain-qlever-materials.py'));
+  assert.ok(retain, 'shared retainer must be used');
+  assert.equal(retain.env.QLEVER_ARTIFACT_ID, '${{ needs.build_qlever_macos_runtime.outputs.artifact_id }}');
+  assert.equal(retain.env.QLEVER_ARTIFACT_DIGEST, '${{ needs.build_qlever_macos_runtime.outputs.artifact_digest }}');
+  assert.equal(retain.env.QLEVER_SOURCE_SHA, '${{ needs.build_qlever_macos_runtime.outputs.source_sha }}');
+  // No ad-hoc re-download/re-tar path beside the shared contract.
+  assert.ok(!job.steps.some(s => s.run?.includes('gh run download')));
+});
+
+test('stable job consumes the ACCEPTED candidate run through the shared retainer', () => {
+  const job = read('release.yml').jobs.build_desktop_macos;
+  assert.equal(job.permissions.actions, 'read');
+  const retain = job.steps.find(s => s.run?.includes('retain-qlever-materials.py'));
+  assert.ok(retain, 'stable must use the shared retainer, not an ad-hoc download');
+  assert.equal(retain.env.QLEVER_ARTIFACT_SOURCE_RUN_ID, '${{ needs.promotion_guard.outputs.candidate_run_id }}');
+  assert.equal(retain.env.QLEVER_SOURCE_SHA, '${{ github.sha }}');
+  // No artifact-id/digest inputs for the stable path: the accepted run + accepted
+  // source define the identity breadth, and the helper selects the single match.
+  assert.equal(retain.env.QLEVER_ARTIFACT_ID, undefined);
+  assert.equal(retain.env.QLEVER_ARTIFACT_DIGEST, undefined);
+  // No ad-hoc QLever download, no latest-run discovery, no native rebuild.
+  // (Other artifacts — e.g. the self-update acceptance evidence — legitimately
+  // keep their own `gh run download` and are out of this scope.)
+  assert.ok(!job.steps.some(s => (s.run ?? '').includes('qlever-local-runtime-darwin-arm64')),
+    'stable must not hand-roll the QLever artifact name');
+  assert.ok(!job.steps.some(s => /gh run list|--latest/i.test(s.run ?? '')));
+  // Same workspace-package prerequisite as the RC desktop job, before the build.
+  const packages = stepIndex(job.steps, s => s.run?.includes('bun run build:packages'));
+  const build = stepIndex(job.steps, s => s.run?.includes('bun run dist'));
+  assert.ok(packages >= 0 && build >= 0);
+  assert.ok(packages < build, 'workspace packages must be built before the desktop build');
+});
+
+// ---- FAILURE-EVIDENCE retention after an API preparation failure -------------
+// The approved canonical pattern (api-module-product.yml) uploads only the
+// producer's own receipt/evidence, never a workspace or env dump. These assert
+// the same narrow contract in each desktop job.
+const FAILURE_UPLOAD = 'Upload failed API preparation diagnostics separately';
+
+test('all three desktop jobs retain the producer receipt/evidence on API failure', () => {
+  const jobs = [
+    ['candidate.yml', 'build_desktop_rc'],
+    ['ci.yml', 'desktop-launch-diagnostic'],
+    ['release.yml', 'build_desktop_macos'],
+  ];
+  for (const [file, jobName] of jobs) {
+    const job = read(file).jobs[jobName];
+    const upload = job.steps.find(s => s.name === FAILURE_UPLOAD);
+    assert.ok(upload, `${file}:${jobName} must retain failure evidence`);
+    // Runs ONLY on failure, and only when the owned root was published.
+    assert.match(String(upload.if), /^failure\(\)/);
+    assert.match(String(upload.if), /XPOD_API_CAPABILITY_ROOT != ''/);
+    // Never fail the job for missing evidence; the real failure must stand.
+    assert.equal(upload.with['if-no-files-found'], 'warn');
+    const paths = String(upload.with.path);
+    // Exactly the approved narrow members.
+    for (const member of ['producer.receipt.json', 'evidence/', 'originals/prepare-inputs.receipt.safe.json']) {
+      assert.ok(paths.includes(member), `${file}:${jobName} must retain ${member}`);
+    }
+    // No broad tree, dependency cache, environment or credential dump.
+    assert.doesNotMatch(paths, /node_modules|workspace|\bsrc\/|\.env|token|secret/i);
+    // The artifact is explicitly a diagnostic, not desktop qualification.
+    assert.match(String(upload.with.name), /diagnostics/);
+    // The prep step must PUBLISH the canonical root, otherwise the upload can
+    // never resolve it and the reason is lost again.
+    const prep = job.steps.find(s => s.run?.includes('prepareApiCapability'));
+    assert.ok(prep, `${file}:${jobName} must run the API preparation`);
+    assert.match(String(prep.run), /XPOD_API_CAPABILITY_ROOT="\$PWD\/\.test-data\/api-capability-\$\(git rev-parse HEAD\)"/);
+    assert.match(String(prep.run), /GITHUB_ENV/);
+  }
+});
+
+test('the API failure reporter projects only allow-listed facts and leaks nothing', () => {
+  const { spawnSync } = require('node:child_process');
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const root = path.resolve(__dirname, '../..');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fail-reporter-'));
+  try {
+    const probe = path.join(dir, 'probe.ts');
+    fs.writeFileSync(probe, [
+      `import { describeProducerFailure } from ${JSON.stringify(path.join(root, 'desktop/scripts/api-capability-producer.ts'))};`,
+      `import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';`,
+      `import { tmpdir } from 'node:os';`,
+      `import path from 'node:path';`,
+      `const mk = () => { const d = mkdtempSync(path.join(tmpdir(), 'fr-')); mkdirSync(path.join(d, 'evidence'), { recursive: true }); return d; };`,
+      `const out: any = {};`,
+      // A: absent receipt
+      `{ const d = mk(); out.absent = describeProducerFailure(d, 1); rmSync(d, { recursive: true, force: true }); }`,
+      // B: realistic dependency-state failure with the REAL phase receipt fields
+      `{ const d = mk();`,
+      `  writeFileSync(path.join(d, 'producer.receipt.json'), JSON.stringify({`,
+      `    status: 'failed',`,
+      `    failure: 'ValueError: API phase did not close successfully: dependency-state',`,
+      `    phases: [`,
+      `      { name: 'install', receipt: { sha256: 'a'.repeat(64) }, raw: { sha256: 'b'.repeat(64) } },`,
+      `      { name: 'dependency-state', receipt: { sha256: 'c'.repeat(64) }, raw: { sha256: 'd'.repeat(64) } },`,
+      `    ],`,
+      `  }));`,
+      `  writeFileSync(path.join(d, 'evidence', 'dependency-state.receipt.json'), JSON.stringify({`,
+      `    exit: 1, signal: null, actualWait: true, ownedGroupAbsentAfterWait: true,`,
+      `    rawClosedBeforeHash: true, resourceStop: null, supervisorError: null, cleanupErrors: [],`,
+      `  }));`,
+      `  out.real = describeProducerFailure(d, 1); rmSync(d, { recursive: true, force: true }); }`,
+      // C: malicious positions — failure text, phase.name and digests all carry a secret
+      `{ const d = mk();`,
+      `  writeFileSync(path.join(d, 'producer.receipt.json'), JSON.stringify({`,
+      `    status: 'failed',`,
+      `    failure: 'ValueError: API phase did not close successfully: SECRET-TOKEN-VALUE /Users/secret/path',`,
+      `    phases: [`,
+      `      { name: 'SECRET-TOKEN-VALUE', receipt: { sha256: 'SECRET-TOKEN-VALUE' }, raw: { sha256: 'SECRET-TOKEN-VALUE' } },`,
+      `      { name: 'dependency-state', receipt: { sha256: 'SECRET-TOKEN-VALUE' }, raw: { sha256: 'e'.repeat(64) } },`,
+      `    ],`,
+      `    env: { GH_TOKEN: 'SECRET-TOKEN-VALUE' }, token: 'SECRET-TOKEN-VALUE',`,
+      `  }));`,
+      `  writeFileSync(path.join(d, 'evidence', 'dependency-state.receipt.json'), JSON.stringify({ exit: 0, signal: null }));`,
+      `  out.malicious = describeProducerFailure(d, 1); rmSync(d, { recursive: true, force: true }); }`,
+      // D: failure text that is NOT the fixed pattern must never be echoed
+      `{ const d = mk();`,
+      `  writeFileSync(path.join(d, 'producer.receipt.json'), JSON.stringify({`,
+      `    status: 'failed', failure: 'OSError: /Users/secret/path SECRET-TOKEN-VALUE', phases: [],`,
+      `  }));`,
+      `  out.freeform = describeProducerFailure(d, 1); rmSync(d, { recursive: true, force: true }); }`,
+      `process.stdout.write(JSON.stringify(out));`,
+    ].join('\n'));
+    const run = spawnSync('bun', ['run', probe], { cwd: root, encoding: 'utf8', timeout: 120000 });
+    assert.equal(run.status, 0, run.stderr);
+    const { absent, real, malicious, freeform } = JSON.parse(String(run.stdout).trim());
+
+    // Missing receipt is reported honestly.
+    assert.match(absent, /receipt=absent/);
+
+    // Realistic dependency-state failure: phase, digests and REAL closure fields.
+    assert.match(real, /failedPhase=dependency-state/);
+    assert.match(real, /producerExit=1/);
+    assert.match(real, /\[dependency-state receipt=cccccccccccc raw=dddddddddddd exit=1 signal=null actualWait=1 groupAbsent=1 rawClosed=1 resourceStop=none supervisorError=none cleanupErrors=0\]/);
+
+    // A non-canonical phase name and non-hex digests are refused, not echoed.
+    assert.match(malicious, /failedPhase=unavailable/);
+    assert.doesNotMatch(malicious, /SECRET/);
+    assert.doesNotMatch(malicious, /secret\/path/);
+    assert.match(malicious, /\[dependency-state receipt=none raw=eeeeeeeeeeee/);
+
+    // Free-form failure text is never printed.
+    assert.match(freeform, /failedPhase=unavailable/);
+    assert.doesNotMatch(freeform, /SECRET/);
+    assert.doesNotMatch(freeform, /Users\/secret/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

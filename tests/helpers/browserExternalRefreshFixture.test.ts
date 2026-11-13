@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert';
 import { test } from 'vitest';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { externalRefreshFromEnvironment, readExternalRefreshFixture, verifyExternalRefreshStorage } from './browserExternalRefreshFixture';
+import { externalRefreshFromEnvironment, readExternalRefreshFixture, readManagedLocalProvisionCode, verifyExternalRefreshStorage } from './browserExternalRefreshFixture';
 
 async function fixture(run: (root: string, manifest: string, input: any) => void | Promise<void>): Promise<void> {
   const parent = path.resolve('.test-data/external-refresh-contract');
@@ -90,4 +90,42 @@ test('B creates one private output directory after validation and never creates 
   input.outputDirectory = path.join(root, 'missing-parent', 'output');
   writeFileSync(manifest, JSON.stringify(input));
   assert.throws(() => readExternalRefreshFixture(manifest, true));
+}));
+
+test('managed Local reads exactly one Cloud-issued scope from its own status', () => fixture(async (_root, _manifest, input) => {
+  const requests: Array<{ url: string; accept?: string }> = [];
+  const transport = (async (value: string | URL | Request, init?: RequestInit) => {
+    requests.push({ url: value instanceof Request ? value.url : String(value),
+      accept: new Headers(init?.headers).get('accept') ?? undefined });
+    return Response.json({ managed: true, registered: true, provisionCode: '  signed-local-scope  ' });
+  }) as typeof fetch;
+  assert.equal(await readManagedLocalProvisionCode(input, transport), 'signed-local-scope');
+  assert.deepEqual(requests, [{ url: 'http://127.0.0.1:49101/provision/status', accept: 'application/json' }]);
+}));
+
+test('cloud and standalone issue no scope request and carry no scope', () => fixture(async (_root, _manifest, input) => {
+  const transport = (async () => { throw new Error('transport must not be used outside local'); }) as unknown as typeof fetch;
+  input.mode = 'cloud';
+  assert.equal(await readManagedLocalProvisionCode(input, transport), undefined);
+  input.mode = 'standalone';
+  assert.equal(await readManagedLocalProvisionCode(input, transport), undefined);
+}));
+
+test('managed Local fails closed when the scope is missing, unregistered or non-managed', () => fixture(async (_root, manifest, input) => {
+  const status = (body: unknown, ok = true): typeof fetch =>
+    (async () => new Response(JSON.stringify(body), { status: ok ? 200 : 503 })) as typeof fetch;
+  await assert.rejects(readManagedLocalProvisionCode(input,
+    status({ managed: true, registered: false, provisionCode: 'c' })), /provision scope/);
+  await assert.rejects(readManagedLocalProvisionCode(input,
+    status({ managed: true, registered: true })), /provision scope/);
+  await assert.rejects(readManagedLocalProvisionCode(input,
+    status({ managed: true, registered: true, provisionCode: '   ' })), /provision scope/);
+  await assert.rejects(readManagedLocalProvisionCode(input,
+    status({ managed: false, registered: true, provisionCode: 'c' })), /managed registration/);
+  await assert.rejects(readManagedLocalProvisionCode(input,
+    status({ error: 'down' }, false)), /provision status unavailable/);
+  await assert.rejects(readManagedLocalProvisionCode(input,
+    (async () => { throw new Error('socket'); }) as typeof fetch), /provision status request failed/);
+  // The fixture itself stays admissible; only the remote scope is unusable.
+  assert.equal(readExternalRefreshFixture(manifest).input.mode, 'local');
 }));

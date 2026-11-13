@@ -399,7 +399,14 @@ def retain_notice_verifier_originals(output):
     source.rename(destination)
     return reference(destination/'acquisition.original.json',output)
 
-def produce(repo, output, target, environment=None, source_kind=None, workspace_recipe='global-v1', notice_supplements=()):
+def produce(repo, output, target, environment=None, source_kind=None, workspace_recipe='global-v1', notice_supplements=(), identity=None):
+    """The ONE production core.
+
+    `identity` is supplied by a caller that has ALREADY authenticated its context
+    (the desktop build has no Actions event and must not pretend to). When it is
+    omitted the CI wrapper derives it from the Actions environment exactly as
+    before, so the public workflow contract is unchanged and unspoofable.
+    """
     if workspace_recipe not in ('global-v1','api-ui-root-minimal-v2'):raise ValueError('Exact API workspace recipe required')
     repo, output = Path(repo).resolve(), Path(output).resolve()
     checked_supplements=[]
@@ -417,12 +424,26 @@ def produce(repo, output, target, environment=None, source_kind=None, workspace_
         raise ValueError('API native source is pending for requested target')
     before = source_state(repo)
     verifier_required=notice_verifier_requirement(repo,checked_supplements,before['sha'])
-    identity = context(environment, before)
+    if identity is None:
+        # The public CLI has exactly one way to establish context. There is no
+        # environment variable that can replace it.
+        identity = context(environment, before)
+    if not isinstance(identity, dict) or identity.get('actualCheckoutSha') != before['sha']:
+        # Both callers must bind to the ACTUAL checkout; a local identity cannot
+        # name a different source than the tree the producer is reading.
+        raise ValueError('Producer identity differs from the actual checkout')
+    if before['status']:
+        raise ValueError('Exact clean checkout required for API production')
     manifest = json.loads((repo / 'packages/xpod-api/package.json').read_text())
     version = manifest.get('version')
     if manifest.get('name') != '@undefineds.co/xpod-api' or not isinstance(version, str):
         raise ValueError('API producer manifest missing')
-    if output.parent != repo / '.test-data' or output.name != f'api-product-{identity["runId"]}-{identity["runAttempt"]}-{target}':
+    if identity.get('kind') == 'local-desktop-build':
+        # A desktop build has no Actions run identity; it still must write into one
+        # fresh, clearly owned directory and never into the source tree.
+        if output.parent != repo / '.test-data' or not output.name.startswith('api-capability-'):
+            raise ValueError('Fresh owned desktop output path required')
+    elif output.parent != repo / '.test-data' or output.name != f'api-product-{identity["runId"]}-{identity["runAttempt"]}-{target}':
         raise ValueError('Fresh owned CI output path required')
     if output.parent.is_symlink():
         raise ValueError('Owned CI parent must not be a symlink')
@@ -556,13 +577,46 @@ def produce(repo, output, target, environment=None, source_kind=None, workspace_
     return receipt
 
 
-if __name__ == '__main__':
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', required=True)
     parser.add_argument('--target', required=True)
     parser.add_argument('--native-source-kind', choices=['xpod-controlled-inngest-build-v1'])
     parser.add_argument('--workspace-recipe',choices=['global-v1','api-ui-root-minimal-v2'],default='global-v1')
     parser.add_argument('--notice-supplement',action='append',default=[])
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     result = produce(Path(__file__).resolve().parent.parent, Path(args.out), args.target, source_kind=args.native_source_kind, workspace_recipe=args.workspace_recipe,notice_supplements=args.notice_supplement)
     print(json.dumps(result))
+    return result
+
+
+def produce_for_local_build(request):
+    """Dedicated PROGRAMMATIC entry for a non-CI caller (the desktop build).
+
+    This is deliberately NOT reachable from the public CLI: `main()` never calls
+    it, and no environment variable selects it. The caller must already have its
+    own context and passes it as structured data, so nothing here can be mistaken
+    for Actions authentication. The production core still re-checks the actual
+    checkout, the target, and the owned output path.
+    """
+    if not isinstance(request, dict):
+        raise ValueError('Structured local producer request required')
+    if set(request) - {'repo', 'output', 'target', 'identity', 'sourceKind', 'workspaceRecipe', 'noticeSupplements'}:
+        raise ValueError('Undeclared local producer request field')
+    identity = request.get('identity')
+    if not isinstance(identity, dict) or identity.get('kind') != 'local-desktop-build':
+        raise ValueError('Explicit local-desktop-build identity required')
+    return produce(Path(request['repo']), Path(request['output']), request['target'],
+                   identity=identity,
+                   source_kind=request.get('sourceKind'),
+                   workspace_recipe=request.get('workspaceRecipe', 'api-ui-root-minimal-v2'),
+                   notice_supplements=tuple(request.get('noticeSupplements') or ()))
+
+
+if __name__ == '__main__':
+    # Two modes only: the public CLI, or the dedicated programmatic entry used by
+    # the desktop adapter (`--local-request -` reads one JSON object from stdin).
+    if sys.argv[1:] == ['--local-request', '-']:
+        print(json.dumps(produce_for_local_build(json.load(sys.stdin))))
+    else:
+        main()

@@ -525,6 +525,87 @@ esac
     expect(runText).not.toContain('codesign --verify');
   });
 
+  it('builds workspace packages before the desktop contract suites on a cold runner', async () => {
+    const workflow = await loadWorkflow();
+    const steps: any[] = workflow.jobs.build_desktop_rc.steps;
+    const buildIndex = steps.findIndex(step =>
+      (step.run ?? '').includes('bun run build:packages'));
+    const testIndex = steps.findIndex(step =>
+      step.name === 'Run the desktop unit test suite');
+    // The desktop contracts import packages/xpod-cli SOURCE, which resolves
+    // @undefineds.co/xpod-client through exports -> dist/*. Cold runners have no
+    // dist, so the packages build MUST run before the desktop test step.
+    expect(buildIndex).toBeGreaterThan(-1);
+    expect(testIndex).toBeGreaterThan(-1);
+    expect(buildIndex).toBeLessThan(testIndex);
+    // `desktop`'s own test script only builds desktop; it never builds packages.
+    const desktopManifest = JSON.parse(await readFile(path.join(repoRoot, 'desktop/package.json'), 'utf8'));
+    expect(desktopManifest.scripts.test).not.toContain('build:packages');
+    // And the resolving package really does expose dist-only entrypoints.
+    const client = JSON.parse(await readFile(path.join(repoRoot, 'packages/xpod-client/package.json'), 'utf8'));
+    expect(client.exports['.'].import).toMatch(/^\.\/dist\//u);
+    expect(client.exports['.'].require).toMatch(/^\.\/dist\//u);
+    // The ordering step must be a real build, never a mock or fallback.
+    expect(jobRunText(workflow, 'build_desktop_rc')).not.toContain('mock');
+  });
+
+  it('emits root JS and components before packing and checking consumers', async () => {
+    const workflow = await loadWorkflow();
+    const steps: any[] = workflow.jobs.build_desktop_rc.steps;
+    const emitIndex = steps.findIndex(step => step.run?.includes('bun run build:ts')
+      && step.run?.includes('bun run build:components'));
+    const packIndex = steps.findIndex(step => step.name === 'Verify root npm package boundary');
+    const consumerIndex = steps.findIndex(step => step.name === 'Verify packed Node and Bun consumers before publication');
+    expect(emitIndex).toBeGreaterThan(-1);
+    expect(packIndex).toBeGreaterThan(-1);
+    expect(consumerIndex).toBeGreaterThan(-1);
+    expect(steps[emitIndex]['working-directory'] ?? '.').toBe('.');
+    expect(workflow.jobs.build_desktop_rc.defaults?.run?.['working-directory'] ?? '.').toBe('.');
+    expect(emitIndex).toBeLessThan(packIndex);
+    expect(packIndex).toBeLessThan(consumerIndex);
+  });
+
+  it('derives every downstream RC seed from the producer suffix, never the raw secret or own attempt', async () => {
+    const workflow = await loadWorkflow();
+    const deploy: any = workflow.jobs.deploy_and_accept;
+    const matrix: any = workflow.jobs.runtime_mode_matrix;
+
+    // The producer PUBLISHES the non-secret suffix it actually materialized.
+    expect(deploy.outputs.seed_suffix).toContain('steps.seed_identity.outputs.suffix');
+    const identity = deploy.steps.find((step: any) => step.id === 'seed_identity');
+    expect(identity).toBeDefined();
+    expect(identity.run).toContain('rc-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}');
+    // Materialization uses that SAME output, so output and bytes cannot drift.
+    const deployRuns = jobRunText(workflow, 'deploy_and_accept');
+    expect(deployRuns).toContain('--suffix "${{ steps.seed_identity.outputs.suffix }}"');
+    expect(deployRuns).not.toContain('--suffix "rc-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"');
+
+    // The consumer materializes from the producer output...
+    const matrixRuns = jobRunText(workflow, 'runtime_mode_matrix');
+    expect(matrixRuns).toContain('--suffix "${{ needs.deploy_and_accept.outputs.seed_suffix }}"');
+    expect(matrixRuns).toContain('materialize-rc-seed-config.ts');
+    // ...and NEVER feeds the raw secret to the platform provider.
+    expect(matrixRuns).not.toContain('--seed-config "${RUNNER_TEMP}/mode-matrix-raw-seeds.json"');
+    expect(matrixRuns).toContain('--seed-config "${RUNNER_TEMP}/mode-matrix-seeds.json"');
+    // A retried consumer must not substitute its own attempt.
+    expect(matrixRuns).not.toContain('--suffix "rc-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"');
+
+    // Exhaustive: no downstream job may hand the raw secret to a seed reader.
+    // The producer itself reads its OWN materialized xpod-rc-seed.json; every
+    // other consumer must read a materialized file too, never the raw secret.
+    const allowed = new Map([['deploy_and_accept', 'xpod-rc-seed.json']]);
+    let checked = 0;
+    for (const [name, job] of Object.entries<any>(workflow.jobs)) {
+      const runs = stepRuns(job).join('\n');
+      for (const match of runs.matchAll(/--seed-config\s+"?\$\{?RUNNER_TEMP\}?\/([\w.-]+)"?/gu)) {
+        checked++;
+        const expected = allowed.get(name) ?? 'mode-matrix-seeds.json';
+        expect([name, match[1]]).toEqual([name, expected]);
+      }
+    }
+    expect(checked).toBeGreaterThan(0);
+  });
+
   it('builds exactly one GHCR image with immutable sha and candidate tags and exposes the canonical digest', async () => {
     const workflow = await loadWorkflow();
     expect(workflow.jobs.observe_service_sdk_source.needs).toEqual(['metadata', 'build_image', 'publish_qlever_local_runtime', 'publish_qlever_runtime_sdk']);
@@ -722,7 +803,9 @@ esac
     expect(runText).toContain('--seed-secret-name "$XPOD_RC_SEED_SECRET_NAME"');
     expect(runText).toContain('scripts/prepare-rc-authenticated-smoke.ts');
     expect(runText).toContain('scripts/materialize-rc-seed-config.ts');
-    expect(runText).toContain('--suffix "rc-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"');
+    // The producer materializes with the SAME suffix it publishes as an output,
+    // so downstream attempts can reuse it instead of re-deriving one.
+    expect(runText).toContain('--suffix "${{ steps.seed_identity.outputs.suffix }}"');
     expect(runText).toContain('bunx playwright install --with-deps chromium');
     expect(runText).toContain('--seed-config "${RUNNER_TEMP}/xpod-rc-seed.json"');
     expect(runText).toContain('set -a');
@@ -1567,5 +1650,54 @@ sys.exit(${mode === 'missing-release' ? 27 : 0})
       const remaining = await (await import('node:fs/promises')).readdir(dir);
       expect(remaining.some(name => name.startsWith('private17-proof'))).toBe(false);
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('desktop candidate-version ordering', () => {
+  // The workspace consumer's source contract is "clean exact source". The
+  // candidate version transform rewrites TRACKED manifests (root package.json,
+  // native optional refs, desktop/package.json), so it must run AFTER the
+  // workspace build+consumer, never before it.
+  it('builds and consumes the workspace source BEFORE applying the candidate version', async () => {
+    const workflow = await loadWorkflow();
+    const steps: any[] = workflow.jobs.build_desktop_rc.steps;
+    const index = (name: string) => steps.findIndex((step) => step.name === name);
+    const build = index('Build workspace packages required by the desktop contracts');
+    const consumer = index('Verify shared applet tarballs in a clean Bun consumer');
+    const apply = index('Apply and verify the candidate version');
+    expect(build).toBeGreaterThanOrEqual(0);
+    expect(consumer).toBeGreaterThanOrEqual(0);
+    expect(apply).toBeGreaterThanOrEqual(0);
+    // Clean-source window: build, then the consumer, then the transform.
+    expect(build).toBeLessThan(consumer);
+    expect(consumer).toBeLessThan(apply);
+    // The transform still precedes everything that needs the candidate version.
+    expect(apply).toBeLessThan(index('Run the desktop unit test suite'));
+    expect(apply).toBeLessThan(index('Build desktop with the accepted native runtime'));
+    expect(apply).toBeLessThan(index('Verify root npm package boundary'));
+  });
+
+  it('keeps the workspace consumer before the root pack and Node/Bun consumers', async () => {
+    const workflow = await loadWorkflow();
+    const steps: any[] = workflow.jobs.build_desktop_rc.steps;
+    const index = (name: string) => steps.findIndex((step) => step.name === name);
+    expect(index('Verify shared applet tarballs in a clean Bun consumer'))
+      .toBeLessThan(index('Verify root npm package boundary'));
+    expect(index('Verify root npm package boundary'))
+      .toBeLessThan(index('Verify packed Node and Bun consumers before publication'));
+    expect(index('Verify packed Node and Bun consumers before publication'))
+      .toBeLessThan(index('Bind the package-consumers acceptance evidence'));
+  });
+
+  it('runs no workspace build or consumer after the candidate version transform', async () => {
+    const workflow = await loadWorkflow();
+    const steps: any[] = workflow.jobs.build_desktop_rc.steps;
+    const apply = steps.findIndex((step) => step.name === 'Apply and verify the candidate version');
+    const after = steps.slice(apply + 1)
+      .map((step) => step.run ?? '')
+      .join('\n');
+    // No second workspace pack/consumer pass on transformed source.
+    expect(after).not.toContain('workspace-package-consumer.cjs');
+    expect(after).not.toContain('bun run build:packages');
   });
 });

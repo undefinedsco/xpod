@@ -54,7 +54,6 @@ async function runOwnedModeCommand(binary, args, { cwd, env, timeoutMs, outputBy
     else try { child.stdin.end(inputBytes, error => { inputEnded = true; if (error) inputError ??= error?.code || 'stdin-end-error'; else if (!inputError) inputEndSucceeded = true; }); } catch (error) { inputError ??= error?.code || 'stdin-write-error'; inputEnded = true; child.stdin.destroy(); abort(); }
   }
   const observed = await Promise.race([close, finalObservation]);
-  clearTimeout(timer); clearTimeout(escalation); clearTimeout(finalTimer); cancellation?.removeEventListener('abort', cancel);
   if (inputSupplied && !inputEnded) {
     // No reader consumed the complete payload (for example an early exit).
     inputError ??= 'input-not-consumed';
@@ -64,6 +63,19 @@ async function runOwnedModeCommand(binary, args, { cwd, env, timeoutMs, outputBy
   // Freeze the negative observation before destroying only our reader handles.
   if (!observed.closeObserved) { ownershipUnknown = true; signal('SIGKILL'); child.stdout.destroy(); child.stderr.destroy(); child.unref(); }
   const absent = () => { if (!child.pid) return spawnFailed; try { process.kill(-child.pid, 0); return false; } catch (e) { if (e.code === 'ESRCH') return true; ownershipUnknown = true; return false; } };
+  // A direct child may close before a short-lived group member finishes.
+  // Observe natural group exit within the existing grace, retaining the command
+  // deadline and cancellation. Forced cleanup remains a failed command.
+  const cleanlyClosed = observed.closeObserved && actualExit?.code === 0 && !actualExit?.signal
+    && !timedOut && !cancelled && !outputTruncated && !spawnFailed && !ownershipUnknown;
+  if (cleanlyClosed && !absent()) {
+    const drainDeadline = Date.now() + terminationGraceMs;
+    while (!absent() && !timedOut && !cancelled && !outputTruncated && !ownershipUnknown && Date.now() < drainDeadline) {
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+  }
+  // Forced cleanup below retains its existing bounded escalation.
+  clearTimeout(timer); clearTimeout(escalation); clearTimeout(finalTimer); cancellation?.removeEventListener('abort', cancel);
   if (!absent()) {
     forcedCleanup = true; signal('SIGTERM');
     for (let n = 0; n < 40 && !absent(); n++) await new Promise(resolve => setTimeout(resolve, 25));

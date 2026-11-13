@@ -33,6 +33,7 @@ import {
 } from './update-manager.js'
 import { DesktopSelfUpdater, UPDATE_RELAUNCH_ENV } from './self-updater.js'
 import { loadDesktopUrlWithoutStaleCache } from './navigation-cache.js'
+import { runStartupSequence } from './startup-sequence.js'
 import { canCancelDesktopLogin, cancelDesktopLogin, shouldCancelDesktopLoginOnClose } from './login-recovery.js'
 import { navigateDesktopProduct } from './product-navigation.js'
 import { desktopProtocolRoute, desktopProtocolRouteFromArgv, resumeDesktopProtocolNavigation, XPOD_DESKTOP_PROTOCOL } from './product-protocol.js'
@@ -131,7 +132,16 @@ let quitConfirmationPending = false
 type DesktopQuitReason = 'explicit' | 'update-install'
 let quitReason: DesktopQuitReason = 'explicit'
 const runtimePreferences = new RuntimePreferences(desktopDataRoot)
-const runtimeManager = new RuntimeManager({ targetOrigin, packaged: app.isPackaged, autoRestart: runtimePreferences.read().autoRestart, resolveEnvironment: () => readRuntimeDataEnvironment(process.env.XPOD_ENV_FILE) })
+// Reuse the app's userData authority for the CLI's writable module store; the
+// installed resources remain the read-only source of packaged capabilities.
+const runtimeManager = new RuntimeManager({
+  targetOrigin,
+  packaged: app.isPackaged,
+  autoRestart: runtimePreferences.read().autoRestart,
+  resolveEnvironment: () => readRuntimeDataEnvironment(process.env.XPOD_ENV_FILE),
+  ownedDataRoot: desktopDataRoot,
+  ...(app.isPackaged ? { resourcesPath: process.resourcesPath } : {}),
+})
 // Squirrel pins an ad-hoc build's cdhash and cannot accept the next release.
 // Our detached installer verifies and swaps the bundle while retaining user data.
 const selfUpdater = new DesktopSelfUpdater({
@@ -819,11 +829,20 @@ if (!hasSingleInstanceLock) {
     app.setAboutPanelOptions({ applicationName: 'Xpod', applicationVersion: app.getVersion(), version: `Electron ${process.versions.electron}`, copyright: `© ${new Date().getFullYear()} Xpod` })
     tray = createTray()
     updateManager.start()
-    await runtimeManager.ensureRunning().catch(() => undefined)
-    await refreshTrayStatus(tray)
-    if (acceptanceMode) app.emit('xpod:acceptance:tray-ready')
-    ensureWindow()
-    if (pendingProtocolRoute) presentProtocolReturn()
+    // Create the BrowserWindow without waiting for runtime readiness, so the
+    // window exists while the runtime is still starting. Existing navigation
+    // recovery and readiness guards remain responsible for loading and showing.
+    runStartupSequence({
+      createWindow: () => {
+        ensureWindow()
+        if (pendingProtocolRoute) presentProtocolReturn()
+      },
+      startRuntime: () => runtimeManager.ensureRunning(),
+      refreshTray: () => refreshTrayStatus(tray as Tray),
+      onSettled: () => {
+        if (acceptanceMode) app.emit('xpod:acceptance:tray-ready')
+      },
+    })
 
     app.on('activate', () => {
       ensureWindow()

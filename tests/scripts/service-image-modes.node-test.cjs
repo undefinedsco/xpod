@@ -137,7 +137,7 @@ const digestBytes = value => require('node:crypto').createHash('sha256').update(
 async function artifactFixture(fn) { return evidenceFixture(async root => {
   const repo=path.join(root,'repo'); const artifact=path.join(root,'artifact'); await fsp.mkdir(repo); await fsp.mkdir(artifact);
   const sourceBytes=Buffer.from('owned fixture source');
-  for(const name of ['scripts/a.ts','scripts/b.ts','tests/helper.ts','bun.lock']) { await fsp.mkdir(path.dirname(path.join(repo,name)),{recursive:true}); await fsp.writeFile(path.join(repo,name),sourceBytes); }
+  for(const name of ['scripts/a.ts','scripts/b.ts','tests/helper.ts','tests/helpers/desktopSessionObserverSnapshot.cjs','bun.lock']) { await fsp.mkdir(path.dirname(path.join(repo,name)),{recursive:true}); await fsp.writeFile(path.join(repo,name),sourceBytes); }
   const report=fixture(); report.sources=Object.fromEntries(['scripts/a.ts','scripts/b.ts','bun.lock'].map(name=>[name,digestBytes(sourceBytes)]));
   for(const mode of report.modes) {
     const live={mode:mode.mode,layers:Object.fromEntries(['runtime','identity','podReadWrite','gatewayAuth','aiConnections','models','chat'].map(k=>[k,{ok:true}])),modelIds:['m'],chatModel:'m',chatStatus:200,keyCleanup:{ok:true}};
@@ -145,7 +145,7 @@ async function artifactFixture(fn) { return evidenceFixture(async root => {
     for(const row of mode.sessions) {
       const directory=path.join(artifact,`session-${mode.mode}-${row.profile.kind}`); await fsp.mkdir(directory);
       const original=Buffer.from(JSON.stringify({grant:row.profile.kind==='expire'?'authorization_code':'refresh_token',status:200}));
-      row.originals=[{path:'protocol.json',bytes:original.length,sha256:digestBytes(original)}];row.sources={'tests/helper.ts':digestBytes(sourceBytes)};
+      row.originals=[{path:'protocol.json',bytes:original.length,sha256:digestBytes(original)}];row.sources={'tests/helper.ts':digestBytes(sourceBytes),'tests/helpers/desktopSessionObserverSnapshot.cjs':digestBytes(sourceBytes)};
       const {receiptSHA256,...receipt}=row;const bytes=Buffer.from(JSON.stringify(receipt));row.receiptSHA256=digestBytes(bytes);
       await fsp.writeFile(path.join(directory,'session.safe.json'),bytes);await fsp.writeFile(path.join(directory,'protocol.json'),original);
     }
@@ -160,6 +160,11 @@ test('light verifier re-reads every declared safe original and exact source byte
 test('light verifier rejects undeclared artifacts or changed safe original', () => artifactFixture(async ({repo,artifact}) => {
   await fsp.writeFile(path.join(artifact,'extra.json'),'{}'); await assert.rejects(verifyModeEvidence(artifact,expected,repo));await fsp.unlink(path.join(artifact,'extra.json'));
   await fsp.writeFile(path.join(artifact,'session-local-idle/protocol.json'),'{}');await assert.rejects(verifyModeEvidence(artifact,expected,repo));
+}));
+test('light verifier rejects changed observer snapshot publisher source', () => artifactFixture(async ({repo,artifact}) => {
+  assert.deepEqual(await verifyModeEvidence(artifact,expected,repo),{[CHECK_NAME]:'passed'});
+  await fsp.appendFile(path.join(repo,'tests/helpers/desktopSessionObserverSnapshot.cjs'),'changed publisher');
+  await assert.rejects(verifyModeEvidence(artifact,expected,repo),/Verifier source binding mismatch/);
 }));
 test('stable guard uses the same light verifier on accepted source/digest/run/attempt originals', () => {
   const release=fs.readFileSync(path.resolve('.github/workflows/release.yml'),'utf8');
@@ -253,4 +258,220 @@ test('both initial and policy-recreation startup use the ordered responsibility'
   assert.equal((runner.match(/budgetMs: LIMITS\.commandMs/g) ?? []).length, 2);
   // Facts survive into the private safe report only for the current failure.
   assert.ok(runner.includes('error instanceof ManagedLocalBootstrapError ? error.facts : undefined'));
+});
+
+// ---- session-matrix DIAGNOSTIC extension -----------------------------------
+// These prove the diagnostic route reuses the canonical order and can NEVER be
+// mistaken for release qualification.
+// The TS script is not part of the tsc emit, so it is loaded through the real
+// Bun toolchain (available in CI) in a subprocess. Import failures must FAIL
+// these tests - never a silent skip and never a swallowed loader error.
+function loadTsHelpers() {
+  // `bun -e` resolves imports lazily and can exit 0 on a broken module, so the
+  // probe is a real .ts FILE executed with `bun run`: a bad import is exit 1.
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const root = path.resolve(__dirname, '../..');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modes-probe-'));
+  const probe = path.join(dir, 'probe.ts');
+  try {
+    fs.writeFileSync(probe, [
+      "import { platformBuiltinServiceEnvironment, platformBuiltinServiceEnvironmentForDiagnostic }",
+      `  from ${JSON.stringify(path.join(root, 'scripts/accept-service-image-modes.ts'))};`,
+      "const c = platformBuiltinServiceEnvironment('cloud', 'https://p.example/');",
+      "const d = platformBuiltinServiceEnvironmentForDiagnostic('cloud', 'https://p.example/');",
+      "process.stdout.write(JSON.stringify({ canonical: c, diagnostic: d, nonCloud: {",
+      "  local: platformBuiltinServiceEnvironmentForDiagnostic('local','x'),",
+      "  standalone: platformBuiltinServiceEnvironmentForDiagnostic('standalone','x'),",
+      "  canonicalLocal: platformBuiltinServiceEnvironment('local','x'),",
+      "  canonicalStandalone: platformBuiltinServiceEnvironment('standalone','x'),",
+      "} }));",
+    ].join('\n'));
+    const run = spawnSync('bun', ['run', probe], { cwd: root, encoding: 'utf8', timeout: 120000 });
+    if (run.error) throw new Error(`bun unavailable: ${run.error.message}`);
+    // A broken import MUST fail here - never be swallowed into a skip.
+    if (run.status !== 0) throw new Error(`TS module import failed (exit ${run.status}): ${run.stderr}`);
+    const text = String(run.stdout || '').trim();
+    if (!text) throw new Error('bun probe produced no JSON');
+    return JSON.parse(text);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+// ---- BLOCKING-1 regression: diagnostic per-mode record must exist ----------
+test('diagnostic mode records are initialised from inspected facts and carry NO live layer', () => {
+  // Mirrors what runMatrix now does for the diagnostic path: build the identity
+  // record (shared constructor shape) BEFORE the session loop dereferences it.
+  const identity = (mode, facts) => {
+    const urls = { cloud: 'http://localhost:1/', local: 'http://127.0.0.1:2/', standalone: 'http://localhost:3/' };
+    return { mode, baseUrl: urls[mode], issuer: mode === 'local' ? urls.cloud : urls[mode],
+      image: facts, sessions: [], sessionBindings: {} };
+  };
+  const facts = { reference: image, platform: expected.platform, id, repoDigests: [image],
+    noCodeMounts: true, mounts: [{ destination: '/app/data', type: 'volume', readOnly: false }],
+    runtimeExecutables: ['/bin/bun', '/bin/bun', '/bin/bun'] };
+  const records = {};
+  for (const mode of MODES) records[mode] = identity(mode, facts);
+  // The crash this guards: previously records[mode] was undefined here and the
+  // first `records[mode].sessionBindings[kind] = ...` threw a TypeError.
+  for (const mode of MODES) {
+    assert.ok(records[mode], `missing record for ${mode}`);
+    assert.equal(records[mode].live, undefined, 'diagnostic record must not claim live');
+    assert.deepEqual(records[mode].sessions, []);
+    assert.deepEqual(records[mode].sessionBindings, {});
+    // Append works for every canonical pair.
+    for (const kind of CASES) {
+      records[mode].sessionBindings[kind] = { webId: 'w', podUrl: 'p' };
+      records[mode].sessions.push({ profile: { kind } });
+    }
+    assert.equal(records[mode].sessions.length, CASES.length);
+  }
+});
+
+test('a diagnostic-shaped matrix passes the STRICT diagnostic validator and is refused by release', () => {
+  const diagnostic = fixture();
+  diagnostic.kind = 'session-matrix-diagnostic';
+  diagnostic.diagnosticOnly = true;
+  diagnostic.liveChatExcluded = true;
+  diagnostic.platformInferenceExcluded = true;
+  diagnostic.qualification = false;
+  diagnostic.notFullModeQualification = true;
+  // Independent origins, recorded distinctly: newer runner, older image.
+  diagnostic.runnerSourceSha = sourceSha;
+  diagnostic.installedImageSourceSha = 'd'.repeat(40);
+  diagnostic.installedImageSourceUrl = 'https://github.com/undefinedsco/xpod';
+  // No live layer is fabricated; the strict common checks still apply.
+  for (const mode of diagnostic.modes) {
+    delete mode.live;
+    mode.image.installedImageSourceSha = diagnostic.installedImageSourceSha;
+  }
+  const { validateSessionMatrixDiagnostic } = require('../../scripts/lib/service-image-modes.cjs');
+  assert.deepEqual(validateSessionMatrixDiagnostic(diagnostic, expected), { 'session-matrix-diagnostic': 'passed' });
+  // The release validator must reject it outright.
+  assert.throws(() => validateMatrix(diagnostic, expected));
+  // A full canonical fixture still passes the release validator unchanged.
+  assert.deepEqual(validateMatrix(fixture(), expected), { [CHECK_NAME]: 'passed' });
+});
+
+test('ANY failed command, forced cleanup, timeout or missing case fails the diagnostic', () => {
+  const { validateSessionMatrixDiagnostic } = require('../../scripts/lib/service-image-modes.cjs');
+  const base = () => {
+    const d = fixture();
+    d.kind = 'session-matrix-diagnostic';
+    d.diagnosticOnly = true; d.liveChatExcluded = true; d.platformInferenceExcluded = true;
+    d.qualification = false; d.notFullModeQualification = true;
+    d.runnerSourceSha = sourceSha; d.installedImageSourceSha = 'd'.repeat(40);
+    d.installedImageSourceUrl = 'https://github.com/undefinedsco/xpod';
+    for (const mode of d.modes) {
+      delete mode.live;
+      mode.image.installedImageSourceSha = d.installedImageSourceSha;
+    }
+    return d;
+  };
+  // Baseline must pass - otherwise the negatives prove nothing.
+  assert.deepEqual(validateSessionMatrixDiagnostic(base(), expected), { 'session-matrix-diagnostic': 'passed' });
+  for (const [name, mutate] of [
+    ['nonzero exit', d => { d.commands[0].code = 1; }],
+    ['forced cleanup', d => { d.commands[0].forcedCleanup = true; }],
+    ['timed out', d => { d.commands[0].timedOut = true; }],
+    ['cancelled', d => { d.commands[0].cancelled = true; }],
+    ['not raw eligible', d => { d.commands[0].rawEligible = false; }],
+    ['spawn failed', d => { d.commands[0].spawnFailed = true; }],
+    ['output truncated', d => { d.commands[0].outputTruncated = true; }],
+    ['ownership unknown', d => { d.commands[0].ownershipUnknown = true; }],
+    ['missing case', d => { d.modes[0].sessions.pop(); }],
+    ['cleanup incomplete', d => { d.cleanup.volumesAbsent = false; }],
+    ['fabricated live layer', d => { d.modes[0].live = { mode: 'cloud' }; }],
+  ]) {
+    const d = base(); mutate(d);
+    assert.throws(() => validateSessionMatrixDiagnostic(d, expected), `expected failure: ${name}`);
+  }
+});
+
+// ---- independent run/image origins (BLOCKING: RC410 9-diag image-source) ----
+// The DIAG runner checks out a NEWER commit than the already-published image it
+// inspects. These exercise the ACTUAL exported assertion in a bun subprocess,
+// because a plain node run cannot import the TS script.
+function imageOriginVerdicts() {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const root = path.resolve(__dirname, '../..');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'modes-origin-'));
+  try {
+    const probe = path.join(dir, 'probe.ts');
+    fs.writeFileSync(probe, [
+      `import { assertImageProvenance, INSTALLED_IMAGE_SOURCE_URL } from ${JSON.stringify(path.join(root, 'scripts/accept-service-image-modes.ts'))};`,
+      `const IMAGE = ${JSON.stringify(image)};`,
+      `const RUNNER = ${JSON.stringify(sourceSha)};`,
+      `const GOOD_ID = 'sha256:' + 'e'.repeat(64);`,
+      `const mk = (rev, src = INSTALLED_IMAGE_SOURCE_URL, extra = {}) => ({ Os: 'linux', Architecture: 'amd64',`,
+      `  RepoDigests: [IMAGE], Id: GOOD_ID, Config: { Labels: { 'org.opencontainers.image.revision': rev,`,
+      `  'org.opencontainers.image.source': src } }, ...extra });`,
+      `const opts = (o = {}) => ({ image: IMAGE, platform: 'linux/amd64', runnerSourceSha: RUNNER, requireSameOrigin: false, ...o });`,
+      `const verdict = (fn) => { try { fn(); return 'ok'; } catch (e) { return String(e.message); } };`,
+      `const installed = '9'.repeat(40);`,
+      `const out = assertImageProvenance(mk(installed), opts());`,
+      `process.stdout.write(JSON.stringify({`,
+      `  installedRev: out.installedImageSourceSha, installedUrl: out.installedImageSourceUrl,`,
+      `  diffOrigin: verdict(() => assertImageProvenance(mk(installed), opts())),`,
+      `  canonicalSame: verdict(() => assertImageProvenance(mk(RUNNER), opts({ requireSameOrigin: true }))),`,
+      `  canonicalDiff: verdict(() => assertImageProvenance(mk(installed), opts({ requireSameOrigin: true }))),`,
+      `  bad: {`,
+      `    shortRev: verdict(() => assertImageProvenance(mk('abc'), opts())),`,
+      `    noRev: verdict(() => assertImageProvenance({ ...mk(RUNNER), Config: { Labels: {} } }, opts())),`,
+      `    badUrl: verdict(() => assertImageProvenance(mk(RUNNER, 'https://example.invalid/x'), opts())),`,
+      `    noUrl: verdict(() => assertImageProvenance({ ...mk(RUNNER), Config: { Labels: { 'org.opencontainers.image.revision': RUNNER } } }, opts())),`,
+      `    forgedUrl: verdict(() => assertImageProvenance({ ...mk(RUNNER), Config: { Labels: { 'org.opencontainers.image.revision': RUNNER } } }, opts({ sourceUrl: INSTALLED_IMAGE_SOURCE_URL }))),`,
+      `    badPlatform: verdict(() => assertImageProvenance({ ...mk(RUNNER), Architecture: 'arm64' }, opts())),`,
+      `    badRepo: verdict(() => assertImageProvenance({ ...mk(RUNNER), RepoDigests: ['ghcr.io/o/x@sha256:' + 'a'.repeat(64)] }, opts())),`,
+      `    badId: verdict(() => assertImageProvenance({ ...mk(RUNNER), Id: 'sha256:xyz' }, opts())),`,
+      `  },`,
+      `}));`,
+    ].join('\n'));
+    const run = spawnSync('bun', ['run', probe], { cwd: root, encoding: 'utf8', timeout: 120000 });
+    if (run.status !== 0) throw new Error(`origin probe failed (exit ${run.status}): ${run.stderr}`);
+    return JSON.parse(String(run.stdout).trim());
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+test('DIAG accepts DIFFERENT runner/image origins and records both distinctly', () => {
+  const r = imageOriginVerdicts();
+  assert.equal(r.diffOrigin, 'ok');
+  assert.equal(r.installedRev, '9'.repeat(40));
+  assert.equal(r.installedUrl, 'https://github.com/undefinedsco/xpod');
+  assert.notEqual(r.installedRev, sourceSha);   // never relabelled as the runner
+});
+
+test('canonical requires the SAME origin and rejects a different one', () => {
+  const r = imageOriginVerdicts();
+  assert.equal(r.canonicalSame, 'ok');
+  assert.match(r.canonicalDiff, /Image source revision mismatch/);
+});
+
+test('bad or missing revision/source/platform/repoDigest/id are always rejected', () => {
+  const { bad } = imageOriginVerdicts();
+  for (const [name, message] of Object.entries(bad)) assert.notEqual(message, 'ok', `expected reject: ${name}`);
+});
+
+test('release evidence rejects a foreign per-mode image origin', () => {
+  const report = fixture();
+  assert.deepEqual(validateMatrix(report, expected), { [CHECK_NAME]: 'passed' });
+  report.modes[0].image.installedImageSourceSha = '9'.repeat(40);
+  assert.throws(() => validateMatrix(report, expected), /Mode image source must be the accepted source/);
+});
+
+test('canonical provenance check is NOT vacuous: a recorded foreign installed revision fails', () => {
+  // Previously report.installedImageSourceSha was only set on the diagnostic path,
+  // so the canonical rule short-circuited on `undefined` and never proved
+  // anything. Now both paths record it, and a foreign value must fail.
+  const foreign = fixture();
+  foreign.installedImageSourceSha = 'd'.repeat(40);   // != sourceSha
+  assert.throws(() => validateMatrix(foreign, expected), /Installed image source must be the accepted source/);
+  // Per-mode mismatch is likewise rejected.
+  const perMode = fixture();
+  perMode.modes[0].image.installedImageSourceSha = 'd'.repeat(40);
+  assert.throws(() => validateMatrix(perMode, expected), /Mode image source must be the accepted source/);
+  // Recording the accepted source is accepted.
+  const same = fixture();
+  same.installedImageSourceSha = sourceSha;
+  for (const mode of same.modes) mode.image.installedImageSourceSha = sourceSha;
+  assert.deepEqual(validateMatrix(same, expected), { [CHECK_NAME]: 'passed' });
 });

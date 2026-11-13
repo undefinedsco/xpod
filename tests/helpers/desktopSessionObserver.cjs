@@ -1,6 +1,7 @@
 const { writeFileSync } = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
+const { writeSnapshotAtomic } = require('./desktopSessionObserverSnapshot.cjs');
 
 /** Only allowlisted counters leave memory; request bodies/URLs are never persisted. */
 function observeRequest(state, details, issuer) {
@@ -27,7 +28,9 @@ if (process.versions.electron) {
   app.setPath('userData', path.resolve(process.env.XPOD_DESKTOP_USER_DATA_DIR));
   const state = { hostPid: process.pid, ready: false, hostImported: false, failed: false, authorizationCodes: 0, passwordPosts: 0, refreshTokens: 0, opaquePosts: 0 };
   writeFileSync(destination, JSON.stringify(state), { mode: 0o600, flag: 'wx' });
-  const save = () => writeFileSync(destination, JSON.stringify(state), { mode: 0o600 });
+  // Every later publication is atomic: a concurrent reader can only observe the
+  // previous COMPLETE snapshot or this new COMPLETE one, never a truncated file.
+  const save = () => writeSnapshotAtomic(destination, JSON.stringify(state));
   const attached = new WeakSet();
   const attach = ses => {
     if (attached.has(ses)) return;

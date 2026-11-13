@@ -4,21 +4,25 @@ on:
   workflow_dispatch:
     inputs:
       operation:
-        description: 'Explicit independent product publication control route'
+        description: 'Explicit route: publication control, or the manual session diagnostic'
         required: true
         type: choice
-        options: [independent-publication]
+        options: [independent-publication, session-diagnostic, session-matrix-diagnostic, desktop-launch-diagnostic]
+      diagnostic_image:
+        description: 'Session diagnostic only: immutable repo@sha256 app image'
+        required: false
+        type: string
       source_sha:
-        description: 'Reviewed immutable staging source SHA'
-        required: true
+        description: 'independent-publication only: reviewed immutable staging source SHA'
+        required: false
         type: string
       producer_coordinates:
-        description: 'Complete immutable product selector request; no approvals'
-        required: true
+        description: 'independent-publication only: complete immutable product selector request'
+        required: false
         type: string
       mode:
-        description: 'Prepare evidence, or explicitly publish after all gates'
-        required: true
+        description: 'independent-publication only: prepare evidence, or publish after all gates'
+        required: false
         type: choice
         options: [prepare, publish]
         default: prepare
@@ -28,13 +32,26 @@ on:
     branches: [main, staging]
 
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && 'independent-publication-control' || format('ci-{0}', github.ref) }}
+  # The diagnostic gets its OWN queue so it can run beside PR CI without sharing
+  # (or blocking) the independent-publication control lock. Legacy stays as-is.
+  group: >-
+    ${{
+      github.event_name == 'workflow_dispatch' && inputs.operation == 'desktop-launch-diagnostic'
+        && format('desktop-launch-diagnostic-{0}', github.ref)
+        || (github.event_name == 'workflow_dispatch' && inputs.operation == 'session-matrix-diagnostic'
+        && format('session-matrix-diagnostic-{0}', github.ref))
+        || (github.event_name == 'workflow_dispatch' && inputs.operation == 'session-diagnostic'
+        && format('session-diagnostic-{0}', github.ref))
+        || (github.event_name == 'workflow_dispatch' && 'independent-publication-control'
+            || format('ci-{0}', github.ref))
+    }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
   test:
     if: ${{ github.event_name != 'workflow_dispatch' }}
-    runs-on: ubuntu-latest
+    # Pin the documented Ubuntu 24.04 native toolchain environment.
+    runs-on: ubuntu-24.04
     steps:
       # The Git-history immutability tests read real commits (9d02/2406/19fe).
       # A default shallow checkout cannot resolve them, so this job needs full
@@ -53,19 +70,38 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
+      # Exercise the real copier before the expensive native and RC producers.
+      - name: Packaged seed copy regression
+        run: bun test desktop/test/after-pack-adhoc-sign.test.ts
+
       # The first Python discovery imports the new owned-window cases, which
       # instantiate the real native SdkLeaseSet. Build the canonical helper and
       # its compiler/header prerequisites before that discovery.
       - name: Install the two reviewed scoped-PCH compilers when absent
+        # Bound compiler downloads so stalled mirrors fail promptly.
+        timeout-minutes: 10
         run: |
           set -eu
+          # Use an HTTPS Ubuntu archive mirror while the default hosts fail DNS.
+          # All apt consumers, including Playwright, share this list; the stock
+          # source definitions and Ubuntu signing keys remain unchanged.
+          mirror_list=/etc/apt/apt-mirrors.txt
+          sources=/etc/apt/sources.list.d/ubuntu.sources
+          sudo test -f "$mirror_list"
+          # Fail closed if the image stops routing sources through that list.
+          grep -Fq 'mirror+file:/etc/apt/apt-mirrors.txt' "$sources" 2>/dev/null \
+            || { echo "::error::apt sources no longer route through the mirror list"; exit 1; }
+          # Keep the original list for the rest of this ephemeral job only.
+          sudo cp "$mirror_list" "${RUNNER_TEMP}/apt-mirrors.original.txt"
+          printf 'https://mirrors.kernel.org/ubuntu/\tpriority:1\n' \
+            | sudo tee "$mirror_list" >/dev/null
           missing=0
           for pkg in g++-12 gcc-12 clang-19 cmake ninja-build; do
             dpkg -s "$pkg" >/dev/null 2>&1 || missing=1
           done
           if [ "$missing" -eq 1 ]; then
             sudo apt-get update
-            # Exact reviewed majors from the existing Ubuntu repositories only.
+            # Exact reviewed majors, unchanged, now resolved via the mirror.
             sudo apt-get install -y --no-install-recommends \
               g++-12 gcc-12 clang-19 cmake ninja-build
           fi
@@ -643,7 +679,10 @@ jobs:
         run: bun run test:integration:full
 
   publication-control:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+    # The independent-publication route validation is meaningful ONLY for its own
+    # operation. Narrowing the guard keeps that route's semantics intact while
+    # letting the manual session diagnostic dispatch without failing here.
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.operation == 'independent-publication' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -666,7 +705,17 @@ jobs:
   independent-publication:
     name: independent-publication
     needs: publication-control
-    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/staging' && inputs.operation == 'independent-publication' && (inputs.mode == 'prepare' || inputs.mode == 'publish') }}
+    # The dispatch INPUTS became optional at the UI level only so the diagnostic
+    # route is not forced to supply publication-only fields. This guard therefore
+    # re-asserts them strictly: without a real source SHA and selector the route
+    # must NOT run. The publication validator below re-checks the same values.
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch'
+          && github.ref == 'refs/heads/staging'
+          && inputs.operation == 'independent-publication'
+          && (inputs.mode == 'prepare' || inputs.mode == 'publish')
+          && inputs.source_sha != ''
+          && inputs.producer_coordinates != '' }}
     permissions:
       contents: read
       actions: read
@@ -677,3 +726,266 @@ jobs:
       mode: ${{ inputs.mode }}
     secrets:
       NPM_TOKEN: ${{ inputs.mode == 'publish' && secrets.NPM_TOKEN || '' }}
+
+  session-diagnostic:
+    name: ${{ inputs.operation }} (manual, NOT release acceptance)
+    # Manual, feature-branch-safe diagnostic ONLY. It never sets
+    # runtime-mode-matrix, never satisfies the candidate 9-profile requirement and
+    # never claims release validity. Its receipt kind is not accepted by the
+    # release verifier.
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.operation == 'session-diagnostic' || inputs.operation == 'session-matrix-diagnostic') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ inputs.operation == 'session-matrix-diagnostic' && 60 || 40 }}
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Validate the immutable diagnostic image input
+        env:
+          DIAGNOSTIC_IMAGE: ${{ inputs.diagnostic_image }}
+        run: |
+          set -euo pipefail
+          [[ "$DIAGNOSTIC_IMAGE" =~ ^ghcr\.io/undefinedsco/xpod@sha256:[a-f0-9]{64}$ ]] \
+            || { echo "::error::diagnostic_image must be ghcr.io/undefinedsco/xpod@sha256:<64hex>"; exit 1; }
+      - run: bun install --frozen-lockfile
+      - run: bun run build:packages && bun run --cwd desktop bundle
+      - run: bun x --no-install playwright install --with-deps chromium
+      - name: Prepare owned Linux Electron display and installed runtime
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes xvfb libgtk-3-0t64 libnss3 libxss1 libgbm1 libasound2t64
+          electron_install_attempts=3
+          for electron_install_attempt in 1 2 3; do
+            if node node_modules/electron/install.js; then
+              break
+            fi
+            if [ "$electron_install_attempt" -eq "$electron_install_attempts" ]; then
+              echo "Electron install failed after ${electron_install_attempts} attempts" >&2
+              exit 1
+            fi
+            electron_install_delay=$((electron_install_attempt * 2))
+            echo "Electron install attempt ${electron_install_attempt}/${electron_install_attempts} failed; retrying in ${electron_install_delay}s" >&2
+            sleep "$electron_install_delay"
+          done
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const { execFileSync } = require('node:child_process');
+          const executable = require('electron');
+          fs.accessSync(executable, fs.constants.X_OK);
+          if (execFileSync('ldd', [executable], { encoding: 'utf8' }).includes('not found')) {
+            throw new Error('Installed Electron system dependencies are incomplete');
+          }
+          execFileSync('which', ['xvfb-run'], { stdio: 'ignore' });
+          NODE
+      - name: Run the owned session diagnostic
+        env:
+          DIAGNOSTIC_OPERATION: ${{ inputs.operation }}
+          XPOD_DIAGNOSTIC_IMAGE: ${{ inputs.diagnostic_image }}
+          XPOD_DIAGNOSTIC_SOURCE_SHA: ${{ github.sha }}
+          XPOD_DIAGNOSTIC_OUTPUT: ${{ github.workspace }}/.test-data/${{ inputs.operation == 'session-matrix-diagnostic' && 'session-matrix-diagnostic' || 'standalone-expire-diagnostic' }}
+        # Bun is the declared toolchain and the script asserts it: running it with
+        # Node would make every child spawn (`bun <script>`) invalid.
+        run: |
+          set -euo pipefail
+          case "$DIAGNOSTIC_OPERATION" in
+            session-diagnostic)
+              xvfb-run --auto-servernum bun scripts/diagnose-standalone-expire-session.cjs
+              ;;
+            session-matrix-diagnostic)
+              xvfb-run --auto-servernum bun scripts/accept-service-image-modes.ts session-matrix-diagnostic "$XPOD_DIAGNOSTIC_OUTPUT"
+              ;;
+            *) exit 2 ;;
+          esac
+      - name: Upload the allowlisted safe diagnostic projection only
+        if: ${{ always() && inputs.operation == 'session-diagnostic' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: standalone-expire-diagnostic-${{ github.sha }}
+          path: ${{ github.workspace }}/.test-data/standalone-expire-diagnostic/diagnostic.report.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload the safe nine-session diagnostic originals
+        if: ${{ always() && inputs.operation == 'session-matrix-diagnostic' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: session-matrix-diagnostic-${{ github.sha }}
+          path: ${{ github.workspace }}/.test-data/session-matrix-diagnostic/
+          if-no-files-found: error
+          retention-days: 14
+
+  # DIAGNOSTIC_NOT_QUALIFICATION. Manual, isolated, macOS-arm launch locator for
+  # the PINNED RC410 desktop failure. Candidate 0.4.31-rc.410 and QLever artifact
+  # 13912079864 are FIXED job env: this route has exactly one manual input
+  # (operation), so it cannot be pointed at a different candidate by mistake.
+  # It mirrors the candidate desktop ordering (build:packages -> candidate
+  # version helper -> cold root compile/components -> desktop dist), then runs
+  # ONLY launchOwnedPackagedDesktop + close. It holds no rc Environment, no
+  # kubectl, no production credential, no account grant and no model call.
+  desktop-launch-diagnostic:
+    name: desktop-launch-diagnostic (NOT release acceptance)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.operation == 'desktop-launch-diagnostic' }}
+    runs-on: macos-15
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: read
+    env:
+      # Read-only token for the retained GH API metadata/download. Never echoed.
+      GH_TOKEN: ${{ github.token }}
+      DIAGNOSTIC_CANDIDATE: '0.4.31-rc.410'
+      DIAGNOSTIC_ARTIFACT_ID: '13912079864'
+      DIAGNOSTIC_ARTIFACT_SHA256: '92710334875497ba29bf1995ba75af6b0eae23dee0e198f9b493e5d852fc3ca6'
+      DIAGNOSTIC_ARTIFACT_NAME: 'qlever-local-runtime-darwin-arm64-021c809886629624934826f4aacf87ff59326932'
+      ORIGINAL_SOURCE_SHA: '021c809886629624934826f4aacf87ff59326932'
+      ORIGINAL_APP_SHA: 'sha256:b1adca8a6ddb16b2c80e3685cee7da76b7fedd46476798ec043c7943b2deb69d'
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT: ${{ github.workspace }}/.test-data/qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Record the immutable diagnostic provenance
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          {
+            printf 'DIAGNOSTIC_NOT_QUALIFICATION\n'
+            printf 'diagnosticSourceSha=%s\n' "$GITHUB_SHA"
+            printf 'originalsource=%s\n' "$ORIGINAL_SOURCE_SHA"
+            printf 'originalapp=%s\n' "$ORIGINAL_APP_SHA"
+            printf 'candidate=%s\n' "$DIAGNOSTIC_CANDIDATE"
+            printf 'qleverArtifactId=%s\n' "$DIAGNOSTIC_ARTIFACT_ID"
+            printf 'qleverArtifactSha256=%s\n' "$DIAGNOSTIC_ARTIFACT_SHA256"
+          } > "${RUNNER_TEMP}/diagnostic-not-qualification.txt"
+      - name: Verify the pinned QLever artifact identity from retained metadata
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${DIAGNOSTIC_ARTIFACT_ID}" > "${RUNNER_TEMP}/qlever-artifact.json"
+          python3 scripts/diagnostics/verify-qlever-artifact.py "${RUNNER_TEMP}/qlever-artifact.json"
+      - name: Download, hash-verify and safely extract the QLever artifact
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${DIAGNOSTIC_ARTIFACT_ID}/zip" > "${RUNNER_TEMP}/qlever-artifact.zip"
+          python3 scripts/diagnostics/extract-qlever-artifact.py \
+            "${RUNNER_TEMP}/qlever-artifact.zip" \
+            .test-data/qlever-runtime \
+            "${DIAGNOSTIC_ARTIFACT_SHA256}" \
+            "${RUNNER_TEMP}/qlever-artifact.json"
+          test -f .test-data/qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
+      - run: bun install --frozen-lockfile
+      # SAME order as candidate.yml: workspace packages first, then the existing
+      # candidate version helper (never a hand-rolled version writer), then the
+      # cold root compile/components that the native producer hard-requires.
+      - name: Build workspace packages required by the desktop contracts
+        run: bun run build:packages
+      # Produce the API capability EXACTLY ONCE, on CLEAN source, BEFORE the
+      # diagnostic version stamp. Same canonical pipeline as the release path;
+      # stage-runtime consumes the verified tree rather than rebuilding dirty
+      # source. No second pipeline, no extra job.
+      - name: Produce the API capability from clean source (before any version stamp)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Publish the canonical owned path so a failure can retain the producer's
+          # own receipt/evidence without guessing the directory later.
+          XPOD_API_CAPABILITY_ROOT="$PWD/.test-data/api-capability-$(git rev-parse HEAD)"
+          echo "XPOD_API_CAPABILITY_ROOT=$XPOD_API_CAPABILITY_ROOT" >> "$GITHUB_ENV"
+          bun -e 'import { prepareApiCapability } from "./desktop/scripts/api-capability-producer.ts"; prepareApiCapability({ repoRoot: process.cwd() });'
+          test -d "$XPOD_API_CAPABILITY_ROOT"
+
+      # Restore root declarations after filtered API production, before stamping
+      # or compiling the root package. The finalized API receipt/archive is retained.
+      - name: Restore the normal full-frozen root dependency tree
+        run: bun scripts/restore-root-dependencies.ts "$PWD"
+      # Bun skips Electron's postinstall during the canonical root install, and the
+      # restore above replaces node_modules, so the vendor binary is initialized
+      # exactly once AFTER the final tree exists.
+      - name: Bootstrap the Electron vendor binary
+        run: node node_modules/electron/install.js
+
+
+      # Failure evidence only: the producer already writes its own receipt and
+      # evidence/ before exiting, so retain those narrow members (never a
+      # workspace/source/env dump). Diagnostic artifact, not qualification.
+      - name: Upload failed API preparation diagnostics separately
+        if: failure() && env.XPOD_API_CAPABILITY_ROOT != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-capability-diagnostics-ci-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.XPOD_API_CAPABILITY_ROOT }}/producer.receipt.json
+            ${{ env.XPOD_API_CAPABILITY_ROOT }}/evidence/
+            ${{ env.XPOD_API_CAPABILITY_ROOT }}/originals/prepare-inputs.receipt.safe.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Apply and verify the candidate version with the existing helper
+        run: |
+          set -euo pipefail
+          # Reuse the existing version writer with the retained RC410 version.
+          # This is a diagnostic checkout, so do not derive staging provenance
+          # or a new version from this diagnostic workflow's run number.
+          node -e 'require("./scripts/release-candidate.cjs").applyRootVersion(process.cwd(), process.env.DIAGNOSTIC_CANDIDATE)'
+          node -e 'if (require("./desktop/package.json").version !== process.env.DIAGNOSTIC_CANDIDATE) process.exit(1)'
+      - name: Compile root package outputs consumed by the packed tarball
+        run: |
+          set -euo pipefail
+          bun run build:ts
+          bun run build:components
+          test -s dist/runtime/index.js
+          test -s dist/components/components.jsonld
+      - name: Build desktop with the accepted native runtime
+        working-directory: desktop
+        run: |
+          bun x --no-install tsc --noEmit -p tsconfig.scripts.json
+          bun run dist
+      - name: Run the isolated launch diagnostic (launch and close only)
+        run: |
+          set -euo pipefail
+          new_zip="$(find "$PWD/desktop/release" -maxdepth 1 -type f -name '*-mac.zip' -print -quit)"
+          test -n "$new_zip"
+          out="${RUNNER_TEMP}/desktop-launch-diagnostic"
+          mkdir -p "$out"
+          set +e
+          bun scripts/diagnostics/desktop-launch-diagnostic.ts \
+            --archive "$new_zip" \
+            --version "$DIAGNOSTIC_CANDIDATE" \
+            --source-sha "$GITHUB_SHA" \
+            --issuer "http://127.0.0.1:9/" \
+            --output "$out"
+          status=$?
+          set -e
+          test -s "$out/diagnostic-safe.json"
+          exit "$status"
+      - name: Retain only the build archives and the safe enum record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-launch-diagnostic-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/desktop-launch-diagnostic/diagnostic-safe.json
+            ${{ runner.temp }}/diagnostic-not-qualification.txt
+            ${{ github.workspace }}/desktop/release/*-mac.zip
+            ${{ github.workspace }}/desktop/release/*-arm64.dmg

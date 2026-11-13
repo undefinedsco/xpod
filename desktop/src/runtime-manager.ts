@@ -37,11 +37,63 @@ export interface RuntimeManagerOptions {
   autoRestart?: boolean
   restartDelayMs?: number
   resolveEnvironment?: () => NodeJS.ProcessEnv
+  /** Authoritative packaged resources root; defaults to process.resourcesPath. */
+  resourcesPath?: string
+  /** AUTHORITATIVE OWNED mutable data root (the desktop userData directory). */
+  ownedDataRoot?: string
+}
+
+/**
+ * The packaged module context handed to the CLI child.
+ *
+ * A packaged runtime without an owned root or a bundle seed must fail BEFORE any
+ * child is spawned: returning an empty environment instead would make the CLI fall
+ * back to `$HOME/.xpod/modules` or to a registry download.
+ */
+export function packagedModuleEnvironment(input: {
+  packaged: boolean; ownedDataRoot?: string; resourcesPath?: string;
+}): Record<string, string> {
+  if (!input.packaged) return {};
+  const owned = input.ownedDataRoot;
+  if (!owned || !path.isAbsolute(owned)) throw new Error('Packaged runtime requires an absolute userData directory');
+  if (!input.resourcesPath || !path.isAbsolute(input.resourcesPath)) {
+    throw new Error('Packaged runtime requires the bundle resources directory');
+  }
+  return {
+    XPOD_MODULES_ROOT: path.join(owned, 'modules'),
+    XPOD_MODULES_SEED: path.join(input.resourcesPath, 'runtime', 'modules'),
+    XPOD_MODULES_OFFLINE: '1',
+  };
 }
 
 export class RuntimeManager {
   private readonly fetchImpl: typeof fetch
   private readonly resolveLaunch: () => RuntimeLaunchCommand | undefined
+  /** The packaged resources root, so module staging uses the bundle's own tree. */
+  private readonly resourcesPath: string
+  /**
+   * The OWNED mutable root (the desktop userData directory).
+   *
+   * `main.ts` passes the real `app.getPath('userData')`. The environment variable is
+   * only the SAME value the acceptance entry point already sets through
+   * `app.setPath`, so it is a fallback for that one path, never a second authority
+   * and never a user-facing setting.
+   */
+  private ownedDataRoot(): string | undefined {
+    const value = this.options.ownedDataRoot ?? process.env.XPOD_DESKTOP_USER_DATA_DIR;
+    return value && path.isAbsolute(value) ? value : undefined;
+  }
+
+  /** The packaged module context, or {} for an unpackaged developer launch. */
+  private packagedModuleEnvironment(): Record<string, string> {
+    if (!this.options.packaged) return {};
+    const ownedDataRoot = this.ownedDataRoot();
+    return packagedModuleEnvironment({
+      packaged: true,
+      ...(ownedDataRoot === undefined ? {} : { ownedDataRoot }),
+      resourcesPath: this.resourcesPath,
+    });
+  }
   private readonly spawnImpl: NonNullable<RuntimeManagerOptions['spawnImpl']>
   private readonly pollIntervalMs: number
   private readonly startupTimeoutMs: number
@@ -54,11 +106,12 @@ export class RuntimeManager {
 
   public constructor(private readonly options: RuntimeManagerOptions) {
     this.autoRestart = options.autoRestart ?? false
+    this.resourcesPath = options.resourcesPath ?? process.resourcesPath ?? ''
     this.fetchImpl = options.fetchImpl ?? fetch
     this.resolveLaunch = options.resolveLaunch ?? (() => resolveRuntimeLaunchCommand({
       env: process.env,
       packaged: options.packaged,
-      resourcesPath: process.resourcesPath,
+      resourcesPath: this.resourcesPath,
       execPath: process.execPath,
       moduleDir: path.dirname(fileURLToPath(import.meta.url)),
     }))
@@ -161,6 +214,9 @@ export class RuntimeManager {
 
   private async launchAndWait(launch: RuntimeLaunchCommand): Promise<RuntimeSnapshot> {
     try {
+      // Resolved before anything is spawned so a packaged context problem is fatal
+      // rather than a silently degraded (HOME or online) child.
+      const packagedEnvironment = this.packagedModuleEnvironment()
       const targetUrl = new URL(this.options.targetOrigin)
       const runtimePort = targetUrl.port || (targetUrl.protocol === 'https:' ? '443' : '80')
       const runtimeBaseUrl = `${targetUrl.origin}/`
@@ -170,6 +226,12 @@ export class RuntimeManager {
           ...this.options.resolveEnvironment?.(),
           CSS_BASE_URL: runtimeBaseUrl,
           XPOD_PORT: runtimePort,
+          // A packaged desktop seeds capabilities from the READ-ONLY bundle into
+          // an OWNED mutable store under its userData directory. The installed
+          // bundle stays immutable (its modules are only ever read), lifecycle
+          // locks live in the owned store, and nothing touches the real HOME.
+          // Throws (before spawn) when the packaged context is incomplete.
+          ...packagedEnvironment,
       }
       const child = this.spawnImpl(launch.command, desktopRuntimeArguments(launch.args, this.options.targetOrigin, runtimeEnvironment), {
         env: runtimeEnvironment,

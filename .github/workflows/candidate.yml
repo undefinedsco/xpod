@@ -407,6 +407,13 @@ jobs:
     permissions:
       contents: read
       packages: read
+    outputs:
+      # The ACTUAL seed suffix/attempt the producer materialized Alice/Bob with.
+      # A downstream rerun (attempt 3) must keep consuming THIS value, never its
+      # own GITHUB_RUN_ATTEMPT, or it authenticates accounts that were never
+      # created. Non-secret: run id + attempt only.
+      seed_suffix: ${{ steps.seed_identity.outputs.suffix }}
+      producer_attempt: ${{ steps.seed_identity.outputs.attempt }}
     env:
       KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
       APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
@@ -478,6 +485,20 @@ jobs:
           chmod 600 ~/.kube/config
           node scripts/verify-rc-cluster-target.cjs
           node scripts/check-rc-deployment-boundary.cjs
+
+      # Bind the ONE non-secret seed suffix this producer actually materializes.
+      # Both the materializer below and every downstream seed consumer read this
+      # output, so a rerun can never re-derive a different (nonexistent) account
+      # set from its own attempt number.
+      - name: Bind the producer seed identity
+        id: seed_identity
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          suffix="rc-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          [[ "$suffix" =~ ^rc-[0-9]+-[0-9]+$ ]]
+          echo "attempt=$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+          echo "suffix=$suffix" >> "$GITHUB_OUTPUT"
 
       - name: Validate RC runtime secret isolation
         run: |
@@ -574,10 +595,12 @@ jobs:
           fs.writeFileSync(process.argv[2], `${[ ...entries ].map(([ key, value ]) => `${key}=${value}`).join('\n')}\n`);
           NODE
           bun scripts/verify-rc-r2-access.ts --env-file "$env_file"
+          # The SAME suffix emitted as the job output, so downstream consumers
+          # provably authenticate the accounts this producer created.
           bun scripts/materialize-rc-seed-config.ts \
             --input "$seed_file" \
             --output "$seed_file" \
-            --suffix "rc-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            --suffix "${{ steps.seed_identity.outputs.suffix }}"
           echo '{"secret-isolation":"passed"}' > "${RUNNER_TEMP}/secret-isolation-check.json"
 
       - name: Compile current source before comparing installed runner bytes
@@ -1421,6 +1444,9 @@ jobs:
     runs-on: macos-15
     environment: rc
     permissions:
+      # The QLever retainer reads artifact metadata and the artifact ZIP through
+      # the GitHub artifact API; contents-only yields HTTP 403.
+      actions: read
       contents: read
     env:
       REF_NAME: ${{ github.ref_name }}
@@ -1435,15 +1461,77 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: actions/download-artifact@v4
-        with:
-          name: ${{ needs.build_qlever_macos_runtime.outputs.artifact_name }}
-          path: ${{ github.workspace }}/.test-data/qlever-runtime
+      # Retain the ORIGINAL QLever artifact ZIP and its true source identity. The
+      # verified API metadata (artifact id + digest + source) is the only identity
+      # authority; the untouched original bytes are preserved for the CSS
+      # capability producer. Reuses the SAME diagnostic extractor, no recompile.
+      - name: Retain the original QLever artifact and its verified identity
+        env:
+          QLEVER_ARTIFACT_ID: ${{ needs.build_qlever_macos_runtime.outputs.artifact_id }}
+          QLEVER_ARTIFACT_DIGEST: ${{ needs.build_qlever_macos_runtime.outputs.artifact_digest }}
+          QLEVER_SOURCE_SHA: ${{ needs.build_qlever_macos_runtime.outputs.source_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/diagnostics/retain-qlever-materials.py
       - run: bun install --frozen-lockfile
-      # Bun skips Electron's postinstall; bootstrap its binary for desktop tests
-      # and packaging on clean runners.
+      # desktop/test imports packages/xpod-cli SOURCE, and that source resolves
+      # @undefineds.co/xpod-client through its package `exports` -> dist/*. A cold
+      # runner has no such dist yet, so build the workspace packages BEFORE the
+      # desktop contract suites. desktop's own `test` script only builds desktop.
+      - name: Build workspace packages required by the desktop contracts
+        run: bun run build:packages
+      - name: Verify shared applet tarballs in a clean Bun consumer
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          node scripts/workspace-package-consumer.cjs --local \
+            --source-sha "$SOURCE_SHA" \
+            --archive-dir "${RUNNER_TEMP}/package-consumer-archive/workspace" \
+            --evidence "${RUNNER_TEMP}/workspace-consumer-evidence.json"
+      # Produce the API capability EXACTLY ONCE, on CLEAN source, BEFORE any
+      # version stamp. The canonical pipeline runs all native originals, notices,
+      # stage and pack; stage-runtime later CONSUMES the verified tree at
+      # .test-data/api-capability-<actual source SHA> instead of rebuilding dirty
+      # source. GH_TOKEN is read-only and grants the official native input; it is
+      # never printed. This is not a second pipeline and adds no job or lane.
+      - name: Produce the API capability from clean source (before any version stamp)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Publish the canonical owned path so a failure can retain the producer's
+          # own receipt/evidence without guessing the directory later.
+          XPOD_API_CAPABILITY_ROOT="$PWD/.test-data/api-capability-$(git rev-parse HEAD)"
+          echo "XPOD_API_CAPABILITY_ROOT=$XPOD_API_CAPABILITY_ROOT" >> "$GITHUB_ENV"
+          bun -e 'import { prepareApiCapability } from "./desktop/scripts/api-capability-producer.ts"; prepareApiCapability({ repoRoot: process.cwd() });'
+          test -d "$XPOD_API_CAPABILITY_ROOT"
+
+      # Restore root declarations after filtered API production, before stamping
+      # or compiling the root package. The finalized API receipt/archive is retained.
+      - name: Restore the normal full-frozen root dependency tree
+        run: bun scripts/restore-root-dependencies.ts "$PWD"
+      # Bun skips Electron's postinstall during the canonical root install, and the
+      # restore above replaces node_modules, so the vendor binary is initialized
+      # exactly once AFTER the final tree exists.
       - name: Bootstrap the Electron vendor binary
         run: node node_modules/electron/install.js
+
+
+      # Failure evidence only: the producer already writes its own receipt and
+      # evidence/ before exiting, so retain those narrow members (never a
+      # workspace/source/env dump). Diagnostic artifact, not qualification.
+      - name: Upload failed API preparation diagnostics separately
+        if: failure() && env.XPOD_API_CAPABILITY_ROOT != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-capability-diagnostics-candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.XPOD_API_CAPABILITY_ROOT }}/producer.receipt.json
+            ${{ env.XPOD_API_CAPABILITY_ROOT }}/evidence/
+            ${{ env.XPOD_API_CAPABILITY_ROOT }}/originals/prepare-inputs.receipt.safe.json
+          if-no-files-found: warn
+          retention-days: 30
+
       - name: Apply and verify the candidate version
         run: |
           node scripts/release-candidate.cjs \
@@ -1453,12 +1541,27 @@ jobs:
             --sha "${{ github.sha }}" \
             --apply-root-version
           node -e 'if (require("./desktop/package.json").version !== process.env.CANDIDATE_VERSION) process.exit(1)'
-      # desktop/test/** is excluded from the root vitest and Bun test runs, so without this the
-      # brand provenance, Dock and updater suites never execute in CI. The desktop `test` script
-      # builds first (`bun run build`), so this also type checks the desktop sources.
+      # desktop/test/** is excluded from the root vitest and Bun test runs, so
+      # without this the brand provenance, Dock and updater suites never execute
+      # in CI. The desktop `test` script builds first (`bun run build`), so this
+      # also type checks the desktop sources.
       - name: Run the desktop unit test suite
         working-directory: desktop
-        run: bun run test
+        run: |
+          bun x --no-install tsc --noEmit -p tsconfig.scripts.json
+          bun run test
+      # M1 (cold runner): the desktop native producer (scripts/build-bun-single.js)
+      # hard-requires dist/index.js + dist/components/components.jsonld, which a
+      # fresh checkout does not have. Compile the root outputs BEFORE the desktop
+      # build. This is the SAME step that previously ran after it - moved, not
+      # duplicated; the packed tarball still consumes the same outputs.
+      - name: Compile root package outputs consumed by the packed tarball
+        run: |
+          set -euo pipefail
+          bun run build:ts
+          bun run build:components
+          test -s dist/runtime/index.js
+          test -s dist/components/components.jsonld
       - name: Build desktop with the accepted native runtime
         working-directory: desktop
         env:
@@ -1486,15 +1589,6 @@ jobs:
           set -euo pipefail
           node scripts/run-npm-pack.cjs .test-data/npm-preflight .test-data/npm-preflight-cache
           node scripts/check-pack-json.cjs .test-data/npm-preflight/pack.json
-      - name: Verify shared applet tarballs in a clean Bun consumer
-        env:
-          SOURCE_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          node scripts/workspace-package-consumer.cjs --local \
-            --source-sha "$SOURCE_SHA" \
-            --archive-dir "${RUNNER_TEMP}/package-consumer-archive/workspace" \
-            --evidence "${RUNNER_TEMP}/workspace-consumer-evidence.json"
       - name: Verify packed Node and Bun consumers before publication
         run: |
           set -euo pipefail
@@ -1758,7 +1852,16 @@ jobs:
           set -euo pipefail
           test -n "$XPOD_RC_SEED_CONFIG"
           umask 077
-          printf '%s\n' "$XPOD_RC_SEED_CONFIG" > "${RUNNER_TEMP}/mode-matrix-seeds.json"
+          # The raw secret holds UNMATERIALIZED accounts. The RC only ever created
+          # Alice/Bob with the producer's recorded suffix, so this consumer must
+          # derive the same accounts from that output -- never from its own
+          # GITHUB_RUN_ATTEMPT, which would authenticate nonexistent users.
+          printf '%s\n' "$XPOD_RC_SEED_CONFIG" > "${RUNNER_TEMP}/mode-matrix-raw-seeds.json"
+          chmod 600 "${RUNNER_TEMP}/mode-matrix-raw-seeds.json"
+          bun scripts/materialize-rc-seed-config.ts \
+            --input "${RUNNER_TEMP}/mode-matrix-raw-seeds.json" \
+            --output "${RUNNER_TEMP}/mode-matrix-seeds.json" \
+            --suffix "${{ needs.deploy_and_accept.outputs.seed_suffix }}"
           bun scripts/prepare-rc-platform-provider.ts create \
             --base-url https://id-rc.undefineds.cn \
             --seed-config "${RUNNER_TEMP}/mode-matrix-seeds.json" \
@@ -1777,12 +1880,14 @@ jobs:
         if: ${{ always() && steps.platform_provider.outcome != '' && steps.platform_provider.outcome != 'skipped' }}
         run: |
           set -euo pipefail
+          status=0
           bun scripts/prepare-rc-platform-provider.ts cleanup \
             --base-url https://id-rc.undefineds.cn \
             --seed-config "${RUNNER_TEMP}/mode-matrix-seeds.json" \
             --key-file "${RUNNER_TEMP}/mode-matrix-provider" \
-            --receipt "${RUNNER_TEMP}/mode-matrix-provider-receipt.json"
-          rm -f "${RUNNER_TEMP}/mode-matrix-seeds.json"
+            --receipt "${RUNNER_TEMP}/mode-matrix-provider-receipt.json" || status=$?
+          rm -f "${RUNNER_TEMP}/mode-matrix-seeds.json" "${RUNNER_TEMP}/mode-matrix-raw-seeds.json"
+          exit "$status"
       - name: Preserve safe per-mode originals and matrix receipt
         id: mode_artifact
         if: always()

@@ -2,7 +2,7 @@
 /** The mandatory desktop gate requires both real self-update and permission operations. */
 const fs = require('node:fs');
 const { verifyEvidence: verifySelfUpdate } = require('./desktop-self-update-acceptance.cjs');
-const { verifyEvidence: verifyPermissions, describeArchive, bundledRuntimeHash } = require('./desktop-permission-acceptance.cjs');
+const { verifyEvidence: verifyPermissions, describeArchive, readArchiveRuntime } = require('./desktop-permission-acceptance.cjs');
 
 function verifyDesktopAcceptance(records, expected) {
   const update = verifySelfUpdate(records?.selfUpdate, { sourceSha: expected.sourceSha, newVersion: expected.version,
@@ -26,12 +26,19 @@ async function main(argv) {
   }
   for (const key of allowed) if (!args[key]) throw new Error('missing desktop gate argument');
   const { AI_CONNECTIONS_SERVICE_RESOURCE_IDS } = require('@undefineds.co/ai-connections/service-access-resources');
+  const archive = await describeArchive(args['--expected-archive']);
+  // Same two independent authorities the permission verifier uses: the declared
+  // desktop candidate and the archive's own packaged CLI version.
+  const runtime = await readArchiveRuntime(args['--expected-archive']);
+  if (runtime.desktopVersion !== undefined && runtime.desktopVersion !== args['--version']) {
+    throw new Error('desktop archive version differs from the declared candidate');
+  }
   const result = verifyDesktopAcceptance({
     selfUpdate: JSON.parse(fs.readFileSync(args['--self-update-evidence'], 'utf8')),
     permissions: JSON.parse(fs.readFileSync(args['--permission-evidence'], 'utf8')),
   }, { sourceSha: args['--source-sha'], version: args['--version'],
-    archive: await describeArchive(args['--expected-archive']),
-    runtimeBinarySha256: await bundledRuntimeHash(args['--expected-archive']),
+    cliVersion: runtime.cliVersion, archive,
+    runtimeBinarySha256: runtime.launcherSha256,
     resourceIds: AI_CONNECTIONS_SERVICE_RESOURCE_IDS });
   if (result.valid) fs.writeFileSync(args['--checks-out'], JSON.stringify({ desktop: 'passed' }) + '\n');
   console.log(JSON.stringify(result));

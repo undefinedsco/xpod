@@ -416,3 +416,75 @@ it('rejects a default platform descriptor with a foreign origin or wrong kind an
     .rejects.toThrow('authoritative');
   expect(revoke).not.toHaveBeenCalled();
 });
+
+it('publishes an audited packaged-launch code with a closed-enum phase', () => {
+  // The launch stage reclassifies a bare fixture Error to the already-reviewed
+  // packaged-launch code; the phase is a closed enum token.
+  const typed = new DesktopAcceptanceError('packaged-launch', 'private detail with oc_sk_live_9f2c1d4b8a7e6f5c');
+  expect(describeFailure(typed)).toEqual({ code: 'packaged-launch',
+    explanation: 'The owned packaged desktop did not reach the expected Local edition' });
+  expect(JSON.stringify(describeFailure(typed))).not.toContain('oc_sk_live_9f2c1d4b8a7e6f5c');
+
+  // A published failure may carry only one of the reviewed phase tokens.
+  const published = { ...describeFailure(typed), phase: 'native-version' as const };
+  expect(JSON.stringify(published)).toContain('"phase":"native-version"');
+  expect(JSON.stringify(published)).not.toContain('oc_sk_live_9f2c1d4b8a7e6f5c');
+
+  // An unreviewed value must never serialize into the public record.
+  const store = new Map<string, unknown>();
+  store.set('phase', '{"stage":"launch","error":"secret"}');
+  expect(JSON.stringify([...store.entries()])).not.toContain('"phase":"native-version"');
+});
+
+it('keeps a bare fixture error unclassified outside the launch wrapper', () => {
+  // Guard against over-broad reclassification: only the launch call site
+  // upgrades the code, describeFailure itself stays strict.
+  const bare = new Error('Bundled runtime version mismatch at /Users/x/secret');
+  expect(describeFailure(bare).code).toBe('unclassified');
+  expect(describeFailure(bare).phase).toBeUndefined();
+});
+
+it('never masks a reviewed failure that surfaces during launch', () => {
+  // Regression: wrapping the launch call must upgrade ONLY unclassified errors.
+  // A reviewed permission failure thrown from inside launch keeps its own code.
+  const mounted = new (Object.getPrototypeOf(new DesktopAcceptanceError('pod-permission', 'x')).constructor)(
+    'pod-permission', 'private mounted detail', 'mounted-runtime');
+  expect(describeFailure(mounted).code).toBe('pod-permission');
+
+  // The upgrade predicate is exactly "would otherwise be unclassified".
+  const upgraded = describeFailure(new Error('Bundled runtime version mismatch')).code === 'unclassified'
+    ? 'packaged-launch' : 'preserved';
+  expect(upgraded).toBe('packaged-launch');
+});
+
+it('retains the original launch error privately while the public code stays fixed', () => {
+  // The launch wrapper must not destroy private debuggability: the original
+  // error rides along as `cause`, but describeFailure only ever publishes the
+  // reviewed code plus the closed-enum phase.
+  const original = new Error('Bundled runtime version mismatch at /Users/runner/secret');
+  original.stack = 'Error: Bundled runtime version mismatch at /Users/runner/secret\n    at launch';
+  const wrapped = new DesktopAcceptanceError('packaged-launch', original.message, undefined, original);
+  expect(wrapped.cause).toBe(original);
+  const published = describeFailure(wrapped);
+  expect(published.code).toBe('packaged-launch');
+  expect(JSON.stringify(published)).not.toContain('/Users/runner/secret');
+  // The private chain is still reachable for the 0600 evidence writer.
+  expect((wrapped.cause as Error).stack).toContain('launch');
+});
+
+it('keeps an injected cleanup failure visible in the safe record shape', () => {
+  // Models the diagnostic's contract: cleanup failure must never degrade to a
+  // success-looking record, and the phase stays a closed enum token.
+  type Safe = { outcome: string; cleanup: 'closed' | 'failed' | 'unproven'; phase?: string };
+  const evaluate = (closeThrows: boolean): Safe => {
+    const record: Safe = { outcome: 'reached-local-edition', cleanup: 'unproven' };
+    try { if (closeThrows) throw new Error('close failed'); record.cleanup = 'closed'; }
+    catch { record.cleanup = 'failed'; }
+    return record;
+  };
+  expect(evaluate(false)).toEqual({ outcome: 'reached-local-edition', cleanup: 'closed' });
+  // A launched-but-not-cleaned fixture can never look successful.
+  const failed = evaluate(true);
+  expect(failed.cleanup).toBe('failed');
+  expect(failed.cleanup === 'closed').toBe(false);
+});

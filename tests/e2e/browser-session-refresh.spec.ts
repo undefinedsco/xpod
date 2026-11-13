@@ -5,11 +5,12 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import { _electron as electron, expect, test, type ElectronApplication, type Page, type Browser } from '@playwright/test';
 import { normalizeAccountPath, chooseConsentBinding, type BrowserSolidCredentials } from '../helpers/browserSolidOidc';
-import { externalRefreshFromEnvironment, externalRefreshPrivateRoot, verifyExternalRefreshStorage } from '../helpers/browserExternalRefreshFixture';
+import { externalRefreshFromEnvironment, externalRefreshPrivateRoot, readManagedLocalProvisionCode, verifyExternalRefreshStorage } from '../helpers/browserExternalRefreshFixture';
 import { recordOwnedHost, closeOwnedHost, cleanupOwnedHostGroup, hostGroupPassed, type OwnedHostGroup } from '../helpers/ownedElectronHost';
 import { startBrowserExternalRp } from '../helpers/browserExternalRp';
-import { completeOidcLogin } from '../helpers/browserSolidOidc';
+import { completeOidcLogin, OidcApprovalError } from '../helpers/browserSolidOidc';
 import { fetchBrowserXpodPod, readBrowserXpodRuntime } from '../helpers/browserXpodRuntime';
+import { assertRestartObserver, inspectRestartObserver, recordExternalFailure, privateReadOutcomeForStatus, type ExternalPhase, type PrivateReadOutcome, type RestartObserverInput } from '../helpers/browserExternalPhase';
 
 const external = externalRefreshFromEnvironment();
 
@@ -108,6 +109,11 @@ async function completeDesktopLogin(app: ElectronApplication, account: BrowserSo
 
 async function verifyExternalBrowser(browser: Browser, stateRoot: string) {
   if (!external) throw new Error('External browser input missing');
+  // Managed Local is the only deployment whose OIDC issuer is not its storage
+  // deployment, so its Cloud authorization request must carry the Cloud-issued
+  // provision scope; the Cloud IdP then scopes Account ownership to this Local
+  // Pod. Cloud/standalone return undefined and issue no extra request.
+  const provisionCode = await readManagedLocalProvisionCode(external.input);
   const rp = await startBrowserExternalRp(external.input.issuer);
   let context: Awaited<ReturnType<Browser['newContext']>> | undefined;
   let passwordPosts = 0;
@@ -117,7 +123,7 @@ async function verifyExternalBrowser(browser: Browser, stateRoot: string) {
     if (request.method() === 'POST' && normalizeAccountPath(new URL(request.url()).pathname) === '/.account/login/password/') passwordPosts++;
   });
   const login = async (rememberAccount: boolean) => {
-    const transaction = rp.authorization();
+    const transaction = rp.authorization(provisionCode);
     const page = await context!.newPage();
     await completeOidcLogin(page, external.ready.account, {
       baseUrl: new URL(rp.callbackUrl).origin, startUrl: transaction.url, rememberAccount,
@@ -164,19 +170,42 @@ for (const mode of profiles) {
     let app: ElectronApplication | undefined;
     let page: Page | undefined;
     let primaryFailure: unknown;
+    // Bounded facts about the private read that failed, so a failure is readable
+    // without ever persisting a status line, URL, header, token or message.
+    let privateReadOutcome: PrivateReadOutcome = 'not-reached';
+    // Actual numeric status of the failed read: 0 means no response arrived.
+    let privateReadStatus = 0;
+    let failureAuthenticated = false;
+    let failureHostReady = false;
+    // Fixed-enum checkpoint so the EXTERNAL failure keeps its location without
+    // exporting page text, messages, URLs, tokens or identifiers.
+    let phase: ExternalPhase = 'preflight';
     let browserEvidence: Awaited<ReturnType<typeof verifyExternalBrowser>> | undefined;
     let persistedHostRestored = false;
+    // Network-issue time of the first refresh_token POST (renew-before-dispatch proof).
+    let refreshRequestAt: number | undefined;
+    let refreshRequestIndex: number | undefined;
     let hostClosed = false;
     const hostGroups: OwnedHostGroup[] = [];
     const observerPath = (phase: 'initial' | 'restart') => path.join(externalRefreshPrivateRoot(external!.input), `${phase}-observer.safe.json`);
-    const readObserver = (phase: 'initial' | 'restart') => {
-      const value = JSON.parse(readFileSync(observerPath(phase), 'utf8'));
-      expect(value.ready).toBe(true); expect(value.hostImported).toBe(true);
-      expect(value.failed).toBe(false); expect(value.opaquePosts).toBe(0);
-      return value as { hostPid: number; authorizationCodes: number; passwordPosts: number; refreshTokens: number };
+    // Capture ONE parsed snapshot before any assertion. Assertions still run and
+    // still fail the spec, but the caller keeps the ACTUAL record so a bad
+    // ready/imported/failed/opaque flag is reported as present with its real
+    // counters instead of vanishing into `undefined`. No second read (no TOCTOU).
+    const captureObserver = (phase: 'initial' | 'restart') => {
+      const value = JSON.parse(readFileSync(observerPath(phase), 'utf8')) as Record<string, unknown>;
+      return { value, path: observerPath(phase) };
     };
+    const assertObserverSnapshot = (snapshot: { value: Record<string, unknown> }) => {
+      expect(snapshot.value.ready).toBe(true); expect(snapshot.value.hostImported).toBe(true);
+      expect(snapshot.value.failed).toBe(false); expect(snapshot.value.opaquePosts).toBe(0);
+      return snapshot.value as { hostPid: number; authorizationCodes: number; passwordPosts: number; refreshTokens: number };
+    };
+    const readObserver = (phase: 'initial' | 'restart') => assertObserverSnapshot(captureObserver(phase));
     let initialObserver: ReturnType<typeof readObserver> | undefined;
-    let restartObserver: ReturnType<typeof readObserver> | undefined;
+    // Wide enough to carry the FULL parsed record (including the ready/imported/
+    // failed/opaque flags) so a bad flag is reported with real values, not lost.
+    let restartObserver: RestartObserverInput | undefined;
     const tokens: TokenEvidence[] = [];
     const pending = new Set<Promise<void>>();
     const requests: Array<{ at: number; path: string; method: string; authorizationScheme: string }> = [];
@@ -184,8 +213,10 @@ for (const mode of profiles) {
     const payload = 'Private Pod data survives real SDK renewal and reauthentication.';
     const evidence = { initialPrivateRead: false, anonymousDenied: false, pastInitialAccessExpiry: false, recoveredByLogin: false, finalPrivateRead: false, idleRequestCount: undefined as number | undefined, suspendedRefreshTimers: undefined as number | undefined, passwordPosts: undefined as number | undefined, firstExpiredRequest: undefined as { at: number; path: string; method: string; authorizationScheme: string } | undefined };
     try {
+      if (external) phase = 'storage-verify';
       const anonymousFetch = external ? await verifyExternalRefreshStorage(external.input) : fetch;
-      if (external) browserEvidence = await verifyExternalBrowser(browser, userData);
+      if (external) { phase = 'browser-verify'; browserEvidence = await verifyExternalBrowser(browser, userData); }
+      phase = 'electron-launch';
       app = await electron.launch({
         args: external ? [path.resolve('tests/helpers/desktopSessionObserver.cjs'), path.resolve('desktop/dist/main.js')] : [path.resolve('desktop/dist/main.js')],
         env: { ...process.env, XPOD_DESKTOP_ACCEPTANCE: '1',
@@ -196,7 +227,12 @@ for (const mode of profiles) {
       });
       if (external) hostGroups.push(recordOwnedHost(app));
       app.context().on('request', (request) => {
-        requests.push({ at: Date.now(), path: normalizeAccountPath(new URL(request.url()).pathname), method: request.method(), authorizationScheme: request.headers().authorization?.split(/\s+/u, 1)[0] ?? 'none' });
+        const at = Date.now();
+        if (request.method() === 'POST' && new URLSearchParams(request.postData() ?? '').get('grant_type') === 'refresh_token') {
+          refreshRequestAt ??= at;
+          refreshRequestIndex ??= requests.length;
+        }
+        requests.push({ at, path: normalizeAccountPath(new URL(request.url()).pathname), method: request.method(), authorizationScheme: request.headers().authorization?.split(/\s+/u, 1)[0] ?? 'none' });
       });
       if (mode === 'idle') {
         await app.context().addInitScript(() => {
@@ -225,6 +261,7 @@ for (const mode of profiles) {
         }).catch(() => undefined);
         pending.add(task); void task.finally(() => pending.delete(task));
       });
+      phase = 'login';
       page = await completeDesktopLogin(app, fixture.ready.account);
       await expect.poll(() => tokens.filter((entry) => entry.grant === 'authorization_code').length).toBe(1);
       if (external) {
@@ -234,6 +271,7 @@ for (const mode of profiles) {
         expect(runtime.issuer).toBe(external.input.issuer);
       }
       const initial = tokens.find((entry) => entry.grant === 'authorization_code')!;
+      phase = 'initial-private-read';
       expect(initial.expiresIn).toBe(fixture.ready.accessTokenTtl);
       expect(initial.refreshIssued).toBe(true);
       expect((await fetchBrowserXpodPod(page, resource, { method: 'PUT', headers: { 'content-type': 'text/plain' }, body: payload })).status).toBe(201);
@@ -241,6 +279,7 @@ for (const mode of profiles) {
       expect([200, 201, 205]).toContain((await fetchBrowserXpodPod(page, `${resource}.acl`, { method: 'PUT', headers: { 'content-type': 'text/turtle' }, body: acl })).status);
       expect(await fetchBrowserXpodPod(page, resource)).toEqual({ status: 200, body: payload });
       evidence.initialPrivateRead = true;
+      phase = 'anonymous-denied';
       const anonymous = await anonymousFetch(new URL(resource, fixture.ready.account.podUrl));
       expect([401, 403]).toContain(anonymous.status);
       await anonymous.arrayBuffer();
@@ -263,10 +302,12 @@ for (const mode of profiles) {
         expect(Date.now()).toBeGreaterThan(initial.receivedAt + initial.expiresIn! * 1000);
         evidence.pastInitialAccessExpiry = true;
       } else if (mode === 'renew') {
+        phase = 'renewal';
         await expect.poll(() => tokens.some((entry) => entry.grant === 'refresh_token' && entry.status === 200), { timeout: 45_000 }).toBe(true);
         // Wall-clock wait beyond the original access token's complete lifetime.
         await expect.poll(() => Date.now() > initial.receivedAt + initial.expiresIn! * 1000 + 1000, { timeout: 45_000 }).toBe(true);
         evidence.pastInitialAccessExpiry = true;
+        phase = 'post-renew-runtime';
         expect((await readBrowserXpodRuntime(page)).status).toBe('authenticated');
         expect(tokens.filter((entry) => entry.grant === 'authorization_code')).toHaveLength(1);
       } else {
@@ -278,15 +319,27 @@ for (const mode of profiles) {
         evidence.recoveredByLogin = true;
         await expect.poll(() => tokens.filter((entry) => entry.grant === 'authorization_code').length).toBe(2);
       }
+      phase = 'final-private-read';
       expect(await fetchBrowserXpodPod(page, resource)).toEqual({ status: 200, body: payload });
       evidence.finalPrivateRead = true;
       await Promise.allSettled([...pending]);
       evidence.passwordPosts = requests.filter(entry => entry.method === 'POST' && entry.path === '/.account/login/password/').length;
       expect(evidence.passwordPosts).toBe(initialPasswordPosts);
-      evidence.firstExpiredRequest = requests.find(entry => entry.at > initial.receivedAt + initial.expiresIn! * 1000 && ['DPoP', 'Bearer'].includes(entry.authorizationScheme));
+      // Keep token requests out of the protected-request ordering comparison.
+      const firstExpiredRequestIndex = requests.findIndex(entry => entry.at > initial.receivedAt + initial.expiresIn! * 1000
+        && ['DPoP', 'Bearer'].includes(entry.authorizationScheme) && !entry.path.endsWith('/token'));
+      evidence.firstExpiredRequest = requests[firstExpiredRequestIndex];
       if (mode === 'idle') {
         expect(evidence.firstExpiredRequest).toBeDefined();
-        expect(tokens.find(entry => entry.grant === 'refresh_token' && entry.status === 200)!.receivedAt).toBeGreaterThanOrEqual(evidence.firstExpiredRequest!.at);
+        // Renew-before-dispatch semantics. Inrupt's proactive timer fires at
+        // expiresIn-5s, i.e. BEFORE the token expires, so a renewal ISSUED after
+        // expiry can only be request-driven.
+        expect(refreshRequestAt).toBeDefined();
+        // (1) Request-driven, not proactive: strictly after the old token expired.
+        expect(refreshRequestAt!).toBeGreaterThan(initial.receivedAt + initial.expiresIn! * 1000);
+        // Event indices distinguish the order even within one millisecond.
+        expect(refreshRequestIndex).toBeDefined();
+        expect(refreshRequestIndex!).toBeLessThan(firstExpiredRequestIndex);
         expect(tokens.filter(entry => entry.grant === 'refresh_token' && entry.status === 200)).toHaveLength(1);
         expect(tokens.filter(entry => entry.grant === 'authorization_code')).toHaveLength(1);
         expect((await readBrowserXpodRuntime(page)).status).toBe('authenticated');
@@ -300,28 +353,108 @@ for (const mode of profiles) {
         expect(initialObserver.authorizationCodes).toBe(codesBeforeRestart);
         expect(initialObserver.passwordPosts).toBe(passwordBeforeRestart);
         app = undefined;
+        phase = 'restart-launch';
         app = await electron.launch({ args: [path.resolve('tests/helpers/desktopSessionObserver.cjs'), path.resolve('desktop/dist/main.js')],
           env: { ...process.env, XPOD_DESKTOP_ACCEPTANCE: '1', XPOD_DESKTOP_URL: new URL('/ai-connections', fixture.ready.baseUrl).href,
             XPOD_DESKTOP_USER_DATA_DIR: userData, XPOD_SESSION_OBSERVER_OUTPUT: observerPath('restart'),
             XPOD_SESSION_OBSERVER_ISSUER: external.input.issuer }, timeout: 30_000 });
         hostGroups.push(recordOwnedHost(app));
         page = await app.firstWindow();
-        await expect.poll(async () => (await readBrowserXpodRuntime(page!)).status, { timeout: 45_000 }).toBe('authenticated');
+        // A window can precede the React commit. Wait for the same Pod-ready UI
+        // as initial login before inspecting the restored session.
+        phase = 'restart-runtime';
+        await expect.poll(() => ready(page!), { timeout: 45_000 }).toBe(true);
         const restored = await readBrowserXpodRuntime(page);
+        expect(restored.status).toBe('authenticated');
+        // Stage BEFORE each binding compare so the exact failing field is named.
+        phase = 'restart-binding-webid';
         expect(restored.webId).toBe(external.input.binding.webId);
+        phase = 'restart-binding-pod';
         expect(restored.podUrl).toBe(external.input.binding.podUrl);
+        phase = 'restart-binding-issuer';
         expect(restored.issuer).toBe(external.input.issuer);
-        expect(await fetchBrowserXpodPod(page, resource)).toEqual({ status: 200, body: payload });
-        restartObserver = readObserver('restart');
-        expect(restartObserver.authorizationCodes).toBe(0);
-        expect(restartObserver.passwordPosts).toBe(0);
+        // Capture the ACTUAL restart snapshot before the private read, so a
+        // failure in that read cannot leave restartObserver undefined (present:0).
+        // The phase is the EXISTING observer-binding label, set BEFORE the capture,
+        // so an unreadable/missing observer file is reported as an observer-read
+        // failure rather than being mislabelled as the previous binding check.
+        // This changes only WHEN the file is read; every expected value below is
+        // unchanged and still asserted.
+        phase = 'observer-binding-read';
+        restartObserver = captureObserver('restart').value as RestartObserverInput;
+        failureAuthenticated = restored.status === 'authenticated';
+        failureHostReady = restartObserver.hostImported === true;
+        phase = 'restart-private-read';
+        try {
+          const privateRead = await fetchBrowserXpodPod(page, resource);
+          // Record the ACTUAL numeric status (bounded, never text) plus its class.
+          privateReadStatus = privateRead.status;
+          privateReadOutcome = privateReadOutcomeForStatus(privateRead.status);
+          expect(privateRead).toEqual({ status: 200, body: payload });
+        } catch (error) {
+          // A rejected fetch has no status; the closed enum records that fact
+          // without the raw message. Assertion failures still propagate.
+          if (privateReadOutcome === 'not-reached') privateReadOutcome = 'fetch-rejected';
+          throw error;
+        }
+        // Silent SSO restore: exactly one silent authorization code, never a
+        // password and never a second code. Every expectation below is unchanged;
+        // only the phase label is finer so a failure names the failing conjunct.
+        // Parse/read first (its own tag), then the per-conjunct observer check,
+        // then the two global-count comparisons.
+        // Read (and keep) the actual snapshot FIRST, so a record with bad flags is
+        // still reported as present with its real counters.
+        const restartSnapshot = { value: restartObserver as Record<string, unknown> };
+        // Name the failing conjunct BEFORE the read-level assertions run, otherwise
+        // a bad ready/imported/failed/opaque flag would be mislabelled as a code
+        // problem. No expectation value is relaxed: inspectRestartObserver covers
+        // the same conjuncts, and assertObserverSnapshot re-asserts them below.
+        const observerVerdict = inspectRestartObserver(restartObserver);
+        // import/failure/opaquePosts are read-level flags, never code problems.
+        if (observerVerdict.conjunct === 'passwordPosts') phase = 'observer-binding-restart-password';
+        else if (observerVerdict.conjunct === 'authorizationCodes') phase = 'observer-binding-restart-codes';
+        else phase = 'observer-binding-read';
+        // Authoritative assertions, unchanged in value:
+        assertObserverSnapshot(restartSnapshot);
+        assertRestartObserver(restartObserver);
+        phase = 'observer-binding-global-counts';
         expect(tokens.filter(entry => entry.grant === 'authorization_code')).toHaveLength(codesBeforeRestart);
         expect(requests.filter(entry => entry.method === 'POST' && entry.path === '/.account/login/password/')).toHaveLength(passwordBeforeRestart);
         persistedHostRestored = true;
       }
     } catch (error) {
       primaryFailure = error;
-      if (external) throw new Error('External session verification failed; private page diagnostics suppressed');
+      if (external) {
+        // The parent captures stdout privately and the outer exporter only copies
+        // allowlisted members, so the checkpoint must reach the SHARED output
+        // directory on disk. Diagnostics only: the original error is still thrown
+        // and the exit is unchanged. Any write problem is swallowed so it can
+        // never mask the real failure or its cleanup.
+        // Keep the first safe checkpoint while preserving the failure outcome.
+        throw new Error(recordExternalFailure({
+          outputDirectory: external.input.outputDirectory,
+          phase,
+          // Only claim the bounded login-approval timeout when the OIDC driver
+          // itself reports it; a generic Playwright poll timeout stays an
+          // assertion failure (the old regex conflated the two).
+          reason: primaryFailure instanceof OidcApprovalError
+            && primaryFailure.condition === 'login-timeout'
+            ? 'approval-timed-out' : 'assertion-failed',
+          // These two are GLOBAL browser-session totals (the spec's accumulators),
+          // deliberately unchanged. The restart observer's OWN counters are carried
+          // separately below so they can never be mistaken for these totals.
+          authorizationCodes: tokens.filter(entry => entry.grant === 'authorization_code').length,
+          passwordPosts: requests.filter(entry => entry.method === 'POST' && entry.path === '/.account/login/password/').length,
+          refreshGrants: tokens.filter(entry => entry.grant === 'refresh_token' && entry.status === 200).length,
+          refreshFailures: tokens.filter(entry => entry.grant === 'refresh_token' && entry.status !== 200).length,
+          requestCount: requests.length,
+          observer: restartObserver,
+          privateRead: privateReadOutcome,
+          privateReadStatus,
+          authenticated: failureAuthenticated,
+          hostReady: failureHostReady,
+        }));
+      }
       const windows = app?.windows().filter(candidate => !candidate.isClosed()) ?? [];
       await testInfo.attach('desktop-failure', { contentType: 'application/json', body: JSON.stringify({
         error: String(error), windows: await Promise.all(windows.map(async candidate => ({
@@ -346,8 +479,7 @@ for (const mode of profiles) {
               await closeOwnedHost(app, hostGroups[hostGroups.length - 1]);
               restartObserver = readObserver('restart');
               expect(restartObserver.hostPid).toBe(hostGroups[1].pid);
-              expect(restartObserver.authorizationCodes).toBe(0);
-              expect(restartObserver.passwordPosts).toBe(0);
+              assertRestartObserver(restartObserver);
               hostClosed = hostGroups.length === 2 && hostGroups.every(hostGroupPassed);
             } else {
               const child = app.process();
@@ -359,7 +491,22 @@ for (const mode of profiles) {
           }
         } catch (error) {
           if (!external) await testInfo.attach('desktop-cleanup-failure', { contentType: 'text/plain', body: String(error) });
-          if (!primaryFailure) throw error;
+          if (!primaryFailure) {
+            // A throw inside `finally` bypasses the main catch. Record a
+            // cleanup-final checkpoint (write-once) and keep the ORIGINAL error.
+            if (external) {
+              throw new Error(recordExternalFailure({
+                outputDirectory: external.input.outputDirectory,
+                phase: 'cleanup-final', reason: 'assertion-failed',
+                authorizationCodes: tokens.filter(entry => entry.grant === 'authorization_code').length,
+                passwordPosts: requests.filter(entry => entry.method === 'POST' && entry.path === '/.account/login/password/').length,
+                refreshGrants: tokens.filter(entry => entry.grant === 'refresh_token' && entry.status === 200).length,
+                refreshFailures: tokens.filter(entry => entry.grant === 'refresh_token' && entry.status !== 200).length,
+                requestCount: requests.length,
+              }));
+            }
+            throw error;
+          }
         } finally {
           for (const group of hostGroups) await cleanupOwnedHostGroup(group);
           hostClosed &&= hostGroups.length === 0 || hostGroups.every(hostGroupPassed);
