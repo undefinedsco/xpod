@@ -741,11 +741,18 @@ LINUX_RUNTIME_STAGES = frozenset(['runtime-extract', 'runtime-readelf', 'runtime
                                   'runtime-status', 'runtime-ldd', 'runtime-node-version'])
 
 
+# The pinned producer archive closes a `supervisor-units` stage (its receipt shows
+# `python3 tests/scripts/agentfs_native_ci_test.py -v` exiting 0), so the consumer
+# must recognise it as part of the same closed set. This is not a relaxation: the
+# strict equality check and every per-stage integrity check are unchanged.
+PRODUCER_SUPERVISOR_UNITS = 'supervisor-units'
+
+
 def verify_native_stage_inventory(stages, os_name, generated_notices):
     required = set(['bun-extract', 'toolchain', 'dependencies', 'workspace-packages', 'upstream',
                     'upstream-checkout', 'export', 'verify-source', 'rebuild', 'sdk-suite', 'cli-suite', 'package', 'verify-install'])
     if generated_notices:
-        required.add('toolchain-docs')
+        required.update(['toolchain-docs', PRODUCER_SUPERVISOR_UNITS])
     if os_name == 'linux':
         required.update(LINUX_RUNTIME_STAGES)
     if set(stages) != required or len(stages) != len(required):

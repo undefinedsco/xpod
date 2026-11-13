@@ -34,9 +34,23 @@ const CURRENT=sha(workflowBytes);
 const MACOS_14_HISTORY='854cc2a40d0e9bd3d41deb339fbc239693a9f7811cf035be1768a9b496cbb043';
 const OLDEST_REVIEWED='c6420bc5699a84a8adf98a19841cb09e3df155370622d1b7e982cd08064ca4bf';
 
-/** The only difference from the previously reviewed bytes is this one line. */
-function historicalMacos14Workflow():Buffer{
+/** The reviewed history differs by one runner line. The CURRENT file also carries
+ * a concurrency block that the historical bytes never had, so strip exactly that
+ * block first; the history assertion must still prove the real reviewed digest,
+ * which is why the strip is textual and the expected hash stays literal. */
+const CONCURRENCY_BLOCK = 'concurrency:\n'
+  + '  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}\n'
+  + "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n\n";
+function reviewedHistoryText():string{
   const text=workflowBytes.toString('utf8');
+  const stripped=text.replace(CONCURRENCY_BLOCK,'');
+  expect(stripped).not.toBe(text);
+  return stripped;
+}
+
+/** The only remaining difference from the previously reviewed bytes is this line. */
+function historicalMacos14Workflow():Buffer{
+  const text=reviewedHistoryText();
   const needle='          - target: darwin-arm64\n            runner: macos-15\n';
   expect(text.split(needle)).toHaveLength(2);
   return Buffer.from(text.replace(needle,'          - target: darwin-arm64\n            runner: macos-14\n'));

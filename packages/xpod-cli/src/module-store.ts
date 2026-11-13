@@ -304,19 +304,21 @@ export class ModuleStore {
       let failed = false;
       try {
         const from = path.join(source.from, 'package');
-        await mkdir(path.join(stage, 'package'), { recursive: true, mode: 0o700 });
-        const copied: { target: string; mode: number }[] = [];
+        const staged = path.join(stage, 'package');
+        await mkdir(staged, { recursive: true, mode: 0o700 });
+        // Each directory is created before it is recursed into, so a file's parent
+        // already exists; only the canonical relative name is retained.
+        const copied: { target: string; relative: string }[] = [];
         const copy = async (relative = ''): Promise<void> => {
           for (const entry of await readdir(path.join(from, relative), { withFileTypes: true })) {
             const name = relative ? `${relative}/${entry.name}` : entry.name;
-            const target = path.join(stage, 'package', name);
+            const target = path.join(staged, name);
             if (entry.isSymbolicLink()) throw error('module_link_rejected', 'Module artifacts cannot contain links.');
             if (entry.isDirectory()) { await mkdir(target, { recursive: true, mode: 0o700 }); await copy(name); }
             else if (entry.isFile()) {
-              await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
               // 0600 while writing; the verified mode is applied below.
               await writeFile(target, await readFile(path.join(from, name)), { mode: 0o600, flag: 'wx' });
-              copied.push({ target, mode: 0o600 });
+              copied.push({ target, relative: name });
             } else throw error('module_inventory_invalid', 'Module contains an unsupported member.');
           }
         };
@@ -334,8 +336,7 @@ export class ModuleStore {
           modes.set(file.path, file.mode);
         }
         for (const entry of copied) {
-          const relative = path.relative(path.join(stage, 'package'), entry.target).split(path.sep).join('/');
-          const mode = relative === 'package.json' ? 0o644 : modes.get(relative);
+          const mode = entry.relative === 'package.json' ? 0o644 : modes.get(entry.relative);
           if (mode === undefined) throw error('module_inventory_invalid', 'Module contains an unbound file.');
           await chmod(entry.target, mode);
         }

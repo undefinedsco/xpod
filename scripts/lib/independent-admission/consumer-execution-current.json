@@ -25,7 +25,7 @@
   },
   {
     "path": ".github/workflows/api-module-product.yml",
-    "sha256": "db6ca21afa33d572f24a92e96c88f425d1bf46a86d966a55be4c10de4d812263"
+    "sha256": "2db71cbf4f6f46a433c397866585374d91b76c89bf79f173b5aae181dc2087b6"
   },
   {
     "path": "Dockerfile",
@@ -233,7 +233,7 @@
   },
   {
     "path": "packages/xpod-cli/src/module-store.ts",
-    "sha256": "7440a66ce89564472566fe9106397f218edbacec34ef851e8572c159a84be6e7"
+    "sha256": "735aa972cc5efc8465ebca145fff03a83f0eb8d0d2c2bb33ba961793e3b1fcaa"
   },
   {
     "path": "packages/xpod-cli/src/native-target.ts",
@@ -617,7 +617,7 @@
   },
   {
     "path": "scripts/agentfs-native-ci/accept.py",
-    "sha256": "3bcd2a9c254689fc26785556752347625bc6ca4f7ed367584b998562f9e3938b"
+    "sha256": "c79c1e76ede8f3acfd800792909b181acc0231b3cde125a16b1a6f51932a73bc"
   },
   {
     "path": "scripts/agentfs-native-ci/mounted/export-products.ts",
@@ -941,7 +941,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "1d9f59f69d9a69007654340840c548d0e9617ee4ae6e615c70d824afe15120f1"
+    "sha256": "4c6971ae56b46b463ffab103c297b0a02dceb4fa4944bb116c291372ecd8aa5c"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",
@@ -1221,7 +1221,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "5c06d3b04ced2ff66b40b728cf8d9777154c04d9c9121964a8052dc41be930b8"
+    "sha256": "1da05a08b1928fc0bad02cf175d210b47545f852236087e16eed0cb19f8b9962"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -2033,7 +2033,7 @@
   },
   {
     "path": ".github/workflows/ci.yml",
-    "sha256": "8d592e68f636c52605d5e839aef1e78f44f4d20b7adea27f31728785218514c0"
+    "sha256": "9b98ea92fd971bc11790cbcf36fddbe724ac6f01668831cf646804510726adc0"
   },
   {
     "path": "qlever/tests/test_sdk90_metadata_open.py",

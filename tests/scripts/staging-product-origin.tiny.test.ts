@@ -1,6 +1,7 @@
 import {test,expect} from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
+import {createHash} from 'node:crypto';
 import {observeCliGitHubOrigin,observeModuleProductGitHubOrigin,githubOriginFacts} from '../../scripts/lib/independent-admission/github-origin';
 let id=900;
 async function scenario(module:'cli'|'api',branch='staging',old=false,mixed=false,mutateSource?:string){
@@ -23,7 +24,15 @@ async function scenario(module:'cli'|'api',branch='staging',old=false,mixed=fals
 for(const module of ['api','cli'] as const)test(`${module} exact staging push origin only`,async()=>{
  const actual=githubOriginFacts(await scenario(module));
  expect(actual?.sourceSha).toHaveLength(40);
- if(module==='api'){expect(actual?.workflowSourceSha256).toBe('db6ca21afa33d572f24a92e96c88f425d1bf46a86d966a55be4c10de4d812263');expect(actual?.sourceSha).toBe(actual?.runHeadSha);}
+ if(module==='api'){
+   // The staging path must accept the CURRENT reviewed workflow bytes, while the
+   // previously reviewed exact bytes stay admitted for older recorded runs.
+   const current=createHash('sha256').update(fs.readFileSync(path.resolve(import.meta.dir,'../..','.github/workflows/api-module-product.yml'))).digest('hex');
+   expect(actual?.workflowSourceSha256).toBe(current);
+   const policy=fs.readFileSync(path.resolve(import.meta.dir,'../../scripts/lib/independent-admission/github-origin.ts'),'utf8');
+   expect(policy).toContain('db6ca21afa33d572f24a92e96c88f425d1bf46a86d966a55be4c10de4d812263');
+   expect(policy).toContain(current);
+   expect(actual?.sourceSha).toBe(actual?.runHeadSha);}
  await expect(scenario(module,'main')).rejects.toThrow();
  await expect(scenario(module,'refs/tags/v0.0.0')).rejects.toThrow();
  await expect(scenario(module,'staging',false,true)).rejects.toThrow();

@@ -8,6 +8,9 @@ import { promisify } from 'node:util';
 import type { ElectronApplication, Page } from '@playwright/test';
 import { resolveRuntimeLaunchCommand, desktopRuntimeArguments,
   type RuntimeLaunchCommand } from '../../desktop/src/runtime-manager';
+// Same authority the app uses to default its owned data directory. The expected
+// argv must be derived from this, never from an observed process listing.
+import { desktopDataDirectory } from '../../desktop/src/user-env';
 
 /**
  * Closed, literal launch subphases. These are the ONLY tokens this fixture may
@@ -80,8 +83,19 @@ export function createPackagedFixtureEnvironment(options: {
  */
 export function expectedOwnedRuntimeArgv(input: {
   command: string; args: string[]; targetOrigin: string; env: NodeJS.ProcessEnv;
+  /**
+   * The authoritative owned profile. The packaged app defaults CSS_ROOT_FILE_PATH
+   * to desktopDataDirectory(profile) before resolving its launch command, so the
+   * expectation must apply the same default. Passing the real profile is required
+   * exactly when the caller's own env is a FILTERED environment that omits it; an
+   * explicit CSS_ROOT_FILE_PATH in `env` always wins.
+   */
+  ownedProfile?: string;
 }): string[] {
-  return [input.command, ...desktopRuntimeArguments(input.args, input.targetOrigin, input.env)];
+  const env = input.env.CSS_ROOT_FILE_PATH === undefined && input.ownedProfile !== undefined
+    ? { ...input.env, CSS_ROOT_FILE_PATH: desktopDataDirectory(input.ownedProfile) }
+    : input.env;
+  return [input.command, ...desktopRuntimeArguments(input.args, input.targetOrigin, env)];
 }
 
 export function assertBundledRuntimeProcess(input: {
@@ -104,6 +118,36 @@ export function assertBundledRuntimeProcess(input: {
   const actual = input.command.trim().replace(/\s+/gu, ' ');
   const expected = input.expectedArgv.join(' ').trim().replace(/\s+/gu, ' ');
   if (actual !== expected) throw new Error('Runtime is not the owned extracted packaged binary');
+}
+
+export interface OwnedRuntimeSnapshot {
+  state: string; ownership: string; pid?: number;
+}
+
+/**
+ * Wait for the PRODUCT's own snapshot to report running.
+ *
+ * Gateway 200 proves the runtime answers; it does not prove the manager finished
+ * starting. This helper consumes the caller's absolute startup deadline so the
+ * bridge step shares ONE budget with the gateway poll.
+ *
+ * A terminal state (failed/stopped) or a non-desktop ownership rejects at once:
+ * waiting longer cannot make those correct.
+ */
+export async function waitForOwnedRuntime(
+  readRuntime: () => Promise<OwnedRuntimeSnapshot>,
+  deadline: number,
+): Promise<OwnedRuntimeSnapshot> {
+  return await waitFor(async () => {
+    const snapshot = await readRuntime();
+    if (snapshot.state === 'failed' || snapshot.state === 'stopped') {
+      throw new Error(`Packaged runtime reported ${snapshot.state} before it became ready`);
+    }
+    if (snapshot.ownership !== 'desktop') {
+      throw new Error('Packaged runtime is not owned by the installed desktop');
+    }
+    return snapshot.state === 'running' ? snapshot : undefined;
+  }, 'Packaged runtime did not reach the running state', deadline);
 }
 
 async function freeLoopbackPort(): Promise<number> {
@@ -177,8 +221,15 @@ export function assertOwnedRuntimeProfile(content: string, profile: string): voi
   }
 }
 
-async function waitFor<T>(probe: () => Promise<T | undefined>, message: string): Promise<T> {
-  const deadline = Date.now() + 60_000;
+/**
+ * Poll until the probe returns a value.
+ *
+ * `deadline` is an ABSOLUTE epoch-ms instant. Callers that must share one startup
+ * budget pass the deadline created at the gateway phase; every other caller keeps
+ * the historical per-call 60s by omitting it.
+ */
+async function waitFor<T>(probe: () => Promise<T | undefined>, message: string,
+  deadline: number = Date.now() + 60_000): Promise<T> {
   while (Date.now() < deadline) {
     const result = await probe();
     if (result !== undefined) return result;
@@ -353,7 +404,12 @@ export async function launchOwnedPackagedDesktop(options: {
       throw new Error('Bundled runtime version differs from the staged CLI manifest');
     }
     const binarySha256 = (await describeArchive(binary)).sha256;
-    ownedArgv = expectedOwnedRuntimeArgv({ command: launch.command, args: launch.args, targetOrigin: gateway, env });
+    // The packaged app defaults CSS_ROOT_FILE_PATH to <profile>/data before it
+    // resolves the launch command, so the expected argv needs the same value.
+    ownedArgv = expectedOwnedRuntimeArgv({
+      command: launch.command, args: launch.args, targetOrigin: gateway,
+      env: { ...env, CSS_ROOT_FILE_PATH: env.CSS_ROOT_FILE_PATH ?? desktopDataDirectory(profile) },
+    });
     const { _electron } = await import('@playwright/test');
     emitSubphase(options, 'electron');
     launchAttempted = true;
@@ -370,10 +426,14 @@ export async function launchOwnedPackagedDesktop(options: {
     emitSubphase(options, 'window');
     const page = await app.firstWindow({ timeout: 60_000 });
     emitSubphase(options, 'gateway');
+    // ONE startup deadline created here and shared by the gateway poll and the
+    // bridge-readiness poll, so the two together consume the historical single
+    // 60s budget instead of adding a second one.
+    const startupDeadline = Date.now() + 60_000;
     await waitFor(async () => {
       const response = await fetch(new URL('service/status', gateway), { signal: AbortSignal.timeout(1_000) }).catch(() => undefined);
       return response?.ok ? true : undefined;
-    }, 'Packaged Local runtime did not become ready');
+    }, 'Packaged Local runtime did not become ready', startupDeadline);
     emitSubphase(options, 'service-info');
     const serviceInfo = await fetch(new URL('api/service-info', gateway), { signal: AbortSignal.timeout(5_000), redirect: 'error' });
     if (!serviceInfo.ok || (await serviceInfo.json() as { edition?: string }).edition !== 'local') {
@@ -381,13 +441,17 @@ export async function launchOwnedPackagedDesktop(options: {
     }
     await page.goto(new URL('device/services', gateway).href);
     emitSubphase(options, 'bridge');
-    const runtime = await page.evaluate(async () => {
+    // Gateway 200 proves the runtime answers, not that the manager has finished
+    // its own transition to running. Poll the product's real snapshot inside the
+    // SAME 60s startup deadline; a terminal or foreign state fails immediately.
+    const readRuntime = async () => await page.evaluate(async () => {
       const bridge = (window as unknown as { xpodDesktop?: { deviceRuntime?: {
         getRuntimeSettings(): Promise<{ state: string; ownership: string; pid?: number }>;
       } } }).xpodDesktop;
       if (!bridge?.deviceRuntime) throw new Error('Missing packaged desktop bridge');
       return bridge.deviceRuntime.getRuntimeSettings();
     });
+    const runtime = await waitForOwnedRuntime(readRuntime, startupDeadline);
     runtimePid = runtime.pid;
     assertBundledRuntimeProcess({ binary, pid: runtimePid, ownership: runtime.ownership,
       expectedArgv: ownedArgv,

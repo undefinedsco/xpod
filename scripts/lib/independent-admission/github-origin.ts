@@ -1377,7 +1377,13 @@ function cssLinuxAncestors(group:GitHubSourceBindingGroup|undefined,target:strin
  * must still match one exact whole file. This is the NORMAL product workflow;
  * the CONTROLLED `css-native-products` workflow (601aa8fe) is untouched and must
  * NOT be added to CSS_SOURCE_PARENT_VERSIONS. */
-const CSS_NORMAL_WORKFLOW_SHA='16f3781aa25d8a89167538babfcd6bd1eaa8556a54831a1ee78450d158ef2286';
+const CSS_NORMAL_WORKFLOW_SHA='90294663092f8e981c2923801cd1712618ee54481ed3810c96a128eafa3950b3';
+/** Previously reviewed normal bytes. The CURRENT 90294663 above is the same
+ * product contract plus same-PR preview cancellation, so it is appended as one
+ * more compatible reviewed version; every earlier digest stays admitted and each
+ * run must still match one exact whole file. NOT related to the CONTROLLED
+ * `css-native-products` parent (601aa8fe). */
+const CSS_NORMAL_PREVIOUS_WORKFLOW_SHA='16f3781aa25d8a89167538babfcd6bd1eaa8556a54831a1ee78450d158ef2286';
 
 /** Product origin uses the canonical target/native-source declaration. A
  * declared target is still unverified until its exact successful run is seen. */
@@ -1397,13 +1403,13 @@ export async function observeModuleProductGitHubOrigin(input: ArtifactAcquisitio
   } as const;
   const legacy:OriginPolicy={
     ...policies[module], workflowPath: `.github/workflows/${module}-module-product.yml`,
-    ...(module==='api'?{stagingPushWorkflowSha256s:['db6ca21afa33d572f24a92e96c88f425d1bf46a86d966a55be4c10de4d812263','c4aa6b7ea6e384adab1e517a903e50d574c8afb2eb92d8c54dc919320652c5b0','b7a91e8c0b61f8a80a3de2c6c93e78f1d2f9637a741bff7ac2592882ba0c831e','04f75d2913e3b6b504cf547d8ba17d1c0011a0a563f42ff708f4ba3f10978153']}:{}),
+    ...(module==='api'?{stagingPushWorkflowSha256s:['2db71cbf4f6f46a433c397866585374d91b76c89bf79f173b5aae181dc2087b6','db6ca21afa33d572f24a92e96c88f425d1bf46a86d966a55be4c10de4d812263','c4aa6b7ea6e384adab1e517a903e50d574c8afb2eb92d8c54dc919320652c5b0','b7a91e8c0b61f8a80a3de2c6c93e78f1d2f9637a741bff7ac2592882ba0c831e','04f75d2913e3b6b504cf547d8ba17d1c0011a0a563f42ff708f4ba3f10978153']}:{}),
     events: module==='api'?['workflow_dispatch','pull_request','push']:['workflow_dispatch','pull_request'], target,
     sourceBindings: [{ path: 'scripts/module-product-targets.ts', sha256: 'd04fb106ca349179e4b99869c68cbb85b8d9a9f30e8d60b927a5eceab9e2f25f',reviewedSha256:['5ef511f448c90a6fc9e767fd8224ef890b5fc04d2b6514f85697a0a529fb3eb4'] }],
     artifactNames: coordinates => [`${module}-module-products-${target}-${coordinates.sourceSha}-${coordinates.runId}-${coordinates.runAttempt}`],
     jobName: () => `products (${target})`,
     // The old reviewed workflow used GitHub's implicit matrix display name.
-    reviewedWorkflowVersions: [...(module==='api'?[{workflowSha256:'db6ca21afa33d572f24a92e96c88f425d1bf46a86d966a55be4c10de4d812263',jobName:()=>`products (${target})`,sourceBindingGroups:API_WORKSPACE_SOURCE_GROUPS},{workflowSha256:'04f75d2913e3b6b504cf547d8ba17d1c0011a0a563f42ff708f4ba3f10978153',jobName:()=>`products (${target})`,sourceBindingGroups:API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS},{workflowSha256:'b7a91e8c0b61f8a80a3de2c6c93e78f1d2f9637a741bff7ac2592882ba0c831e',jobName:()=>`products (${target})`,sourceBindings:API_CONTROLLED_SOURCE_BINDINGS},{workflowSha256:'c4aa6b7ea6e384adab1e517a903e50d574c8afb2eb92d8c54dc919320652c5b0',jobName:()=>`products (${target})`}]:[]), { workflowSha256: policies[module].previousShortWorkflowSha256, jobName: () => `products (${target})`,
+    reviewedWorkflowVersions: [...(module==='api'?[{workflowSha256:'db6ca21afa33d572f24a92e96c88f425d1bf46a86d966a55be4c10de4d812263',jobName:()=>`products (${target})`,sourceBindingGroups:API_WORKSPACE_SOURCE_GROUPS},{workflowSha256:'2db71cbf4f6f46a433c397866585374d91b76c89bf79f173b5aae181dc2087b6',jobName:()=>`products (${target})`,sourceBindingGroups:API_WORKSPACE_SOURCE_GROUPS},{workflowSha256:'04f75d2913e3b6b504cf547d8ba17d1c0011a0a563f42ff708f4ba3f10978153',jobName:()=>`products (${target})`,sourceBindingGroups:API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS},{workflowSha256:'b7a91e8c0b61f8a80a3de2c6c93e78f1d2f9637a741bff7ac2592882ba0c831e',jobName:()=>`products (${target})`,sourceBindings:API_CONTROLLED_SOURCE_BINDINGS},{workflowSha256:'c4aa6b7ea6e384adab1e517a903e50d574c8afb2eb92d8c54dc919320652c5b0',jobName:()=>`products (${target})`}]:[]), { workflowSha256: policies[module].previousShortWorkflowSha256, jobName: () => `products (${target})`,
       sourceBindings: [{ path: 'scripts/module-product-targets.ts', sha256: '35b8752237d620981b1848d6d8876dfac3c1da14509e77358e7f961ca256cf96' }] },
       { workflowSha256: policies[module].legacyWorkflowSha256, jobName: () => `products (${Object.values(row).join(', ')})`,
         sourceBindings: [{ path: 'scripts/module-product-targets.ts', sha256: '35b8752237d620981b1848d6d8876dfac3c1da14509e77358e7f961ca256cf96' }] },
@@ -1411,6 +1417,8 @@ export async function observeModuleProductGitHubOrigin(input: ArtifactAcquisitio
       // 9f14303a above stays admitted, and the same reviewed module-product-targets
       // closure is required, so this adds a version rather than replacing a proof.
       ...(module==='css'?[{ workflowSha256: CSS_NORMAL_WORKFLOW_SHA,
+        jobName: () => `products (${target})` },
+      { workflowSha256: CSS_NORMAL_PREVIOUS_WORKFLOW_SHA,
         jobName: () => `products (${target})` }]:[])],
   };
   const current:OriginPolicy={workflowPath:CSS_NATIVE_PRODUCTS_WORKFLOW,workflowSha256:CSS_NATIVE_PARENT_SHA,
@@ -1432,6 +1440,10 @@ export async function observeModuleProductGitHubOrigin(input: ArtifactAcquisitio
  * 854cc2a4 exactly. Every older reviewed version stays admitted, so historical
  * runs keep verifying; every run still has to match one exact whole file. */
 export const AFS_MODULE_MOUNTED_WORKFLOW_SHA256S=Object.freeze([
+  // CURRENT bytes: same acceptance contract plus same-PR preview cancellation.
+  // Every previously reviewed digest below stays admitted; each run must still
+  // match one exact whole file, so this appends a version, not a new allowlist.
+  '3bfbe801a14790ffb8b4cf66f227296d288cdf6e8e1761b66f61c6f10993519e',
   'ccf5f21a6681425ffac52c8efc9547a22b7962310822c84479a39602f466a343',
   '854cc2a40d0e9bd3d41deb339fbc239693a9f7811cf035be1768a9b496cbb043',
   'c6420bc5699a84a8adf98a19841cb09e3df155370622d1b7e982cd08064ca4bf',
@@ -1511,10 +1523,16 @@ export async function observeQleverNativeGitHubOrigin(input:ArtifactAcquisitionI
     workflowPath:invocation==='standalone'?nativeWorkflow:'.github/workflows/css-module-product.yml',
     workflowSha256:invocation==='standalone'?nativeHash:CSS_NORMAL_WORKFLOW_SHA,
     ...(invocation==='css-module'?{reviewedWorkflowVersions:[{
+      // The reviewed 16f normal bytes WERE this caller's primary version before the
+      // same-PR preview cancellation moved the primary to 90294663. Keeping them here
+      // admits already-recorded historical native origins; job/steps/source bindings
+      // are inherited from this same policy, exactly as when 16f was primary.
+      workflowSha256:CSS_NORMAL_PREVIOUS_WORKFLOW_SHA,jobName:()=> 'native / build',
+    },{
       workflowSha256:'454baf86f674c2c3b5058ad012c09d968c26e4f7d282d702df745a16978542b3',jobName:()=> 'native / build',
     },{
-      // Prior reviewed normal CSS product workflow stays admitted alongside the
-      // current 16f above; each run must still match one exact whole file.
+      // Older reviewed normal CSS product workflows stay admitted alongside the
+      // current bytes; each run must still match one exact whole file.
       workflowSha256:'9f14303a0736391b250598c21211dc5312565adf5bf30256a4f9c61f13cc8257',jobName:()=> 'native / build',
     }]}:{reviewedWorkflowVersions:[
       {workflowSha256:previousNativeHash,jobName:()=> 'build'},
@@ -1764,6 +1782,15 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
       // regular caller jobs and publication contract remain unchanged; register
       // the reviewed workflow bytes without changing any historical identity.
       {workflowSha256:'8d592e68f636c52605d5e839aef1e78f44f4d20b7adea27f31728785218514c0',
+      jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // APPEND-ONLY: current ci.yml removes the forced kernel.org mirror-list
+      // override so apt keeps the runner's signed, failover-capable Ubuntu
+      // sources. All caller jobs, permissions and pre/post installed consumer
+      // commands are unchanged, so this is a new reviewed workflow identity over
+      // the same contract. Every earlier reviewed version above stays byte-exact
+      // and selectable; unknown or mixed versions are still refused.
+      {workflowSha256:'9b98ea92fd971bc11790cbcf36fddbe724ac6f01668831cf646804510726adc0',
       jobName:()=>callerNames[0]!,
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,

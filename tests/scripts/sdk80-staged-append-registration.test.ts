@@ -126,3 +126,32 @@ it('the canonical binds actual bytes and never a self hash',()=>{
   expect(dca).toHaveLength(1);
   expect(dca[0]!.sha256).toBe('230b3feaa3c881b5cc0dd4165df5b5fea9995f2f7724c7992eb019eb36802f7a');
 });
+
+/**
+ * The published RC398 declarations are frozen to the bytes they were reviewed
+ * against; only the CURRENT tail follows the live files. Re-registering a moved
+ * original must therefore rebind the tail WITHOUT rewriting published history.
+ */
+it('keeps published RC398 canonical bindings frozen while the current tail follows the live files',()=>{
+  const sha=(f:string)=>createHash('sha256').update(readFileSync(path.join(process.cwd(),f))).digest('hex');
+  const canonical='scripts/lib/independent-admission/consumer-execution-current.json';
+  const accept='scripts/agentfs-native-ci/accept.py';
+  const role=(g:any,p:string)=>[...g.sourceBindings,...(g.secondarySelectors??[])]
+    .filter((r:any)=>r.path===p).map((r:any)=>r.sha256);
+  const RC398_CANONICAL='37acf879ef285b0174f7eb3746dabffefc987cbb9597f6de35614b06a6166727';
+  const RC398_ACCEPT='3bcd2a9c254689fc26785556752347625bc6ca4f7ed367584b998562f9e3938b';
+
+  // Published RC398 groups keep their reviewed literals even though the files moved.
+  for(const index of [CONSUMER.length-3, CONSUMER.length-2]){
+    const group=CONSUMER[index]!;
+    expect(role(group,canonical)).toEqual([RC398_CANONICAL]);
+    expect(role(group,accept)).toEqual([RC398_ACCEPT]);
+  }
+
+  // The CURRENT tail binds the live bytes for both paths.
+  const current=CONSUMER[CONSUMER.length-1]!;
+  expect(role(current,canonical)).toEqual([sha(canonical)]);
+  expect(role(current,accept)).toEqual([sha(accept)]);
+  expect(sha(canonical)).not.toBe(RC398_CANONICAL);
+  expect(sha(accept)).not.toBe(RC398_ACCEPT);
+});
