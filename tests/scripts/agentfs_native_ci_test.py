@@ -1084,13 +1084,49 @@ class NativeReuseTests(unittest.TestCase):
     def test_generated_stage_inventory_is_exact_on_both_platforms(self):
         base = ['bun-extract', 'toolchain', 'dependencies', 'workspace-packages', 'upstream', 'upstream-checkout', 'export', 'verify-source', 'rebuild', 'sdk-suite', 'cli-suite', 'package', 'verify-install']
         linux = ['runtime-extract', 'runtime-readelf', 'runtime-dynamic', 'runtime-launcher-version', 'runtime-helper-version', 'runtime-status', 'runtime-ldd', 'runtime-node-version']
-        for os_name, expected in [('darwin', 14), ('linux', 22)]:
-            stages = base + (linux if os_name == 'linux' else []) + ['toolchain-docs']
+        # The pinned producer archive closes both a docs stage and a supervisor-units
+        # stage; the generated set is the producer's own 23 (linux) / 15 (darwin).
+        generated = ['toolchain-docs', 'supervisor-units']
+        for os_name, expected in [('darwin', 15), ('linux', 23)]:
+            stages = base + (linux if os_name == 'linux' else []) + generated
             self.assertEqual(len(stages), expected)
             a.verify_native_stage_inventory(stages, os_name, True)
-            for wrong in [stages[:-1], stages + ['unknown'], stages + ['toolchain-docs']]:
+            for wrong in [stages[:-1], stages + ['unknown'], stages + ['toolchain-docs'],
+                          [name for name in stages if name != 'supervisor-units']]:
                 with self.assertRaises(RuntimeError): a.verify_native_stage_inventory(wrong, os_name, True)
-            a.verify_native_stage_inventory(stages[:-1], os_name, False)
+            # Without generated notices neither docs nor supervisor-units is required.
+            a.verify_native_stage_inventory([n for n in stages if n not in generated], os_name, False)
+
+    def test_generated_inventory_accepts_the_real_producer_23_stage_set(self):
+        """The pinned producer archive enumerates these exact stages on linux."""
+        real = ['bun-extract', 'cli-suite', 'dependencies', 'export', 'package', 'rebuild',
+                'runtime-dynamic', 'runtime-extract', 'runtime-helper-version',
+                'runtime-launcher-version', 'runtime-ldd', 'runtime-node-version',
+                'runtime-readelf', 'runtime-status', 'sdk-suite', 'supervisor-units',
+                'toolchain', 'toolchain-docs', 'upstream', 'upstream-checkout',
+                'verify-install', 'verify-source', 'workspace-packages']
+        self.assertEqual(len(real), 23)
+        self.assertEqual(a.verify_native_stage_inventory(real, 'linux', True), set(real))
+
+    def test_generated_inventory_rejects_a_failed_supervisor_units_stage(self):
+        """A declared supervisor-units stage must still pass full closure checks.
+
+        The inventory check only proves the stage is DECLARED. Closure is enforced
+        separately by verify_closed_native_stage, so assert that contract directly
+        rather than letting the newly recognised stage bypass it.
+        """
+        raw = b'owned supervisor unit closure'
+        good = dict(actualWait=True, exit=0, signal=None, rawClosedBeforeHash=True,
+                    ownedGroupAbsentAfterWait=True, closedUTC='owned-close',
+                    resourceStop=None, supervisorError=None, cleanupErrors=[],
+                    rawSHA256=hashlib.sha256(raw).hexdigest())
+        a.verify_closed_native_stage(good, raw, 'supervisor-units')
+        for broken in (dict(good, exit=1), dict(good, signal=9), dict(good, actualWait=False),
+                       dict(good, ownedGroupAbsentAfterWait=False), dict(good, rawClosedBeforeHash=False),
+                       dict(good, resourceStop='disk'), dict(good, supervisorError='boom'),
+                       dict(good, cleanupErrors=['x']), dict(good, rawSHA256='0' * 64)):
+            with self.assertRaises(RuntimeError):
+                a.verify_closed_native_stage(broken, raw, 'supervisor-units')
 
     def add_generated_notices(self, entries):
         native = json.loads(entries['native-receipt.json']); target = native['target']
@@ -1113,6 +1149,8 @@ class NativeReuseTests(unittest.TestCase):
         final = json.loads(entries['final.json']); final.update(nativeReceipt=native, archiveSHA256=hashlib.sha256(output.getvalue()).hexdigest())
         entries['native-receipt.json'] = json.dumps(native).encode(); entries['final.json'] = json.dumps(final).encode()
         entries['toolchain-docs.raw.log'] = entries['toolchain.raw.log']; entries['toolchain-docs.receipt.json'] = entries['toolchain.receipt.json']
+        # The producer closes this stage too; the fixture must declare the same set.
+        entries['supervisor-units.raw.log'] = entries['toolchain.raw.log']; entries['supervisor-units.receipt.json'] = entries['toolchain.receipt.json']
 
     def fixture(self, directory, change=None):
         inventory = dict(declaredTests=98, passedTests=96, ignoredTests=2, filteredTests=0)
@@ -1293,7 +1331,7 @@ class NativeReuseTests(unittest.TestCase):
                 archive, pins, inventory = self.fixture(directory, change)
                 with zipfile.ZipFile(archive) as z: pins['DARWIN_ARCHIVE_SHA'] = json.loads(z.read('final.json'))['archiveSHA256']
                 with patch.object(a, 'check_tests', return_value=inventory):
-                    if failure is None: self.assertEqual(len(a.verify_reuse_archive(archive, pins, 'darwin')['stages']), 14)
+                    if failure is None: self.assertEqual(len(a.verify_reuse_archive(archive, pins, 'darwin')['stages']), 15)
                     else:
                         with self.assertRaises(RuntimeError): a.verify_reuse_archive(archive, pins, 'darwin')
 
@@ -1385,7 +1423,7 @@ class NativeReuseTests(unittest.TestCase):
                     pins.update(PRODUCT_TARGET=target, LINUX_ZIP_SHA=a.sha256(archive), LINUX_ARCHIVE_SHA=final['archiveSHA256'], LINUX_HELPER_SHA=final['nativeReceipt']['helperSha256'])
                     with patch.object(a, 'check_tests', return_value=inventory):
                         if failure is None:
-                            result = a.verify_reuse_archive(archive, pins, 'linux', arch); self.assertEqual(len(result['stages']), 22 if generated else 21)
+                            result = a.verify_reuse_archive(archive, pins, 'linux', arch); self.assertEqual(len(result['stages']), 23 if generated else 21)
                         else:
                             with self.assertRaises(RuntimeError):
                                 a.verify_reuse_archive(archive, pins, 'linux', arch)

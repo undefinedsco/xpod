@@ -120,7 +120,14 @@ test('workflow keeps pilot preview permissions, triggers and separate failed dia
   expect(source).toContain('api-module-products-${{ matrix.target }}-');
   expect(source).toContain('api-module-diagnostics-${{ matrix.target }}-');
   expect(source).not.toContain('NPM_TOKEN');
-  expect(source).not.toContain('cancel-in-progress');
+  // Same-PR preview cancellation is the reviewed policy: it must cancel ONLY
+  // pull_request runs, while push and manual dispatches stay in independent
+  // groups (run_id fallback), so a staging push or a manual retry is never
+  // cancelled by an unrelated PR update.
+  expect(workflow.concurrency).toEqual({
+    group: '${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}',
+    'cancel-in-progress': "${{ github.event_name == 'pull_request' }}",
+  });
   expect(source).not.toContain('id-token: write');
   expect(source).not.toContain('workflow_call');
 });

@@ -526,7 +526,13 @@ const RC399_LIVE_RELEASE_INPUTS: Readonly<Record<string, string>> = Object.freez
   'scripts/lib/owned-mode-command.cjs': '8ebb1a1b5ed3ee841ea2eabcd7275cbe879c74661dfc4dc0a60e22cb38cfa66a',
   '.github/workflows/ci.yml': '8d592e68f636c52605d5e839aef1e78f44f4d20b7adea27f31728785218514c0',
   // github-origin owns the API group definition changed by the same append.
-  'scripts/lib/independent-admission/github-origin.ts': '1d9f59f69d9a69007654340840c548d0e9617ee4ae6e615c70d824afe15120f1',
+  'scripts/lib/independent-admission/github-origin.ts': 'e9efdf1f8cc85db11f2552686d14fe351cb4d99c0521502bc0c638f0faa04633',
+  // The reviewed API preview workflow gained same-PR preview cancellation; the
+  // live tail follows the new exact bytes so inherited API selectors rebind too.
+  '.github/workflows/api-module-product.yml': '2db71cbf4f6f46a433c397866585374d91b76c89bf79f173b5aae181dc2087b6',
+  // The AFS reuse stage-contract fix moves this owned original; only the current
+  // tail rebinds it, while every published group keeps its frozen bytes.
+  'scripts/agentfs-native-ci/accept.py': 'c79c1e76ede8f3acfd800792909b181acc0231b3cde125a16b1a6f51932a73bc',
   // CLI16 is the declared in-place current CLI tuple in this same generation; its
   // verifier module is an already-owned row of the consumer/CI tails.
   'scripts/lib/independent-admission/source-rules.ts': '4bad2440d95b29d04abd6a78f24cd9c262ae0a6faeacd8c252050888a23b168b',
@@ -540,7 +546,7 @@ const RC399_LIVE_RELEASE_INPUTS: Readonly<Record<string, string>> = Object.freez
   // The reviewed CLI catalog split moved these two owned module rows. Only the
   // current tail rebinds them; every published group keeps its frozen bytes.
   'packages/xpod-cli/src/module-catalog.ts': '8b6f022e9b1a40f6687782539f99e1a12e3d3fb0728ad19a6dc726f83cfb347e',
-  'packages/xpod-cli/src/module-store.ts': '7440a66ce89564472566fe9106397f218edbacec34ef851e8572c159a84be6e7',
+  'packages/xpod-cli/src/module-store.ts': '735aa972cc5efc8465ebca145fff03a83f0eb8d0d2c2bb33ba961793e3b1fcaa',
   // The reviewed API controlled-phase recipe moved the producer and its dependency
   // declaration. These are the same owned rows; only the current tail moves.
   'scripts/api-module-producer.py': 'cad0d8896b244e22b5e3ffd531e5e6a029154114378f6077864576dc651e1fe1',

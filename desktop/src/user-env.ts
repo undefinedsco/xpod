@@ -1,6 +1,17 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
+/**
+ * The single authoritative owned-profile data directory.
+ *
+ * The packaged app defaults CSS_ROOT_FILE_PATH to this path, and desktopRuntimeArguments
+ * turns that into `--data`. Any harness that must predict the owned argv derives it from
+ * this same function instead of re-deriving the layout, so the two cannot drift.
+ */
+export function desktopDataDirectory(userDataDir: string): string {
+  return path.join(userDataDir, 'data')
+}
+
 export function desktopEnvPath(userDataDir: string): string {
   return path.join(userDataDir, '.env')
 }
@@ -76,7 +87,7 @@ function defaultDesktopEnv(userDataDir: string): string {
     `CSS_IDENTITY_DB_URL=sqlite:${path.join(userDataDir, 'identity.sqlite')}`,
     `CSS_SPARQL_ENDPOINT=sqlite:${path.join(userDataDir, 'quadstore.sqlite')}`,
     `CSS_RDF_INDEX_PATH=${path.join(userDataDir, 'rdf-index.sqlite')}`,
-    `CSS_ROOT_FILE_PATH=${path.join(userDataDir, 'data')}`,
+    `CSS_ROOT_FILE_PATH=${desktopDataDirectory(userDataDir)}`,
     '',
   ].join('\n')
 }

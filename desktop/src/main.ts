@@ -37,7 +37,7 @@ import { runStartupSequence } from './startup-sequence.js'
 import { canCancelDesktopLogin, cancelDesktopLogin, shouldCancelDesktopLoginOnClose } from './login-recovery.js'
 import { navigateDesktopProduct } from './product-navigation.js'
 import { desktopProtocolRoute, desktopProtocolRouteFromArgv, resumeDesktopProtocolNavigation, XPOD_DESKTOP_PROTOCOL } from './product-protocol.js'
-import { ensureDesktopEnvFile, loadDesktopEnvFile } from './user-env.js'
+import { desktopDataDirectory, ensureDesktopEnvFile, loadDesktopEnvFile } from './user-env.js'
 import { isTrustedOidcNavigation, resolveDesktopOidcIssuer, isOidcAuthorizationRequest, isSameOriginProductUrl } from './navigation-policy.js'
 import {
   installCompactWindowDevToolsGuard,
@@ -82,7 +82,7 @@ process.env.XPOD_AI_CLIENT_CONFIGURATION_ENABLED ??= 'true'
 process.env.CSS_IDENTITY_DB_URL ??= `sqlite:${path.join(desktopDataRoot, 'identity.sqlite')}`
 process.env.CSS_SPARQL_ENDPOINT ??= `sqlite:${path.join(desktopDataRoot, 'quadstore.sqlite')}`
 process.env.CSS_RDF_INDEX_PATH ??= path.join(desktopDataRoot, 'rdf-index.sqlite')
-process.env.CSS_ROOT_FILE_PATH ??= path.join(desktopDataRoot, 'data')
+process.env.CSS_ROOT_FILE_PATH ??= desktopDataDirectory(desktopDataRoot)
 
 const targetUrl = resolveDesktopTargetUrl()
 const targetOrigin = new URL(targetUrl).origin

@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { assertBundledRuntimeProcess, createPackagedFixtureEnvironment,
   assertOwnedRuntimeProfile, isMissingProcessReport, readProcessInventory,
   rememberProcessTree, remainingOwnedProcessIds, closeOwnedPackagedApp,
-  isLaunchSubphase, expectedOwnedRuntimeArgv } from '../../scripts/helpers/packaged-desktop-fixture';
+  isLaunchSubphase, expectedOwnedRuntimeArgv, waitForOwnedRuntime } from '../../scripts/helpers/packaged-desktop-fixture';
+import { desktopDataDirectory } from '../../desktop/src/user-env';
 
 describe('owned packaged desktop permission fixture', () => {
   it('uses the captured OS process when close disposes the Electron channel', async () => {
@@ -233,3 +234,84 @@ describe('launch subphase boundary placement', () => {
     expect(profileAt).toBeLessThan(assertAt);
   });
 });
+
+  it('applies the owned-profile data default to the REAL expected-argv helper for a filtered env', () => {
+    const profile = '/task/.test-data/profile';
+    const dataDir = desktopDataDirectory(profile);
+    expect(dataDir).toBe(path.join(profile, 'data'));
+
+    // The real fixture env is FILTERED and has no CSS_ROOT_FILE_PATH; the app
+    // defaults it before resolving, so the helper must add --data from the profile.
+    const filtered = createPackagedFixtureEnvironment({
+      inherited: { PATH: '/bin', HOME: '/Users/test', CSS_ROOT_FILE_PATH: '/other/data' },
+      profile, port: 41987, issuer: 'https://id.example/',
+    });
+    expect(filtered.CSS_ROOT_FILE_PATH).toBeUndefined();
+
+    const binary = '/task/Xpod.app/Contents/Resources/runtime/bin/bun';
+    const entry = '/task/Xpod.app/Contents/Resources/runtime/node_modules/@undefineds.co/xpod-cli/dist/xpod.mjs';
+    const expected = expectedOwnedRuntimeArgv({ command: binary, args: [entry, 'start'],
+      targetOrigin: 'http://127.0.0.1:41987/', env: filtered, ownedProfile: profile });
+
+    expect(expected.join(' ')).toContain(`--data ${dataDir}`);
+    // An explicit value in env still wins over the profile default.
+    const explicit = expectedOwnedRuntimeArgv({ command: binary, args: [entry, 'start'],
+      targetOrigin: 'http://127.0.0.1:41987/',
+      env: { ...filtered, CSS_ROOT_FILE_PATH: '/explicit/data' }, ownedProfile: profile });
+    expect(explicit.join(' ')).toContain('--data /explicit/data');
+    // Without the authoritative profile nothing is invented.
+    const bare = expectedOwnedRuntimeArgv({ command: binary, args: [entry, 'start'],
+      targetOrigin: 'http://127.0.0.1:41987/', env: filtered });
+    expect(bare.join(' ')).not.toContain('--data');
+
+    // The live process that really passes the owned --data must now be accepted,
+    // and a foreign data path must still be rejected.
+    expect(() => assertBundledRuntimeProcess({ binary, pid: 42, ownership: 'desktop',
+      command: expected.join(' '), expectedArgv: expected })).not.toThrow();
+    expect(() => assertBundledRuntimeProcess({ binary, pid: 42, ownership: 'desktop',
+      command: expected.join(' '), expectedArgv: bare })).toThrow();
+    expect(() => assertBundledRuntimeProcess({ binary, pid: 42, ownership: 'desktop',
+      command: expected.join(' ').replace(dataDir, '/tmp/foreign/data'), expectedArgv: expected })).toThrow();
+  });
+
+  it('waits for the REAL bridge readiness helper and rejects terminal or foreign states at once', async () => {
+    // Drives the exported production helper, not a local copy of its conditions.
+    const sequence = (states: Array<{ state: string; ownership?: string }>) => {
+      let index = 0;
+      return async () => {
+        const value = states[Math.min(index++, states.length - 1)]!;
+        return { state: value.state, ownership: value.ownership ?? 'desktop', pid: 7 };
+      };
+    };
+    await expect(waitForOwnedRuntime(sequence([{ state: 'starting' }, { state: 'running' }]), Date.now() + 60_000))
+      .resolves.toMatchObject({ state: 'running' });
+    await expect(waitForOwnedRuntime(sequence([{ state: 'running' }]), Date.now() + 60_000))
+      .resolves.toMatchObject({ state: 'running' });
+    await expect(waitForOwnedRuntime(sequence([{ state: 'failed' }]), Date.now() + 60_000))
+      .rejects.toThrow(/failed before it became ready/u);
+    await expect(waitForOwnedRuntime(sequence([{ state: 'stopped' }]), Date.now() + 60_000))
+      .rejects.toThrow(/stopped before it became ready/u);
+    await expect(waitForOwnedRuntime(sequence([{ state: 'running', ownership: 'external' }]), Date.now() + 60_000))
+      .rejects.toThrow(/not owned by the installed desktop/u);
+  });
+
+  it('expires at the CALLER deadline instead of granting a fresh 60s', async () => {
+    vi.useFakeTimers();
+    try {
+      const alwaysStarting = async () => ({ state: 'starting', ownership: 'desktop', pid: 7 });
+      // An already-elapsed deadline fails before any read.
+      let reads = 0;
+      const counting = async () => { reads += 1; return alwaysStarting(); };
+      await expect(waitForOwnedRuntime(counting as never, Date.now() - 1))
+        .rejects.toThrow(/did not reach the running state/u);
+      expect(reads).toBe(0);
+
+      // A deadline 1s out expires after ~1s of fake time, not 60s.
+      let message = '';
+      const pending = waitForOwnedRuntime(alwaysStarting, Date.now() + 1_000)
+        .catch((error: Error) => { message = error.message; });
+      await vi.advanceTimersByTimeAsync(1_100);
+      await pending;
+      expect(message).toMatch(/did not reach the running state/u);
+    } finally { vi.useRealTimers(); }
+  });
