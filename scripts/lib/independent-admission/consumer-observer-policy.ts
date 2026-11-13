@@ -510,7 +510,7 @@ function rc398ConsumerVariant<T extends GitHubSourceBindingGroup>(group: T): T {
  * origin policy bytes (one appended candidate-workflow version). One shared variant per
  * family is appended; every published group and both RC398 variants stay byte-exact.
  * Only this new variant uses the held-FD live controller self-reference. */
-const QLEVER_RC399_POLICY_SHA256='5c06d3b04ced2ff66b40b728cf8d9777154c04d9c9121964a8052dc41be930b8';
+const QLEVER_RC399_POLICY_SHA256='31495c3990235c500bd527644f6f327a3aa17ed74ac103bdf15059fdda159e22';
 /** Live bytes of the release inputs this generation's dependency declaration and its
  * already-owned policy rows actually moved. Only these rows move; every earlier tuple
  * keeps its published bytes. */
@@ -524,9 +524,15 @@ const RC399_LIVE_RELEASE_INPUTS: Readonly<Record<string, string>> = Object.freez
   'scripts/lib/root-registry-supply.cjs': 'c8b2445bba41efd24156129587cdb12489cf75a6d193dd1e3f38c5f1239bdb59',
   'scripts/run-npm-pack.cjs': '6e1c6144cc71a8399350a0873c9f3dfafc06a9a2967c0fe88b09c269e8aabe46',
   'scripts/lib/owned-mode-command.cjs': '8ebb1a1b5ed3ee841ea2eabcd7275cbe879c74661dfc4dc0a60e22cb38cfa66a',
-  '.github/workflows/ci.yml': '8d592e68f636c52605d5e839aef1e78f44f4d20b7adea27f31728785218514c0',
+  '.github/workflows/ci.yml': '1ed635dc234c374b1304bde07c2daeab03832794ddad698db1ce4200e767af87',
   // github-origin owns the API group definition changed by the same append.
-  'scripts/lib/independent-admission/github-origin.ts': '1d9f59f69d9a69007654340840c548d0e9617ee4ae6e615c70d824afe15120f1',
+  'scripts/lib/independent-admission/github-origin.ts': '014432f112584b192669621e9576ec81b1493bf89508659a25dbd576e5afa3d3',
+  // The reviewed API preview workflow gained same-PR preview cancellation; the
+  // live tail follows the new exact bytes so inherited API selectors rebind too.
+  '.github/workflows/api-module-product.yml': '91f8945206ed87a1621a5a37b2762aa2aacfde988b3fa775fe398568a9910377',
+  // The AFS reuse stage-contract fix moves this owned original; only the current
+  // tail rebinds it, while every published group keeps its frozen bytes.
+  'scripts/agentfs-native-ci/accept.py': 'c79c1e76ede8f3acfd800792909b181acc0231b3cde125a16b1a6f51932a73bc',
   // CLI16 is the declared in-place current CLI tuple in this same generation; its
   // verifier module is an already-owned row of the consumer/CI tails.
   'scripts/lib/independent-admission/source-rules.ts': '4bad2440d95b29d04abd6a78f24cd9c262ae0a6faeacd8c252050888a23b168b',
@@ -540,7 +546,9 @@ const RC399_LIVE_RELEASE_INPUTS: Readonly<Record<string, string>> = Object.freez
   // The reviewed CLI catalog split moved these two owned module rows. Only the
   // current tail rebinds them; every published group keeps its frozen bytes.
   'packages/xpod-cli/src/module-catalog.ts': '8b6f022e9b1a40f6687782539f99e1a12e3d3fb0728ad19a6dc726f83cfb347e',
-  'packages/xpod-cli/src/module-store.ts': '7440a66ce89564472566fe9106397f218edbacec34ef851e8572c159a84be6e7',
+  'packages/xpod-cli/src/module-store.ts': '42ed0a2d11b9fae6162d032cf494a0907dd046a38747c9115dc333128b7f1513',
+  // Reuse the already-owned worker primitive for bounded seed copying as well.
+  'packages/xpod-cli/src/module-inventory-workers.ts': '108e9c14e8c8ad4d5487396f197a96abef2c5084861a65a4fa9351cfd910c667',
   // The reviewed API controlled-phase recipe moved the producer and its dependency
   // declaration. These are the same owned rows; only the current tail moves.
   'scripts/api-module-producer.py': 'cad0d8896b244e22b5e3ffd531e5e6a029154114378f6077864576dc651e1fe1',

@@ -113,21 +113,71 @@ test('candidate produces the API capability ONCE on clean source BEFORE the vers
   assert.doesNotMatch(steps[api].run, /echo\s+.*GH_TOKEN|set\s+-x/);
 });
 
-test('diagnostic produces the API capability ONCE on clean source BEFORE its version stamp', () => {
+test('diagnostic cold-builds a FRESH app on the exact RC415-era native pin', () => {
   const { jobs } = read('ci.yml');
-  const steps = jobs['desktop-launch-diagnostic'].steps;
+  const job = jobs['desktop-launch-diagnostic'];
+  const steps = job.steps;
+  // Manual-only, single operation, macOS 15, original 120-minute OUTER budget.
+  assert.equal(job.if, "${{ github.event_name == 'workflow_dispatch' && inputs.operation == 'desktop-launch-diagnostic' }}");
+  assert.equal(job['runs-on'], 'macos-15');
+  assert.equal(job['timeout-minutes'], 120);
+  assert.equal(job.environment, undefined);
+  assert.equal(job.permissions.contents, 'read');
+  assert.equal(job.permissions.actions, 'read');
+  // Fresh diagnostic bits are built from the diagnostic branch source.
+  assert.equal(job.env.DIAGNOSTIC_CANDIDATE, '0.4.31-rc.415');
+  // EXACT retained RC415-era QLever native input, never the obsolete 021c one.
+  assert.equal(job.env.DIAGNOSTIC_ARTIFACT_ID, '14036640427');
+  assert.equal(job.env.DIAGNOSTIC_ARTIFACT_NAME,
+    'qlever-local-runtime-darwin-arm64-a6e35a647048e448d6b6c9fe48351add52eb3a5f');
+  assert.equal(job.env.DIAGNOSTIC_ARTIFACT_SHA256,
+    'ee68601e33d0a6f10c128ae8a90a80a122bb4bc288c2e4036aa8099598476a76');
+  assert.equal(job.env.DIAGNOSTIC_ARTIFACT_SIZE, '358609641');
+  assert.equal(job.env.DIAGNOSTIC_RUN_ID, '43423375885');
+  assert.equal(job.env.DIAGNOSTIC_RUN_SOURCE_SHA, 'a6e35a647048e448d6b6c9fe48351add52eb3a5f');
+  assert.equal(job.env.DIAGNOSTIC_REPOSITORY_ID, '880257842');
+  assert.equal(job.env.DIAGNOSTIC_ARTIFACT_ID === '13912079864', false);
+  // The rejected original App identity is PROVENANCE ONLY, never accepted.
+  assert.match(String(job.env.ORIGINAL_RC415_APP_SHA_PROVENANCE), /^sha256:af38dab0/);
+  // Same canonical cold-build order as the release path.
   const api = stepIndex(steps, s => s.run?.includes('prepareApiCapability'));
-  const stamp = stepIndex(steps, s => s.run?.includes('applyRootVersion'));
   const packages = stepIndex(steps, s => s.run?.includes('bun run build:packages'));
-  assert.ok(api >= 0 && stamp >= 0 && packages >= 0);
-  assert.ok(packages < api, 'API production must follow workspace package build');
-  assert.ok(api < stamp, 'API production must precede the diagnostic version stamp');
+  const restore = stepIndex(steps, s => s.run?.includes('restore-root-dependencies.ts'));
+  const stamp = stepIndex(steps, s => s.run?.includes('applyRootVersion'));
+  const compile = stepIndex(steps, s => s.name === 'Compile root package outputs consumed by the packed tarball');
+  const desktop = stepIndex(steps, s => s.name === 'Build desktop with the accepted native runtime');
+  const launch = stepIndex(steps, s => s.run?.includes('desktop-launch-diagnostic.ts'));
+  for (const [name, at] of [['packages', packages], ['api', api], ['restore', restore],
+    ['stamp', stamp], ['compile', compile], ['desktop', desktop], ['launch', launch]]) {
+    assert.ok(at >= 0, `${name} step must exist`);
+  }
+  assert.ok(packages < api && api < restore && restore < stamp && stamp < compile && compile < desktop && desktop < launch,
+    'cold build order must be packages -> API -> restore -> stamp -> compile -> desktop -> launch');
+  // Exactly one canonical API pipeline: no parallel producer path.
   assert.equal(steps.filter(s => s.run?.includes('prepareApiCapability')).length, 1);
-  // The pinned QLever identity stays immutable and no rc env/secret is added.
-  assert.equal(jobs['desktop-launch-diagnostic'].env.DIAGNOSTIC_ARTIFACT_ID, '13912079864');
-  assert.match(jobs['desktop-launch-diagnostic'].env.DIAGNOSTIC_ARTIFACT_SHA256, /^92710334875497ba/);
-  assert.equal(jobs['desktop-launch-diagnostic'].env.ORIGINAL_SOURCE_SHA, '021c809886629624934826f4aacf87ff59326932');
-  assert.equal(jobs['desktop-launch-diagnostic'].environment, undefined);
+  // Fingerprinted native input is verified BEFORE extraction/consumption.
+  const verifyNative = stepIndex(steps, s => s.run?.includes('verify-retained-desktop-artifact.py metadata'));
+  const extractNative = stepIndex(steps, s => s.run?.includes('extract-qlever-artifact.py'));
+  assert.ok(verifyNative >= 0 && extractNative > verifyNative);
+  // The generic metadata mode is pinned to every explicit coordinate.
+  const verifyRun = String(steps[verifyNative].run);
+  for (const flag of ['--id', '--name', '--sha256', '--size', '--run', '--run-source', '--repository-id']) {
+    assert.ok(verifyRun.includes(flag), `metadata verification must pin ${flag}`);
+  }
+  assert.ok(!verifyRun.includes('verify-qlever-artifact.py'));
+  // The extractor receives the exact expected artifact id as its 5th argument.
+  assert.ok(/\$\{DIAGNOSTIC_ARTIFACT_ID\}/.test(String(steps[extractNative].run)));
+  // Launch is bounded by the helper's unchanged 60s deadline, not this budget.
+  assert.ok(!String(steps[launch].run).includes('60000') && !String(steps[launch].run).includes('--timeout'));
+  // Fresh archives AND the safe enum record are retained; still unqualified.
+  const upload = steps.find(s => s.uses === 'actions/upload-artifact@v4' && /desktop-launch-diagnostic/.test(String(s.with?.name)));
+  assert.ok(upload);
+  const uploaded = String(upload.with.path);
+  assert.ok(uploaded.includes('*-mac.zip'));
+  assert.ok(uploaded.includes('diagnostic-safe.json'));
+  assert.ok(uploaded.includes('diagnostic-not-qualification.txt'));
+  // No publish, no release uploader, no deployment of the diagnostic bytes.
+  assert.ok(!steps.some(s => /upload-release-asset|gh release|npm publish|candidate-service.*publish/i.test(String(s.run ?? ''))));
 });
 
 test('RC desktop job has artifact-read permission and calls the shared retainer', () => {
@@ -176,10 +226,12 @@ test('stable job consumes the ACCEPTED candidate run through the shared retainer
 const FAILURE_UPLOAD = 'Upload failed API preparation diagnostics separately';
 
 test('all three desktop jobs retain the producer receipt/evidence on API failure', () => {
+  // The restored cold-build diagnostic produces the API capability again, so it
+  // keeps the SAME narrow failure evidence contract as the two release build jobs.
   const jobs = [
     ['candidate.yml', 'build_desktop_rc'],
-    ['ci.yml', 'desktop-launch-diagnostic'],
     ['release.yml', 'build_desktop_macos'],
+    ['ci.yml', 'desktop-launch-diagnostic'],
   ];
   for (const [file, jobName] of jobs) {
     const job = read(file).jobs[jobName];

@@ -1,9 +1,9 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { createReadStream } from 'node:fs';
+import { constants as fsConstants, createReadStream } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { constants, homedir } from 'node:os';
 import path from 'node:path';
-import { chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { t as listTar, x as extractTar } from 'tar';
 import { CliCommandError } from './lib/output';
 import { MODULE_API_VERSION, moduleDefinition, modulePackageName, moduleTarget, type ModuleId } from './module-catalog';
@@ -14,6 +14,8 @@ import { withModuleOwnedLock } from './module-owned-lock';
 const REGISTRY = 'https://registry.npmjs.org';
 /** Prefix for a seed import identity: the packaged package.json digest. */
 const SEED_INTEGRITY_PREFIX = 'seed-package-sha256-';
+/** Fixed global file-copy fanout for seed staging. Not user-configurable. */
+const SEED_COPY_CONCURRENCY = 8;
 const VERSION = /^\d+\.\d+\.\d+(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?$/;
 const safePath = (name: unknown): name is string => typeof name === 'string' && name.length > 0 && !name.includes('\\') && !path.isAbsolute(name)
   && name.split('/').every(part => part && part !== '.' && part !== '..');
@@ -131,13 +133,22 @@ export class ModuleStore {
     };
     await diagnostics.run('verify-walk', () => visit()); return manifest;
   }
-  public async current(id: string): Promise<InstalledModule | undefined> {
+  /**
+   * The ONE strict pointer reader: JSON record, binding/id check, and the SAME
+   * verifier as admission. Callers decide whether a lifecycle lock is held; the
+   * returned manifest is scoped to that call and is never cached across unlock.
+   */
+  private async verifiedCurrent(id: string): Promise<{ row: InstalledModule; manifest: ModuleManifest } | undefined> {
     const definition = this.definition(id); let source;
     try { source = await readFile(this.pointer(definition.id), 'utf8'); }
     catch (cause) { if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return; throw cause; }
     const row: InstalledModule = JSON.parse(source);
     if (row.id !== definition.id) throw error('module_binding_invalid', 'Module selection is invalid.');
-    await this.verify(this.directory(row), row); return row;
+    const manifest = await this.verify(this.directory(row), row);
+    return { row, manifest };
+  }
+  public async current(id: string): Promise<InstalledModule | undefined> {
+    return (await this.verifiedCurrent(id))?.row;
   }
   private async withLock<T>(id: ModuleId, action: () => Promise<T>): Promise<T> {
     await mkdir(this.root, { recursive: true, mode: 0o700 });
@@ -234,7 +245,6 @@ export class ModuleStore {
     const definition = this.definition(id);
     await this.withLock(definition.id, async () => { await rm(path.dirname(this.pointer(definition.id)), { recursive: true, force: true }); });
   }
-  /** Admission and its locks remain valid until the entire consumer lifecycle completes. */
   /**
    * Resolve the ONE authoritative packaged artifact for a capability.
    *
@@ -274,14 +284,14 @@ export class ModuleStore {
   }
 
   /**
-   * Import ONE packaged capability into this OWNED store from the read-only seed.
+   * Import ONE packaged capability while its real lifecycle lock is ALREADY held.
    *
-   * The bundle stays immutable: nothing is written under the seed. The copy lands
-   * in `this.root` through the same manifest/inventory verification and the same
-   * owned lifecycle lock as a normal install, then publishes its pointer
-   * atomically. Returns undefined when the seed does not carry that capability.
+   * Returns the verified manifest together with the row. That manifest is valid
+   * only inside this lock callback: it is either the verifier's result for the
+   * exact staged tree just renamed into place, or a fresh verification of an
+   * existing destination. Callers must not return it across unlock.
    */
-  private async seedStaged(id: ModuleId): Promise<InstalledModule | undefined> {
+  private async seedAdmitLocked(id: ModuleId): Promise<{ row: InstalledModule; manifest: ModuleManifest } | undefined> {
     const source = await this.seedSource(id);
     if (!source) return undefined;
     const packageName = modulePackageName(id, this.platform, this.arch)!;
@@ -291,136 +301,164 @@ export class ModuleStore {
       integrity: `${SEED_INTEGRITY_PREFIX}${source.manifestSha256}`,
       manifestSha256: source.manifestSha256,
     };
-    return this.withLock(id, async () => {
-      const destination = this.directory(row);
-      // Reuse only when the installed tree IS the exact packaged artifacts. A
-      // changed same-version seed must be re-imported, never silently reused.
-      const existing = await this.current(id);
-      if (existing && existing.version === row.version && existing.manifestSha256 === row.manifestSha256) return existing;
-      const parent = path.dirname(destination);
-      await mkdir(parent, { recursive: true, mode: 0o700 });
-      const stage = await mkdtemp(path.join(parent, '.seed-'));
-      let primaryError: unknown;
-      let failed = false;
-      try {
-        const from = path.join(source.from, 'package');
-        await mkdir(path.join(stage, 'package'), { recursive: true, mode: 0o700 });
-        const copied: { target: string; mode: number }[] = [];
-        const copy = async (relative = ''): Promise<void> => {
-          for (const entry of await readdir(path.join(from, relative), { withFileTypes: true })) {
-            const name = relative ? `${relative}/${entry.name}` : entry.name;
-            const target = path.join(stage, 'package', name);
-            if (entry.isSymbolicLink()) throw error('module_link_rejected', 'Module artifacts cannot contain links.');
-            if (entry.isDirectory()) { await mkdir(target, { recursive: true, mode: 0o700 }); await copy(name); }
-            else if (entry.isFile()) {
-              await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
-              // 0600 while writing; the verified mode is applied below.
-              await writeFile(target, await readFile(path.join(from, name)), { mode: 0o600, flag: 'wx' });
-              copied.push({ target, mode: 0o600 });
-            } else throw error('module_inventory_invalid', 'Module contains an unsupported member.');
-          }
-        };
-        await copy();
-        // Apply the manifest's declared modes BEFORE verify(): verify compares the
-        // on-disk mode against the manifest, so correcting afterwards is too late.
-        const pkg = JSON.parse(await readFile(path.join(stage, 'package', 'package.json'), 'utf8')) as { xpodModule?: ModuleManifest };
-        const declared = pkg.xpodModule;
-        if (!declared || !Array.isArray(declared.files)) throw error('module_inventory_invalid', 'Module manifest inventory is missing.');
-        const modes = new Map<string, number>();
-        for (const file of declared.files) {
-          if (!file || !safePath(file.path) || ![0o644, 0o755].includes(file.mode) || modes.has(file.path)) {
-            throw error('module_inventory_invalid', 'Module file permissions are invalid.');
-          }
-          modes.set(file.path, file.mode);
+    const destination = this.directory(row);
+    // Keep the old strict read + SAME verify before deciding to replace: a
+    // corrupted warm tree is reported, never silently healed by a re-import.
+    const existing = await this.verifiedCurrent(id);
+    if (existing && existing.row.version === row.version && existing.row.manifestSha256 === row.manifestSha256) return existing;
+    const parent = path.dirname(destination);
+    await mkdir(parent, { recursive: true, mode: 0o700 });
+    const stage = await mkdtemp(path.join(parent, '.seed-'));
+    let primaryError: unknown;
+    let failed = false;
+    try {
+      const from = path.join(source.from, 'package');
+      const staged = path.join(stage, 'package');
+      await mkdir(staged, { recursive: true, mode: 0o700 });
+      // Walk first, mutate second: the walk only validates member kinds and
+      // records canonical work items, so directory creation always precedes the
+      // files that live in them and no task can race a parent mkdir.
+      const copied: { target: string; relative: string }[] = [];
+      const directories: string[] = [];
+      const files: { source: string; target: string; relative: string }[] = [];
+      const walk = async (relative = ''): Promise<void> => {
+        for (const entry of await readdir(path.join(from, relative), { withFileTypes: true })) {
+          const name = relative ? `${relative}/${entry.name}` : entry.name;
+          const target = path.join(staged, name);
+          if (entry.isSymbolicLink()) throw error('module_link_rejected', 'Module artifacts cannot contain links.');
+          if (entry.isDirectory()) { directories.push(target); await walk(name); }
+          else if (entry.isFile()) files.push({ source: path.join(from, name), target, relative: name });
+          else throw error('module_inventory_invalid', 'Module contains an unsupported member.');
         }
-        for (const entry of copied) {
-          const relative = path.relative(path.join(stage, 'package'), entry.target).split(path.sep).join('/');
-          const mode = relative === 'package.json' ? 0o644 : modes.get(relative);
-          if (mode === undefined) throw error('module_inventory_invalid', 'Module contains an unbound file.');
-          await chmod(entry.target, mode);
+      };
+      const copy = async (): Promise<void> => {
+        await walk();
+        for (const directory of directories) await mkdir(directory, { recursive: true, mode: 0o700 });
+        // The SAME bounded fanout primitive that verifies inventory, at a higher
+        // explicit bound. It is a single flat list, so the bound is global for the
+        // module and cannot multiply with tree depth. A failure stops scheduling
+        // and drains every started copy before the throw, so cleanup never races
+        // one. The private mkdtemp stage is 0700, so a copy is only visible to its
+        // owner. COPYFILE_FICLONE stays opportunistic (never FORCE) and EXCL keeps
+        // the existing no-overwrite guarantee. No intermediate per-file chmod is
+        // needed: the manifest's exact mode is applied once below and fully
+        // verified against the same manifest.
+        await checkInventoryFiles(files, async file => {
+          await copyFile(file.source, file.target, fsConstants.COPYFILE_EXCL | fsConstants.COPYFILE_FICLONE);
+          copied.push({ target: file.target, relative: file.relative });
+        }, SEED_COPY_CONCURRENCY);
+      };
+      await copy();
+      // Apply the manifest's declared modes BEFORE verify(): verify compares the
+      // on-disk mode against the manifest, so correcting afterwards is too late.
+      const pkg = JSON.parse(await readFile(path.join(stage, 'package', 'package.json'), 'utf8')) as { xpodModule?: ModuleManifest };
+      const declared = pkg.xpodModule;
+      if (!declared || !Array.isArray(declared.files)) throw error('module_inventory_invalid', 'Module manifest inventory is missing.');
+      const modes = new Map<string, number>();
+      for (const file of declared.files) {
+        if (!file || !safePath(file.path) || ![0o644, 0o755].includes(file.mode) || modes.has(file.path)) {
+          throw error('module_inventory_invalid', 'Module file permissions are invalid.');
         }
-        // The SAME verifier as a registry install; no second validator.
-        await this.verify(stage, row);
-        // A prior import may have published these exact bytes before its pointer
-        // write failed. Verify and reuse them; never delete an admitted tree.
-        let publish = true;
-        try { await lstat(destination); await this.verify(destination, row); publish = false; }
-        catch (cause) { if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') throw cause; }
-        if (publish) await rename(stage, destination);
-        await mkdir(path.dirname(this.pointer(id)), { recursive: true, mode: 0o700 });
-        const pending = `${this.pointer(id)}.tmp`;
-        await writeFile(pending, JSON.stringify(row), { mode: 0o600 });
-        await rename(pending, this.pointer(id));
-        return row;
-      } catch (cause) {
-        failed = true; primaryError = cause; throw cause;
-      } finally {
-        // No private waiver: a cleanup failure is surfaced, and both errors are
-        // retained exactly like a normal install.
-        try { await rm(stage, { recursive: true, force: true }); }
-        catch (cleanupError) {
-          if (failed) throw new AggregateError([primaryError, cleanupError],
-            `Module seed import failed (${primaryError instanceof Error ? primaryError.message : String(primaryError)}); staging cleanup failed (${String(cleanupError)})`);
-          throw cleanupError;
-        }
+        modes.set(file.path, file.mode);
       }
-    });
+      for (const entry of copied) {
+        const mode = entry.relative === 'package.json' ? 0o644 : modes.get(entry.relative);
+        if (mode === undefined) throw error('module_inventory_invalid', 'Module contains an unbound file.');
+        await chmod(entry.target, mode);
+      }
+      // The SAME verifier as a registry install; no second validator.
+      const stagedManifest = await this.verify(stage, row);
+      // A prior import may have published these exact bytes before its pointer
+      // write failed. Verify and reuse them; never delete an admitted tree. Only
+      // when the destination is absent may the staged manifest be reused, because
+      // the rename below puts exactly those verified bytes in place. It stays
+      // scoped to this lock callback and is never cached.
+      let manifest = stagedManifest;
+      let publish = true;
+      try { await lstat(destination); manifest = await this.verify(destination, row); publish = false; }
+      catch (cause) { if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') throw cause; }
+      if (publish) await rename(stage, destination);
+      await mkdir(path.dirname(this.pointer(id)), { recursive: true, mode: 0o700 });
+      const pending = `${this.pointer(id)}.tmp`;
+      await writeFile(pending, JSON.stringify(row), { mode: 0o600 });
+      await rename(pending, this.pointer(id));
+      return { row, manifest };
+    } catch (cause) {
+      failed = true; primaryError = cause; throw cause;
+    } finally {
+      // No private waiver: a cleanup failure is surfaced, and both errors are
+      // retained exactly like a normal install.
+      try { await rm(stage, { recursive: true, force: true }); }
+      catch (cleanupError) {
+        if (failed) throw new AggregateError([primaryError, cleanupError],
+          `Module seed import failed (${primaryError instanceof Error ? primaryError.message : String(primaryError)}); staging cleanup failed (${String(cleanupError)})`);
+        throw cleanupError;
+      }
+    }
   }
 
-  public async withAdmittedModules<T>(ids: readonly string[], action: (modules: readonly AdmittedModule[]) => Promise<T>): Promise<T> {
-    const definitions = ids.map(id => this.definition(id));
-    if (new Set(definitions.map(row => row.id)).size !== definitions.length) {
+  /** Build the callback view; the verified manifest is only used here. */
+  private admittedView(row: InstalledModule, manifest: ModuleManifest): AdmittedModule {
+    const directory = this.directory(row);
+    return Object.freeze({ installed: Object.freeze({ ...row }),
+      entry: path.join(directory, 'package', manifest.entry), cwd: path.join(directory, 'package') });
+  }
+
+  /**
+   * The ONE admission entry for `run()` and `withAdmittedModules()`.
+   *
+   * Locks are acquired in canonical ModuleId order so concurrent callers cannot
+   * deadlock. The callback receives modules in the caller's REQUESTED order.
+   * Offline: seed resolution, strict old-current verification, import, publish and
+   * the action all happen while every real lifecycle lock is held. Online: the
+   * registry two-stage flow is unchanged (self-locking current/install first,
+   * never inside another module lock), then canonical locks plus the second
+   * verification still required across the first stage's unlock window.
+   */
+  private async withAdmission<T>(requested: readonly { id: ModuleId }[], action: (modules: readonly AdmittedModule[]) => Promise<T>): Promise<T> {
+    if (new Set(requested.map(row => row.id)).size !== requested.length) {
       throw error('module_selection_invalid', 'Select each module only once.');
     }
-    const selected: InstalledModule[] = [];
-    for (const definition of definitions) {
-      // A packaged/offline runtime must never fall back to a registry download and
-      // must never keep running an OLDER capability after the app was updated. The
-      // packaged seed is the authority, so it is resolved first and the owned
-      // pointer is only reused when it IS that exact seed (same version AND same
-      // packaged manifest digest). Everything still goes through seedStaged()'s
-      // lock + the same verify().
-      if (this.offline) {
-        const seeded = await this.seedStaged(definition.id);
-        if (!seeded) throw error('module_not_staged', `Module ${definition.id} is not staged for this offline runtime.`);
-        selected.push(seeded);
-        continue;
+    const ordered = [...requested].sort((a, b) => a.id.localeCompare(b.id));
+    const rows = new Map<ModuleId, InstalledModule>();
+    if (!this.offline) {
+      // Registry resolution is self-locking and MUST happen before any admission
+      // lock: never current/install/download while another module lock is held.
+      for (const definition of requested) {
+        rows.set(definition.id, await this.current(definition.id) ?? await this.install(definition.id));
       }
-      const staged = await this.current(definition.id);
-      if (staged) { selected.push(staged); continue; }
-      selected.push(await this.install(definition.id));
     }
-    const ordered = [...selected].sort((a, b) => a.id.localeCompare(b.id));
     const admitted = new Map<ModuleId, AdmittedModule>();
     const acquire = async (index: number): Promise<T> => {
-      if (index === ordered.length) return action(selected.map(row => admitted.get(row.id)!));
-      const row = ordered[index];
-      return this.withLock(row.id, async () => {
-        const directory = this.directory(row);
-        const manifest = await this.verify(directory, row);
-        admitted.set(row.id, Object.freeze({ installed: Object.freeze({ ...row }),
-          entry: path.join(directory, 'package', manifest.entry), cwd: path.join(directory, 'package') }));
+      if (index === ordered.length) return action(requested.map(row => admitted.get(row.id)!));
+      const id = ordered[index]!.id;
+      return this.withLock(id, async () => {
+        if (this.offline) {
+          const result = await this.seedAdmitLocked(id);
+          if (!result) throw error('module_not_staged', `Module ${id} is not staged for this offline runtime.`);
+          admitted.set(id, this.admittedView(result.row, result.manifest));
+        } else {
+          const row = rows.get(id)!;
+          const manifest = await this.verify(this.directory(row), row);
+          admitted.set(id, this.admittedView(row, manifest));
+        }
         return acquire(index + 1);
       });
     };
     return acquire(0);
   }
+
+  public async withAdmittedModules<T>(ids: readonly string[], action: (modules: readonly AdmittedModule[]) => Promise<T>): Promise<T> {
+    return this.withAdmission(ids.map(id => this.definition(id)), action);
+  }
   public async run(id: string, args: string[]): Promise<number> {
-    // Same selection rule as withAdmittedModules(): an offline runtime is bound to
-    // the packaged seed, never to a stale pointer and never to the registry.
+    // Same admission entry as withAdmittedModules: offline binds to the packaged
+    // seed, online to the current pointer or a registry install.
     const definition = this.definition(id);
-    let row: InstalledModule;
-    if (this.offline) {
-      const seeded = await this.seedStaged(definition.id);
-      if (!seeded) throw error('module_not_staged', `Module ${id} is not staged for this offline runtime.`);
-      row = seeded;
-    } else {
-      row = await this.current(definition.id) ?? await this.install(definition.id);
-    }
-    return this.withLock(row.id, async () => {
-      const directory = this.directory(row); const manifest = await this.verify(directory, row);
+    return this.withAdmission([definition], async modules => {
+      const module = modules[0]!;
       return new Promise<number>((resolve, reject) => {
-        const child = spawn(process.execPath, [path.join(directory, 'package', manifest.entry), ...args], { stdio: 'inherit', env: process.env });
+        const child = spawn(process.execPath, [module.entry, ...args], { stdio: 'inherit', env: process.env });
         const interrupt = () => { child.kill('SIGINT'); };
         const terminate = () => { child.kill('SIGTERM'); };
         process.on('SIGINT', interrupt); process.on('SIGTERM', terminate);

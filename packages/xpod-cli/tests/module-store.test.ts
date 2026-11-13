@@ -502,6 +502,35 @@ test('an offline store fails closed when the seed lacks the capability', async (
   expect(String(failure?.message)).toContain('not staged');
 });
 
+test('seed staging preserves every manifest mode exactly, including files that start 0600', async () => {
+  const f = await seedFixture();
+  // A second manifest file with the other allowed mode proves the staging pass is
+  // driven by the manifest, not by a hardcoded 0600/0644.
+  const executable = '#!/bin/sh\nexit 0\n';
+  const packageDir = path.join(f.seed, 'afs', 'darwin-arm64', f.version, 'package');
+  await writeFile(path.join(packageDir, 'run.sh'), executable);
+  await chmod(path.join(packageDir, 'run.sh'), 0o600);
+  const manifestPath = path.join(packageDir, 'package.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { xpodModule: ModuleManifest };
+  manifest.xpodModule.files.push({ path: 'run.sh',
+    sha256: createHash('sha256').update(executable).digest('hex'),
+    size: Buffer.byteLength(executable), mode: 0o755 });
+  await writeFile(manifestPath, JSON.stringify(manifest));
+
+  const store = new ModuleStore({ root: f.store, seed: f.seed, offline: true, platform: 'darwin', arch: 'arm64' });
+  // Use the admitted module's OWN cwd: a seed import is published under the
+  // packaged tree, so the location comes from the store, never from a guess.
+  const admitted = await store.withAdmittedModules(['afs'], async modules => modules[0]!);
+  const installed = admitted.cwd;
+  // The FINAL modes are exactly the manifest's, including the file that started
+  // life as 0600 in the seed.
+  expect((await lstat(path.join(installed, 'entry.mjs'))).mode & 0o777).toBe(0o644);
+  expect((await lstat(path.join(installed, 'run.sh'))).mode & 0o777).toBe(0o755);
+  // A later admission re-verifies the same published modes.
+  await store.withAdmittedModules(['afs'], async () => {});
+  expect((await lstat(path.join(installed, 'run.sh'))).mode & 0o777).toBe(0o755);
+});
+
 test('a second admission reuses the already imported module', async () => {
   const f = await seedFixture();
   const store = new ModuleStore({ root: f.store, seed: f.seed, offline: true, platform: 'darwin', arch: 'arm64' });
@@ -528,7 +557,7 @@ test('store options are per-instance and never read a process-wide snapshot', as
 
 
 /** Write one seed version directory with a real xpodModule manifest. */
-async function writeSeedVersion(seed: string, version: string, source: string, id: 'afs' = 'afs'): Promise<void> {
+async function writeSeedVersion(seed: string, version: string, source: string, id: 'afs' | 'api' = 'afs'): Promise<void> {
   const dir = path.join(seed, id, 'darwin-arm64', version, 'package');
   await mkdir(dir, { recursive: true });
   const name = id === 'afs' ? '@undefineds.co/xpod-afs-darwin-arm64' : '@undefineds.co/xpod-api-darwin-arm64';
@@ -592,6 +621,81 @@ console.log(JSON.stringify({ code, current: await store.current('afs') }));
   expect(result.status).toBe(0);
   expect(JSON.parse(result.stdout)).toEqual({ code: 'EIO', current: previous });
   expect(await readFile(oldEntry, 'utf8')).toBe('process.exit(0);\n');
+});
+
+test('a copy failure in the bounded staging pool drains every started copy and never publishes', async () => {
+  const f = await seedFixture();
+  const options = { root: f.store, seed: f.seed, offline: true, platform: 'darwin', arch: 'arm64' };
+  // Several extra files so more than one pool worker is guaranteed to start.
+  const packageDir = path.join(f.seed, 'afs', 'darwin-arm64', f.version, 'package');
+  const manifestPath = path.join(packageDir, 'package.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { xpodModule: ModuleManifest };
+  for (let index = 0; index < 16; index += 1) {
+    const name = `extra-${index}.mjs`; const body = `// ${index}\n`;
+    await writeFile(path.join(packageDir, name), body);
+    manifest.xpodModule.files.push({ path: name,
+      sha256: createHash('sha256').update(body).digest('hex'), size: Buffer.byteLength(body), mode: 0o644 });
+  }
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  const script = path.join(f.root, 'copy-fault.ts');
+  await writeFile(script, `
+import { mock } from 'bun:test';
+const original = { ...await import('node:fs/promises') };
+let started = 0; let active = 0; let peak = 0;
+mock.module('node:fs/promises', () => ({ ...original, copyFile: async (from, to, flags) => {
+  // Capture THIS copy's index at entry: reading the shared counter after an await
+  // would race the other workers and never select a fixed failing index.
+  const index = ++started; active += 1; peak = Math.max(peak, active);
+  try {
+    // Every copy parks briefly, so at least one is still IN FLIGHT when the
+    // failure is raised. A fail-fast regression that released the lock while a
+    // copy was live would then be observable in "activeAtRejection".
+    await new Promise(resolve => setTimeout(resolve, 5));
+    if (index === 3) throw Object.assign(new Error('copy fault'), { code: 'EIO' });
+    return await original.copyFile(from, to, flags);
+  } finally { active -= 1; }
+} }));
+const { ModuleStore } = await import(${JSON.stringify(path.join(coreSource, 'module-store.ts'))});
+const store = new ModuleStore(${JSON.stringify(options)});
+let code; let activeAtRejection = -1;
+try { await store.withAdmittedModules(['afs'], async () => {}); }
+catch (error) { code = error.code; activeAtRejection = active; }
+const current = await store.current('afs');
+// The published root for a SEED import is packaged/<manifestSha>/<id>/<platform>/:
+// read the REAL location, never a guessed legacy one.
+const manifestSha = ${JSON.stringify(createHash('sha256').update(JSON.stringify(manifest)).digest('hex'))};
+const publishedRoot = ${JSON.stringify(path.join(f.store, 'packaged'))} + '/' + manifestSha + '/afs/darwin-arm64';
+const entries = await original.readdir(publishedRoot);
+const leftovers = entries.filter(name => name.startsWith('.seed-'));
+const publishedVersionTree = entries.includes(${JSON.stringify(f.version)});
+// Lock must be immediately reusable: a task still copying would hold it.
+let second;
+try { await store.withAdmittedModules(['afs'], async () => {}); second = 'admitted'; }
+catch (error) { second = error.code; }
+console.log(JSON.stringify({ code, current: current ?? null, entries, leftovers, publishedVersionTree,
+  activeAtRejection, peak, second, manifestSha, publishedRoot }));
+`);
+  const result = spawnSync('bun', [script], { encoding: 'utf8' });
+  if (result.status !== 0) throw new Error(`fault child exited ${result.status}: ${result.stderr}`);
+  const observed = JSON.parse(result.stdout) as { code?: string; current: unknown; entries: string[];
+    leftovers: string[]; publishedVersionTree: boolean; activeAtRejection: number; peak: number;
+    second: string; manifestSha: string };
+  // The injected error surfaces unchanged and nothing was published.
+  expect(observed.code).toBe('EIO');
+  expect(observed.current).toBeNull();
+  // The REAL published root is packaged/<manifestSha>/... and it holds no module
+  // and no leftover .seed-* stage: cleanup did not race an in-flight copy.
+  expect(/^[a-f0-9]{64}$/u.test(observed.manifestSha)).toBe(true);
+  // `parent` (packaged/<sha>/afs/darwin-arm64) may legitimately be pre-created
+  // before staging; what must NOT exist is the published VERSION tree itself.
+  expect(observed.publishedVersionTree).toBe(false);
+  expect(observed.leftovers).toEqual([]);
+  // At least one copy was genuinely in flight at rejection, and every started
+  // copy had settled by the time the rejection surfaced (active == 0).
+  expect(observed.peak).toBeGreaterThan(1);
+  expect(observed.activeAtRejection).toBe(0);
+  // The lock is free enough for a clean retry.
+  expect(observed.second).toBe('admitted');
 });
 
 test('an upgraded seed version replaces the older selection without partial reuse', async () => {
@@ -658,4 +762,65 @@ test('two stores built from different contexts never share state', async () => {
   expect(a.root).toBe(path.resolve('/tmp/a'));
   expect(b.root).toBe(path.resolve('/tmp/b'));
   expect(a.root).not.toBe(b.root);
+});
+
+test('offline admission preserves the requested callback order', async () => {
+  const f = await seedFixture();
+  await writeSeedVersion(f.seed, f.version, 'process.exit(0);\n', 'api');
+  const store = new ModuleStore({ root: f.store, seed: f.seed, offline: true, platform: 'darwin', arch: 'arm64' });
+  const seen = await store.withAdmittedModules(['api', 'afs'], async modules => modules.map(row => row.installed.id));
+  expect(seen).toEqual(['api', 'afs']);
+});
+
+test('a corrupted warm tree is rejected instead of being silently re-imported', async () => {
+  const f = await seedFixture();
+  const store = new ModuleStore({ root: f.store, seed: f.seed, offline: true, platform: 'darwin', arch: 'arm64' });
+  await store.withAdmittedModules(['afs'], async () => {});
+  const current = await store.current('afs');
+  const record = await readFile(path.join(store.root, 'afs/darwin-arm64/current.json'), 'utf8');
+  const entry = path.join(store.root, 'packaged', current!.manifestSha256, 'afs/darwin-arm64', f.version, 'package/entry.mjs');
+  await writeFile(entry, 'process.exit(9);\n');
+  const failure = await store.withAdmittedModules(['afs'], async () => {}).then(() => null, cause => cause as { code?: string });
+  expect(failure?.code).toBe('module_file_changed');
+  expect(await readFile(path.join(store.root, 'afs/darwin-arm64/current.json'), 'utf8')).toBe(record);
+});
+
+test('a second offline admission is refused while the first action runs, then succeeds', async () => {
+  const f = await seedFixture();
+  const store = new ModuleStore({ root: f.store, seed: f.seed, offline: true, platform: 'darwin', arch: 'arm64' });
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let entered!: () => void;
+  const firstEntered = new Promise<void>(resolve => { entered = resolve; });
+  const first = store.withAdmittedModules(['afs'], async () => { entered(); await gate; });
+  await firstEntered;
+  let consumed = false;
+  const second = await store.withAdmittedModules(['afs'], async () => { consumed = true; })
+    .then(() => null, cause => cause as { code?: string });
+  expect(consumed).toBe(false);
+  expect(second?.code).toBe('module_busy');
+  release(); await first;
+  await store.withAdmittedModules(['afs'], async () => { consumed = true; });
+  expect(consumed).toBe(true);
+});
+
+test('inverse two-module offline admissions fail fast without overlapping', async () => {
+  const f = await seedFixture();
+  await writeSeedVersion(f.seed, f.version, 'process.exit(0);\n', 'api');
+  const store = new ModuleStore({ root: f.store, seed: f.seed, offline: true, platform: 'darwin', arch: 'arm64' });
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let entered = false;
+  const forward = store.withAdmittedModules(['api', 'afs'], async modules => {
+    expect(modules.map(row => row.installed.id)).toEqual(['api', 'afs']);
+    entered = true; await gate;
+  });
+  while (!entered) await new Promise(resolve => setTimeout(resolve, 5));
+  // The inverse request must not enter a second action, and must fail fast on the
+  // held module lock rather than waiting on the first action.
+  const inverseFailure = await store.withAdmittedModules(['afs', 'api'], async () => {}).then(() => null, cause => cause as { code?: string });
+  expect(inverseFailure?.code).toBe('module_busy');
+  release(); await forward;
+  const inverse = await store.withAdmittedModules(['afs', 'api'], async modules => modules.map(row => row.installed.id));
+  expect(inverse).toEqual(['afs', 'api']);
 });

@@ -9,6 +9,10 @@ on:
     # inputs. Their authoritative producers must not acquire a second allowlist.
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -36,6 +40,8 @@ jobs:
 
   products:
     name: products (${{ matrix.target }})
+    # Expensive independent producer: explicit workflow_dispatch only.
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     needs: contract
     strategy:
       fail-fast: false

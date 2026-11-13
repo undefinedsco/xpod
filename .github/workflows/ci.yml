@@ -82,26 +82,14 @@ jobs:
         timeout-minutes: 10
         run: |
           set -eu
-          # Use an HTTPS Ubuntu archive mirror while the default hosts fail DNS.
-          # All apt consumers, including Playwright, share this list; the stock
-          # source definitions and Ubuntu signing keys remain unchanged.
-          mirror_list=/etc/apt/apt-mirrors.txt
-          sources=/etc/apt/sources.list.d/ubuntu.sources
-          sudo test -f "$mirror_list"
-          # Fail closed if the image stops routing sources through that list.
-          grep -Fq 'mirror+file:/etc/apt/apt-mirrors.txt' "$sources" 2>/dev/null \
-            || { echo "::error::apt sources no longer route through the mirror list"; exit 1; }
-          # Keep the original list for the rest of this ephemeral job only.
-          sudo cp "$mirror_list" "${RUNNER_TEMP}/apt-mirrors.original.txt"
-          printf 'https://mirrors.kernel.org/ubuntu/\tpriority:1\n' \
-            | sudo tee "$mirror_list" >/dev/null
           missing=0
           for pkg in g++-12 gcc-12 clang-19 cmake ninja-build; do
             dpkg -s "$pkg" >/dev/null 2>&1 || missing=1
           done
+          # Use the runner-configured signed Ubuntu sources so apt can fail over
+          # across its mirrors; no custom mirror or source/key rewrite.
           if [ "$missing" -eq 1 ]; then
             sudo apt-get update
-            # Exact reviewed majors, unchanged, now resolved via the mirror.
             sudo apt-get install -y --no-install-recommends \
               g++-12 gcc-12 clang-19 cmake ninja-build
           fi
@@ -825,18 +813,26 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # DIAGNOSTIC_NOT_QUALIFICATION. Manual, isolated, macOS-arm launch locator for
-  # the PINNED RC410 desktop failure. Candidate 0.4.31-rc.410 and QLever artifact
-  # 13912079864 are FIXED job env: this route has exactly one manual input
-  # (operation), so it cannot be pointed at a different candidate by mistake.
-  # It mirrors the candidate desktop ordering (build:packages -> candidate
-  # version helper -> cold root compile/components -> desktop dist), then runs
-  # ONLY launchOwnedPackagedDesktop + close. It holds no rc Environment, no
-  # kubectl, no production credential, no account grant and no model call.
+  # DIAGNOSTIC_NOT_QUALIFICATION. Manual-only, isolated macOS-arm COLD BUILD that
+  # produces FRESH diagnostic App bits and immediately runs ONLY
+  # launchOwnedPackagedDesktop + close on those new bytes. It is deliberately NOT
+  # the retained rc.410 replay: RuntimeManager diagnostics live in the App code, so
+  # replaying an old archive could never capture them. The newly built archive is a
+  # NEW diagnostic build from GITHUB_SHA; it is NOT the original failed RC415 App
+  # (no raw RC415 App bytes exist) and it does not qualify any release.
+  #
+  # Restored from the already-reviewed cold-build body at
+  # 759379b8d5a3b82cf008e6e42c5742b0305c4dd6: same job id, same single manual
+  # operation, same macOS 15 image, same original 120-minute OUTER build budget.
+  # The launch helper keeps its own unchanged 60s gateway deadline; no OTHER check
+  # deadline moves. The native input is the retained RC415-era QLever artifact, NOT
+  # the obsolete 021c input. No rc Environment, no kubectl, no production credential,
+  # no account grant, no model call, no publish step: contents/actions are READ-only.
   desktop-launch-diagnostic:
     name: desktop-launch-diagnostic (NOT release acceptance)
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.operation == 'desktop-launch-diagnostic' }}
     runs-on: macos-15
+    # ORIGINAL cold-build outer budget restored (not the 20-minute replay scope).
     timeout-minutes: 120
     permissions:
       contents: read
@@ -844,12 +840,19 @@ jobs:
     env:
       # Read-only token for the retained GH API metadata/download. Never echoed.
       GH_TOKEN: ${{ github.token }}
-      DIAGNOSTIC_CANDIDATE: '0.4.31-rc.410'
-      DIAGNOSTIC_ARTIFACT_ID: '13912079864'
-      DIAGNOSTIC_ARTIFACT_SHA256: '92710334875497ba29bf1995ba75af6b0eae23dee0e198f9b493e5d852fc3ca6'
-      DIAGNOSTIC_ARTIFACT_NAME: 'qlever-local-runtime-darwin-arm64-021c809886629624934826f4aacf87ff59326932'
-      ORIGINAL_SOURCE_SHA: '021c809886629624934826f4aacf87ff59326932'
-      ORIGINAL_APP_SHA: 'sha256:b1adca8a6ddb16b2c80e3685cee7da76b7fedd46476798ec043c7943b2deb69d'
+      # The NEW diagnostic App takes this label; it is not an RC qualification.
+      DIAGNOSTIC_CANDIDATE: '0.4.31-rc.415'
+      # Exact retained RC415-era QLever native input, by immutable identity.
+      DIAGNOSTIC_ARTIFACT_ID: '14036640427'
+      DIAGNOSTIC_ARTIFACT_NAME: 'qlever-local-runtime-darwin-arm64-a6e35a647048e448d6b6c9fe48351add52eb3a5f'
+      DIAGNOSTIC_ARTIFACT_SHA256: 'ee68601e33d0a6f10c128ae8a90a80a122bb4bc288c2e4036aa8099598476a76'
+      DIAGNOSTIC_ARTIFACT_SIZE: '358609641'
+      DIAGNOSTIC_RUN_ID: '43423375885'
+      DIAGNOSTIC_RUN_SOURCE_SHA: 'a6e35a647048e448d6b6c9fe48351add52eb3a5f'
+      DIAGNOSTIC_REPOSITORY_ID: '880257842'
+      # PROVENANCE ONLY: the rejected RC415 App candidate identity. Never accepted,
+      # never compared, never treated as the archive this job produces.
+      ORIGINAL_RC415_APP_SHA_PROVENANCE: 'sha256:af38dab0dc6955ab7c54f5b2d14b4e0870258e08479cc1f52495f74e14700e74'
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
       XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT: ${{ github.workspace }}/.test-data/qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
     steps:
@@ -870,27 +873,46 @@ jobs:
           {
             printf 'DIAGNOSTIC_NOT_QUALIFICATION\n'
             printf 'diagnosticSourceSha=%s\n' "$GITHUB_SHA"
-            printf 'originalsource=%s\n' "$ORIGINAL_SOURCE_SHA"
-            printf 'originalapp=%s\n' "$ORIGINAL_APP_SHA"
+            printf 'newDiagnosticAppSource=%s\n' "$GITHUB_SHA"
             printf 'candidate=%s\n' "$DIAGNOSTIC_CANDIDATE"
-            printf 'qleverArtifactId=%s\n' "$DIAGNOSTIC_ARTIFACT_ID"
-            printf 'qleverArtifactSha256=%s\n' "$DIAGNOSTIC_ARTIFACT_SHA256"
+            printf 'nativeArtifactId=%s\n' "$DIAGNOSTIC_ARTIFACT_ID"
+            printf 'nativeArtifactName=%s\n' "$DIAGNOSTIC_ARTIFACT_NAME"
+            printf 'nativeArtifactSha256=%s\n' "$DIAGNOSTIC_ARTIFACT_SHA256"
+            printf 'nativeArtifactRun=%s\n' "$DIAGNOSTIC_RUN_ID"
+            printf 'nativeArtifactRunSource=%s\n' "$DIAGNOSTIC_RUN_SOURCE_SHA"
+            printf 'originalRc415AppShaProvenance=%s\n' "$ORIGINAL_RC415_APP_SHA_PROVENANCE"
+            printf 'newAppEqualsOriginalRc415=NO\n'
           } > "${RUNNER_TEMP}/diagnostic-not-qualification.txt"
+      # GENERIC retained-artifact metadata mode: explicit id/name/digest/size/run/
+      # head/repo are all checked, so no hardcoded 021c helper is reused.
       - name: Verify the pinned QLever artifact identity from retained metadata
         run: |
           set -euo pipefail
           gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${DIAGNOSTIC_ARTIFACT_ID}" > "${RUNNER_TEMP}/qlever-artifact.json"
-          python3 scripts/diagnostics/verify-qlever-artifact.py "${RUNNER_TEMP}/qlever-artifact.json"
+          python3 scripts/diagnostics/verify-retained-desktop-artifact.py metadata \
+            "${RUNNER_TEMP}/qlever-artifact.json" \
+            --id "$DIAGNOSTIC_ARTIFACT_ID" \
+            --name "$DIAGNOSTIC_ARTIFACT_NAME" \
+            --sha256 "$DIAGNOSTIC_ARTIFACT_SHA256" \
+            --size "$DIAGNOSTIC_ARTIFACT_SIZE" \
+            --run "$DIAGNOSTIC_RUN_ID" \
+            --run-source "$DIAGNOSTIC_RUN_SOURCE_SHA" \
+            --repository-id "$DIAGNOSTIC_REPOSITORY_ID"
       - name: Download, hash-verify and safely extract the QLever artifact
         run: |
           set -euo pipefail
           gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${DIAGNOSTIC_ARTIFACT_ID}/zip" > "${RUNNER_TEMP}/qlever-artifact.zip"
+          # The optional 5th argument is the exact expected artifact id: the
+          # extractor's own metadata check must name THIS artifact, never 13912079864.
           python3 scripts/diagnostics/extract-qlever-artifact.py \
             "${RUNNER_TEMP}/qlever-artifact.zip" \
             .test-data/qlever-runtime \
             "${DIAGNOSTIC_ARTIFACT_SHA256}" \
-            "${RUNNER_TEMP}/qlever-artifact.json"
+            "${RUNNER_TEMP}/qlever-artifact.json" \
+            "${DIAGNOSTIC_ARTIFACT_ID}"
           test -f .test-data/qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
+          # The untouched original ZIP and tar stay in place unchanged.
+          test -f .test-data/qlever-runtime/qlever-native-artifact.zip
       - run: bun install --frozen-lockfile
       # SAME order as candidate.yml: workspace packages first, then the existing
       # candidate version helper (never a hand-rolled version writer), then the
@@ -923,7 +945,6 @@ jobs:
       - name: Bootstrap the Electron vendor binary
         run: node node_modules/electron/install.js
 
-
       # Failure evidence only: the producer already writes its own receipt and
       # evidence/ before exiting, so retain those narrow members (never a
       # workspace/source/env dump). Diagnostic artifact, not qualification.
@@ -939,12 +960,11 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-      - name: Apply and verify the candidate version with the existing helper
+      - name: Apply and verify the diagnostic version label with the existing helper
         run: |
           set -euo pipefail
-          # Reuse the existing version writer with the retained RC410 version.
-          # This is a diagnostic checkout, so do not derive staging provenance
-          # or a new version from this diagnostic workflow's run number.
+          # Reuse the existing version writer with the diagnostic label. This is a
+          # diagnostic checkout, so never derive staging provenance from this run.
           node -e 'require("./scripts/release-candidate.cjs").applyRootVersion(process.cwd(), process.env.DIAGNOSTIC_CANDIDATE)'
           node -e 'if (require("./desktop/package.json").version !== process.env.DIAGNOSTIC_CANDIDATE) process.exit(1)'
       - name: Compile root package outputs consumed by the packed tarball
@@ -959,7 +979,7 @@ jobs:
         run: |
           bun x --no-install tsc --noEmit -p tsconfig.scripts.json
           bun run dist
-      - name: Run the isolated launch diagnostic (launch and close only)
+      - name: Run the isolated launch diagnostic on the FRESH build (launch and close only)
         run: |
           set -euo pipefail
           new_zip="$(find "$PWD/desktop/release" -maxdepth 1 -type f -name '*-mac.zip' -print -quit)"
@@ -967,6 +987,8 @@ jobs:
           out="${RUNNER_TEMP}/desktop-launch-diagnostic"
           mkdir -p "$out"
           set +e
+          # The offline issuer is an isolated launch-diagnostic input only; it is
+          # NEVER an RC qualification and never evidence about the real issuer.
           bun scripts/diagnostics/desktop-launch-diagnostic.ts \
             --archive "$new_zip" \
             --version "$DIAGNOSTIC_CANDIDATE" \
@@ -977,7 +999,7 @@ jobs:
           set -e
           test -s "$out/diagnostic-safe.json"
           exit "$status"
-      - name: Retain only the build archives and the safe enum record
+      - name: Retain only the fresh diagnostic archives and the safe enum record
         if: always()
         uses: actions/upload-artifact@v4
         with:

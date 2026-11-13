@@ -14,7 +14,7 @@ import {
 import { trayIconAssetName, XPOD_TRAY_GUID } from './tray-icon.js'
 import { isTrustedDesktopShellSender } from './ipc-policy.js'
 import { DesktopApprovalDelivery } from './approval-delivery.js'
-import { RuntimeManager } from './runtime-manager.js'
+import { RuntimeManager, createStartupDiagnosticSink } from './runtime-manager.js'
 import { RuntimePreferences, readRuntimeDataEnvironment } from './runtime-preferences.js'
 import { resolveDesktopTargetUrl } from './target-url.js'
 import { installDockIcon, resolveDockIconPath } from './dock-icon.js'
@@ -37,7 +37,7 @@ import { runStartupSequence } from './startup-sequence.js'
 import { canCancelDesktopLogin, cancelDesktopLogin, shouldCancelDesktopLoginOnClose } from './login-recovery.js'
 import { navigateDesktopProduct } from './product-navigation.js'
 import { desktopProtocolRoute, desktopProtocolRouteFromArgv, resumeDesktopProtocolNavigation, XPOD_DESKTOP_PROTOCOL } from './product-protocol.js'
-import { ensureDesktopEnvFile, loadDesktopEnvFile } from './user-env.js'
+import { desktopDataDirectory, ensureDesktopEnvFile, loadDesktopEnvFile } from './user-env.js'
 import { isTrustedOidcNavigation, resolveDesktopOidcIssuer, isOidcAuthorizationRequest, isSameOriginProductUrl } from './navigation-policy.js'
 import {
   installCompactWindowDevToolsGuard,
@@ -82,7 +82,7 @@ process.env.XPOD_AI_CLIENT_CONFIGURATION_ENABLED ??= 'true'
 process.env.CSS_IDENTITY_DB_URL ??= `sqlite:${path.join(desktopDataRoot, 'identity.sqlite')}`
 process.env.CSS_SPARQL_ENDPOINT ??= `sqlite:${path.join(desktopDataRoot, 'quadstore.sqlite')}`
 process.env.CSS_RDF_INDEX_PATH ??= path.join(desktopDataRoot, 'rdf-index.sqlite')
-process.env.CSS_ROOT_FILE_PATH ??= path.join(desktopDataRoot, 'data')
+process.env.CSS_ROOT_FILE_PATH ??= desktopDataDirectory(desktopDataRoot)
 
 const targetUrl = resolveDesktopTargetUrl()
 const targetOrigin = new URL(targetUrl).origin
@@ -132,6 +132,20 @@ let quitConfirmationPending = false
 type DesktopQuitReason = 'explicit' | 'update-install'
 let quitReason: DesktopQuitReason = 'explicit'
 const runtimePreferences = new RuntimePreferences(desktopDataRoot)
+/**
+ * Acceptance-only startup observation.
+ *
+ * The managed child's state and stream classes are written under the OWNED
+ * userData root so the external acceptance can read them WITHOUT the product
+ * IPC bridge (that bridge needs a trusted product page, which is exactly what a
+ * failed gateway cannot provide). Gated by the EXISTING acceptance flag; the
+ * sink helper in runtime-manager owns the hardened owned-file write. Nothing is
+ * exported to the renderer, and normal launches stay identical: no sink, no
+ * pipe, no file.
+ */
+const startupDiagnosticSink = acceptanceMode
+  ? createStartupDiagnosticSink({ userDataRoot: desktopDataRoot })
+  : undefined
 // Reuse the app's userData authority for the CLI's writable module store; the
 // installed resources remain the read-only source of packaged capabilities.
 const runtimeManager = new RuntimeManager({
@@ -141,6 +155,7 @@ const runtimeManager = new RuntimeManager({
   resolveEnvironment: () => readRuntimeDataEnvironment(process.env.XPOD_ENV_FILE),
   ownedDataRoot: desktopDataRoot,
   ...(app.isPackaged ? { resourcesPath: process.resourcesPath } : {}),
+  ...(startupDiagnosticSink ? { startupDiagnostics: startupDiagnosticSink } : {}),
 })
 // Squirrel pins an ad-hoc build's cdhash and cannot accept the next release.
 // Our detached installer verifies and swaps the bundle while retaining user data.

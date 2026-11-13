@@ -89,14 +89,32 @@ describe('exact-identity enforcement is unchanged by the isolation',()=>{
 });
 
 /**
- * The desktop bootstrap is the SINGLE Electron initialization. Bun skips Electron's
- * postinstall during the canonical root install, and the root restore replaces
- * node_modules afterwards, so the binary must be initialized after the final tree
- * exists - never before. These assertions pin the order without executing the step.
+ * The diagnostic cold-build restores the root dependency tree and must therefore
+ * initialize Electron AFTER that restore, exactly like the release jobs. It is a
+ * fresh build now, not a retained-artifact replay.
  */
+describe('cold-build diagnostic restores root deps then bootstraps Electron',()=>{
+  const doc=parseYaml(readFileSync(path.join(import.meta.dir,'../../.github/workflows/ci.yml'),'utf8')) as any;
+  const steps=doc.jobs['desktop-launch-diagnostic'].steps as any[];
+  it('runs the canonical API producer exactly once before the version stamp',()=>{
+    const api=steps.filter(step=>String(step.run??'').includes('prepareApiCapability'));
+    expect(api).toHaveLength(1);
+    const stampAt=steps.findIndex(step=>String(step.run??'').includes('applyRootVersion'));
+    expect(stampAt).toBeGreaterThan(steps.indexOf(api[0]!));
+  });
+  it('initializes Electron exactly once, after the root dependency restore',()=>{
+    const bootstraps=steps.filter(step=>String(step.run??'').includes('node node_modules/electron/install.js'));
+    expect(bootstraps).toHaveLength(1);
+    const restoreAt=steps.findIndex(step=>String(step.run??'').includes('bun scripts/restore-root-dependencies.ts'));
+    expect(restoreAt).toBeGreaterThanOrEqual(0);
+    expect(steps.indexOf(bootstraps[0]!)).toBeGreaterThan(restoreAt);
+  });
+});
+
 describe('desktop Electron bootstrap follows the root dependency restore',()=>{
+  // The two release build jobs keep the full ordering contract; the ci.yml cold
+  // diagnostic is asserted separately above and follows the same restore rule.
   const workflows:[string,string][]=[
-    ['ci.yml','desktop-launch-diagnostic'],
     ['candidate.yml','build_desktop_rc'],
     ['release.yml','build_desktop_macos'],
   ];

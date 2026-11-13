@@ -5,6 +5,10 @@ on:
     branches: [staging, main]
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -31,11 +35,15 @@ jobs:
           bun -e 'const p=await Bun.file("targets.json").json();for(const [key,available] of [["matrix",true],["pending",false]])console.log(key+"="+JSON.stringify({include:p.include.filter(x=>x.nativeSourceAvailable===available)}));' >> "$GITHUB_OUTPUT"
 
   native:
+    # Expensive native producer: explicit workflow_dispatch only.
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     needs: contract
     uses: ./.github/workflows/build-qlever-macos-runtime.yml
 
   products:
     name: products (${{ matrix.target }})
+    # Expensive independent producer: explicit workflow_dispatch only.
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     needs: [contract, native]
     strategy:
       fail-fast: false
@@ -104,6 +112,8 @@ jobs:
           retention-days: 30
 
   pending-native-sources:
+    # Report-only diagnostic matrix; explicit workflow_dispatch only.
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     needs: contract
     strategy:
       fail-fast: false

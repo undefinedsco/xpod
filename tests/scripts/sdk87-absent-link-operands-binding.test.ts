@@ -300,12 +300,14 @@ it('SDK87 advances its PRIMARY selectors coherently to the current CSS producer,
 
 it('the reviewed NORMAL CSS product workflow admits the current version and keeps the prior one', () => {
   // CAUSAL REGRESSION for gap 2: the normal css-module-product workflow advanced
-  // 9f14303a -> 16f3781a (diagnostic-payload retention). The prior approval must
+  // 9f14303a -> 16f3781a (diagnostic-payload retention) -> 90294663 (same-PR
+  // preview cancellation) -> d1c64dbb (manual preview producers). The prior approvals must
   // remain admitted; this must NOT be conflated with the CONTROLLED
-  // css-native-products table, which is unchanged.
+  // css-native-products table, which is unchanged. This is a static registration
+  // check; actual admission execution is covered by the dedicated admission tests.
   const currentNormal = sha('.github/workflows/css-module-product.yml');
   const priorNormal = '9f14303a0736391b250598c21211dc5312565adf5bf30256a4f9c61f13cc8257';
-  expect(currentNormal).toBe('16f3781aa25d8a89167538babfcd6bd1eaa8556a54831a1ee78450d158ef2286');
+  expect(currentNormal).toBe('d1c64dbb6488b7b4a59e63006437f96413198a278b24fa89c609799858d5f225');
   expect(currentNormal).not.toBe(priorNormal);
   // The controlled native-products path is a different workflow and stays as-is.
   const controlled = sha('.github/workflows/css-native-products.yml');

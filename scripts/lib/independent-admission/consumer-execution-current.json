@@ -25,7 +25,7 @@
   },
   {
     "path": ".github/workflows/api-module-product.yml",
-    "sha256": "db6ca21afa33d572f24a92e96c88f425d1bf46a86d966a55be4c10de4d812263"
+    "sha256": "91f8945206ed87a1621a5a37b2762aa2aacfde988b3fa775fe398568a9910377"
   },
   {
     "path": "Dockerfile",
@@ -225,7 +225,7 @@
   },
   {
     "path": "packages/xpod-cli/src/module-inventory-workers.ts",
-    "sha256": "2f314ac1a1784bf33d373dd30a8e35b8b716afdbaa3dcc1bec5d73cdc2ac6ff1"
+    "sha256": "108e9c14e8c8ad4d5487396f197a96abef2c5084861a65a4fa9351cfd910c667"
   },
   {
     "path": "packages/xpod-cli/src/module-owned-lock.ts",
@@ -233,7 +233,7 @@
   },
   {
     "path": "packages/xpod-cli/src/module-store.ts",
-    "sha256": "7440a66ce89564472566fe9106397f218edbacec34ef851e8572c159a84be6e7"
+    "sha256": "42ed0a2d11b9fae6162d032cf494a0907dd046a38747c9115dc333128b7f1513"
   },
   {
     "path": "packages/xpod-cli/src/native-target.ts",
@@ -617,7 +617,7 @@
   },
   {
     "path": "scripts/agentfs-native-ci/accept.py",
-    "sha256": "3bcd2a9c254689fc26785556752347625bc6ca4f7ed367584b998562f9e3938b"
+    "sha256": "c79c1e76ede8f3acfd800792909b181acc0231b3cde125a16b1a6f51932a73bc"
   },
   {
     "path": "scripts/agentfs-native-ci/mounted/export-products.ts",
@@ -941,7 +941,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "1d9f59f69d9a69007654340840c548d0e9617ee4ae6e615c70d824afe15120f1"
+    "sha256": "014432f112584b192669621e9576ec81b1493bf89508659a25dbd576e5afa3d3"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",
@@ -1221,7 +1221,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "5c06d3b04ced2ff66b40b728cf8d9777154c04d9c9121964a8052dc41be930b8"
+    "sha256": "31495c3990235c500bd527644f6f327a3aa17ed74ac103bdf15059fdda159e22"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -2033,7 +2033,7 @@
   },
   {
     "path": ".github/workflows/ci.yml",
-    "sha256": "8d592e68f636c52605d5e839aef1e78f44f4d20b7adea27f31728785218514c0"
+    "sha256": "1ed635dc234c374b1304bde07c2daeab03832794ddad698db1ce4200e767af87"
   },
   {
     "path": "qlever/tests/test_sdk90_metadata_open.py",

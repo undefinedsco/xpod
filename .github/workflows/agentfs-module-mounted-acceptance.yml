@@ -8,14 +8,39 @@ on:
     branches: [staging, main]
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
   packages: read
   actions: read
 
 jobs:
+  # Cheap, always-on PR/push contract. Uses the EXISTING owned container identity
+  # regression (moved here from the heavy matrix, not duplicated).
+  contract:
+    name: owned container identity contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Owned container identity publication regression
+        run: python3 tests/scripts/agentfs_linux_cidfile_test.py -v
+
   mounted-module:
     name: mounted-module (${{ matrix.target }})
+    # Actual FUSE/NFS mounted acceptance is expensive and needs a real host:
+    # explicit workflow_dispatch only, after the automatic contract passes.
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    needs: contract
     strategy:
       fail-fast: false
       matrix:
@@ -41,11 +66,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22.21.1
+      # Different runner from the fast `contract` job: this job keeps its own
+      # exact Python 3.12 toolchain (hashlib.file_digest) rather than relying on
+      # whatever the hosted image defaults to. Only the cidfile REGRESSION moved.
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Owned container identity publication regression
-        run: python3 tests/scripts/agentfs_linux_cidfile_test.py -v
       - name: Establish immutable source and exact native authority
         env:
           TARGET: ${{ matrix.target }}
