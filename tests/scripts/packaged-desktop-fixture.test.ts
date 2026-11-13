@@ -4,7 +4,10 @@ import path from 'node:path';
 import { assertBundledRuntimeProcess, createPackagedFixtureEnvironment,
   assertOwnedRuntimeProfile, isMissingProcessReport, readProcessInventory,
   rememberProcessTree, remainingOwnedProcessIds, closeOwnedPackagedApp,
-  isLaunchSubphase, expectedOwnedRuntimeArgv, waitForOwnedRuntime } from '../../scripts/helpers/packaged-desktop-fixture';
+  isLaunchSubphase, expectedOwnedRuntimeArgv, waitForOwnedRuntime,
+  classifyGatewayProbe, summarizeSnapshot, createGatewayTelemetry,
+  waitForGatewayReady, readGatewayTelemetry, observeSnapshotBounded,
+  SNAPSHOT_OBSERVATION_MS } from '../../scripts/helpers/packaged-desktop-fixture';
 import { desktopDataDirectory } from '../../desktop/src/user-env';
 
 describe('owned packaged desktop permission fixture', () => {
@@ -225,7 +228,7 @@ describe('launch subphase boundary placement', () => {
     // bridge is emitted immediately before the bridge evaluate, and profile right
     // before the actual profile assertion - not merely somewhere earlier.
     const bridgeAt = source.indexOf("emitSubphase(options, 'bridge')");
-    const evaluateAt = source.indexOf('await page.evaluate');
+    const evaluateAt = source.indexOf('await page.evaluate', bridgeAt);
     const profileAt = source.indexOf("emitSubphase(options, 'profile')");
     const assertAt = source.indexOf('await assertOwnedRuntimeProfile');
     expect(bridgeAt).toBeGreaterThan(0);
@@ -315,3 +318,117 @@ describe('launch subphase boundary placement', () => {
       expect(message).toMatch(/did not reach the running state/u);
     } finally { vi.useRealTimers(); }
   });
+
+describe('bounded gateway telemetry', () => {
+  it('treats a synchronously throwing snapshot observer as unavailable', async () => {
+    await expect(observeSnapshotBounded(() => { throw new Error('private observer error'); }))
+      .resolves.toBeUndefined();
+  });
+
+  it('classifies only closed-enum outcomes and keeps a numeric status alone', () => {
+    expect(classifyGatewayProbe({ kind: 'response', ok: true, status: 200 })).toEqual({ outcome: 'ok', httpStatus: 200 });
+    expect(classifyGatewayProbe({ kind: 'response', ok: false, status: 503 })).toEqual({ outcome: 'http-error', httpStatus: 503 });
+    expect(classifyGatewayProbe({ kind: 'timeout' })).toEqual({ outcome: 'timeout' });
+    expect(classifyGatewayProbe({ kind: 'error' })).toEqual({ outcome: 'connect-failed' });
+    expect(classifyGatewayProbe({ kind: 'response', ok: true, status: Number.NaN })).toEqual({ outcome: 'malformed' });
+  });
+
+  it('never retains a message, url or env in a snapshot summary', () => {
+    expect(summarizeSnapshot({ state: 'starting', ownership: 'desktop', error: undefined }))
+      .toEqual({ state: 'starting', ownershipMatch: true, hasError: false });
+    expect(summarizeSnapshot({ state: 'failed', ownership: 'external',
+      error: new Error('C:\\secret\\path https://id.rc/?token=abc') }))
+      .toEqual({ state: 'failed', ownershipMatch: false, hasError: true });
+    // Unknown/absent states and non-objects degrade to "no observation".
+    expect(summarizeSnapshot({ state: 'bogus', ownership: 'desktop' })).toBeUndefined();
+    expect(summarizeSnapshot('starting')).toBeUndefined();
+    expect(summarizeSnapshot(undefined)).toBeUndefined();
+  });
+
+  it('records only the LAST bounded frame and stops at the caller deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      const telemetry = createGatewayTelemetry();
+      const outcomes = [503, 503, 200];
+      let index = 0;
+      const fetchImpl = (async () => new Response('{}', { status: outcomes[Math.min(index++, outcomes.length - 1)]! })) as unknown as typeof fetch;
+      const pending = waitForGatewayReady({ gateway: 'http://127.0.0.1:1/', deadline: Date.now() + 5_000,
+        telemetry, fetchImpl, now: () => Date.now() });
+      await vi.advanceTimersByTimeAsync(2_000);
+      await pending;
+      expect(telemetry.lastOutcome).toBe('ok');
+      expect(telemetry.lastHttpStatus).toBe(200);
+      // Aggregate stays finite: one probe counter, not a frame array.
+      expect(Array.isArray((telemetry as unknown as { frames?: unknown }).frames)).toBe(false);
+      expect(Object.keys(telemetry).sort()).toEqual(['elapsedMs', 'lastHttpStatus', 'lastOutcome', 'probes']);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('does not turn a failure into a pass when the bridge is unavailable', async () => {
+    const telemetry = createGatewayTelemetry();
+    const fetchImpl = (async () => new Response('{}', { status: 503 })) as unknown as typeof fetch;
+    await expect(waitForGatewayReady({ gateway: 'http://127.0.0.1:1/', deadline: Date.now() + 300,
+      telemetry, fetchImpl, snapshot: async () => { throw new Error('Missing packaged desktop bridge'); } }))
+      .rejects.toThrow(/did not become ready/u);
+    expect(telemetry.lastSnapshot).toBeUndefined();
+    expect(telemetry.probes).toBeGreaterThan(0);
+  });
+
+  it('preserves the primary error when the telemetry observer itself throws', async () => {
+    const telemetry = createGatewayTelemetry();
+    const fetchImpl = (async () => { throw new TypeError('boom https://id.rc/?token=x'); }) as unknown as typeof fetch;
+    await expect(waitForGatewayReady({ gateway: 'http://127.0.0.1:1/', deadline: Date.now() + 300,
+      telemetry, fetchImpl, onTelemetry: () => { throw new Error('observer exploded'); } }))
+      .rejects.toThrow(/did not become ready/u);
+    expect(telemetry.lastOutcome).toBe('connect-failed');
+  });
+
+  it('uses the SAME accumulator->error->read path a real failure takes', async () => {
+    vi.useFakeTimers();
+    try {
+      // Exactly how launchOwnedPackagedDesktop builds it: no extra keys allowed.
+      const telemetry = createGatewayTelemetry();
+      const fetchImpl = (async () => new Response('{}', { status: 503 })) as unknown as typeof fetch;
+      const pending = waitForGatewayReady({ gateway: 'http://127.0.0.1:1/', deadline: Date.now() + 1_000,
+        telemetry, fetchImpl, snapshot: async () => { throw new Error('bridge unavailable'); } })
+        .catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(1_100);
+      const thrown = await pending as Error & { gatewayTelemetry?: unknown };
+      expect(thrown).toBeInstanceOf(Error);
+      // Attach exactly like the fixture does, then read back through the projection.
+      Object.defineProperty(thrown, 'gatewayTelemetry', { enumerable: false, configurable: false,
+        writable: false, value: Object.freeze({ ...telemetry, appAlive: true }) });
+      expect(readGatewayTelemetry(thrown)).toEqual({ probes: expect.any(Number), lastOutcome: 'http-error',
+        lastHttpStatus: 503, elapsedMs: expect.any(Number), appAlive: true });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('bounds one hanging snapshot probe without delaying readiness', async () => {
+    vi.useFakeTimers();
+    try {
+      let snapshotResolved = false;
+      const pending = observeSnapshotBounded(() => new Promise(resolve => {
+        setTimeout(() => { snapshotResolved = true; resolve({ state: 'running', ownership: 'desktop' }); }, 10_000);
+      }));
+      await vi.advanceTimersByTimeAsync(SNAPSHOT_OBSERVATION_MS + 10);
+      await expect(pending).resolves.toBeUndefined();
+      expect(snapshotResolved).toBe(false);
+      // A resolvable bridge still summarizes normally within the bound.
+      await expect(observeSnapshotBounded(async () => ({ state: 'starting', ownership: 'desktop', error: 'x' })))
+        .resolves.toEqual({ state: 'starting', ownershipMatch: true, hasError: true });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('projects attached telemetry down to safe fields and rejects anything extra', () => {
+    const error = new Error('primary');
+    Object.defineProperty(error, 'gatewayTelemetry', { enumerable: false, value: {
+      probes: 3, lastOutcome: 'timeout', lastSnapshot: { state: 'starting', ownershipMatch: true, hasError: false },
+      elapsedMs: 60_000, appAlive: true } });
+    expect(readGatewayTelemetry(error)).toEqual({ probes: 3, lastOutcome: 'timeout', appAlive: true, elapsedMs: 60_000,
+      lastSnapshot: { state: 'starting', ownershipMatch: true, hasError: false } });
+    const leaked = new Error('primary');
+    Object.defineProperty(leaked, 'gatewayTelemetry', { enumerable: false, value: { probes: 1, errorMessage: 'secret' } });
+    expect(readGatewayTelemetry(leaked)).toBeUndefined();
+    expect(readGatewayTelemetry(new Error('plain'))).toBeUndefined();
+  });
+});

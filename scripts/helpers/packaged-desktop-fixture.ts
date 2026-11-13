@@ -221,6 +221,195 @@ export function assertOwnedRuntimeProfile(content: string, profile: string): voi
   }
 }
 
+const TELEMETRY_KEYS = ['probes', 'lastOutcome', 'lastHttpStatus', 'lastSnapshot', 'appAlive', 'elapsedMs'] as const;
+const TELEMETRY_OUTCOMES = new Set(['ok', 'http-error', 'timeout', 'connect-failed', 'malformed']);
+const TELEMETRY_STATES = new Set(['stopped', 'starting', 'running', 'failed']);
+
+/** Project an arbitrary error's attached telemetry down to the safe closed
+ * shape. Anything unexpected is dropped rather than forwarded, so a raw
+ * message/URL/env can never reach a published artifact. */
+export function readGatewayTelemetry(error: unknown): GatewayTelemetry | undefined {
+  const value = (error as { gatewayTelemetry?: unknown } | undefined)?.gatewayTelemetry;
+  if (!value || typeof value !== 'object') return undefined;
+  const row = value as Record<string, unknown>;
+  if (Object.keys(row).some(key => !(TELEMETRY_KEYS as readonly string[]).includes(key))) return undefined;
+  if (!Number.isSafeInteger(row.probes) || (row.probes as number) < 0) return undefined;
+  const out: GatewayTelemetry = { probes: row.probes as number };
+  if (typeof row.lastOutcome === 'string') {
+    if (!TELEMETRY_OUTCOMES.has(row.lastOutcome)) return undefined;
+    out.lastOutcome = row.lastOutcome as GatewayTelemetry['lastOutcome'];
+  }
+  if (row.lastHttpStatus !== undefined) {
+    if (!Number.isInteger(row.lastHttpStatus) || (row.lastHttpStatus as number) < 100
+      || (row.lastHttpStatus as number) > 599) return undefined;
+    out.lastHttpStatus = row.lastHttpStatus as number;
+  }
+  if (row.lastSnapshot !== undefined) {
+    const snapshot = row.lastSnapshot as Record<string, unknown>;
+    if (!snapshot || typeof snapshot !== 'object' || typeof snapshot.state !== 'string'
+      || !TELEMETRY_STATES.has(snapshot.state) || typeof snapshot.ownershipMatch !== 'boolean'
+      || typeof snapshot.hasError !== 'boolean') return undefined;
+    out.lastSnapshot = { state: snapshot.state, ownershipMatch: snapshot.ownershipMatch, hasError: snapshot.hasError };
+  }
+  if (typeof row.appAlive === 'boolean') out.appAlive = row.appAlive;
+  if (row.elapsedMs !== undefined) {
+    if (!Number.isSafeInteger(row.elapsedMs) || (row.elapsedMs as number) < 0) return undefined;
+    out.elapsedMs = row.elapsedMs as number;
+  }
+  return Object.freeze(out);
+}
+
+/** Closed-enum result of ONE bounded gateway probe. No URL, header, body or
+ * error message is ever retained; `httpStatus` exists only when a response
+ * actually arrived. */
+export type GatewayProbeOutcome =
+  | 'ok' | 'http-error' | 'timeout' | 'connect-failed' | 'malformed';
+
+export interface GatewayTelemetry {
+  /** Number of probes actually attempted inside the shared deadline. */
+  probes: number;
+  /** Last closed-enum outcome observed (absent before the first probe). */
+  lastOutcome?: GatewayProbeOutcome;
+  /** Last HTTP status seen, if any response arrived. */
+  lastHttpStatus?: number;
+  /** Last bounded product-snapshot observation, when the bridge answered. */
+  lastSnapshot?: { state: string; ownershipMatch: boolean; hasError: boolean };
+  /** Whether the owned Electron App process was still alive when sampled.
+   * This is the App process only, never the packaged runtime child. */
+  appAlive?: boolean;
+  /** Total elapsed ms from gateway-phase entry to the final observation. */
+  elapsedMs?: number;
+}
+
+/** Aggregate-only accumulator. It keeps the LAST value of each bounded field,
+ * never a per-poll frame, so telemetry stays finite for long polls.
+ *
+ * The start instant is NOT part of this object: it is carried privately by
+ * {@link waitForGatewayReady}, so the attached/failure shape has exactly the
+ * closed key set that {@link readGatewayTelemetry} accepts. */
+export function createGatewayTelemetry(): GatewayTelemetry {
+  return { probes: 0 };
+}
+
+/** Upper bound for ONE snapshot observation inside the existing deadline. A
+ * probe that cannot answer within this window is simply absent. */
+export const SNAPSHOT_OBSERVATION_MS = 100;
+
+/**
+ * Race one snapshot read against a hard 100ms bound. A bridge that is not yet
+ * declared, throws, or hangs yields `undefined` (absent observation); it never
+ * delays the caller beyond the bound and never affects readiness.
+ */
+export async function observeSnapshotBounded(read: () => Promise<unknown>,
+  timeoutMs: number = SNAPSHOT_OBSERVATION_MS): Promise<GatewayTelemetry['lastSnapshot']> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const value = await Promise.race([
+      Promise.resolve().then(read).catch(() => undefined),
+      new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), timeoutMs); }),
+    ]);
+    return summarizeSnapshot(value);
+  } finally { if (timer) clearTimeout(timer); }
+}
+
+/** Read the product's existing main-IPC bridge from the initial window, if it is
+ * already exposed by that window's preload. Returns undefined when absent; it
+ * never installs a global, hook or test bypass. */
+export async function readInitialWindowSnapshot(page: Page): Promise<unknown> {
+  const pending = page.evaluate(async () => {
+    const bridge = (window as unknown as { xpodDesktop?: { deviceRuntime?: {
+      getRuntimeSettings(): Promise<{ state: string; ownership: string; pid?: number; error?: unknown }>;
+    } } }).xpodDesktop;
+    if (!bridge?.deviceRuntime) return undefined;
+    try { return await bridge.deviceRuntime.getRuntimeSettings(); } catch { return undefined; }
+  }).catch(() => undefined);
+  return pending;
+}
+
+const SNAPSHOT_STATES = new Set(['stopped', 'starting', 'running', 'failed']);
+
+/** Classify one probe without retaining any response text. */
+export function classifyGatewayProbe(result:
+  | { kind: 'response'; ok: boolean; status: number }
+  | { kind: 'timeout' }
+  | { kind: 'error' }): { outcome: GatewayProbeOutcome; httpStatus?: number } {
+  if (result.kind === 'timeout') return { outcome: 'timeout' };
+  if (result.kind === 'error') return { outcome: 'connect-failed' };
+  const httpStatus = Number.isInteger(result.status) && result.status >= 100 && result.status <= 599
+    ? result.status : undefined;
+  if (result.ok) return httpStatus === undefined ? { outcome: 'malformed' } : { outcome: 'ok', httpStatus };
+  return httpStatus === undefined ? { outcome: 'malformed' } : { outcome: 'http-error', httpStatus };
+}
+
+/** Reduce an arbitrary snapshot to the closed enum + booleans only. */
+export function summarizeSnapshot(value: unknown): GatewayTelemetry['lastSnapshot'] {
+  if (!value || typeof value !== 'object') return undefined;
+  const row = value as { state?: unknown; ownership?: unknown; error?: unknown };
+  if (typeof row.state !== 'string' || !SNAPSHOT_STATES.has(row.state)) return undefined;
+  return { state: row.state, ownershipMatch: row.ownership === 'desktop',
+    hasError: row.error !== undefined && row.error !== null };
+}
+
+/**
+ * Wait for the gateway inside the CALLER's deadline while recording bounded,
+ * non-authoritative telemetry.
+ *
+ * The existing 60s gateway+bridge shared budget, the 1s per-fetch timeout and
+ * the readiness rule (`response.ok`) are unchanged. Telemetry never turns a
+ * failure into a pass and never replaces the thrown primary error.
+ */
+export async function waitForGatewayReady(input: {
+  gateway: string; deadline: number; telemetry: GatewayTelemetry;
+  snapshot?: () => Promise<unknown>;
+  onTelemetry?: (telemetry: GatewayTelemetry) => void;
+  fetchImpl?: typeof fetch;
+  now?: () => number;
+}): Promise<void> {
+  const now = input.now ?? Date.now;
+  const startedAt = now();
+  let snapshotObserved = false;
+  const fetchImpl = input.fetchImpl ?? fetch;
+  const record = (): void => {
+    // Bounded elapsed on the accumulator itself, so the SAME object attached to
+    // the primary error already carries it (no extra key, no extra frame).
+    input.telemetry.elapsedMs = Math.max(0, now() - startedAt);
+    if (!input.onTelemetry) return;
+    try {
+      input.onTelemetry({ ...input.telemetry,
+        ...(input.telemetry.lastSnapshot ? { lastSnapshot: { ...input.telemetry.lastSnapshot } } : {}) });
+    } catch { /* observer must not change launch semantics */ }
+  };
+  try {
+    await waitFor(async () => {
+      input.telemetry.probes += 1;
+      let result: { kind: 'response'; ok: boolean; status: number } | { kind: 'timeout' } | { kind: 'error' };
+      try {
+        const response = await fetchImpl(new URL('service/status', input.gateway),
+          { signal: AbortSignal.timeout(1_000) });
+        result = { kind: 'response', ok: response.ok, status: response.status };
+      } catch (error) {
+        const name = (error as { name?: unknown } | undefined)?.name;
+        result = name === 'TimeoutError' || name === 'AbortError' ? { kind: 'timeout' } : { kind: 'error' };
+      }
+      const classified = classifyGatewayProbe(result);
+      input.telemetry.lastOutcome = classified.outcome;
+      if (classified.httpStatus !== undefined) input.telemetry.lastHttpStatus = classified.httpStatus;
+      else delete input.telemetry.lastHttpStatus;
+      if (input.snapshot && !snapshotObserved) {
+        snapshotObserved = true;
+        // One bounded read; later unavailable observations cannot erase it.
+        const snapshot = await observeSnapshotBounded(input.snapshot,
+          Math.min(SNAPSHOT_OBSERVATION_MS, Math.max(0, input.deadline - now())));
+        if (snapshot) input.telemetry.lastSnapshot = snapshot;
+      }
+      record();
+      return classified.outcome === 'ok' ? true : undefined;
+    }, 'Packaged Local runtime did not become ready', input.deadline);
+  } finally {
+    record();
+  }
+}
+
 /**
  * Poll until the probe returns a value.
  *
@@ -265,6 +454,10 @@ export async function launchOwnedPackagedDesktop(options: {
   archive: string; version: string; issuer: string; evidenceDirectory: string;
   /** Optional closed-enum progress observer; must not alter launch semantics. */
   onPhase?: (phase: LaunchSubphase) => void;
+  /** Optional bounded, closed-enum failure telemetry; never authoritative. */
+  onTelemetry?: (telemetry: GatewayTelemetry) => void;
+  /** Optional LOCAL-diagnostic process-output observer; never used as evidence. */
+  onProcessOutput?: (stream: 'stdout' | 'stderr', chunk: string) => void;
 }): Promise<OwnedPackagedDesktop> {
   if (process.platform !== 'darwin') throw new Error('Packaged desktop acceptance requires macOS');
   if (!/^\d+\.\d+\.\d+(?:-rc\.\d+(?:\.\d+)?)?$/.test(options.version)) throw new Error('Invalid packaged version');
@@ -289,6 +482,7 @@ export async function launchOwnedPackagedDesktop(options: {
   let observation: Promise<void> | undefined;
   let observationFailed = false;
   const owned = new Map<number, string>();
+  const telemetry = createGatewayTelemetry();
   async function observeTree(): Promise<void> {
     const pid = appProcess?.pid;
     if (!pid) throw new Error('Missing owned App pid');
@@ -415,6 +609,21 @@ export async function launchOwnedPackagedDesktop(options: {
     launchAttempted = true;
     app = await _electron.launch({ executablePath: path.join(appPath, 'Contents', 'MacOS', 'Xpod'), cwd: directory, env, timeout: 60_000 });
     appProcess = app.process();
+    // LOCAL diagnostic only: hand bounded process output to the caller's private
+    // sink. Streams may be absent (Playwright owns stdio), so this is optional
+    // and can never change launch behaviour or readiness.
+    if (options.onProcessOutput) {
+      for (const stream of ['stdout', 'stderr'] as const) {
+        const source = appProcess[stream];
+        if (!source || typeof source.on !== 'function') continue;
+        source.on('data', (chunk: unknown) => {
+          try {
+            const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+            options.onProcessOutput!(stream, text);
+          } catch { /* observer must not change launch semantics */ }
+        });
+      }
+    }
     await observeTree();
     observer = setInterval(() => {
       if (observation) return;
@@ -430,10 +639,15 @@ export async function launchOwnedPackagedDesktop(options: {
     // bridge-readiness poll, so the two together consume the historical single
     // 60s budget instead of adding a second one.
     const startupDeadline = Date.now() + 60_000;
-    await waitFor(async () => {
-      const response = await fetch(new URL('service/status', gateway), { signal: AbortSignal.timeout(1_000) }).catch(() => undefined);
-      return response?.ok ? true : undefined;
-    }, 'Packaged Local runtime did not become ready', startupDeadline);
+    // The product bridge may already be exposed by the initial window's preload.
+    // Probe it at most ONCE, bounded to 100ms inside this same deadline; if it is
+    // not available yet the observation is explicitly absent (never faked), and
+    // the real bridge phase below still fills the snapshot afterwards.
+    await waitForGatewayReady({
+      gateway, deadline: startupDeadline, telemetry,
+      snapshot: () => readInitialWindowSnapshot(page),
+      ...(options.onTelemetry ? { onTelemetry: options.onTelemetry } : {}),
+    });
     emitSubphase(options, 'service-info');
     const serviceInfo = await fetch(new URL('api/service-info', gateway), { signal: AbortSignal.timeout(5_000), redirect: 'error' });
     if (!serviceInfo.ok || (await serviceInfo.json() as { edition?: string }).edition !== 'local') {
@@ -446,12 +660,14 @@ export async function launchOwnedPackagedDesktop(options: {
     // SAME 60s startup deadline; a terminal or foreign state fails immediately.
     const readRuntime = async () => await page.evaluate(async () => {
       const bridge = (window as unknown as { xpodDesktop?: { deviceRuntime?: {
-        getRuntimeSettings(): Promise<{ state: string; ownership: string; pid?: number }>;
+        getRuntimeSettings(): Promise<{ state: string; ownership: string; pid?: number; error?: unknown }>;
       } } }).xpodDesktop;
       if (!bridge?.deviceRuntime) throw new Error('Missing packaged desktop bridge');
       return bridge.deviceRuntime.getRuntimeSettings();
     });
     const runtime = await waitForOwnedRuntime(readRuntime, startupDeadline);
+    // Recorded for the failure projection only; never re-emitted as a frame.
+    telemetry.lastSnapshot = summarizeSnapshot(runtime);
     runtimePid = runtime.pid;
     assertBundledRuntimeProcess({ binary, pid: runtimePid, ownership: runtime.ownership,
       expectedArgv: ownedArgv,
@@ -464,6 +680,22 @@ export async function launchOwnedPackagedDesktop(options: {
       runtime: { version: runtimeVersion, edition: 'local', ownership: 'desktop', binarySha256,
         bundled: true, installed: true, noExternalOverride: true, freshEndpoint: true }, close };
   } catch (error) {
+    // Sample the App process BEFORE any cleanup: close() necessarily ends it, so
+    // sampling afterwards would always report false. This is the Electron App
+    // process only, never the packaged runtime child.
+    try {
+      const appAlive = appProcess === undefined ? undefined
+        : appProcess.exitCode === null && appProcess.signalCode === null;
+      if (telemetry.probes > 0 && error && typeof error === 'object') {
+        Object.defineProperty(error, 'gatewayTelemetry', {
+          value: Object.freeze({
+            ...telemetry,
+            ...(telemetry.lastSnapshot ? { lastSnapshot: { ...telemetry.lastSnapshot } } : {}),
+            ...(appAlive === undefined ? {} : { appAlive }),
+          }),
+          enumerable: false, configurable: false, writable: false });
+      }
+    } catch { /* never mask the primary error */ }
     // Keep owned files if lifecycle cleanup cannot be proven. Never clean another App/profile.
     await close().catch(() => undefined);
     if (observer) clearInterval(observer);

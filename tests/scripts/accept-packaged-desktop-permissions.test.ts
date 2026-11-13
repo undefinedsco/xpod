@@ -265,6 +265,32 @@ it('preserves mounted attribution through the driver final failure projection', 
   }
 });
 
+it('retains safe startup telemetry through the real launch error wrapper', async () => {
+  const parent = path.join(process.cwd(), '.test-data', 'packaged-desktop-runner');
+  await mkdir(parent, { recursive: true });
+  const directory = await mkdtemp(path.join(parent, 'gateway-projection-'));
+  const secret = 'synthetic-private-startup-detail';
+  const rejection = new Error(secret);
+  const telemetry = { probes: 42, lastOutcome: 'connect-failed', elapsedMs: 60_000, appAlive: true };
+  Object.defineProperty(rejection, 'gatewayTelemetry', { value: telemetry });
+  const verify = vi.spyOn(packagedSource, 'verifyPackagedSourceCheckout').mockResolvedValue(undefined);
+  const launch = vi.spyOn(packagedFixture, 'launchOwnedPackagedDesktop').mockRejectedValue(rejection);
+  try {
+    await expect(acceptPackagedDesktopPermissions({ archive: 'synthetic-launch-rejection', version: '0.4.31',
+      sourceSha: 'a'.repeat(40), issuer: 'https://id.example/', privateDirectory: directory,
+      evidenceFile: path.join(directory, 'public.json') })).rejects.toThrow('private evidence retained');
+    const safe = JSON.parse(await readFile(path.join(directory, 'failure-safe.json'), 'utf8'));
+    expect(safe).toMatchObject({ stage: 'launch', launchTelemetry: telemetry,
+      failures: [{ code: 'packaged-launch' }] });
+    expect(JSON.stringify(safe)).not.toContain(secret);
+    expect(await readFile(path.join(directory, 'failure-private.json'), 'utf8')).toContain(secret);
+    await expect(readFile(path.join(directory, 'public.json'))).rejects.toHaveProperty('code', 'ENOENT');
+  } finally {
+    verify.mockRestore(); launch.mockRestore();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 it('consumes real Pod-bound issuer credentials through the packaged acceptance boundary', async () => {
   const codec = new AesInvocationTokenCodec({ active: { kid: 'test', secret: 'packaged-invocation-contract' } });
   const issuer = new AiConnectionsInvocationKeyIssuer({ codec, deployment: 'local', baseUrl: 'https://gateway.example/v1' });
