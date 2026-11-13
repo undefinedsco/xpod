@@ -1783,6 +1783,15 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
       // the reviewed workflow bytes without changing any historical identity.
       {workflowSha256:'8d592e68f636c52605d5e839aef1e78f44f4d20b7adea27f31728785218514c0',
       jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // APPEND-ONLY: current ci.yml removes the forced kernel.org mirror-list
+      // override so apt keeps the runner's signed, failover-capable Ubuntu
+      // sources. All caller jobs, permissions and pre/post installed consumer
+      // commands are unchanged, so this is a new reviewed workflow identity over
+      // the same contract. Every earlier reviewed version above stays byte-exact
+      // and selectable; unknown or mixed versions are still refused.
+      {workflowSha256:'9b98ea92fd971bc11790cbcf36fddbe724ac6f01668831cf646804510726adc0',
+      jobName:()=>callerNames[0]!,
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,
     sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS,

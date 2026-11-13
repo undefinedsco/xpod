@@ -526,7 +526,7 @@ const RC399_LIVE_RELEASE_INPUTS: Readonly<Record<string, string>> = Object.freez
   'scripts/lib/owned-mode-command.cjs': '8ebb1a1b5ed3ee841ea2eabcd7275cbe879c74661dfc4dc0a60e22cb38cfa66a',
   '.github/workflows/ci.yml': '9b98ea92fd971bc11790cbcf36fddbe724ac6f01668831cf646804510726adc0',
   // github-origin owns the API group definition changed by the same append.
-  'scripts/lib/independent-admission/github-origin.ts': 'e9efdf1f8cc85db11f2552686d14fe351cb4d99c0521502bc0c638f0faa04633',
+  'scripts/lib/independent-admission/github-origin.ts': '4c6971ae56b46b463ffab103c297b0a02dceb4fa4944bb116c291372ecd8aa5c',
   // The reviewed API preview workflow gained same-PR preview cancellation; the
   // live tail follows the new exact bytes so inherited API selectors rebind too.
   '.github/workflows/api-module-product.yml': '2db71cbf4f6f46a433c397866585374d91b76c89bf79f173b5aae181dc2087b6',
