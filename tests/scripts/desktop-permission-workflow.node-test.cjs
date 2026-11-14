@@ -45,16 +45,20 @@ test('RC requires real permission producer and source-bound artifact in the comb
     assert.ok(!String(step.with.path).includes('desktop-permission-private/failure-private'));
     assert.ok(String(step.with.path) !== '${{ runner.temp }}/desktop-permission-private');
   }
-  const final = jobs.finalize_acceptance.steps;
-  assert.ok(final.some(step => step.with?.name === 'desktop-permission-acceptance-${{ github.sha }}'));
-  const combined = final.find(step => step.run?.includes('node scripts/desktop-acceptance.cjs'));
+  // The desktop's own promotion evidence is produced by its acceptance job;
+  // the service acceptance never reads it.
+  const combined = accept.steps.find(step => step.run?.includes('node scripts/desktop-acceptance.cjs'));
   assert.ok(combined);
   for (const flag of ['--self-update-evidence', '--permission-evidence', '--expected-archive', '--checks-out']) assert.ok(combined.run.includes(flag));
-  assert.ok(!final.some(step => step.run?.includes('scripts/desktop-self-update-acceptance.cjs verify')));
+  const evidence = accept.steps.find(step => step.with?.name === 'desktop-acceptance-${{ github.sha }}');
+  assert.ok(accept.steps.indexOf(combined) < accept.steps.indexOf(evidence));
+  const final = jobs.finalize_acceptance.steps;
+  assert.ok(!final.some(step => String(step.with?.name ?? '').startsWith('desktop-')));
+  assert.ok(!final.some(step => step.run?.includes('scripts/desktop-acceptance.cjs')));
 });
 
 test('stable repeats both actual operations and self-update for its newly built exact archive', () => {
-  const job = read('release.yml').jobs.build_desktop_macos;
+  const job = read('release-desktop.yml').jobs.build_desktop_macos;
   assert.ok(job.steps.some(step => step.run?.includes('bun scripts/accept-packaged-desktop-permissions.ts')));
   assert.ok(job.steps.some(step => step.run?.includes('node desktop/scripts/packaged-update-acceptance.mjs')));
   const combined = job.steps.find(step => step.run?.includes('node scripts/desktop-acceptance.cjs'));
@@ -237,11 +241,11 @@ test('RC desktop job has artifact-read permission and calls the shared retainer'
 });
 
 test('stable job consumes the ACCEPTED candidate run through the shared retainer', () => {
-  const job = read('release.yml').jobs.build_desktop_macos;
+  const job = read('release-desktop.yml').jobs.build_desktop_macos;
   assert.equal(job.permissions.actions, 'read');
   const retain = job.steps.find(s => s.run?.includes('retain-qlever-materials.py'));
   assert.ok(retain, 'stable must use the shared retainer, not an ad-hoc download');
-  assert.equal(retain.env.QLEVER_ARTIFACT_SOURCE_RUN_ID, '${{ needs.promotion_guard.outputs.candidate_run_id }}');
+  assert.equal(retain.env.QLEVER_ARTIFACT_SOURCE_RUN_ID, '${{ needs.desktop_guard.outputs.candidate_run_id }}');
   assert.equal(retain.env.QLEVER_SOURCE_SHA, '${{ github.sha }}');
   // No artifact-id/digest inputs for the stable path: the accepted run + accepted
   // source define the identity breadth, and the helper selects the single match.
@@ -271,7 +275,7 @@ test('all three desktop jobs retain the producer receipt/evidence on API failure
   // keeps the SAME narrow failure evidence contract as the two release build jobs.
   const jobs = [
     ['candidate.yml', 'build_desktop_rc'],
-    ['release.yml', 'build_desktop_macos'],
+    ['release-desktop.yml', 'build_desktop_macos'],
     ['ci.yml', 'desktop-launch-diagnostic'],
   ];
   for (const [file, jobName] of jobs) {

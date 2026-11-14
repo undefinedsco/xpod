@@ -56,7 +56,7 @@ describe('release candidate workflow', () => {
     for (const name of ['deploy_and_accept', 'runtime_mode_matrix', 'build_desktop_rc', 'accept_desktop_rc', 'finalize_acceptance']) {
       expect(JSON.stringify(workflow.jobs[name].needs ?? [])).not.toContain('provider-availability');
     }
-    const stable = parseDocument(await readFile(path.join(repoRoot, '.github/workflows/release.yml'), 'utf8')).toJSON();
+    const stable = parseDocument(await readFile(path.join(repoRoot, '.github/workflows/release-desktop.yml'), 'utf8')).toJSON();
     expect(JSON.stringify(stable.jobs.build_desktop_macos)).not.toContain('secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG');
     expect(JSON.stringify(stable.jobs.build_desktop_macos)).not.toContain('--key-file');
     expect(jobRunText(workflow, 'build_desktop_rc')).not.toContain('--key-file');
@@ -1139,12 +1139,20 @@ esac
       'metadata',
       'build_image',
       'deploy_and_accept',
+      'build_qlever_macos_runtime',
       'build_desktop_rc',
-      'accept_desktop_rc',
       'legacy_root_compat',
       'runtime_mode_matrix',
     ]);
     expect(finalizeText).toContain('node scripts/release-acceptance-manifest.cjs create');
+    // Desktop is accepted on its own: the service promotion never waits on it.
+    expect(finalize.needs).not.toContain('accept_desktop_rc');
+    expect(finalize.if).toContain('!cancelled()');
+    expect(finalize.if).not.toContain('needs.build_desktop_rc.result');
+    const desktopEvidence = workflow.jobs.accept_desktop_rc.steps.find((step: any) =>
+      step.with?.name === 'desktop-acceptance-${{ github.sha }}');
+    expect(desktopEvidence.with['if-no-files-found']).toBe('error');
+    expect(jobRunText(workflow, 'accept_desktop_rc')).toContain('node scripts/desktop-acceptance.cjs');
     for (const check of [
       'image',
       'service-status',
@@ -1548,8 +1556,8 @@ describe('service-image audit scope change', () => {
       'metadata',
       'build_image',
       'deploy_and_accept',
+      'build_qlever_macos_runtime',
       'build_desktop_rc',
-      'accept_desktop_rc',
       'legacy_root_compat',
       'runtime_mode_matrix',
     ]);
@@ -1561,9 +1569,11 @@ describe('service-image audit scope change', () => {
     expect(workflow.jobs.finalize_acceptance.needs).toContain('legacy_root_compat');
     const releaseText = readFileSync(path.join(repoRoot, '.github/workflows/release.yml'), 'utf8');
     const requiredChecks = [...releaseText.matchAll(/--required-check\s+(\S+)/g)].map((match) => match[1]);
-    expect(requiredChecks).toHaveLength(29);
+    // The desktop is promoted from its own desktop-acceptance evidence, not this list.
+    expect(requiredChecks).toHaveLength(28);
+    expect(requiredChecks).not.toContain('desktop');
     expect(requiredChecks).toEqual(expect.arrayContaining([
-      'legacy-root-compat', 'runtime-mode-matrix', 'desktop', 'chat', 'rc-builtin-models-chat', 'native-private17',
+      'legacy-root-compat', 'runtime-mode-matrix', 'chat', 'rc-builtin-models-chat', 'native-private17',
     ]));
 
     const steps = workflow.jobs.finalize_acceptance.steps;

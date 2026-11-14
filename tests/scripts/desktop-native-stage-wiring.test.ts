@@ -13,7 +13,7 @@ const repoRoot = path.resolve(__dirname, '../..');
 const stageSource = readFileSync(path.join(repoRoot, 'desktop/scripts/stage-runtime.ts'), 'utf8');
 const packageJson = JSON.parse(readFileSync(path.join(repoRoot, 'desktop/package.json'), 'utf8'));
 const candidate = readFileSync(path.join(repoRoot, '.github/workflows/candidate.yml'), 'utf8');
-const release = readFileSync(path.join(repoRoot, '.github/workflows/release.yml'), 'utf8');
+const release = readFileSync(path.join(repoRoot, '.github/workflows/release-desktop.yml'), 'utf8');
 
 describe('desktop native platform staging wiring', () => {
   test('staging consumes the shared publication producer instead of a second measurement', () => {

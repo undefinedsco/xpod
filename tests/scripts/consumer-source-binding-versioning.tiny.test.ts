@@ -502,7 +502,7 @@ test('normal producer keeps the frozen 23-row flat list and all earlier groups',
   // compiles the root outputs BEFORE the desktop build on a cold runner), so the
   // reviewed CURRENT bytes are the ones now in the tree. RC396/397/398 above keep
   // their frozen values. Root declarations are restored after API preparation.
-  const RC399_CANDIDATE='df512a05fe0fab355c667ad5136039bdfab8e3ed7ca187155a33a988e9451d37';
+  const RC399_CANDIDATE='e7b25845605efd6d3ba054009871d0a5a885cad65559fccf842920e2962f0425';
   expect(old!.sourceBindings).toBe(QLEVER_SDK_NORMAL_SOURCE_BINDINGS);
   expect(QLEVER_SDK_NORMAL_SOURCE_BINDINGS).toHaveLength(23);
   expect(whole(QLEVER_SDK_NORMAL_SOURCE_BINDINGS)).toBe(publishedSdk93.published.normalFlatBindingsSha256);

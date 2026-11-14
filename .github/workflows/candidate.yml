@@ -1560,15 +1560,6 @@ jobs:
             --sha "${{ github.sha }}" \
             --apply-root-version
           node -e 'if (require("./desktop/package.json").version !== process.env.CANDIDATE_VERSION) process.exit(1)'
-      # desktop/test/** is excluded from the root vitest and Bun test runs, so
-      # without this the brand provenance, Dock and updater suites never execute
-      # in CI. The desktop `test` script builds first (`bun run build`), so this
-      # also type checks the desktop sources.
-      - name: Run the desktop unit test suite
-        working-directory: desktop
-        run: |
-          bun x --no-install tsc --noEmit -p tsconfig.scripts.json
-          bun run test
       # M1 (cold runner): the desktop native producer (scripts/build-bun-single.js)
       # hard-requires dist/index.js + dist/components/components.jsonld, which a
       # fresh checkout does not have. Compile the root outputs BEFORE the desktop
@@ -1656,6 +1647,16 @@ jobs:
             desktop/runtime-pack.json
           if-no-files-found: error
           retention-days: 30
+      # desktop/test/** is excluded from the root vitest and Bun test runs, so
+      # without this the brand provenance, Dock and updater suites never execute
+      # in CI. The desktop `test` script builds first (`bun run build`), so this
+      # also type checks the desktop sources. It runs after the npm package
+      # evidence is uploaded, so a desktop-only failure never blocks the service.
+      - name: Run the desktop unit test suite
+        working-directory: desktop
+        run: |
+          bun x --no-install tsc --noEmit -p tsconfig.scripts.json
+          bun run test
       - name: Verify desktop version and native runtime payload
         run: |
           set -euo pipefail
@@ -1827,6 +1828,36 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-self-update-acceptance-${{ github.sha }}
+          path: ${{ runner.temp }}/desktop-self-update
+      # The `desktop` check is only accepted from the source-bound evidence the
+      # macOS jobs produced AND must byte-match the uploaded candidate archive;
+      # bundle presence alone never sets it.
+      - name: Verify the combined mandatory desktop acceptance evidence
+        run: |
+          set -euo pipefail
+          candidate_zip="$(find "$PWD/desktop/release" -maxdepth 1 -type f -name '*-mac.zip' -print -quit)"
+          test -n "$candidate_zip"
+          mkdir -p "${RUNNER_TEMP}/desktop-acceptance"
+          node scripts/desktop-acceptance.cjs \
+            --self-update-evidence "${RUNNER_TEMP}/desktop-self-update/desktop-self-update-evidence.json" \
+            --permission-evidence "${RUNNER_TEMP}/desktop-permission-evidence.json" \
+            --source-sha "${{ github.sha }}" \
+            --version "$CANDIDATE_VERSION" \
+            --expected-archive "$candidate_zip" \
+            --checks-out "${RUNNER_TEMP}/desktop-acceptance/desktop-check.json"
+          cp "${RUNNER_TEMP}/desktop-self-update/desktop-self-update-evidence.json" \
+            "${RUNNER_TEMP}/desktop-permission-evidence.json" "${RUNNER_TEMP}/desktop-acceptance/"
+      # The only desktop promotion evidence: the stable desktop release ships
+      # only for a candidate run that holds this artifact.
+      - name: Upload the desktop promotion evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-acceptance-${{ github.sha }}
+          path: ${{ runner.temp }}/desktop-acceptance/
+          if-no-files-found: error
       # The public log only carries closed failure codes. The real messages,
       # stacks and HTTP details stay in the private directory; seal them to the
       # maintainers' key so a failed run is diagnosable without a blind rerun.
@@ -1974,14 +2005,27 @@ jobs:
 
   finalize_acceptance:
     name: Finalize RC acceptance
+    # Service (container + npm) acceptance. Desktop is accepted and released on
+    # its own (accept_desktop_rc -> desktop-acceptance-<sha>), so a desktop-only
+    # failure never blocks the service promotion. build_desktop_rc is joined only
+    # for the npm package-consumers evidence it uploads before any desktop-only
+    # step; that evidence is verified below, never inferred from a job result.
     needs:
       - metadata
       - build_image
       - deploy_and_accept
+      - build_qlever_macos_runtime
       - build_desktop_rc
-      - accept_desktop_rc
       - legacy_root_compat
       - runtime_mode_matrix
+    if: >-
+      ${{ !cancelled()
+      && needs.metadata.result == 'success'
+      && needs.build_image.result == 'success'
+      && needs.deploy_and_accept.result == 'success'
+      && needs.build_qlever_macos_runtime.result == 'success'
+      && needs.legacy_root_compat.result == 'success'
+      && needs.runtime_mode_matrix.result == 'success' }}
     runs-on: ubuntu-latest
     environment: rc
     permissions:
@@ -2073,36 +2117,6 @@ jobs:
         with:
           name: release-service-acceptance-${{ github.sha }}
           path: ${{ runner.temp }}/service-acceptance
-      - uses: actions/download-artifact@v4
-        with:
-          name: desktop-self-update-acceptance-${{ github.sha }}
-          path: ${{ runner.temp }}/desktop-self-update
-      - uses: actions/download-artifact@v4
-        with:
-          name: desktop-permission-acceptance-${{ github.sha }}
-          path: ${{ runner.temp }}/desktop-permissions
-      - uses: actions/download-artifact@v4
-        with:
-          name: xpod-desktop-macos-${{ needs.metadata.outputs.candidate }}
-          path: ${{ runner.temp }}/xpod-desktop-candidate
-      # The `desktop` check is only accepted from the source-bound evidence the
-      # macOS job produced AND must byte-match the uploaded candidate archive;
-      # bundle presence alone never sets it.
-      - name: Verify the combined mandatory desktop acceptance evidence
-        run: |
-          set -euo pipefail
-          candidate_zip="$(find "${{ runner.temp }}/xpod-desktop-candidate" -maxdepth 1 -type f -name '*-mac.zip' -print -quit)"
-          if [ -z "$candidate_zip" ]; then
-            echo "::error::uploaded candidate desktop zip is missing"
-            exit 1
-          fi
-          node scripts/desktop-acceptance.cjs \
-            --self-update-evidence "${{ runner.temp }}/desktop-self-update/desktop-self-update-evidence.json" \
-            --permission-evidence "${{ runner.temp }}/desktop-permissions/desktop-permission-evidence.json" \
-            --source-sha "${{ github.sha }}" \
-            --version "$CANDIDATE_VERSION" \
-            --expected-archive "$candidate_zip" \
-            --checks-out "${{ runner.temp }}/desktop-check.json"
       # `qlever-local` and `package-consumers` are only accepted from the
       # source/artifact-bound evidence the producing jobs uploaded AND must
       # byte-match the artifacts downloaded here; a missing or mismatched
@@ -2140,10 +2154,6 @@ jobs:
           const fs = require('node:fs');
           const path = require('node:path');
           const checksPath = path.join(process.env.RUNNER_TEMP, 'service-acceptance', 'checks.json');
-          const desktopChecks = JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'desktop-check.json'), 'utf8'));
-          if (desktopChecks.desktop !== 'passed') {
-            throw new Error('combined desktop acceptance did not verify');
-          }
           const qleverChecks = JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'qlever-local-check.json'), 'utf8'));
           if (qleverChecks['qlever-local'] !== 'passed') {
             throw new Error('qlever-local acceptance did not verify');
@@ -2157,7 +2167,6 @@ jobs:
             ...JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'legacy-root-compat-check.json'), 'utf8')),
             ...JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'service-image-modes-check.json'), 'utf8')),
             'qlever-local': qleverChecks['qlever-local'],
-            'desktop': desktopChecks.desktop,
             'package-consumers': packageConsumerChecks['package-consumers'],
           };
           fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'checks.json'), `${JSON.stringify(checks, null, 2)}\n`);
