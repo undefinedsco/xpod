@@ -169,6 +169,8 @@ History favors emoji-prefixed, imperative commit titles such as `🐛 Fix quadst
 ### 版本发布
 RC 只从 `staging` 发起：开发分支先完成隔离验证和 PR 审查，普通 merge 合入 `staging` 保留祖先后再对不可变 SHA/digest 排队验收；通过后 squash 同步到 `main`，stable tag 仍绑定已验收的 `staging` SHA。开发持续沿 `staging`，不把 `main` 反向合回；`main` 不接独立改动。不得从其他分支占用或覆盖共享 RC，不得自动中断在验候选；跨仓库或手工发布须协调同一环境的独占权。具体流程与锁的边界见 `docs/RELEASE.md`。
 
+RC 失败时**先拿到真实错误再改代码**：读取加密诊断或在保留的 RC 上本地复现，不靠"合入—等 RC—看失败码"试错；RC 未恢复绿色前冻结新增门禁，且不得把文件字节哈希写进其他源码或测试。见 `docs/RELEASE.md`"失败排查"与"门禁冻结"。
+
 发布新版本的详细流程参见 `docs/RELEASE.md`。
 
 ## Security & Configuration Tips

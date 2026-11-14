@@ -155,11 +155,17 @@ function stringListValue(value: unknown): string[] | undefined {
 
 export function parseGatewayModel(value: unknown): AiGatewayModel | undefined {
   if (!isRecord(value) || typeof value.id !== 'string') return undefined
-  if (isPlatformModelId(value.id)) return undefined
-  const provider = providerValue(value.provider)
+  // An EXPLICIT, known provider owner is the authoritative single source: a real
+  // Pod model may legitimately publish an id that also names a platform routing
+  // role (`linx-lite`), and dropping it made the mounted binding unresolvable.
+  const explicitProvider = providerValue(value.provider)
     ?? providerValue(value.providerId)
     ?? providerValue(value.owned_by)
-    ?? providerFromModelId(value.id)
+  // Only WITHOUT such an owner is a platform-role id the Gateway's own routing
+  // entry (or a genuine `xpod-builtin` row, whose owner is not a Pod provider),
+  // and only then must it stay out of the Pod model list.
+  if (!explicitProvider && isPlatformModelId(value.id)) return undefined
+  const provider = explicitProvider ?? providerFromModelId(value.id)
   if (!provider) return undefined
   const imageInput = isRecord(value.capabilities) ? value.capabilities.imageInput : undefined
 

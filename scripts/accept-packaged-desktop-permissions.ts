@@ -1,6 +1,7 @@
 import type { AIConnectionInvocationConfig } from '../src/agents/types';
 import { createHash, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
+import { appendFileSync } from 'node:fs';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -482,6 +483,12 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
           if (!isLaunchSubphase(phase)) return;
           launchPhase = phase;
           console.log(JSON.stringify({ stage: 'launch', phase }));
+        },
+        // Private only: the App and its runtime print the real errors here. It is
+        // never published in the log; CI seals the private directory on failure.
+        onProcessOutput: (stream, chunk) => {
+          appendFileSync(path.join(options.privateDirectory, 'app-output.private.log'), `[${stream}] ${chunk}`,
+            { mode: 0o600 });
         } });
     } catch (error) {
       launchTelemetry = readGatewayTelemetry(error);
