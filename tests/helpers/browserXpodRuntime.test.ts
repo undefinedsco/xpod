@@ -3,6 +3,24 @@ import type { Page } from '@playwright/test';
 import { expect, it, vi } from 'vitest';
 import { captureBrowserAiConnections, readBrowserXpodRuntime } from './browserXpodRuntime';
 
+/**
+ * Execute a page callback the way Playwright does: ONLY `fn.toString()` crosses
+ * the boundary, and the body runs in a fresh scope with no Node module bindings.
+ *
+ * This is what makes the harness able to catch a callback that closes over a
+ * module-scope helper (the RC417 defect: `samePodRoot is not defined`).
+ *
+ * Identity is preserved because the jsdom document and the fiber tree live in
+ * this same process, so traversing `document` inside the isolated function still
+ * yields the very objects the test built.
+ */
+function runSerialized<T>(fn: (arg: unknown) => unknown, arg: unknown): T {
+  // Playwright transpiles then serializes; `fn` here is already transpiled JS, so
+  // toString() is exactly the text the page would receive.
+  const isolated = new Function('arg', `"use strict"; return (${fn.toString()})(arg);`);
+  return isolated(arg) as T;
+}
+
 function mountedFixture() {
   const dom = new JSDOM('<div id="root"></div>');
   vi.stubGlobal('document', dom.window.document);
@@ -24,11 +42,11 @@ function mountedFixture() {
   const stale = { memoizedProps: { value: { ...runtime, currentPod: { ...binding, podUrl: 'https://local.example/a/' } } } };
   const rootState = { current: committed };
   Object.assign(dom.window.document.getElementById('root')!, { __reactContainer$fixture: { ...stale, stateNode: rootState } });
-  const evaluate = async (fn: (arg: unknown) => unknown, arg: unknown) => fn(arg);
   const page = {
-    evaluateHandle: evaluate, evaluate,
+    evaluateHandle: async (fn: (arg: unknown) => unknown, arg: unknown) => runSerialized(fn, arg),
+    evaluate: async (fn: (arg: unknown) => unknown, arg: unknown) => runSerialized(fn, arg),
     waitForFunction: async (fn: (arg: unknown) => unknown, arg: unknown) => {
-      const value = await fn(arg);
+      const value = await runSerialized(fn, arg);
       if (!value) throw new Error('Missing mounted host capability for ai-host');
       return value;
     },
@@ -52,6 +70,24 @@ it('retains only the exact committed mounted host, including its existing grant 
     host.solid.session.getSnapshot = () => ({ status: 'anonymous', webId: binding.webId });
     await expect(captureBrowserAiConnections(page, binding)).rejects.toThrow('Missing mounted host');
     expect(revoke).not.toHaveBeenCalled();
+  } finally { fixture.close(); }
+});
+
+it('runs the real capture callback through Playwright serialization with no module bindings (RC417 regression)', async () => {
+  const fixture = mountedFixture();
+  const { binding } = fixture;
+  const page = fixture.page as unknown as Page;
+  try {
+    // Only fn.toString() crosses into the page, so a callback closing over a
+    // module-scope helper throws there. Any such throw fails this test outright;
+    // there is deliberately no message-text assertion.
+    const retained = await captureBrowserAiConnections(page, binding) as unknown as
+      { host: typeof fixture.host; controller: typeof fixture.controller };
+    expect(retained.host).toBe(fixture.host);
+    expect(retained.controller).toBe(fixture.controller);
+    // A same-origin, same-webId client bound to another Pod must still refuse.
+    await expect(captureBrowserAiConnections(page, { ...binding,
+      podUrl: 'https://local.example/a/' })).rejects.toThrow('Missing mounted host');
   } finally { fixture.close(); }
 });
 
