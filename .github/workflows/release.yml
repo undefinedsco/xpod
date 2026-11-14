@@ -633,6 +633,22 @@ jobs:
           # update (update.electronjs.org looks for latest-mac.yml among the release assets).
           test -s release/latest-mac.yml
 
+      # Artifact custody: upload the product archive ONCE, immediately after the
+      # build, so a later permission/self-update failure still leaves the exact
+      # original ZIP/DMG bytes. Retention is not qualification: the checks below
+      # still run against these bytes and `create_github_release` still waits for
+      # this job to succeed before publishing.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xpod-desktop-macos-${{ needs.promotion_guard.outputs.version }}
+          path: |
+            desktop/release/*.dmg
+            desktop/release/*.zip
+            desktop/release/*.blockmap
+            desktop/release/latest-mac.yml
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Verify packaged version and native runtime payload
         run: |
           set -euo pipefail
@@ -696,18 +712,6 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      # The archive ships an ad-hoc (linker) signature; `create_github_release` publishes
-      # these exact bytes after production deploys, so hand them over as one artifact.
-      - uses: actions/upload-artifact@v4
-        with:
-          name: xpod-desktop-macos-${{ needs.promotion_guard.outputs.version }}
-          path: |
-            desktop/release/*.dmg
-            desktop/release/*.zip
-            desktop/release/*.blockmap
-            desktop/release/latest-mac.yml
-          if-no-files-found: error
-          retention-days: 14
       - name: Upload stable desktop permission failure summary
         if: failure()
         uses: actions/upload-artifact@v4

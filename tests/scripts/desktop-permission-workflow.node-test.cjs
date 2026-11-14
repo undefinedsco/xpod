@@ -51,6 +51,96 @@ test('stable repeats both actual operations and self-update for its newly built 
   assert.equal(stableFailure.with.path, '${{ runner.temp }}/desktop-permission-private/failure-safe.json');
 });
 
+// ---- ARTIFACT CUSTODY: product archive precedes real acceptance -----------
+const productArchive = (steps, name) => steps.findIndex(step =>
+  step.uses === 'actions/upload-artifact@v4' && step.with?.name === name);
+const productArchiveSteps = (steps, name) => steps.filter(step =>
+  step.uses === 'actions/upload-artifact@v4' && step.with?.name === name);
+
+test('RC uploads the exact product archive ONCE, right after the build, before every real acceptance check', () => {
+  const job = read('candidate.yml').jobs.build_desktop_rc;
+  const steps = job.steps;
+  const name = 'xpod-desktop-macos-${{ needs.metadata.outputs.candidate }}';
+  // Exactly one upload with the SAME name: no duplicate upload/bytes path.
+  assert.equal(productArchiveSteps(steps, name).length, 1, 'product archive must be uploaded exactly once');
+  const archiveAt = productArchive(steps, name);
+  const buildAt = steps.findIndex(step => step.run?.includes('bun run dist'));
+  // The custody upload sits immediately after the successful build, so a later
+  // checkout-local failure cannot destroy the built bytes.
+  assert.ok(buildAt >= 0, 'desktop build step must exist');
+  assert.equal(archiveAt, buildAt + 1, 'product archive must follow the build immediately');
+  // The payload contract is unchanged: same paths, failing on absence, 30 days.
+  const archive = steps[archiveAt];
+  const candidatePaths = String(archive.with.path).trim().split('\n').map(line => line.trim());
+  assert.deepEqual(candidatePaths, ['desktop/release/*.dmg', 'desktop/release/*.zip', 'desktop/release/*.blockmap']);
+  assert.equal(archive.with['if-no-files-found'], 'error');
+  assert.equal(archive.with['retention-days'], 30);
+  assert.equal(archive.if, undefined);
+  assert.equal(archive['continue-on-error'], undefined);
+  // Every REAL acceptance/permission/self-update check still runs after it.
+  const permissionAt = steps.findIndex(step => step.run?.includes('bun scripts/accept-packaged-desktop-permissions.ts'));
+  const selfUpdateAt = steps.findIndex(step => step.run?.includes('node desktop/scripts/packaged-update-acceptance.mjs'));
+  assert.ok(permissionAt > archiveAt, 'permission acceptance must run after custody upload');
+  assert.ok(selfUpdateAt > archiveAt, 'self-update acceptance must run after custody upload');
+  assert.equal(steps[permissionAt]['continue-on-error'], undefined);
+  assert.equal(steps[selfUpdateAt]['continue-on-error'], undefined);
+  // The permission failure summary stays last and still only fires on failure.
+  const last = steps[steps.length - 1];
+  assert.equal(last.with?.name, 'desktop-permission-failure-${{ github.sha }}');
+  assert.equal(last.if, 'failure()');
+});
+
+test('stable uploads the exact product archive ONCE after the build and still gates the release on the desktop job', () => {
+  const workflow = read('release.yml');
+  const steps = workflow.jobs.build_desktop_macos.steps;
+  const name = 'xpod-desktop-macos-${{ needs.promotion_guard.outputs.version }}';
+  assert.equal(productArchiveSteps(steps, name).length, 1, 'product archive must be uploaded exactly once');
+  const archiveAt = productArchive(steps, name);
+  const buildAt = steps.findIndex(step => step.run?.includes('bun run dist'));
+  assert.ok(buildAt >= 0);
+  assert.equal(archiveAt, buildAt + 1, 'stable product archive must follow the build immediately');
+  const archive = steps[archiveAt];
+  const stablePaths = String(archive.with.path).trim().split('\n').map(line => line.trim());
+  assert.deepEqual(stablePaths, ['desktop/release/*.dmg', 'desktop/release/*.zip', 'desktop/release/*.blockmap', 'desktop/release/latest-mac.yml']);
+  assert.equal(archive.with['if-no-files-found'], 'error');
+  assert.equal(archive.with['retention-days'], 14);
+  // Real permission AND self-update acceptance still run after custody.
+  const permissionAt = steps.findIndex(step => step.run?.includes('bun scripts/accept-packaged-desktop-permissions.ts'));
+  const selfUpdateAt = steps.findIndex(step => step.run?.includes('node desktop/scripts/packaged-update-acceptance.mjs'));
+  assert.ok(permissionAt > archiveAt);
+  assert.ok(selfUpdateAt > archiveAt);
+  // Uploading bytes never satisfies the release barrier: the publishing job still
+  // depends on the desktop job succeeding.
+  const release = workflow.jobs.create_github_release;
+  assert.ok(release.needs.includes('build_desktop_macos'), 'release must depend on desktop job success');
+  assert.equal(release.if, undefined, 'release must not bypass a failed desktop job');
+  const download = release.steps.find(step => step.uses === 'actions/download-artifact@v4');
+  assert.equal(download.with?.name, name);
+});
+
+test('RC finalizer still requires the desktop job and its combined acceptance evidence', () => {
+  const { jobs } = read('candidate.yml');
+  const final = jobs.finalize_acceptance;
+  // The finalizer (and therefore promotion evidence) still blocks on desktop.
+  assert.ok(final.needs.includes('build_desktop_rc'));
+  assert.equal(final.if, undefined);
+  const combined = final.steps.find(step => step.run?.includes('node scripts/desktop-acceptance.cjs'));
+  assert.ok(combined);
+  // It verifies BOTH source-bound evidences and byte-matches the uploaded archive;
+  // retention alone can never set the desktop check.
+  for (const flag of ['--self-update-evidence', '--permission-evidence', '--expected-archive']) {
+    assert.ok(combined.run.includes(flag), flag);
+  }
+  assert.ok(combined.run.includes('xpod-desktop-candidate'));
+  // The manifest reads the desktop check from the verifier output and refuses
+  // anything that is not exactly 'passed'; no literal pass is written.
+  const manifest = final.steps.find(step => step.run?.includes('release-acceptance-manifest.cjs create'));
+  assert.ok(manifest);
+  assert.match(manifest.run, /desktopChecks\.desktop !== 'passed'/);
+  assert.match(manifest.run, /'desktop': desktopChecks\.desktop/);
+  assert.doesNotMatch(manifest.run, /'desktop':\s*'passed'/);
+});
+
 test('RC scale-down waits for desktop and final acceptance even when upstream jobs fail', () => {
   const { jobs } = read('candidate.yml');
   assert.ok(!jobs.deploy_and_accept.steps.some(step => step.name === 'Scale RC deployments to zero'));
