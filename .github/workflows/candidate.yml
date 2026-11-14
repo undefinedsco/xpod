@@ -786,6 +786,30 @@ jobs:
             --pg-image "$NATIVE_PG_IMAGE" \
             --pull-receipt "${RUNNER_TEMP}/namespace-native-pull-check.json"
 
+      # A separate step on purpose: the quiescence gate below never scales the
+      # app. Only an RC that a FAILED candidate deliberately kept serving for
+      # diagnosis is released here, exactly as its own cleanup would have.
+      - name: Release an RC retained by a failed candidate
+        run: |
+          set -euo pipefail
+          retained_json="$(mktemp "${RUNNER_TEMP}/rc-retained.XXXXXX")"
+          # An RC that a FAILED candidate deliberately kept serving for diagnosis
+          # (its own mounted seed named by the retained marker) is not an active
+          # candidate: the workflow-level lock guarantees that run has finished.
+          # Release it exactly as its cleanup would have, then prove quiescence.
+          kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-rc --ignore-not-found -o json \
+            > "$retained_json"
+          if retained_seed="$(node scripts/rc-cleanup-ownership.cjs retained "$retained_json" "$SEALOS_NAMESPACE")"; then
+            echo "Releasing the RC retained by $retained_seed"
+            kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc --replicas=0
+            if [ -n "$(kubectl -n "$SEALOS_NAMESPACE" get deployment/xpod-rc-inngest --ignore-not-found -o name)" ]; then
+              kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc-inngest --replicas=0
+            fi
+            kubectl -n "$SEALOS_NAMESPACE" annotate deployment/xpod-rc "xpod.undefineds.co/retained-for-diagnosis-"
+            kubectl -n "$SEALOS_NAMESPACE" delete secret "$retained_seed" --ignore-not-found
+            kubectl -n "$SEALOS_NAMESPACE" wait --for=delete pod -l app=xpod-rc --timeout=300s
+          fi
+          rm -f "$retained_json"
       - name: Verify RC-only PostgreSQL and bootstrap without touching production
         run: |
           set -euo pipefail
@@ -869,22 +893,6 @@ jobs:
           # that path.
           quiesce_dir="$(mktemp -d "${RUNNER_TEMP}/rc-quiesce.XXXXXX")"
           chmod 700 "$quiesce_dir"
-          # An RC that a FAILED candidate deliberately kept serving for diagnosis
-          # (its own mounted seed named by the retained marker) is not an active
-          # candidate: the workflow-level lock guarantees that run has finished.
-          # Release it exactly as its cleanup would have, then prove quiescence.
-          kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-rc --ignore-not-found -o json \
-            > "$quiesce_dir/retained.json"
-          if retained_seed="$(node scripts/rc-cleanup-ownership.cjs retained "$quiesce_dir/retained.json" "$SEALOS_NAMESPACE")"; then
-            echo "Releasing the RC retained by $retained_seed"
-            kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc --replicas=0
-            if [ -n "$(kubectl -n "$SEALOS_NAMESPACE" get deployment/xpod-rc-inngest --ignore-not-found -o name)" ]; then
-              kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc-inngest --replicas=0
-            fi
-            kubectl -n "$SEALOS_NAMESPACE" annotate deployment/xpod-rc "xpod.undefineds.co/retained-for-diagnosis-"
-            kubectl -n "$SEALOS_NAMESPACE" delete secret "$retained_seed" --ignore-not-found
-            kubectl -n "$SEALOS_NAMESPACE" wait --for=delete pod -l app=xpod-rc --timeout=300s
-          fi
           kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-rc --ignore-not-found -o json \
             > "$quiesce_dir/deployment.json"
           kubectl -n "$SEALOS_NAMESPACE" get pods -l app=xpod-rc -o json \

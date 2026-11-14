@@ -111,11 +111,15 @@ test('a failed acceptance retains its own RC for diagnosis and the next deployme
   assert.match(scale.slice(retain, teardown), /retained-for-diagnosis=\$XPOD_RC_SEED_SECRET_NAME/);
   assert.doesNotMatch(scale.slice(retain, teardown), /delete secret|--replicas=0/);
   // The next candidate releases only a retained RC, before proving quiescence.
-  const deploy = jobs.deploy_and_accept.steps.find(step => step.run?.includes('rc-cleanup-ownership.cjs retained')).run;
-  const release = deploy.indexOf('rc-cleanup-ownership.cjs retained');
-  assert.ok(release < deploy.indexOf('rc-bootstrap-ownership.cjs quiescent'));
-  assert.match(deploy.slice(release), /delete secret "\$retained_seed"/);
-  assert.match(deploy.slice(release), /wait --for=delete pod -l app=xpod-rc/);
+  // It is its own step: the quiescence gate itself never scales the app.
+  const steps = jobs.deploy_and_accept.steps;
+  const release = steps.findIndex(step => step.name === 'Release an RC retained by a failed candidate');
+  const gate = steps.findIndex(step => step.run?.includes('rc-bootstrap-ownership.cjs quiescent'));
+  assert.ok(release >= 0 && release < gate);
+  assert.doesNotMatch(steps[gate].run, /rc-cleanup-ownership\.cjs retained/);
+  assert.match(steps[release].run, /rc-cleanup-ownership\.cjs retained "\$retained_json"/);
+  assert.match(steps[release].run, /delete secret "\$retained_seed"/);
+  assert.match(steps[release].run, /wait --for=delete pod -l app=xpod-rc/);
 });
 
 test('staging candidates retain a fixed workflow RC lock through desktop and cleanup', () => {
