@@ -6,6 +6,9 @@ export const OIDC_ISSUER_ENV_KEYS = [
 
 export const DEFAULT_LOCAL_OIDC_ISSUER = 'https://id.undefineds.co/';
 
+/** The one Cloud identity origin implied by the Local default issuer. */
+export const OFFICIAL_CLOUD_IDENTITY_ORIGIN = new URL(DEFAULT_LOCAL_OIDC_ISSUER).origin;
+
 function cleanEnvValue(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
@@ -60,4 +63,28 @@ export function cloudApiEndpointFromIssuer(issuer: string): string {
   return identity.origin === 'https://id.undefineds.co'
     ? 'https://api.undefineds.co'
     : identity.origin;
+}
+
+/**
+ * Resolve the CLI-visible issuer for a Local/Cloud runtime.
+ *
+ * Explicit environment configuration wins (loopback included). A remembered
+ * issuer is residue from an earlier run, so it only counts when the network can
+ * still serve it -- a loopback one points every login at a port with no listener.
+ * An unconfigured Local runtime falls back to the official Cloud identity.
+ */
+export function resolveCliOidcIssuer(
+  env: RuntimeEnv,
+  provisionedIssuer?: string,
+  edition?: string,
+): string | undefined {
+  const explicit = resolveExternalOidcIssuer(env);
+  if (explicit) {
+    return explicit;
+  }
+  const remembered = resolveExternalOidcIssuer({ SOLID_OIDC_ISSUER: provisionedIssuer });
+  if (remembered && !isLoopbackIssuer(remembered)) {
+    return remembered;
+  }
+  return edition === 'local' ? DEFAULT_LOCAL_OIDC_ISSUER : undefined;
 }

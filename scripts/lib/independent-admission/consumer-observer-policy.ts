@@ -549,6 +549,11 @@ const RC399_LIVE_RELEASE_INPUTS: Readonly<Record<string, string>> = Object.freez
   'packages/xpod-cli/src/module-store.ts': '42ed0a2d11b9fae6162d032cf494a0907dd046a38747c9115dc333128b7f1513',
   // Reuse the already-owned worker primitive for bounded seed copying as well.
   'packages/xpod-cli/src/module-inventory-workers.ts': '108e9c14e8c8ad4d5487396f197a96abef2c5084861a65a4fa9351cfd910c667',
+  // The current CLI host-source closure gained the four pure provision modules
+  // needed for the managed-Local cold fix, so this already-owned declaration row
+  // moves to today's exact bytes. Only the current tail rebinds it; every
+  // published group and every historical snapshot keeps its frozen hash.
+  'packages/xpod-cli/scripts/canonical-host-sources.json': '6be73dea37eb993dee80d07a0e0bd65f6d6a32e1f7191563894f99e4c68edfc6',
   // The reviewed API controlled-phase recipe moved the producer and its dependency
   // declaration. These are the same owned rows; only the current tail moves.
   'scripts/api-module-producer.py': 'cad0d8896b244e22b5e3ffd531e5e6a029154114378f6077864576dc651e1fe1',
