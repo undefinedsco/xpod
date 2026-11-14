@@ -12,7 +12,6 @@ import { OFFICIAL_CLOUD_IDENTITY_ORIGIN, cloudApiEndpointFromIssuer } from '../r
 import {
   resolveLocalSetupPath, resolveLocalSetupProviderId, upsertLocalProvisionState,
 } from './LocalProvisionState';
-import type { TunnelProfile } from '../tunnel/TunnelProfiles';
 
 /**
  * The narrow slice of runtime configuration that first-run registration reads.
@@ -39,8 +38,16 @@ export interface FirstRunProvisionConfig {
   cloudApiEndpoint?: string;
   cloudflareTunnelToken?: string;
   apiBaseUrl?: string;
-  /** Same shape the API container config uses; only read by tunnel refresh. */
-  activeTunnelProfile?: TunnelProfile;
+  /**
+   * Narrow structural view of the API container's tunnel profile.
+   *
+   * This module is copied into the isolated CLI source closure, which does not
+   * include the tunnel implementation. Only `provider` is ever read here, and
+   * the object is otherwise carried through unchanged (the generic spread keeps
+   * every caller field), so declaring just that property avoids a type-only
+   * dependency without weakening or narrowing any runtime value.
+   */
+  activeTunnelProfile?: { readonly provider: string };
   tunnelProvider?: string;
   localSetupPath?: string;
   localSetupProviderId?: string;
