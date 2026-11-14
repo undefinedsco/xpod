@@ -47,6 +47,18 @@ export class DesktopWindowRecovery {
     return this.recovering
   }
 
+  /**
+   * True while THIS window still shows the broken page a recovery was started for.
+   *
+   * A recovery waits on the runtime, the cooldown, issuer discovery and cache
+   * invalidation. Any of those can outlive the failure: once a different document
+   * finishes loading, `handleDidFinishLoad` clears the flag and the pending reload
+   * must stand down instead of replacing the page the user is now on.
+   */
+  public needsRecovery(): boolean {
+    return this.mainFrameFailed
+  }
+
   public beginRecovery(): void {
     this.recovering = true
   }
@@ -70,5 +82,66 @@ export class DesktopWindowRecovery {
   public markReloaded(now = Date.now()): void {
     this.mainFrameFailed = false
     this.lastAutoReloadAt = now
+  }
+}
+
+/**
+ * Everything a failed-load recovery waits on, injected so the real sequencing can
+ * be exercised with controlled promises instead of a live Electron window.
+ */
+export interface FailedLoadRecoveryInput {
+  recovery: DesktopWindowRecovery
+  isDestroyed(): boolean
+  waitUntilReachable(): Promise<boolean>
+  delay(milliseconds: number): Promise<void>
+  discoverIssuer(): Promise<unknown>
+  /**
+   * Clear caches and navigate. `stillNeeded` must be consulted immediately
+   * before the real loadURL; the owner records the reload there, after the last
+   * await, so a cancelled recovery never consumes the cooldown.
+   */
+  load(stillNeeded: () => boolean): Promise<void>
+}
+
+/**
+ * Reloads a window that showed a failed page, but only while that same failure is
+ * still the page's problem.
+ *
+ * The waits below (runtime reachability, the reload cooldown, issuer discovery and
+ * the navigation-cache clear inside `load`) can each outlive the original failure:
+ * the gateway becoming reachable is exactly what lets an in-flight page commit.
+ * A committed page calls `handleDidFinishLoad`, which clears the SAME
+ * `mainFrameFailed` flag this recovery is gated on, so every later step stands
+ * down instead of replacing the live page.
+ *
+ * @returns true only when a navigation was actually issued.
+ */
+export async function runFailedLoadRecovery(input: FailedLoadRecoveryInput): Promise<boolean> {
+  const { recovery } = input
+  // Never steal or end another recovery, and never start one for a window whose
+  // page is already fine or already gone.
+  if (recovery.isRecovering() || input.isDestroyed() || !recovery.needsRecovery()) return false
+  const stale = (): boolean => input.isDestroyed() || !recovery.needsRecovery()
+  let navigated = false
+  recovery.beginRecovery()
+  try {
+    if (!await input.waitUntilReachable()) return false
+    if (stale()) return false
+    const cooldown = recovery.reloadCooldownRemainingMs()
+    if (cooldown > 0) await input.delay(cooldown)
+    if (stale()) return false
+    await input.discoverIssuer()
+    if (stale()) return false
+    // Last gate sits INSIDE load, after the cache await and immediately before
+    // loadURL; markReloaded is recorded there so only a real navigation counts.
+    await input.load(() => {
+      if (stale()) return false
+      recovery.markReloaded()
+      navigated = true
+      return true
+    })
+    return navigated
+  } finally {
+    recovery.endRecovery()
   }
 }
