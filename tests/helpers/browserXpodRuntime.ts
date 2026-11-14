@@ -90,18 +90,23 @@ async function inspectBrowserHost<T>(page: Page, operation: HostOperation): Prom
   return await page.evaluate(inspectCommittedHost, operation) as T;
 }
 
-/**
- * Pod-root identity: trailing-slash insensitive, but the full path is compared.
- * Origin alone is NOT enough — two Pods of one owner share it.
- */
-function samePodRoot(left: string | undefined, right: string | undefined): boolean {
-  if (typeof left !== 'string' || typeof right !== 'string') return false;
-  const root = (value: string): string => value.endsWith('/') ? value : `${value}/`;
-  return root(left) === root(right);
-}
-
 /** Serialized into the page; all discoveries use the same committed root traversal. */
 function inspectCommittedHost(operation: HostOperation): unknown {
+    /**
+     * Pod-root identity: trailing-slash insensitive, but the FULL path is compared.
+     * Origin alone is not identity — two Pods of one owner share it.
+     *
+     * Declared INSIDE the callback on purpose: Playwright serializes this
+     * function with fn.toString() and runs it in the page, where Node module
+     * bindings do not exist. A nested declaration is part of the serialized
+     * source, so the comparison survives that boundary.
+     */
+    function samePodRoot(left: string | undefined, right: string | undefined): boolean {
+      if (typeof left !== 'string' || typeof right !== 'string') return false;
+      const root = (value: string): string => value.endsWith('/') ? value : `${value}/`;
+      return root(left) === root(right);
+    }
+
     type HostValue = {
       state?: { status: string };
       session?: { getSnapshot(): { status: string; webId?: string; issuer?: string } };
