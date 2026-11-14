@@ -751,8 +751,18 @@ describe('AI Connection management client', () => {
           secret: 'must-not-escape',
         },
         { id: 'qwen3-max', owned_by: 'dashscope' },
+        // An explicit, registered Pod provider is OWNERSHIP, so a real Pod model
+        // whose bare id collides with a Gateway platform routing role survives.
         { id: 'linx-lite', provider: 'openai' },
+        // Ownership, not the role name, decides. These owners are not registered
+        // Pod providers, so the rows stay out of the Pod model list.
+        { id: 'linx-lite', owned_by: 'xpod-builtin' },
+        { id: 'linx', owned_by: 'platform-undefineds' },
         { id: 'unattributed-model' },
+        // No owner at all: a bare platform-role id (and its protocol namespace) is
+        // the Gateway's own routing entry, never a Pod model.
+        { id: 'linx' },
+        { id: 'undefineds/linx-lite' },
       ],
     }), { status: 200, headers: { 'content-type': 'application/json' } }))
     const client = createAiConnectionsClient({
@@ -776,6 +786,7 @@ describe('AI Connection management client', () => {
         protocols: ['responses', 'chat-completions'],
       },
       { id: 'qwen3-max', provider: 'bailian' },
+      { id: 'linx-lite', provider: 'openai' },
     ])
     expect(JSON.stringify(models)).not.toContain('must-not-escape')
   })
