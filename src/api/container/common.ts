@@ -10,6 +10,7 @@ import { asFunction, type AwilixContainer } from 'awilix';
 import { randomBytes } from 'node:crypto';
 import { getLoggerFor } from 'global-logger-factory';
 import type { ApiContainerCradle } from './types';
+import { resolveLocalStorageProviderBaseUrl } from './storage-base-url';
 
 import { getIdentityDatabase } from '../../identity/drizzle/db';
 import { EdgeNodeRepository } from '../../identity/drizzle/EdgeNodeRepository';
@@ -656,9 +657,17 @@ export function registerCommonServices(
       solidSessions,
       config,
     }: ApiContainerCradle) => {
+      // Local managed runtimes advertise Cloud-issued canonical Pods, so once a
+      // publicUrl has actually been issued the authenticator's canonical resource
+      // origin must be the SAME verified authority the Local Pod provisioning API
+      // uses. Without one, keep config.solidBaseUrl exactly (including undefined):
+      // the helper's localhost default is a provisioning default, not authority
+      // this new auth call may invent.
       const solidAuthenticator = new SolidTokenAuthenticator({
         resolveAccountId: async (webId) => webId,
-        publicBaseUrl: config.solidBaseUrl,
+        publicBaseUrl: config.edition === 'local' && config.publicUrl
+          ? resolveLocalStorageProviderBaseUrl(config)
+          : config.solidBaseUrl,
         // Token discovery is a public OIDC concern. WebID/JWKS verification is
         // an internal service call and must not hairpin through public ingress.
         internalBaseUrl: resolveHostedPodCssBaseUrl(config),
