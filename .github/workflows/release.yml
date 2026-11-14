@@ -716,6 +716,22 @@ jobs:
           path: ${{ runner.temp }}/desktop-permission-private/failure-safe.json
           if-no-files-found: ignore
           retention-days: 30
+      - name: Seal private desktop permission diagnostics
+        if: failure()
+        env:
+          XPOD_DIAGNOSTICS_PUBLIC_KEY: ${{ vars.XPOD_DIAGNOSTICS_PUBLIC_KEY }}
+        run: |
+          node scripts/sealed-diagnostics.cjs seal \
+            --in "${RUNNER_TEMP}/desktop-permission-private" \
+            --out "${RUNNER_TEMP}/desktop-permission-sealed/diagnostics.sealed"
+      - name: Upload sealed desktop permission diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-permission-sealed-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/desktop-permission-sealed/diagnostics.sealed
+          if-no-files-found: ignore
+          retention-days: 14
 
   create_github_release:
     name: Create GitHub Release

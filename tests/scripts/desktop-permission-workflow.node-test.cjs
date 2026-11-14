@@ -7,24 +7,44 @@ const read = name => yaml.load(fs.readFileSync(path.resolve(__dirname, '../../.g
 
 test('RC requires real permission producer and source-bound artifact in the combined mandatory desktop gate', () => {
   const { jobs } = read('candidate.yml');
-  assert.ok(jobs.build_desktop_rc.needs.includes('deploy_and_accept'));
-  const producer = jobs.build_desktop_rc.steps.find(step => step.run?.includes('bun scripts/accept-packaged-desktop-permissions.ts'));
+  // Building never waits for the RC deployment; only the permission acceptance does.
+  assert.ok(!jobs.build_desktop_rc.needs.includes('deploy_and_accept'));
+  const accept = jobs.accept_desktop_rc;
+  for (const name of ['build_desktop_rc', 'deploy_and_accept']) assert.ok(accept.needs.includes(name));
+  assert.ok(!jobs.build_desktop_rc.steps.some(step => step.run?.includes('accept-packaged-desktop-permissions.ts')));
+  const archive = accept.steps.find(step => step.uses === 'actions/download-artifact@v4');
+  assert.equal(archive.with.name, 'xpod-desktop-macos-${{ needs.metadata.outputs.candidate }}');
+  assert.equal(archive.with.path, 'desktop/release');
+  const producer = accept.steps.find(step => step.run?.includes('bun scripts/accept-packaged-desktop-permissions.ts'));
   assert.ok(producer);
+  assert.ok(accept.steps.indexOf(archive) < accept.steps.indexOf(producer));
   assert.doesNotMatch(producer.run, /--key-file|XPOD_LIVE_PROVIDER_API_KEY_CONFIG/);
   assert.match(producer.run, /--source-sha "\$\{\{ github\.sha \}\}"/);
   assert.match(producer.run, /--archive "\$new_zip"/);
   assert.equal(producer['continue-on-error'], undefined);
-  const upload = jobs.build_desktop_rc.steps.find(step => step.with?.name === 'desktop-permission-acceptance-${{ github.sha }}');
+  const upload = accept.steps.find(step => step.with?.name === 'desktop-permission-acceptance-${{ github.sha }}');
   assert.equal(upload.with['if-no-files-found'], 'error');
   assert.equal(upload.with.path, '${{ runner.temp }}/desktop-permission-evidence.json');
   // A failed producer must still leave a redacted stage/error summary in the log
-  // and as an artifact; the private directory itself is never uploaded.
-  const failureSummary = jobs.build_desktop_rc.steps.find(step => step.with?.name === 'desktop-permission-failure-${{ github.sha }}');
+  // and as an artifact; the private directory itself is never uploaded in clear.
+  const failureSummary = accept.steps.find(step => step.with?.name === 'desktop-permission-failure-${{ github.sha }}');
   assert.ok(failureSummary);
   assert.equal(failureSummary.if, 'failure()');
   assert.equal(failureSummary.with['if-no-files-found'], 'ignore');
   assert.equal(failureSummary.with.path, '${{ runner.temp }}/desktop-permission-private/failure-safe.json');
   assert.ok(!failureSummary.with.path.endsWith('failure-private.json'));
+  // The real errors leave the runner only sealed to the maintainers' key.
+  const seal = accept.steps.find(step => step.run?.includes('scripts/sealed-diagnostics.cjs seal'));
+  assert.equal(seal.if, 'failure()');
+  assert.match(seal.run, /--in "\$\{RUNNER_TEMP\}\/desktop-permission-private"/);
+  assert.equal(accept.env.XPOD_DIAGNOSTICS_PUBLIC_KEY, '${{ vars.XPOD_DIAGNOSTICS_PUBLIC_KEY }}');
+  const sealed = accept.steps.find(step => String(step.with?.name).startsWith('desktop-permission-sealed-'));
+  assert.equal(sealed.if, 'failure()');
+  assert.match(sealed.with.path, /diagnostics\.sealed$/);
+  for (const step of accept.steps.filter(item => item.uses === 'actions/upload-artifact@v4')) {
+    assert.ok(!String(step.with.path).includes('desktop-permission-private/failure-private'));
+    assert.ok(String(step.with.path) !== '${{ runner.temp }}/desktop-permission-private');
+  }
   const final = jobs.finalize_acceptance.steps;
   assert.ok(final.some(step => step.with?.name === 'desktop-permission-acceptance-${{ github.sha }}'));
   const combined = final.find(step => step.run?.includes('node scripts/desktop-acceptance.cjs'));
@@ -56,7 +76,7 @@ test('RC scale-down waits for desktop and final acceptance even when upstream jo
   assert.ok(!jobs.deploy_and_accept.steps.some(step => step.name === 'Scale RC deployments to zero'));
   const cleanup = jobs.cleanup_rc;
   assert.equal(cleanup.if, '${{ always() }}');
-  for (const name of ['deploy_and_accept', 'build_desktop_rc', 'finalize_acceptance']) assert.ok(cleanup.needs.includes(name));
+  for (const name of ['deploy_and_accept', 'build_desktop_rc', 'accept_desktop_rc', 'finalize_acceptance']) assert.ok(cleanup.needs.includes(name));
   assert.equal(cleanup.concurrency.group, jobs.deploy_and_accept.concurrency.group);
   const scale = cleanup.steps.find(step => step.name === 'Scale RC deployments to zero');
   assert.ok(scale);
@@ -71,6 +91,27 @@ test('RC scale-down waits for desktop and final acceptance even when upstream jo
   assert.ok(scale.run.indexOf('if [ "$ownership_status" -eq 0 ]; then')
     < scale.run.indexOf('scale deployment/xpod-rc --replicas=0'));
   assert.doesNotMatch(scale.run, /deployment\/xpod-cloud|namespace\/|delete deployment|delete statefulset|rollout/);
+});
+
+test('a failed acceptance retains its own RC for diagnosis and the next deployment releases it', () => {
+  const { jobs } = read('candidate.yml');
+  const cleanup = jobs.cleanup_rc;
+  assert.equal(cleanup.env.RETAIN_FOR_DIAGNOSIS,
+    "${{ contains(needs.*.result, 'failure') && needs.deploy_and_accept.result == 'success' }}");
+  const scale = cleanup.steps.find(step => step.name === 'Scale RC deployments to zero').run;
+  // Retaining is still gated by ownership, and re-run attempts resolve their run's seed.
+  assert.match(scale, /rc-cleanup-ownership\.cjs run-seed "\$observation" "\$SEALOS_NAMESPACE" "\$GITHUB_RUN_ID"/);
+  const retain = scale.indexOf('if [ "$ownership_status" -eq 0 ] && [ "$RETAIN_FOR_DIAGNOSIS" = true ]; then');
+  const teardown = scale.indexOf('scale deployment/xpod-rc --replicas=0');
+  assert.ok(retain >= 0 && retain < teardown);
+  assert.match(scale.slice(retain, teardown), /retained-for-diagnosis=\$XPOD_RC_SEED_SECRET_NAME/);
+  assert.doesNotMatch(scale.slice(retain, teardown), /delete secret|--replicas=0/);
+  // The next candidate releases only a retained RC, before proving quiescence.
+  const deploy = jobs.deploy_and_accept.steps.find(step => step.run?.includes('rc-cleanup-ownership.cjs retained')).run;
+  const release = deploy.indexOf('rc-cleanup-ownership.cjs retained');
+  assert.ok(release < deploy.indexOf('rc-bootstrap-ownership.cjs quiescent'));
+  assert.match(deploy.slice(release), /delete secret "\$retained_seed"/);
+  assert.match(deploy.slice(release), /wait --for=delete pod -l app=xpod-rc/);
 });
 
 test('staging candidates retain a fixed workflow RC lock through desktop and cleanup', () => {

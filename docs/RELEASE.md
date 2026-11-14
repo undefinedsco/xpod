@@ -474,12 +474,66 @@ deployment、replicaset、pod、service、describe 和当前/previous logs，不
 RC。不要删除 stable tag 重新试，也不要把失败 digest 手工推进生产。
 
 candidate workflow 的 `cleanup_rc` 在服务、桌面和最终验收全部结束后执行 cleanup，确认本轮 RC 所有权并核对本轮
-seed Secret 的部署绑定后将 `deployment/xpod-rc` 和存在的 `xpod-rc-inngest`
-scale-to-zero；共享 `statefulset/xpod-rdf-postgres`、`deployment/xpod-inngest` 以及 RC 自己的
+seed Secret 的部署绑定。全部通过时将 `deployment/xpod-rc` 和存在的 `xpod-rc-inngest`
+scale-to-zero 并删除本轮 seed Secret；共享 `statefulset/xpod-rdf-postgres`、`deployment/xpod-inngest` 以及 RC 自己的
 `statefulset/xpod-rc-rdf-postgres`/PVC/administrator Secret 都保持运行。本轮 bootstrap Job
 只在本轮 nonce 注解与 live UID 都匹配时以 `DeleteOptions.preconditions.uid` 删除，foreign 或
 被替换的同名 Job 一律保留，观察/删除/wait 失败不被吞掉。下一次 RC workflow 会重新 apply
 overlay、写入 Secret、派生专用 DB host、设置 digest 并等待 rollout。
+
+### 失败排查：先拿到真实错误，再改代码
+
+一次 RC 要一个多小时，**不允许靠"合入—等 RC—看一个失败码"来猜原因**。合入修复前必须已经
+看到失败的真实错误（消息、堆栈、HTTP 状态或运行日志），并在本地或保留的 RC 上复现过。
+
+1. **RC 失败时保留现场。** 部署成功但任一验收失败时，`cleanup_rc` 不缩容，只给 `deployment/xpod-rc`
+   打上 `xpod.undefineds.co/retained-for-diagnosis=<seed>` 注解，RC 继续对外服务，直到下一个候选部署。
+   下一个候选的部署步骤只会回收"注解与自身挂载 seed 一致"的保留 RC（缩容、删除该 seed Secret、
+   等待 Pod 消失），然后照常证明 quiescence；其他状态仍一律 fail closed。
+2. **读取加密诊断。** 仓库公开，公开日志只给封闭失败码（如 `pod-permission / target-read`）。
+   桌面验收失败时，私有目录（`failure-private.json` 里的消息与堆栈、`app-output.private.log`
+   里 App 与 runtime 的真实输出）由 `scripts/sealed-diagnostics.cjs` 用仓库变量
+   `XPOD_DIAGNOSTICS_PUBLIC_KEY`（RSA 公钥）加密后上传为 `desktop-permission-sealed-<sha>-<attempt>`。
+   维护者用私钥解开：
+
+   ```bash
+   gh run download <run-id> -n desktop-permission-sealed-<sha>-<attempt> -D /tmp/diag
+   node scripts/sealed-diagnostics.cjs open --key ~/.xpod/diagnostics.pem \
+     --in /tmp/diag/diagnostics.sealed --out /tmp/diag/open
+   ```
+
+   密钥对由 `node scripts/sealed-diagnostics.cjs keygen --private ~/.xpod/diagnostics.pem --public diagnostics.pub`
+   生成；私钥只留在维护者本机，公钥写入仓库变量。未配置公钥时该步骤只给 warning，不影响真实失败结论。
+3. **在 Mac 上对保留的 RC 本地复现桌面验收**（分钟级，无需任何 Secret；验收会自行在 RC 上注册测试账号）：
+
+   ```bash
+   git checkout <source-sha>
+   bun install && bun run build:packages
+   node scripts/release-candidate.cjs --branch staging --run-number <run-number> \
+     --run-attempt <attempt> --sha <source-sha> --apply-root-version
+   gh run download <run-id> -n xpod-desktop-macos-<candidate-version> -D desktop/release
+   bun scripts/accept-packaged-desktop-permissions.ts \
+     --archive "$(ls desktop/release/*-mac.zip)" --version <candidate-version> \
+     --source-sha <source-sha> --issuer https://id-rc.undefineds.cn/ \
+     --private-directory .test-data/desktop-permission-private \
+     --evidence .test-data/desktop-permission-evidence.json
+   ```
+
+   真实错误在 `.test-data/desktop-permission-private/`。复现前确认没有其他候选正在占用 RC。
+4. **修好后只重跑失败的 job。** 修复只涉及测试/验收脚本时，可以在 GitHub 上对原 run 使用
+   "Re-run failed jobs"：保留的 RC、镜像 digest 和桌面产物都不变，重跑 attempt 会按 run id
+   认领本 run 部署的 RC，通过后照常缩容。修复涉及产品代码时，仍按"先合入 staging，再出新候选"执行。
+
+桌面构建（`build_desktop_rc`）不依赖已部署的 RC，与服务部署并行；只有 `accept_desktop_rc`
+在部署完成后对 RC 执行权限与操作验收，因此桌面验收失败不必等待重新构建。
+
+### 门禁冻结
+
+RC 未恢复为绿色之前，不新增验收步骤、证据类型、预算检查或文件哈希绑定；只允许修复导致失败的
+产品缺陷，或修复让失败可诊断的手段。新增门禁必须在 RC 已经稳定通过时单独提出，并说明它能拦住的
+真实缺陷。禁止把 workflow 或脚本的字节哈希写进其他源码或测试（这会让任何正常修改都要连锁改哈希）；
+现存的 `candidate.yml` 哈希绑定（`qlever-sdk-origin-policy.ts` 及其下游）属于待清理的历史欠账。
+
 手动恢复 RC 时可在同一 namespace 将 Xpod Deployment scale 到 1，然后重新
 运行 candidate workflow 做完整验收。
 

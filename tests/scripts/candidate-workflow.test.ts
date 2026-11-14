@@ -53,13 +53,14 @@ describe('release candidate workflow', () => {
       expect(JSON.stringify(job)).not.toContain('secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG');
       expect(JSON.stringify(job)).not.toContain('secrets.XPOD_AI_PROXY_URL');
     }
-    for (const name of ['deploy_and_accept', 'runtime_mode_matrix', 'build_desktop_rc', 'finalize_acceptance']) {
+    for (const name of ['deploy_and_accept', 'runtime_mode_matrix', 'build_desktop_rc', 'accept_desktop_rc', 'finalize_acceptance']) {
       expect(JSON.stringify(workflow.jobs[name].needs ?? [])).not.toContain('provider-availability');
     }
     const stable = parseDocument(await readFile(path.join(repoRoot, '.github/workflows/release.yml'), 'utf8')).toJSON();
     expect(JSON.stringify(stable.jobs.build_desktop_macos)).not.toContain('secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG');
     expect(JSON.stringify(stable.jobs.build_desktop_macos)).not.toContain('--key-file');
     expect(jobRunText(workflow, 'build_desktop_rc')).not.toContain('--key-file');
+    expect(jobRunText(workflow, 'accept_desktop_rc')).not.toContain('--key-file');
     const monitor = parseDocument(await readFile(path.join(repoRoot, '.github/workflows/provider-availability.yml'), 'utf8')).toJSON();
     const probe = monitor.jobs['provider-availability'].steps.find((step: any) => step.name === 'Probe upstream models and one real Chat completion');
     expect(probe.env.XPOD_LIVE_PROVIDER_API_KEY_CONFIG)
@@ -511,7 +512,8 @@ esac
     const desktopManifest = JSON.parse(await readFile(path.join(repoRoot, 'desktop/package.json'), 'utf8'));
 
     expect(desktop.name).toBe('Build macOS RC desktop');
-    expect(desktop.needs).toEqual([ 'metadata', 'build_qlever_macos_runtime', 'deploy_and_accept' ]);
+    expect(desktop.needs).toEqual([ 'metadata', 'build_qlever_macos_runtime' ]);
+    expect(workflow.jobs.accept_desktop_rc.needs).toEqual([ 'metadata', 'build_desktop_rc', 'deploy_and_accept' ]);
     expect(desktop.env.CSC_IDENTITY_AUTO_DISCOVERY).toBe('false');
     for (const key of [ 'CSC_LINK', 'CSC_KEY_PASSWORD', 'APPLE_ID', 'APPLE_APP_SPECIFIC_PASSWORD', 'APPLE_TEAM_ID' ]) {
       expect(desktop.env[key]).toBeUndefined();
@@ -1138,6 +1140,7 @@ esac
       'build_image',
       'deploy_and_accept',
       'build_desktop_rc',
+      'accept_desktop_rc',
       'legacy_root_compat',
       'runtime_mode_matrix',
     ]);
@@ -1207,7 +1210,7 @@ esac
     expect(diagnostics.run).toContain('docker inspect "$local_name"');
     expect(diagnostics.run).toContain('docker logs "$local_name"');
     expect(workflow.jobs.deploy_and_accept.steps.some((step: any) => step.name === 'Scale RC deployments to zero')).toBe(false);
-    expect(workflow.jobs.cleanup_rc.needs).toEqual(['deploy_and_accept', 'build_desktop_rc', 'runtime_mode_matrix', 'finalize_acceptance']);
+    expect(workflow.jobs.cleanup_rc.needs).toEqual(['deploy_and_accept', 'build_desktop_rc', 'accept_desktop_rc', 'runtime_mode_matrix', 'finalize_acceptance']);
     expect(workflow.jobs.cleanup_rc.if).toContain('always()');
     const cleanup = workflow.jobs.cleanup_rc.steps.find((step: any) => step.name === 'Scale RC deployments to zero');
     expect(cleanup.run).toContain('scripts/rc-cleanup-ownership.cjs');
@@ -1546,6 +1549,7 @@ describe('service-image audit scope change', () => {
       'build_image',
       'deploy_and_accept',
       'build_desktop_rc',
+      'accept_desktop_rc',
       'legacy_root_compat',
       'runtime_mode_matrix',
     ]);
