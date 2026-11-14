@@ -176,5 +176,5 @@ owned container identity 回归）。API/CSS 预览与 AFS 挂载 producer 改�
   identity 回归）；实际 FUSE/NFS `mounted-module` 手动。
 
 人工运行必须指定**已评审的 staging SHA（及 target）**，并在独立模块发布前完成；
-自动 contract 不能替代 producer，服务 RC 的 29 项服务门禁也不覆盖每一次独立模块发布。
+自动 contract 不能替代 producer，服务 RC 的 28 项服务门禁也不覆盖每一次独立模块发布。
 候选服务 Trixie SDK 仍随 candidate 自动运行，不受本调度影响。

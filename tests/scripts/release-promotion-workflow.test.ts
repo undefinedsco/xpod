@@ -17,6 +17,11 @@ async function loadWorkflow(): Promise<Workflow> {
   return parseDocument(await loadWorkflowText()).toJSON() as Workflow;
 }
 
+/** The desktop is released by its own workflow, called from release.yml or dispatched. */
+async function loadDesktopWorkflow(): Promise<Workflow> {
+  return parseDocument(await readFile(path.join(repoRoot, '.github/workflows/release-desktop.yml'), 'utf8')).toJSON() as Workflow;
+}
+
 function stepRuns(job: any): string[] {
   return (job.steps ?? [])
     .map((step: any) => step.run)
@@ -62,10 +67,11 @@ describe('stable release promotion workflow', () => {
   });
 
   it('hands the packaged desktop to the release job and creates the release in exactly one place', async () => {
-    const workflow = await loadWorkflow();
+    const workflow = await loadDesktopWorkflow();
     const build = workflow.jobs.build_desktop_macos;
     const publish = workflow.jobs.create_github_release;
-    const artifactName = 'xpod-desktop-macos-${{ needs.promotion_guard.outputs.version }}';
+    const artifactName = 'xpod-desktop-macos-${{ needs.desktop_guard.outputs.version }}';
+    expect(Object.keys((await loadWorkflow()).jobs)).not.toContain('create_github_release');
 
     // The desktop job also uploads allowlisted acceptance evidence; bind the assertion
     // to the packaged payload artifact that the release job downloads.
@@ -175,7 +181,13 @@ describe('stable release promotion workflow', () => {
     expect(runText).toContain('gh run list');
     expect(runText).toContain('Release Candidate');
     expect(runText).toContain('--commit "$TAG_SHA"');
-    expect(runText).toContain('--status success');
+    // The candidate run may have failed on desktop only; the service is promoted
+    // from the run that holds the service acceptance artifact.
+    expect(runText).toContain('--status completed');
+    expect(runText).toContain('artifacts?name=release-acceptance-${TAG_SHA}');
+    expect(runText).toContain('artifacts?name=desktop-acceptance-${TAG_SHA}');
+    expect(runText).not.toContain('--required-check desktop');
+    expect(guard.outputs.desktop_accepted).toBe('${{ steps.acceptance.outputs.desktop_accepted }}');
     expect(runText).toContain('release-acceptance-${TAG_SHA}');
     expect(runText).toContain('gh run download "$CANDIDATE_RUN_ID"');
     expect(runText).toContain('node scripts/release-acceptance-manifest.cjs validate');
@@ -208,7 +220,6 @@ describe('stable release promotion workflow', () => {
       'native-private17',
       'native-namespace-pull',
       'qlever-local',
-      'desktop',
     ]) {
       expect(runText).toContain(`--required-check ${check}`);
     }
@@ -326,7 +337,7 @@ describe('stable release promotion workflow', () => {
   });
 
   it('repackages the accepted desktop without Apple distribution credentials', async () => {
-    const workflow = await loadWorkflow();
+    const workflow = await loadDesktopWorkflow();
     const desktop = workflow.jobs.build_desktop_macos;
     const runText = jobRunText(workflow, 'build_desktop_macos');
 
@@ -372,8 +383,16 @@ describe('stable release promotion workflow', () => {
 
   it('waits for production deploy before creating the GitHub Release', async () => {
     const workflow = await loadWorkflow();
+    const desktop = await loadDesktopWorkflow();
     const deploy = workflow.jobs.deploy_production_co;
-    const release = workflow.jobs.create_github_release;
+    const release = desktop.jobs.create_github_release;
+    // The desktop release runs only after production deploys and only for an accepted desktop.
+    expect(workflow.jobs.release_desktop.needs).toEqual(expect.arrayContaining([ 'promotion_guard', 'deploy_production_co' ]));
+    expect(workflow.jobs.release_desktop.if).toBe("${{ needs.promotion_guard.outputs.desktop_accepted == 'true' }}");
+    expect(workflow.jobs.release_desktop.uses).toBe('./.github/workflows/release-desktop.yml');
+    expect(workflow.jobs.release_desktop.permissions).toEqual({ actions: 'read', contents: 'write' });
+    expect(desktop.jobs.build_desktop_macos.needs).toBe('desktop_guard');
+    expect(desktop.jobs.desktop_guard.steps.some((step: any) => step.run?.includes('scripts/desktop-release-guard.cjs'))).toBe(true);
 
     expect(deploy.needs).toEqual(expect.arrayContaining([
       'promotion_guard',
@@ -392,15 +411,15 @@ describe('stable release promotion workflow', () => {
       'image-digest': '${{ needs.promotion_guard.outputs.image_digest }}',
       environment: 'co',
     });
-    expect(release.needs).toEqual(expect.arrayContaining([ 'deploy_production_co' ]));
+    expect(release.needs).toEqual(expect.arrayContaining([ 'desktop_guard', 'build_desktop_macos' ]));
     expect(release.permissions).toEqual({
       contents: 'write',
     });
     expect(release.env.GH_REPO).toBe('${{ github.repository }}');
-    expect(jobRunText(workflow, 'create_github_release')).toContain('gh release view "$TAG_NAME"');
-    expect(jobRunText(workflow, 'create_github_release')).toContain('gh release edit "$TAG_NAME"');
-    expect(jobRunText(workflow, 'create_github_release')).toContain('gh release create "$TAG_NAME"');
-    expect(jobRunText(workflow, 'create_github_release')).toContain('--verify-tag');
+    expect(jobRunText(desktop, 'create_github_release')).toContain('gh release view "$TAG_NAME"');
+    expect(jobRunText(desktop, 'create_github_release')).toContain('gh release edit "$TAG_NAME"');
+    expect(jobRunText(desktop, 'create_github_release')).toContain('gh release create "$TAG_NAME"');
+    expect(jobRunText(desktop, 'create_github_release')).toContain('--verify-tag');
   });
 
   it('injects dynamic inputs through env instead of shell-interpolating GitHub expressions', async () => {

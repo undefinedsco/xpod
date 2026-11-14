@@ -116,7 +116,7 @@ describe('desktop Electron bootstrap follows the root dependency restore',()=>{
   // diagnostic is asserted separately above and follows the same restore rule.
   const workflows:[string,string][]=[
     ['candidate.yml','build_desktop_rc'],
-    ['release.yml','build_desktop_macos'],
+    ['release-desktop.yml','build_desktop_macos'],
   ];
   const stepsOf=(file:string,job:string)=>{
     const doc=parseYaml(readFileSync(path.join(import.meta.dir,'../../.github/workflows',file),'utf8')) as any;

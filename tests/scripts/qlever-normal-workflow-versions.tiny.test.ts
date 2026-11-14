@@ -99,7 +99,7 @@ test('the ACTUAL on-disk candidate workflow is reviewed and resolves on the cons
  // CURRENT reviewed candidate bytes (this generation moved only the workspace
  // build+consumer ahead of the candidate-version transform in build_desktop_rc;
  // RC409 additionally compiles the root outputs BEFORE the desktop build).
- expect(DISK_WORKFLOW_SHA).toBe('f4295f934f6614c500700b596ffda917c6754fc2fed1b35d6ca170c51a5d4d6f');
+ expect(DISK_WORKFLOW_SHA).toBe('837d5a9fffe362c926f5121a718a79d0da359d79669ba2f78a1ae248434db673');
  // The previously reviewed RC398 bytes stay accepted history, never replaced.
  expect(normalWorkflowVersions()).toContain('f488709ab38b7d42f58accd90cbe59a162eae89ee23169db9b28ecdf264a7581');
  // The real production set must review those exact bytes.

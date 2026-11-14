@@ -786,6 +786,30 @@ jobs:
             --pg-image "$NATIVE_PG_IMAGE" \
             --pull-receipt "${RUNNER_TEMP}/namespace-native-pull-check.json"
 
+      # A separate step on purpose: the quiescence gate below never scales the
+      # app. Only an RC that a FAILED candidate deliberately kept serving for
+      # diagnosis is released here, exactly as its own cleanup would have.
+      - name: Release an RC retained by a failed candidate
+        run: |
+          set -euo pipefail
+          retained_json="$(mktemp "${RUNNER_TEMP}/rc-retained.XXXXXX")"
+          # An RC that a FAILED candidate deliberately kept serving for diagnosis
+          # (its own mounted seed named by the retained marker) is not an active
+          # candidate: the workflow-level lock guarantees that run has finished.
+          # Release it exactly as its cleanup would have, then prove quiescence.
+          kubectl -n "$SEALOS_NAMESPACE" get deployment xpod-rc --ignore-not-found -o json \
+            > "$retained_json"
+          if retained_seed="$(node scripts/rc-cleanup-ownership.cjs retained "$retained_json" "$SEALOS_NAMESPACE")"; then
+            echo "Releasing the RC retained by $retained_seed"
+            kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc --replicas=0
+            if [ -n "$(kubectl -n "$SEALOS_NAMESPACE" get deployment/xpod-rc-inngest --ignore-not-found -o name)" ]; then
+              kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc-inngest --replicas=0
+            fi
+            kubectl -n "$SEALOS_NAMESPACE" annotate deployment/xpod-rc "xpod.undefineds.co/retained-for-diagnosis-"
+            kubectl -n "$SEALOS_NAMESPACE" delete secret "$retained_seed" --ignore-not-found
+            kubectl -n "$SEALOS_NAMESPACE" wait --for=delete pod -l app=xpod-rc --timeout=300s
+          fi
+          rm -f "$retained_json"
       - name: Verify RC-only PostgreSQL and bootstrap without touching production
         run: |
           set -euo pipefail
@@ -1440,7 +1464,10 @@ jobs:
 
   build_desktop_rc:
     name: Build macOS RC desktop
-    needs: [metadata, build_qlever_macos_runtime, deploy_and_accept]
+    # Building, unit-testing and self-update-testing the desktop never touches
+    # the deployed RC, so it runs in parallel with the deployment. Only the
+    # permission acceptance in accept_desktop_rc needs the live RC.
+    needs: [metadata, build_qlever_macos_runtime]
     runs-on: macos-15
     environment: rc
     permissions:
@@ -1541,15 +1568,6 @@ jobs:
             --sha "${{ github.sha }}" \
             --apply-root-version
           node -e 'if (require("./desktop/package.json").version !== process.env.CANDIDATE_VERSION) process.exit(1)'
-      # desktop/test/** is excluded from the root vitest and Bun test runs, so
-      # without this the brand provenance, Dock and updater suites never execute
-      # in CI. The desktop `test` script builds first (`bun run build`), so this
-      # also type checks the desktop sources.
-      - name: Run the desktop unit test suite
-        working-directory: desktop
-        run: |
-          bun x --no-install tsc --noEmit -p tsconfig.scripts.json
-          bun run test
       # M1 (cold runner): the desktop native producer (scripts/build-bun-single.js)
       # hard-requires dist/index.js + dist/components/components.jsonld, which a
       # fresh checkout does not have. Compile the root outputs BEFORE the desktop
@@ -1637,6 +1655,16 @@ jobs:
             desktop/runtime-pack.json
           if-no-files-found: error
           retention-days: 30
+      # desktop/test/** is excluded from the root vitest and Bun test runs, so
+      # without this the brand provenance, Dock and updater suites never execute
+      # in CI. The desktop `test` script builds first (`bun run build`), so this
+      # also type checks the desktop sources. It runs after the npm package
+      # evidence is uploaded, so a desktop-only failure never blocks the service.
+      - name: Run the desktop unit test suite
+        working-directory: desktop
+        run: |
+          bun x --no-install tsc --noEmit -p tsconfig.scripts.json
+          bun run test
       - name: Verify desktop version and native runtime payload
         run: |
           set -euo pipefail
@@ -1725,6 +1753,54 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xpod-desktop-macos-${{ needs.metadata.outputs.candidate }}
+          path: |
+            desktop/release/*.dmg
+            desktop/release/*.zip
+            desktop/release/*.blockmap
+          if-no-files-found: error
+          retention-days: 30
+
+  accept_desktop_rc:
+    name: Accept macOS RC desktop against the deployed RC
+    needs: [metadata, build_desktop_rc, deploy_and_accept]
+    runs-on: macos-15
+    environment: rc
+    permissions:
+      contents: read
+    env:
+      REF_NAME: ${{ github.ref_name }}
+      CANDIDATE_VERSION: ${{ needs.metadata.outputs.candidate }}
+      XPOD_DIAGNOSTICS_PUBLIC_KEY: ${{ vars.XPOD_DIAGNOSTICS_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: bun install --frozen-lockfile
+      # The acceptance runner imports workspace packages through their dist/.
+      - name: Build workspace packages required by the desktop acceptance
+        run: bun run build:packages
+      # The exact-source check expects the same candidate version transform the
+      # build job applied to the archive.
+      - name: Apply and verify the candidate version
+        run: |
+          node scripts/release-candidate.cjs \
+            --branch "$REF_NAME" \
+            --run-number "${{ github.run_number }}" \
+            --run-attempt "${{ needs.metadata.outputs.runAttempt }}" \
+            --sha "${{ github.sha }}" \
+            --apply-root-version
+          node -e 'if (require("./desktop/package.json").version !== process.env.CANDIDATE_VERSION) process.exit(1)'
+      - uses: actions/download-artifact@v4
+        with:
+          name: xpod-desktop-macos-${{ needs.metadata.outputs.candidate }}
+          path: desktop/release
       - name: Accept actual packaged desktop permissions and operations
         run: |
           set -euo pipefail
@@ -1751,17 +1827,6 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: xpod-desktop-macos-${{ needs.metadata.outputs.candidate }}
-          path: |
-            desktop/release/*.dmg
-            desktop/release/*.zip
-            desktop/release/*.blockmap
-          if-no-files-found: error
-          retention-days: 30
-      # Keep the redacted producer failure summary last so the release archive
-      # stays the first upload in this job and no gate reads it as the artifact.
       - name: Upload desktop permission failure summary
         if: failure()
         uses: actions/upload-artifact@v4
@@ -1770,6 +1835,54 @@ jobs:
           path: ${{ runner.temp }}/desktop-permission-private/failure-safe.json
           if-no-files-found: ignore
           retention-days: 30
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-self-update-acceptance-${{ github.sha }}
+          path: ${{ runner.temp }}/desktop-self-update
+      # The `desktop` check is only accepted from the source-bound evidence the
+      # macOS jobs produced AND must byte-match the uploaded candidate archive;
+      # bundle presence alone never sets it.
+      - name: Verify the combined mandatory desktop acceptance evidence
+        run: |
+          set -euo pipefail
+          candidate_zip="$(find "$PWD/desktop/release" -maxdepth 1 -type f -name '*-mac.zip' -print -quit)"
+          test -n "$candidate_zip"
+          mkdir -p "${RUNNER_TEMP}/desktop-acceptance"
+          node scripts/desktop-acceptance.cjs \
+            --self-update-evidence "${RUNNER_TEMP}/desktop-self-update/desktop-self-update-evidence.json" \
+            --permission-evidence "${RUNNER_TEMP}/desktop-permission-evidence.json" \
+            --source-sha "${{ github.sha }}" \
+            --version "$CANDIDATE_VERSION" \
+            --expected-archive "$candidate_zip" \
+            --checks-out "${RUNNER_TEMP}/desktop-acceptance/desktop-check.json"
+          cp "${RUNNER_TEMP}/desktop-self-update/desktop-self-update-evidence.json" \
+            "${RUNNER_TEMP}/desktop-permission-evidence.json" "${RUNNER_TEMP}/desktop-acceptance/"
+      # The only desktop promotion evidence: the stable desktop release ships
+      # only for a candidate run that holds this artifact.
+      - name: Upload the desktop promotion evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-acceptance-${{ github.sha }}
+          path: ${{ runner.temp }}/desktop-acceptance/
+          if-no-files-found: error
+      # The public log only carries closed failure codes. The real messages,
+      # stacks and HTTP details stay in the private directory; seal them to the
+      # maintainers' key so a failed run is diagnosable without a blind rerun.
+      - name: Seal private desktop permission diagnostics
+        if: failure()
+        run: |
+          node scripts/sealed-diagnostics.cjs seal \
+            --in "${RUNNER_TEMP}/desktop-permission-private" \
+            --out "${RUNNER_TEMP}/desktop-permission-sealed/diagnostics.sealed"
+      - name: Upload sealed desktop permission diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-permission-sealed-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/desktop-permission-sealed/diagnostics.sealed
+          if-no-files-found: ignore
+          retention-days: 14
 
   runtime_mode_matrix:
     name: Same image three-mode live and session acceptance
@@ -1900,13 +2013,27 @@ jobs:
 
   finalize_acceptance:
     name: Finalize RC acceptance
+    # Service (container + npm) acceptance. Desktop is accepted and released on
+    # its own (accept_desktop_rc -> desktop-acceptance-<sha>), so a desktop-only
+    # failure never blocks the service promotion. build_desktop_rc is joined only
+    # for the npm package-consumers evidence it uploads before any desktop-only
+    # step; that evidence is verified below, never inferred from a job result.
     needs:
       - metadata
       - build_image
       - deploy_and_accept
+      - build_qlever_macos_runtime
       - build_desktop_rc
       - legacy_root_compat
       - runtime_mode_matrix
+    if: >-
+      ${{ !cancelled()
+      && needs.metadata.result == 'success'
+      && needs.build_image.result == 'success'
+      && needs.deploy_and_accept.result == 'success'
+      && needs.build_qlever_macos_runtime.result == 'success'
+      && needs.legacy_root_compat.result == 'success'
+      && needs.runtime_mode_matrix.result == 'success' }}
     runs-on: ubuntu-latest
     environment: rc
     permissions:
@@ -1998,36 +2125,6 @@ jobs:
         with:
           name: release-service-acceptance-${{ github.sha }}
           path: ${{ runner.temp }}/service-acceptance
-      - uses: actions/download-artifact@v4
-        with:
-          name: desktop-self-update-acceptance-${{ github.sha }}
-          path: ${{ runner.temp }}/desktop-self-update
-      - uses: actions/download-artifact@v4
-        with:
-          name: desktop-permission-acceptance-${{ github.sha }}
-          path: ${{ runner.temp }}/desktop-permissions
-      - uses: actions/download-artifact@v4
-        with:
-          name: xpod-desktop-macos-${{ needs.metadata.outputs.candidate }}
-          path: ${{ runner.temp }}/xpod-desktop-candidate
-      # The `desktop` check is only accepted from the source-bound evidence the
-      # macOS job produced AND must byte-match the uploaded candidate archive;
-      # bundle presence alone never sets it.
-      - name: Verify the combined mandatory desktop acceptance evidence
-        run: |
-          set -euo pipefail
-          candidate_zip="$(find "${{ runner.temp }}/xpod-desktop-candidate" -maxdepth 1 -type f -name '*-mac.zip' -print -quit)"
-          if [ -z "$candidate_zip" ]; then
-            echo "::error::uploaded candidate desktop zip is missing"
-            exit 1
-          fi
-          node scripts/desktop-acceptance.cjs \
-            --self-update-evidence "${{ runner.temp }}/desktop-self-update/desktop-self-update-evidence.json" \
-            --permission-evidence "${{ runner.temp }}/desktop-permissions/desktop-permission-evidence.json" \
-            --source-sha "${{ github.sha }}" \
-            --version "$CANDIDATE_VERSION" \
-            --expected-archive "$candidate_zip" \
-            --checks-out "${{ runner.temp }}/desktop-check.json"
       # `qlever-local` and `package-consumers` are only accepted from the
       # source/artifact-bound evidence the producing jobs uploaded AND must
       # byte-match the artifacts downloaded here; a missing or mismatched
@@ -2065,10 +2162,6 @@ jobs:
           const fs = require('node:fs');
           const path = require('node:path');
           const checksPath = path.join(process.env.RUNNER_TEMP, 'service-acceptance', 'checks.json');
-          const desktopChecks = JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'desktop-check.json'), 'utf8'));
-          if (desktopChecks.desktop !== 'passed') {
-            throw new Error('combined desktop acceptance did not verify');
-          }
           const qleverChecks = JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'qlever-local-check.json'), 'utf8'));
           if (qleverChecks['qlever-local'] !== 'passed') {
             throw new Error('qlever-local acceptance did not verify');
@@ -2082,7 +2175,6 @@ jobs:
             ...JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'legacy-root-compat-check.json'), 'utf8')),
             ...JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'service-image-modes-check.json'), 'utf8')),
             'qlever-local': qleverChecks['qlever-local'],
-            'desktop': desktopChecks.desktop,
             'package-consumers': packageConsumerChecks['package-consumers'],
           };
           fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'checks.json'), `${JSON.stringify(checks, null, 2)}\n`);
@@ -2351,7 +2443,7 @@ jobs:
 
   cleanup_rc:
     name: Cleanup RC after all acceptance jobs
-    needs: [deploy_and_accept, build_desktop_rc, runtime_mode_matrix, finalize_acceptance]
+    needs: [deploy_and_accept, build_desktop_rc, accept_desktop_rc, runtime_mode_matrix, finalize_acceptance]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     environment: rc
@@ -2364,6 +2456,10 @@ jobs:
       KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
       SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
       XPOD_RC_SEED_SECRET_NAME: xpod-rc-seed-${{ github.run_id }}-${{ github.run_attempt }}
+      # A failed acceptance keeps its RC serving so the failure can be reproduced
+      # locally against it and the failed jobs re-run. The next candidate's
+      # deployment releases it (see "Release an RC retained by a failed candidate").
+      RETAIN_FOR_DIAGNOSIS: ${{ contains(needs.*.result, 'failure') && needs.deploy_and_accept.result == 'success' }}
     steps:
       - uses: actions/checkout@v4
       - name: Scale RC deployments to zero
@@ -2380,6 +2476,10 @@ jobs:
           node scripts/check-rc-deployment-boundary.cjs
           observation="${RUNNER_TEMP}/rc-cleanup-deployment.json"
           kubectl -n "$SEALOS_NAMESPACE" get deployment/xpod-rc --ignore-not-found -o json > "$observation"
+          # A re-run attempt still owns the RC its own run deployed.
+          if run_seed="$(node scripts/rc-cleanup-ownership.cjs run-seed "$observation" "$SEALOS_NAMESPACE" "$GITHUB_RUN_ID")"; then
+            XPOD_RC_SEED_SECRET_NAME="$run_seed"
+          fi
           set +e
           node scripts/rc-cleanup-ownership.cjs deployment "$observation" "$SEALOS_NAMESPACE" "$XPOD_RC_SEED_SECRET_NAME"
           ownership_status=$?
@@ -2422,7 +2522,15 @@ jobs:
 
           # ------------------------------------------------------------------
           # RC application teardown, gated by the deployment ownership status.
-          if [ "$ownership_status" -eq 0 ]; then
+          if [ "$ownership_status" -eq 0 ] && [ "$RETAIN_FOR_DIAGNOSIS" = true ]; then
+            kubectl -n "$SEALOS_NAMESPACE" annotate deployment/xpod-rc --overwrite \
+              "xpod.undefineds.co/retained-for-diagnosis=$XPOD_RC_SEED_SECRET_NAME"
+            {
+              echo '### RC retained for diagnosis'
+              echo 'Acceptance failed, so the RC keeps serving https://id-rc.undefineds.cn until the next candidate deploys.'
+              echo 'Reproduce locally against it (docs/RELEASE.md "失败排查"), or re-run the failed jobs of this run.'
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$ownership_status" -eq 0 ]; then
             kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc --replicas=0
             if [ -n "$(kubectl -n "$SEALOS_NAMESPACE" get deployment/xpod-rc-inngest --ignore-not-found -o name)" ]; then
               kubectl -n "$SEALOS_NAMESPACE" scale deployment/xpod-rc-inngest --replicas=0

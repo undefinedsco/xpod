@@ -70,7 +70,7 @@ Windows 保留平台默认 shell/PATH。完整 build 产生的 UI 变化由 Vite
 限制为 `staging`，并对 `staging`/`main` 启用 PR 审查与必需检查；这些服务端设置需另行核对，
 不能仅凭本文或 workflow 文件宣称已配置。
 
-`release.yml` 的 `build_desktop_macos` 仍在 `rc` Environment 中运行，
+`release-desktop.yml` 的 `build_desktop_macos` 仍在 `rc` Environment 中运行，
 因此仅允许 `staging` 的策略会阻止 stable tag 的桌面 job。桌面推理验收使用
 正常账号凭据访问平台模型，不再读取第三方 Provider Key。
 准备提升时，先核对 exact accepted staging SHA、版本和 acceptance，再为这一个
@@ -101,14 +101,37 @@ policy 为空。上线前必须补齐分支与环境策略；创建/推送 stagi
 6. 同一个 workflow 在 macOS ARM64 构建并实测原生 QLever runtime，运行真实
    RDF、FTS、VEC Local conformance，但 RC 不向 npm 发布任何包。
 7. 同一个 workflow 构建带 ad-hoc 签名、未 notarize 的 macOS ARM64 桌面产物，并验证版本、
-   QLever runtime、manifest、真实自更新及同包真实权限操作；服务、QLever 和桌面全部通过后才接受该候选。
-8. 验收成功后上传 acceptance artifact：artifact name 是 `release-acceptance-${GITHUB_SHA}`，artifact 内文件是 `release-acceptance.json`。该 artifact 是 stable tag promotion 的唯一凭证。
+   QLever runtime、manifest、真实自更新及同包真实权限操作。**各端独立验收**：服务（容器 + npm）
+   与桌面各自产出凭证，桌面失败不阻塞服务提升。
+8. 服务验收成功后上传 acceptance artifact：artifact name 是 `release-acceptance-${GITHUB_SHA}`，artifact 内文件是 `release-acceptance.json`，它是服务
+   stable promotion 的唯一凭证；桌面验收成功后另行上传 `desktop-acceptance-${GITHUB_SHA}`
+   （内含 `desktop-check.json` 与两份桌面证据），它是桌面发布的唯一凭证。
 9. 只在接受的 exact commit 上创建 stable tag，例如 `v0.4.0`。
 10. `.github/workflows/release.yml` 下载 exact commit 对应的 acceptance
    artifact，校验 stable tag、staging 来源、required
    checks 和 accepted digest 后，才首次发布该版本的 npm 包：先发布到临时
    `stable-staging` tag，并由 Node/Bun 重新安装验证；然后才移动 npm `latest`、把 accepted digest
    重新标记为 stable/latest 容器 tag，并调用生产部署。`stable-staging` 是公开包的 dist-tag，不是私有或不可获取的发布。
+11. 生产部署后，只有该候选同时持有 `desktop-acceptance-${GITHUB_SHA}` 时，`release.yml` 才调用
+   `release-desktop.yml` 构建并复验 stable 桌面、创建 GitHub Release 并上传桌面资产（含
+   `latest-mac.yml` 更新源）。没有桌面凭证时只发布服务，不创建 GitHub Release，已安装的桌面
+   继续停在上一个版本，不会读到缺少更新清单的 Release。
+
+### 各端独立验收与发布
+
+| 端 | 验收（candidate.yml） | 凭证 | 发布 |
+| --- | --- | --- | --- |
+| 服务：容器、npm、Local runtime | `deploy_and_accept`、`runtime_mode_matrix`、`legacy_root_compat`、QLever 与 npm 包消费者验收 → `finalize_acceptance` | `release-acceptance-<sha>` | `release.yml`：npm → 容器 tag → 生产部署 |
+| macOS 桌面 | `build_desktop_rc`（构建、单测、自更新）→ `accept_desktop_rc`（对 RC 的权限与操作） | `desktop-acceptance-<sha>` | `release-desktop.yml`：stable 复验 → GitHub Release |
+
+- 服务验收只依据它自己的证据：`finalize_acceptance` 不等待桌面验收；`build_desktop_rc` 只为
+  其中先行上传的 npm 包消费者证据而被引用，桌面单测和自更新排在该证据上传之后。
+- 候选 run 因桌面失败显示为失败时，服务仍可按 `release-acceptance-<sha>` 提升。
+- 桌面晚于服务通过（例如对同一候选 "Re-run failed jobs" 后产生了 `desktop-acceptance-<sha>`）时，在
+  stable tag 上手动触发：`gh workflow run release-desktop.yml --ref vX.Y.Z -f tag=vX.Y.Z -f candidate_run_id=<run-id>`。
+  `scripts/desktop-release-guard.cjs` 要求 tag、候选 run、服务验收、桌面验收一致，且该 tag 的生产
+  部署已成功，桌面永远不会先于它依赖的服务到达用户。
+- 桌面修复需要改产品代码时，随下一个候选与版本发布；被跳过的版本不补发桌面。
 
 macOS QLever 以原生输入、构建 workflow、验收脚本和 Clang 身份缓存已验证的完整 runtime，
 不以 Xpod 提交 SHA 作为缓存键。精确命中后跳过 C++ 编译和构建工具安装，先校验旧产物的
@@ -442,14 +465,14 @@ stable promotion 校验以下内容：
 - artifact 的 source SHA、source branch、target version、candidate version
   和 endpoint 与当前 tag 匹配；
 - image digest 是 `sha256:<64-lowercase-hex>`；
-- required checks 全部 29 项通过：`image`、`service-status`、`oidc`、
+- required checks 全部 28 项通过：`image`、`service-status`、`oidc`、
   `dashboard`、`protected-route`、`deployed-digest`、`direct-pod`、
   `public-service`、`secret-isolation`、`authenticated-pod`、`pod-read-write`、
   `gateway-key`、`ai-connections`、`models`、`chat`、`rc-pod-sparql`、
   `rc-builtin-models-chat`、`rc-matrix-collaboration`、`rc-browser-consent`、`task-approval`、
   `native-sparql`、`native-public16`、`native-private17`、
   `native-namespace-pull`、`qlever-local`、`package-consumers`、
-  `legacy-root-compat`、`runtime-mode-matrix` 和 `desktop`。
+  `legacy-root-compat` 和 `runtime-mode-matrix`。`desktop` 不在服务凭证中，见"各端独立验收与发布"。
 
 `deployed-digest` 证明 RC Deployment 运行的是 accepted digest，
 `direct-pod` 证明 ready Pod 的 imageID 包含同一个 digest。stable tag 只做
@@ -474,12 +497,66 @@ deployment、replicaset、pod、service、describe 和当前/previous logs，不
 RC。不要删除 stable tag 重新试，也不要把失败 digest 手工推进生产。
 
 candidate workflow 的 `cleanup_rc` 在服务、桌面和最终验收全部结束后执行 cleanup，确认本轮 RC 所有权并核对本轮
-seed Secret 的部署绑定后将 `deployment/xpod-rc` 和存在的 `xpod-rc-inngest`
-scale-to-zero；共享 `statefulset/xpod-rdf-postgres`、`deployment/xpod-inngest` 以及 RC 自己的
+seed Secret 的部署绑定。全部通过时将 `deployment/xpod-rc` 和存在的 `xpod-rc-inngest`
+scale-to-zero 并删除本轮 seed Secret；共享 `statefulset/xpod-rdf-postgres`、`deployment/xpod-inngest` 以及 RC 自己的
 `statefulset/xpod-rc-rdf-postgres`/PVC/administrator Secret 都保持运行。本轮 bootstrap Job
 只在本轮 nonce 注解与 live UID 都匹配时以 `DeleteOptions.preconditions.uid` 删除，foreign 或
 被替换的同名 Job 一律保留，观察/删除/wait 失败不被吞掉。下一次 RC workflow 会重新 apply
 overlay、写入 Secret、派生专用 DB host、设置 digest 并等待 rollout。
+
+### 失败排查：先拿到真实错误，再改代码
+
+一次 RC 要一个多小时，**不允许靠"合入—等 RC—看一个失败码"来猜原因**。合入修复前必须已经
+看到失败的真实错误（消息、堆栈、HTTP 状态或运行日志），并在本地或保留的 RC 上复现过。
+
+1. **RC 失败时保留现场。** 部署成功但任一验收失败时，`cleanup_rc` 不缩容，只给 `deployment/xpod-rc`
+   打上 `xpod.undefineds.co/retained-for-diagnosis=<seed>` 注解，RC 继续对外服务，直到下一个候选部署。
+   下一个候选的部署步骤只会回收"注解与自身挂载 seed 一致"的保留 RC（缩容、删除该 seed Secret、
+   等待 Pod 消失），然后照常证明 quiescence；其他状态仍一律 fail closed。
+2. **读取加密诊断。** 仓库公开，公开日志只给封闭失败码（如 `pod-permission / target-read`）。
+   桌面验收失败时，私有目录（`failure-private.json` 里的消息与堆栈、`app-output.private.log`
+   里 App 与 runtime 的真实输出）由 `scripts/sealed-diagnostics.cjs` 用仓库变量
+   `XPOD_DIAGNOSTICS_PUBLIC_KEY`（RSA 公钥）加密后上传为 `desktop-permission-sealed-<sha>-<attempt>`。
+   维护者用私钥解开：
+
+   ```bash
+   gh run download <run-id> -n desktop-permission-sealed-<sha>-<attempt> -D /tmp/diag
+   node scripts/sealed-diagnostics.cjs open --key ~/.xpod/diagnostics.pem \
+     --in /tmp/diag/diagnostics.sealed --out /tmp/diag/open
+   ```
+
+   密钥对由 `node scripts/sealed-diagnostics.cjs keygen --private ~/.xpod/diagnostics.pem --public diagnostics.pub`
+   生成；私钥只留在维护者本机，公钥写入仓库变量。未配置公钥时该步骤只给 warning，不影响真实失败结论。
+3. **在 Mac 上对保留的 RC 本地复现桌面验收**（分钟级，无需任何 Secret；验收会自行在 RC 上注册测试账号）：
+
+   ```bash
+   git checkout <source-sha>
+   bun install && bun run build:packages
+   node scripts/release-candidate.cjs --branch staging --run-number <run-number> \
+     --run-attempt <attempt> --sha <source-sha> --apply-root-version
+   gh run download <run-id> -n xpod-desktop-macos-<candidate-version> -D desktop/release
+   bun scripts/accept-packaged-desktop-permissions.ts \
+     --archive "$(ls desktop/release/*-mac.zip)" --version <candidate-version> \
+     --source-sha <source-sha> --issuer https://id-rc.undefineds.cn/ \
+     --private-directory .test-data/desktop-permission-private \
+     --evidence .test-data/desktop-permission-evidence.json
+   ```
+
+   真实错误在 `.test-data/desktop-permission-private/`。复现前确认没有其他候选正在占用 RC。
+4. **修好后只重跑失败的 job。** 修复只涉及测试/验收脚本时，可以在 GitHub 上对原 run 使用
+   "Re-run failed jobs"：保留的 RC、镜像 digest 和桌面产物都不变，重跑 attempt 会按 run id
+   认领本 run 部署的 RC，通过后照常缩容。修复涉及产品代码时，仍按"先合入 staging，再出新候选"执行。
+
+桌面构建（`build_desktop_rc`）不依赖已部署的 RC，与服务部署并行；只有 `accept_desktop_rc`
+在部署完成后对 RC 执行权限与操作验收，因此桌面验收失败不必等待重新构建。
+
+### 门禁冻结
+
+RC 未恢复为绿色之前，不新增验收步骤、证据类型、预算检查或文件哈希绑定；只允许修复导致失败的
+产品缺陷，或修复让失败可诊断的手段。新增门禁必须在 RC 已经稳定通过时单独提出，并说明它能拦住的
+真实缺陷。禁止把 workflow 或脚本的字节哈希写进其他源码或测试（这会让任何正常修改都要连锁改哈希）；
+现存的 `candidate.yml` 哈希绑定（`qlever-sdk-origin-policy.ts` 及其下游）属于待清理的历史欠账。
+
 手动恢复 RC 时可在同一 namespace 将 Xpod Deployment scale 到 1，然后重新
 运行 candidate workflow 做完整验收。
 
@@ -602,8 +679,8 @@ GHA 缓存（scope `qlever-runtime-sdk`）和"复用已有 SDK 镜像"两条增�
   既有 profile 契约不变）；
 - SDK 的 build source SHA 与当前 app consumer SHA 分开绑定：复用旧 SDK 不要求
   旧 SDK revision 等于仅 app 变化的新提交，app master 记录 SDK 自己的
-  source/run/head 与当前 app 关系；当前候选的 18 条兼容与 29 项检查与 SDK 解析
-  **并行**，其中 18 条兼容是共享 RC 部署的显式前置、29 项检查在部署验收阶段运行，
+  source/run/head 与当前 app 关系；当前候选的 18 条兼容与 28 项检查与 SDK 解析
+  **并行**，其中 18 条兼容是共享 RC 部署的显式前置、28 项检查在部署验收阶段运行，
   不能反过来作为 SDK 解析/构建前置。
 
 **`normal-build-v1` 明确保留与移除的证明**：保留精确 source SHA、profile/target、
@@ -625,7 +702,7 @@ source/run/target、SDK 输入身份与不可变镜像、runtime 镜像/config�
 shutdown；提前关闭会取消仍在排队的查询。失败时保留独立诊断附件，并撤销未完成的
 master，诊断附件不能作为发布通过的证据。
 
-服务镜像的逐文件 SOURCE/LEGAL/ABI 推导审计与上述 SDK/原生验证分开：仅在手动运行 candidate 时显式勾选 `service_source_diagnostics` 执行，结果作为独立诊断保留，不再作为共享 RC 部署或最终验收的前置。诊断失败仍记录失败，不授予 `wholeServiceSourceVerified`、`serviceAbiVerified` 或 `legalCoverageVerified`。最终验收单独披露这一范围；既有 SDK/原生验证、18 路兼容、不可变源码和镜像绑定，以及全部 29 项真实产品检查仍须通过。原生兼容测试不等价于完整镜像 ABI 推导审计。
+服务镜像的逐文件 SOURCE/LEGAL/ABI 推导审计与上述 SDK/原生验证分开：仅在手动运行 candidate 时显式勾选 `service_source_diagnostics` 执行，结果作为独立诊断保留，不再作为共享 RC 部署或最终验收的前置。诊断失败仍记录失败，不授予 `wholeServiceSourceVerified`、`serviceAbiVerified` 或 `legalCoverageVerified`。最终验收单独披露这一范围；既有 SDK/原生验证、18 路兼容、不可变源码和镜像绑定，以及全部 28 项服务检查仍须通过（桌面另有独立凭证）。原生兼容测试不等价于完整镜像 ABI 推导审计。
 
 **并行度按机器实测决定，不再手写**：
 
