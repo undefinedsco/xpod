@@ -185,7 +185,7 @@
   },
   {
     "path": "packages/xpod-cli/scripts/canonical-host-sources.json",
-    "sha256": "1e7815662fad1dcb1bf66785d538e20d14e466b6dd269d748a2697dceeae19aa"
+    "sha256": "6be73dea37eb993dee80d07a0e0bd65f6d6a32e1f7191563894f99e4c68edfc6"
   },
   {
     "path": "packages/xpod-cli/scripts/public-build-tools.ts",
