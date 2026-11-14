@@ -24,7 +24,7 @@ import {
   installDesktopNativeTheme,
 } from './native-theme.js'
 import { WindowLifecycle } from './window-lifecycle.js'
-import { DesktopWindowRecovery } from './window-recovery.js'
+import { DesktopWindowRecovery, runFailedLoadRecovery } from './window-recovery.js'
 import { DesktopWindowModeController, WORKSPACE_WINDOW_MODE_SIZE, bindDesktopWindowModeNavigation } from './window-mode.js'
 import {
   DesktopUpdateManager,
@@ -463,21 +463,23 @@ const WINDOW_RECOVERY_TIMEOUT_MS = 10 * 60_000
  */
 async function recoverWindowAfterFailedLoad(window: BrowserWindow): Promise<void> {
   const recovery = windowRecoveries.get(window)
-  if (!recovery || window.isDestroyed() || recovery.isRecovering()) return
-  recovery.beginRecovery()
-  try {
-    if (!await runtimeManager.waitUntilReachable(WINDOW_RECOVERY_TIMEOUT_MS)) return
-    if (window.isDestroyed()) return
-    const cooldown = recovery.reloadCooldownRemainingMs()
-    if (cooldown > 0) await delay(cooldown)
-    if (window.isDestroyed()) return
-    desktopConsole.info(`[desktop] reloading ${safeNavigationTarget(targetUrl)} after a failed load`)
-    recovery.markReloaded()
-    await discoverDesktopIssuer()
-    await loadDesktopUrlWithoutStaleCache(window, targetUrl)
-  } finally {
-    recovery.endRecovery()
-  }
+  if (!recovery) return
+  // Readiness, cooldown, discovery and the final cache await are all owned by
+  // runFailedLoadRecovery, which also re-checks that this window still needs a
+  // failed-page reload before navigating.
+  await runFailedLoadRecovery({
+    recovery,
+    isDestroyed: () => window.isDestroyed(),
+    waitUntilReachable: () => runtimeManager.waitUntilReachable(WINDOW_RECOVERY_TIMEOUT_MS),
+    delay,
+    discoverIssuer: () => discoverDesktopIssuer(),
+    load: async (stillNeeded) => await loadDesktopUrlWithoutStaleCache(
+      window, targetUrl, undefined, () => {
+        if (!stillNeeded()) return false
+        desktopConsole.info(`[desktop] reloading ${safeNavigationTarget(targetUrl)} after a failed load`)
+        return true
+      }),
+  })
 }
 
 function delay(milliseconds: number): Promise<void> {
