@@ -1,0 +1,6 @@
+gpgv: Signature made Sun Oct 18 08:08:27 2026 UTC
+gpgv:                using RSA key 4CB50190207B4758A3F73A796ED0E7B82643E131
+gpgv: Can't check signature: No public key
+gpgv: Signature made Sun Oct 18 08:08:42 2026 UTC
+gpgv:                using RSA key B8E5F13176D2A7A75220028078DBA3BC47EF2265
+gpgv: Good signature from "Debian Archive Automatic Signing Key (13/trixie) <ftpmaster@debian.org>"

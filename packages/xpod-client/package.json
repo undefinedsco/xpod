@@ -1,0 +1,54 @@
+{
+  "name": "@undefineds.co/xpod-client",
+  "version": "0.1.0-preview.1",
+  "description": "Shared Xpod authentication and Pod HTTP runtime client",
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/library.cjs"
+    },
+    "./session": {
+      "types": "./dist/types/session.d.ts",
+      "import": "./dist/session.mjs",
+      "require": "./dist/session.cjs"
+    }
+  },
+  "scripts": {
+    "build": "bun scripts/build.ts",
+    "typecheck": "tsc --noEmit --emitDeclarationOnly false -p tsconfig.json",
+    "test": "bun test ./tests"
+  },
+  "peerDependencies": {
+    "@inrupt/solid-client-authn-node": "^3.1.1"
+  },
+  "devDependencies": {
+    "@inrupt/solid-client-authn-node": "^3.1.1",
+    "typescript": "5.5",
+    "@types/node": "^22",
+    "@undefineds.co/xpod-cli": "workspace:*"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "peerDependenciesMeta": {
+    "@inrupt/solid-client-authn-node": {
+      "optional": true
+    }
+  },
+  "types": "./dist/types/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "session": [
+        "dist/types/session.d.ts"
+      ]
+    }
+  }
+}

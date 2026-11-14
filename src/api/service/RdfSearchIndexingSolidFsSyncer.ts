@@ -3,8 +3,8 @@ import type {
   SolidFsManifest,
   SolidFsPrepareInput,
   SolidFsSyncer,
-} from '../../solidfs';
-import { resolvePodResourceUrl } from '../../solidfs';
+} from '../../solidfs/types';
+import { resolvePodResourceUrl } from '../../solidfs/PodSolidFsSyncer';
 import {
   isLineAddressableRdf,
   isLineAddressableRdfPath,

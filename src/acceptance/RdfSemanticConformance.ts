@@ -5,8 +5,18 @@ import { DataFactory, Parser, termToId, Writer } from 'n3';
 import type {
   RdfEngineLike,
   RdfNativeSparqlAccessScope,
+  RdfNativeSparqlQueryOptions,
   RdfNativeSparqlResult,
 } from '../storage/rdf/types';
+
+/** The ONE canonical dataset enum, reused from the native query contract. */
+export type SemanticDefaultDataset = NonNullable<RdfNativeSparqlQueryOptions['defaultDataset']>;
+
+export const SEMANTIC_DEFAULT_DATASETS: readonly SemanticDefaultDataset[] = Object.freeze([
+  'physical',
+  'exactSource',
+  'scopedUnion',
+]);
 
 export const DEFAULT_BASE_PATH = 'urn:xpod:semantic:';
 
@@ -24,6 +34,10 @@ export interface SemanticFixtureCase {
   }[];
   query: string;
   acceptMediaType: string;
+  /** Reviewed per-case dataset declaration (top-level, the canonical private
+   * protocol shape). Absent = the historical container mode. Directly the
+   * existing native option type; there is no wrapper object and no alias. */
+  defaultDataset?: RdfNativeSparqlQueryOptions['defaultDataset'];
   accessScope: {
     principal: string;
     mode: string;
@@ -99,6 +113,33 @@ export interface SemanticCaseExecutor {
     testCase: SemanticFixtureCase,
     timeoutMs: number | undefined,
   ): Promise<RdfNativeSparqlResult>;
+}
+
+/** Fail closed on an unknown runtime dataset value.
+ *
+ * The type system cannot police a JSON fixture, so a malformed/hand-edited value
+ * must never silently degrade to the historical default: that would change which
+ * graph a query reads without any review. */
+export function assertSemanticDefaultDataset(
+  value: unknown,
+  context: string,
+): SemanticDefaultDataset | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || !SEMANTIC_DEFAULT_DATASETS.includes(value as SemanticDefaultDataset)) {
+    throw new Error(
+      `${context}: unsupported defaultDataset ${JSON.stringify(value)}; ` +
+      `expected one of ${SEMANTIC_DEFAULT_DATASETS.join('|')}`,
+    );
+  }
+  return value as SemanticDefaultDataset;
+}
+
+/** The dataset a case asks for, defaulting to the historical container mode. */
+export function semanticCaseDefaultDataset(
+  testCase: SemanticFixtureCase,
+): SemanticDefaultDataset {
+  return assertSemanticDefaultDataset(testCase.defaultDataset, `${testCase.id}: defaultDataset`)
+    ?? 'scopedUnion';
 }
 
 export async function runCaseWithEngine(

@@ -47,7 +47,26 @@ COPY scripts/patch-inrupt-authn-operation-cleanup.js ./scripts/patch-inrupt-auth
 RUN NODE_TLS_REJECT_UNAUTHORIZED=0 bun install --frozen-lockfile
 
 COPY . .
-RUN bun run build:packages && bun run build:ts && bun run build:components && bun scripts/check-components-runtime-metadata.cjs && bun run build:ui
+ARG XPOD_SOURCE_SHA
+RUN if [ -z "${XPOD_SOURCE_SHA}" ]; then bun run build:packages && bun run build:ts && bun run build:components && bun scripts/check-components-runtime-metadata.cjs && bun run build:ui; fi
+# Explicit provenance builds use the bounded parent. Local builds keep the
+# existing pack recipe and do not claim retained pack provenance.
+RUN if [ -n "${XPOD_SOURCE_SHA}" ]; then \
+      python3 scripts/service-pack-parent.py --source-sha "${XPOD_SOURCE_SHA}" --include-build; \
+    else \
+      node scripts/run-npm-pack.cjs .test-data/service-pack .test-data/service-pack-cache service; \
+    fi \
+ && mkdir /service \
+ && tar -xzf .test-data/service-pack/*.tgz -C /service --strip-components=1 \
+ && cd /service && bun install --production --ignore-scripts \
+ && node -e "const {execFileSync}=require('node:child_process');const fs=require('node:fs');const dir='/service/node_modules/inngest-cli';const pkg=JSON.parse(fs.readFileSync(dir+'/package.json','utf8'));if(!pkg.scripts||!pkg.scripts.postinstall)throw Error('inngest-cli declares no postinstall lifecycle');const bin=dir+'/bin/inngest';execFileSync(process.execPath,['postinstall.js'],{cwd:dir,stdio:'inherit',env:{...process.env}});const size=fs.existsSync(bin)?fs.statSync(bin).size:0;if(!(size>1048576))throw Error('inngest-cli postinstall left no real executable (size='+size+')');const raw=execFileSync(bin,['--version'],{encoding:'utf8',timeout:60000}).trim();const m=/inngest version ([0-9]+[.][0-9]+[.][0-9]+)/.exec(raw);if(!m)throw Error('inngest-cli --version differs: '+raw);if(m[1]!==pkg.version.trim())throw Error('inngest-cli version mismatch: binary='+m[1]+' package='+pkg.version);console.log('[inngest-cli] installed '+m[1]+' bytes '+size)" \
+ && node -e "for (const name of ['refresh','transport','operation-cleanup']) require('/app/scripts/patch-inrupt-authn-' + name + '.js').patchInstalledPackage('/service', {runtimeOnly:true}); require('/app/scripts/patch-jose.js').patchInstalledPackages('/service'); require('/app/patches/comunica-undici-entry.cjs').patchInstalledPackage('/service')" \
+ && bun /app/scripts/check-dependency-state.ts --dependency-root /service --runtime-only \
+ && if [ -n "${XPOD_SOURCE_SHA}" ]; then \
+      mkdir -p /service/provenance \
+      && cp -a /app/.test-data/service-pack-originals /app/.test-data/service-pack-bodies /app/.test-data/service-pack-phase /service/provenance/; \
+    fi \
+ && rm -rf /service/runtime-packages
 
 FROM node:22-bookworm-slim AS node-runtime
 
@@ -68,15 +87,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
-COPY --from=build /app/package.json ./
-COPY --from=build /app/desktop/package.json ./desktop/package.json
-COPY --from=build /app/ui/package.json ./ui/package.json
-COPY --from=build /app/config ./config
-COPY --from=build /app/dist ./dist
-COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/packages ./packages
-COPY --from=build /app/static ./static
-COPY --from=build /app/templates ./templates
+COPY --from=build /service ./
 
 RUN mkdir -p /app/data /app/logs \
  && mkdir -p /app/node_modules/@undefineds.co \
@@ -92,4 +103,4 @@ ENV XPOD_QLEVER_LOCAL_RUNTIME_COMMAND=/opt/xpod/qlever/bin/xpod_qlever_local_run
 EXPOSE 5737 5738 6300 6301
 
 ENTRYPOINT []
-CMD ["sh", "-c", "bun --no-env-file dist/cli/index.js start --mode ${XPOD_EDITION} --port ${CSS_PORT} --host 0.0.0.0"]
+CMD ["sh", "-c", "bun --no-env-file dist/runtime/service-entry.js start --mode ${XPOD_EDITION} --port ${CSS_PORT} --host 0.0.0.0"]

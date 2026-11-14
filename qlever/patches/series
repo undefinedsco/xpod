@@ -65,3 +65,6 @@ qlever-spatial-join-physical-wkt.patch
 qlever-execute-update-production-seam.patch
 qlever-execute-update-fresh-blank-nodes.patch
 qlever-filter-split-conjunctions.patch
+qlever-production-only-subdirectories.patch
+qlever-s2-scoped-precompiled-headers.patch
+qlever-antlr-scoped-pch-and-server-pch-reuse.patch

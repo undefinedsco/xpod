@@ -82,3 +82,31 @@ describe('desktop navigation cache', () => {
     expect(targetSession.clearAuthCache).not.toHaveBeenCalled()
   })
 })
+
+describe('loadDesktopUrlWithoutStaleCache stillNeeded guard', () => {
+  function windowWith(session: DesktopNavigationSession) {
+    const loads: string[] = []
+    return { window: { webContents: { session }, loadURL: async (url: string) => { loads.push(url) } }, loads };
+  }
+
+  test('skips loadURL when the target stopped being needed during the cache clear', async () => {
+    let needed = true
+    const target = session({ clearCache: mock(async () => { needed = false }) })
+    const { window, loads } = windowWith(target)
+    await loadDesktopUrlWithoutStaleCache(window, 'http://127.0.0.1:3000/status', undefined, () => needed)
+    expect(loads).toEqual([])
+    expect(target.clearCodeCaches).toHaveBeenCalled()
+  })
+
+  test('loads when the target is still needed after the cache clear', async () => {
+    const { window, loads } = windowWith(session())
+    await loadDesktopUrlWithoutStaleCache(window, 'http://127.0.0.1:3000/status', undefined, () => true)
+    expect(loads).toEqual(['http://127.0.0.1:3000/status'])
+  })
+
+  test('keeps loading when no guard is supplied', async () => {
+    const { window, loads } = windowWith(session())
+    await loadDesktopUrlWithoutStaleCache(window, 'http://127.0.0.1:3000/status')
+    expect(loads).toHaveLength(1)
+  })
+})

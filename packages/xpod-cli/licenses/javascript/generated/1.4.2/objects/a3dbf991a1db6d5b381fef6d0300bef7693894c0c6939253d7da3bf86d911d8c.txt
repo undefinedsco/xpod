@@ -1,0 +1,13 @@
+import { createRequire } from "node:module";
+var __esm = (fn, res, err) => () => {
+  if (fn)
+    try {
+      res = fn(fn = 0);
+    } catch (e) {
+      err = [e];
+    }
+  if (err)
+    throw err[0];
+  return res;
+};
+var __require = /* @__PURE__ */ createRequire(import.meta.url);

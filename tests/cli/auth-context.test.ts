@@ -35,7 +35,6 @@ beforeEach(() => {
   process.env.USERPROFILE = testHome;
   process.env.SOLID_HOME = solidHome;
   vi.resetModules();
-  vi.doUnmock('@inrupt/solid-client-authn-node');
 });
 
 afterEach(() => {
@@ -46,7 +45,6 @@ afterEach(() => {
   if (originalSolidHome === undefined) delete process.env.SOLID_HOME;
   else process.env.SOLID_HOME = originalSolidHome;
   vi.resetModules();
-  vi.doUnmock('@inrupt/solid-client-authn-node');
   if (testRoot && existsSync(testRoot)) {
     rmSync(testRoot, { recursive: true, force: true });
   }
@@ -66,7 +64,7 @@ describe('CLI resource auth context', () => {
       },
     });
 
-    const authContext = await import('../../src/cli/lib/auth-context');
+    const authContext = await import('../../packages/xpod-client/src/auth-context');
 
     await expect(authContext.requireAuthContext()).resolves.toMatchObject({
       accessToken: 'access-token',
@@ -117,14 +115,15 @@ describe('CLI resource auth context', () => {
       return session;
     });
 
-    vi.doMock('@inrupt/solid-client-authn-node', () => ({
+    const { registerSolidAuthnSdkLoader } = await import('../../packages/xpod-client/src/sdk');
+    registerSolidAuthnSdkLoader(async () => ({
       EVENTS: { NEW_TOKENS: 'newTokens' },
       getSessionFromStorage,
       refreshSession,
       Session: class Session {},
-    }));
+    }) as unknown as typeof import('@inrupt/solid-client-authn-node'));
 
-    const authContext = await import('../../src/cli/lib/auth-context');
+    const authContext = await import('../../packages/xpod-client/src/auth-context');
 
     await expect(authContext.requireAuthContext()).resolves.toMatchObject({
       accessToken: 'new-access',

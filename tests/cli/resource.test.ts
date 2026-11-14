@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { resolvePodRootFromWebId, type CliAuthContext } from '../../src/cli/lib/auth-context';
+import { resolvePodRootFromWebId, type CliAuthContext } from '../../packages/xpod-cli/src/lib/auth-context';
 import {
   contentTypeForPath,
   parseContainedResources,
   relativeToPodRoot,
   resolveResourceTarget,
   responseHeaders,
-} from '../../src/cli/lib/resource';
+} from '../../packages/xpod-cli/src/lib/resource';
 
 const authContext: CliAuthContext = {
   baseUrl: 'https://pod.example/',

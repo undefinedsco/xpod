@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { finished } from 'node:stream/promises';
 import { lookup } from 'mime-types';
 import path from 'path';
-import { PACKAGE_ROOT } from '../runtime';
+import { PACKAGE_ROOT } from '../runtime/package-root';
 
 /**
  * A specialized StaticAssetHandler that serves the React UI assets

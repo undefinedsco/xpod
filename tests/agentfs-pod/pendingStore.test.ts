@@ -1,8 +1,8 @@
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { PodLowerPendingStore } from '../../src/cli/agent-fs/pending-store';
-import type { PendingOperation } from '../../src/cli/agent-fs/pod-lower';
+import { PodLowerPendingStore } from '../../packages/xpod-afs/src/agent-fs/pending-store';
+import type { PendingOperation } from '../../packages/xpod-afs/src/agent-fs/pod-lower';
 
 const ROOT = path.resolve('.test-data/agent-directory-workers/agentfs-test/pending');
 

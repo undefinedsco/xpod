@@ -1,0 +1,48 @@
+name: Controlled CSS native target products
+on:
+  push:
+    branches: [staging]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: One canonical target, or all; native builds are serialized
+        type: string
+        default: all
+permissions:
+  contents: read
+  packages: write
+  actions: read
+concurrency:
+  group: css-native-products-${{ github.sha }}
+  cancel-in-progress: false
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.targets.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.4.2
+      - id: targets
+        env:
+          TARGET: ${{ github.event_name == 'push' && 'all' || inputs.target }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          bun -e 'import {appendFileSync} from "node:fs";import {productTargets,productTarget} from "./scripts/module-product-targets.ts";const target=process.env.TARGET!;const rows=target==="all"?productTargets("css"):[productTarget("css",target)];if(rows.some(row=>!row.nativeProducer))throw Error("Producer route absent");appendFileSync(process.env.GITHUB_OUTPUT!,`matrix=${JSON.stringify({include:rows})}\n`);'
+  targets:
+    name: targets (${{ matrix.target }})
+    needs: contract
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.contract.outputs.matrix) }}
+    uses: ./.github/workflows/css-native-product-target.yml
+    with:
+      target: ${{ matrix.target }}

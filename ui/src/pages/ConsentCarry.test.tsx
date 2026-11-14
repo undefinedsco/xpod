@@ -72,24 +72,32 @@ function mockConsent(consentBody: Record<string, unknown>) {
 }
 
 describe('ConsentPage requires authority or an explicit approval', () => {
-  it('asks explicitly when binding a WebID returns a new Consent interaction', async () => {
-    mockConsent({ client: { client_id: 'desktop', client_name: 'Xpod Desktop' } });
-    renderConsent();
-    fireEvent.click(await screen.findByRole('button', { name: '允许' }));
+  it('pre-binds the sole unambiguous identity once and still requires explicit consent for the new interaction', async () => {
+    // No session WebID yet and exactly one owned binding: bind once before
+    // rendering approval. The POST body must not request persistent identity.
+    const fetchMock = mockConsent({ client: { client_id: 'desktop', client_name: 'Xpod Desktop' } });
+    const first = renderConsent();
     await waitFor(() => expect(assign).toHaveBeenCalledWith(boundLocation));
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+    const prebind = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST');
+    expect(String(prebind?.[0])).toContain('/oidc/pick-webid/');
+    expect(JSON.parse(String(prebind?.[1]?.body))).toEqual({ webId: binding.webId, remember: false });
+    expect(assign).toHaveBeenCalledTimes(1);
     expect(sessionStorage.getItem('xpod.consent.carry.v1')).toBeNull();
+    expect(screen.queryByRole('button', { name: '允许' })).toBeNull();
+    first.unmount();
 
-    cleanup();
     currentUrl = new URL(boundLocation, currentUrl.origin);
     assign.mockReset();
-    const fetchMock = mockConsent({ client: { client_id: 'desktop' }, webId: binding.webId });
+    const consentFetch = mockConsent({ client: { client_id: 'desktop' }, webId: binding.webId });
     renderConsent();
     await screen.findByRole('button', { name: '允许' });
-    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+    // The new interaction is never auto-approved: no POST before the click.
+    expect(consentFetch.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
     expect(assign).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: '允许' }));
     await waitFor(() => expect(assign).toHaveBeenCalledWith(callbackLocation));
-    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+    expect(consentFetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
   });
 
   it.each(['same Account new session', 'different Account', 'different interaction', 'different client', 'missing client', 'expired', 'future'])(

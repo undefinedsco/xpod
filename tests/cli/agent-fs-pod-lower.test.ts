@@ -1,11 +1,11 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { AgentDirectoryClient } from '../../src/agent-directory/client/AgentDirectoryClient';
+import type { AgentDirectoryClient } from '../../packages/xpod-afs/src/directory/client';
 import {
   PodHttpLowerFileSystem,
   PodLowerConflictError,
-} from '../../src/cli/agent-fs/pod-lower';
+} from '../../packages/xpod-afs/src/agent-fs/pod-lower';
 
 interface FixtureRecord {
   method: string;

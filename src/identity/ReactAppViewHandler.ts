@@ -15,7 +15,7 @@ import type {
 } from '@solid/community-server';
 import * as fs from 'fs';
 import * as path from 'path';
-import { PACKAGE_ROOT } from '../runtime';
+import { PACKAGE_ROOT } from '../runtime/package-root';
 
 /**
  * Entry for a single HTML view template.

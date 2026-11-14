@@ -1,0 +1,49 @@
+import {test,expect} from 'bun:test';
+import fs from 'node:fs';
+import path from 'node:path';
+import {createHash} from 'node:crypto';
+import {observeCliGitHubOrigin,observeModuleProductGitHubOrigin,githubOriginFacts} from '../../scripts/lib/independent-admission/github-origin';
+let id=900;
+async function scenario(module:'cli'|'api',branch='staging',old=false,mixed=false,mutateSource?:string){
+ const source=(++id).toString(16).padStart(40,'0'),head=mixed?'f'.repeat(40):source,digest='b'.repeat(64);
+ const workflow=`.github/workflows/${module==='cli'?'cli-package':'api-module-product'}.yml`,target='darwin-arm64';
+ const tuple={schemaVersion:1 as const,sourceSha:source,runHeadSha:head,runId:5,runAttempt:1,artifactId:8,artifactSha256:digest};
+ const previous=globalThis.fetch;
+ globalThis.fetch=(async value=>{
+  const endpoint=new URL(String(value)).pathname.replace('/repos/undefinedsco/xpod/','');let body:any;
+  if(endpoint==='actions/runs/5/attempts/1')body={id:5,run_attempt:1,head_sha:head,repository:{full_name:'undefinedsco/xpod'},head_repository:{full_name:'undefinedsco/xpod'},status:'completed',conclusion:'success',event:'push',head_branch:branch,workflow_id:7,path:workflow};
+  else if(endpoint==='actions/workflows/7')body={id:7,path:workflow};
+  else if(endpoint.startsWith('contents/')){const name=endpoint.slice(9);let data=fs.readFileSync(path.resolve(import.meta.dir,'../..',name));if(old&&name===workflow)data=Buffer.from(data.toString().replace('  push:\n    branches: [staging]\n',''));if(name===mutateSource)data=Buffer.concat([data,Buffer.from('\n// drift')]);body={type:'file',path:name,encoding:'base64',content:data.toString('base64')};}
+  else if(endpoint==='actions/artifacts/8')body={id:8,expired:false,workflow_run:{id:5,head_sha:head},digest:'sha256:'+digest,size_in_bytes:100,name:module==='cli'?`xpod-cli-publication-preparation-macOS-${source}-5-1`:`api-module-products-${target}-${source}-5-1`,created_at:'2026-10-17T00:01:00Z'};
+  else if(endpoint==='actions/runs/5/attempts/1/jobs')body={total_count:1,jobs:[{id:10,run_id:5,run_attempt:1,head_sha:head,name:module==='cli'?'normal-publication (macos-latest)':`products (${target})`,status:'completed',conclusion:'success',started_at:'2026-10-17T00:00:00Z',completed_at:'2026-10-17T00:02:00Z',steps:[{name:module==='cli'?'Build normal CLI publication preparation':'Produce the actual API preview once',status:'completed',conclusion:'success'}]}]};
+  else throw Error(endpoint);
+  return new Response(JSON.stringify(body));
+ }) as typeof fetch;
+ try{return module==='cli'?await observeCliGitHubOrigin(tuple):await observeModuleProductGitHubOrigin(tuple,'api',target);}finally{globalThis.fetch=previous;}
+}
+for(const module of ['api','cli'] as const)test(`${module} exact staging push origin only`,async()=>{
+ const actual=githubOriginFacts(await scenario(module));
+ expect(actual?.sourceSha).toHaveLength(40);
+ if(module==='api'){
+   // The staging path must accept the CURRENT reviewed workflow bytes, while the
+   // previously reviewed exact bytes stay admitted for older recorded runs.
+   const current=createHash('sha256').update(fs.readFileSync(path.resolve(import.meta.dir,'../..','.github/workflows/api-module-product.yml'))).digest('hex');
+   expect(actual?.workflowSourceSha256).toBe(current);
+   const policy=fs.readFileSync(path.resolve(import.meta.dir,'../../scripts/lib/independent-admission/github-origin.ts'),'utf8');
+   expect(policy).toContain('db6ca21afa33d572f24a92e96c88f425d1bf46a86d966a55be4c10de4d812263');
+   expect(policy).toContain(current);
+   expect(actual?.sourceSha).toBe(actual?.runHeadSha);}
+ await expect(scenario(module,'main')).rejects.toThrow();
+ await expect(scenario(module,'refs/tags/v0.0.0')).rejects.toThrow();
+ await expect(scenario(module,'staging',false,true)).rejects.toThrow();
+ await expect(scenario(module,'staging',true)).rejects.toThrow();
+});
+
+test('controlled API whole native source tuple rejects producer/helper/placement drift',async()=>{for(const name of ['scripts/api-module-producer.py','scripts/lib/inngest-controlled-build.py','scripts/lib/physical-module-native-placement.ts'])await expect(scenario('api','staging',false,false,name)).rejects.toThrow('not reviewed');});
+
+test('public source and pre-public API origin groups remain complete and cannot mix',async()=>{
+ const {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS:groups}=await import('../../scripts/lib/independent-admission/github-origin');
+ const {selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey}=await import('../../scripts/lib/independent-admission/github-source-binding-groups');
+ for(const group of groups){const secondary=group.secondarySelectors??[];const rows=[...group.selectors,...secondary];const observed=new Map(rows.map(row=>[sourceBindingKey(row),row.sha256]));for(const role of secondaryGitHubSourceBindingSelectors(groups,new Map(group.selectors.map(row=>[sourceBindingKey(row),row.sha256])))){const own=[...group.selectors,...secondary,...group.sourceBindings].find(row=>sourceBindingKey(row)===sourceBindingKey(role))!;observed.set(sourceBindingKey(role),own.sha256);}expect(selectGitHubSourceBindingGroup(groups,observed)).toBe(group);for(const row of secondaryGitHubSourceBindingSelectors(groups,new Map(group.selectors.map(row=>[sourceBindingKey(row),row.sha256])))){const missing=new Map(observed);missing.delete(sourceBindingKey(row));expect(()=>selectGitHubSourceBindingGroup(groups,missing)).toThrow();const mixed=new Map(observed);mixed.set(sourceBindingKey(row),'f'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(groups,mixed)).toThrow();}}
+ for(const path of ['scripts/prepare-package-manifest.cjs','scripts/platform-binaries.cjs','package.json','bun.lock','packages/xpod-api/package.json'])await expect(scenario('api','staging',false,false,path)).rejects.toThrow();
+});

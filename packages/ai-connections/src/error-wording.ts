@@ -261,6 +261,13 @@ function providerLabel(provider: AiConnectionsProvider): string {
  */
 export function withDisplayableErrors(client: AiConnectionsClient): AiConnectionsClient {
   const wrapped: Record<string, unknown> = { ...client };
+  // A spread copy would turn the immutable Pod binding into a writable data
+  // property, so a wrapped client could be silently re-pointed at another Pod.
+  // Re-pin it as a non-writable accessor over the same value.
+  const boundPod = client.podBaseUrl;
+  Object.defineProperty(wrapped, 'podBaseUrl', {
+    get: () => boundPod, enumerable: true, configurable: false,
+  });
   for (const [key, value] of Object.entries(client)) {
     if (typeof value !== 'function') continue;
     wrapped[key] = async (...args: unknown[]) => {

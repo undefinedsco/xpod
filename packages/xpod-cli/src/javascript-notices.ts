@@ -1,8 +1,8 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { bunCompileTarget } from './native-target';
 import { sha256File } from './manifest';
+import { renderCliuiModificationNotice } from './promotion';
 
 interface BuildMetafile {
   inputs: Record<string, { bytes: number; imports: { path: string; external?: boolean }[] }>;
@@ -16,6 +16,8 @@ interface PackageNotice {
   packageJsonSha256: string;
   declaredLicense: unknown;
   inputCount: number;
+  vendored?: boolean;
+  sourceAuthority?: NoticeFile;
   noticeStatus: 'collected-candidates' | 'missing-original';
   files: NoticeFile[];
 }
@@ -28,6 +30,8 @@ interface NoticeFile {
 }
 
 interface NoticeSupplement {
+  directory?: string;
+  authority?: NoticeFile;
   name: string;
   version: string;
   provenance: unknown;
@@ -43,20 +47,21 @@ interface GeneratedNoticeIndex {
   files: NoticeFile[];
 }
 
-function supplements(directory?: string): Map<string, NoticeSupplement> {
+function supplements(directories?: string | string[]): Map<string, NoticeSupplement> {
   const entries = new Map<string, NoticeSupplement>();
-  if (!directory) { return entries; }
-  const index = JSON.parse(readFileSync(path.join(directory, 'index.json'), 'utf8')) as { schemaVersion: number; entries: NoticeSupplement[] };
-  if (index.schemaVersion !== 1 || !Array.isArray(index.entries)) { throw new Error('Invalid JavaScript notice supplements'); }
-  for (const entry of index.entries) {
-    const key = JSON.stringify([entry.name, entry.version]);
-    if (typeof entry.name !== 'string' || !entry.name || typeof entry.version !== 'string' || !entry.version || !Array.isArray(entry.files) || entries.has(key)) {
-      throw new Error('Invalid or duplicate JavaScript notice supplement');
+  for (const directory of typeof directories === 'string' ? [directories] : directories ?? []) {
+    const index = JSON.parse(readFileSync(path.join(directory, 'index.json'), 'utf8')) as { schemaVersion: number; entries: NoticeSupplement[] };
+    if (index.schemaVersion !== 1 || !Array.isArray(index.entries)) { throw new Error('Invalid JavaScript notice supplements'); }
+    for (const entry of index.entries) {
+      const key = JSON.stringify([entry.name, entry.version]);
+      if (typeof entry.name !== 'string' || !entry.name || typeof entry.version !== 'string' || !entry.version || !Array.isArray(entry.files) || entries.has(key)) {
+        throw new Error('Invalid or duplicate JavaScript notice supplement');
+      }
+      for (const file of [...entry.files, ...(entry.authority ? [entry.authority] : [])]) {
+        if (!/^[a-f0-9]{64}$/.test(file.sha256) || file.object !== `objects/${file.sha256}.txt`) { throw new Error('Unsafe JavaScript supplement object'); }
+      }
+      entries.set(key, { ...entry, directory });
     }
-    for (const file of entry.files) {
-      if (!/^[a-f0-9]{64}$/.test(file.sha256) || file.object !== `objects/${file.sha256}.txt`) { throw new Error('Unsafe JavaScript supplement object'); }
-    }
-    entries.set(key, entry);
   }
   return entries;
 }
@@ -100,38 +105,116 @@ function noticeCandidates(root: string): string[] {
   return files.sort();
 }
 
-/** Inventory the exact portable JS bundle inputs; externally installed runtimes are not shipped. */
+/** Inventory the exact portable JS bundle inputs; explicit vendored roots are shipped even when imports are external. */
 export function collectJavascriptNotices(options: {
   metafile: string;
   stageRoot: string;
   repoRoot: string;
+  /** Exact canonical installed roots declared by the build layout. */
+  dependencyRoots?: readonly string[];
   destination: string;
   target: string;
   cli: string;
   bunVersion: string;
-  supplements?: string;
+  supplements?: string | string[];
+  /** Exact canonical first-party files admitted by the producer's boundary gate. */
+  canonicalSources?: { root: string; files: readonly { path: string; sha256: string }[] };
+  /** Explicit producer path projection, verified against the actual input bytes.
+   * This changes output labels only; all existing source confinement still applies. */
+  inputPaths?: readonly { physicalPath: string; logicalPath: string; sha256: string }[];
+  /** Actual staged packages shipped independently of the bundler import graph. */
+  vendoredRoots?: string[];
+  requireVendoredOriginals?: boolean;
+  /** Optional shared content-addressed output, confined to the actual stage. */
+  sharedObjectRoot?: string;
   generated?: string;
+  generatedProfile?: 'core' | 'client' | 'build-tools-esm' | 'build-tools-cjs' | 'output-esm' | 'preview' | 'afs-commands';
 }): string[] {
-  bunCompileTarget(options.target);
+  // Producer metadata for portable JavaScript, not native ABI admission.
+  if (!/^[a-z][a-z0-9]*-[a-z][a-z0-9]*$/.test(options.target)) {
+    throw new Error('Invalid JavaScript build target metadata');
+  }
   const stageRoot = realpathSync(options.stageRoot);
-  const dependencyRoot = realpathSync(path.join(options.repoRoot, 'node_modules'));
+  const repoRoot = realpathSync(options.repoRoot);
+  const dependencyRoots = options.dependencyRoots === undefined ? [realpathSync(path.join(repoRoot, 'node_modules'))] : options.dependencyRoots.map(root => {
+    if (path.basename(root) !== 'node_modules' || !within(repoRoot, root) || realpathSync(root) !== root) throw new Error('Invalid canonical dependency root');
+    return root;
+  });
+  if (!dependencyRoots.length || new Set(dependencyRoots).size !== dependencyRoots.length) throw new Error('Invalid dependency root declaration');
+  const dependencyPath = (root: string, file: string) => options.dependencyRoots === undefined
+    ? `node_modules/${slash(path.relative(root, file))}` : slash(path.relative(repoRoot, file));
   const metadata = JSON.parse(readFileSync(options.metafile, 'utf8')) as BuildMetafile;
   if (!metadata.inputs || !metadata.outputs || Object.keys(metadata.inputs).length === 0 || Object.keys(metadata.outputs).length === 0) {
     throw new Error('Invalid JavaScript build metafile');
   }
+  const projectedInputs = new Map<string, { logicalPath: string; sha256: string }>();
+  const projectedLabels = new Set<string>();
+  for (const binding of options.inputPaths ?? []) {
+    if (!path.isAbsolute(binding.physicalPath) || !/^[a-f0-9]{64}$/.test(binding.sha256)
+      || !binding.logicalPath || /[\\\x00-\x1f\x7f]/u.test(binding.logicalPath)
+      || path.posix.isAbsolute(binding.logicalPath) || binding.logicalPath.split('/').some(part => !part || part === '.' || part === '..')
+      || projectedInputs.has(binding.physicalPath) || projectedLabels.has(binding.logicalPath)) throw new Error('Invalid explicit input path binding');
+    projectedInputs.set(binding.physicalPath, binding); projectedLabels.add(binding.logicalPath);
+  }
+  const usedProjections = new Set<string>(), emittedInputPaths = new Set<string>();
   const packages = new Map<string, PackageNotice>();
   const supplementIndex = supplements(options.supplements);
   const objects = new Map<string, string>();
+  function registerPackage(root: string, info: Record<string, unknown>, label: string): PackageNotice {
+    const packageJsonSha256 = sha256File(path.join(root, 'package.json'));
+    const existing = packages.get(label);
+    if (existing) {
+      if (existing.packageJsonSha256 !== packageJsonSha256) { throw new Error('Bundled and vendored package metadata differs'); }
+      return existing;
+    }
+    const notices: NoticeFile[] = noticeCandidates(root).map(file => {
+      const sha256 = sha256File(file); const object = `objects/${sha256}.txt`;
+      objects.set(object, file);
+      return { sourcePath: slash(path.relative(root, file)), object, sha256 };
+    });
+    const supplemental = supplementIndex.get(JSON.stringify([info.name, info.version]));
+    const supplementFile = (file: NoticeFile): NoticeFile => {
+      const source = path.join(supplemental!.directory!, file.object);
+      if (sha256File(source) !== file.sha256) { throw new Error(`JavaScript supplement hash mismatch: ${file.object}`); }
+      objects.set(file.object, source);
+      return { ...file, provenance: file.provenance ?? supplemental!.provenance };
+    };
+    for (const file of supplemental?.files ?? []) { notices.push(supplementFile(file)); }
+    let sourceAuthority: NoticeFile | undefined;
+    if (supplemental?.authority) {
+      sourceAuthority = supplementFile(supplemental.authority);
+      const authority = JSON.parse(readFileSync(path.join(supplemental.directory!, sourceAuthority.object), 'utf8'));
+      if (authority.name !== info.name || authority.version !== info.version) { throw new Error('JavaScript supplement source version authority mismatch'); }
+    }
+    const entry: PackageNotice = { name: info.name as string, version: info.version as string, root: label, packageJsonSha256,
+      declaredLicense: info.license ?? info.licenses ?? null, inputCount: 0,
+      noticeStatus: notices.length ? 'collected-candidates' : 'missing-original', files: notices,
+      ...(sourceAuthority ? { sourceAuthority } : {}) };
+    packages.set(label, entry); return entry;
+  }
+  if (options.generatedProfile && !options.generated) { throw new Error('Generated JavaScript profile requires source provenance'); }
   let generated: GeneratedNoticeIndex | undefined;
   if (options.generated) {
     generated = JSON.parse(readFileSync(path.join(options.generated, 'index.json'), 'utf8')) as GeneratedNoticeIndex;
+    if (options.generatedProfile) {
+      if (!['core', 'client', 'build-tools-esm', 'build-tools-cjs', 'output-esm', 'preview', 'afs-commands'].includes(options.generatedProfile)) {
+        throw new Error('Unsupported generated JavaScript profile');
+      }
+      const profile = JSON.parse(readFileSync(path.join(options.generated, `${options.generatedProfile}.json`), 'utf8'));
+      if (profile.schemaVersion !== 1 || profile.bunVersion !== generated.bunVersion || profile.file?.sourcePath !== 'generated-prefix.js') {
+        throw new Error('Unsupported generated JavaScript profile');
+      }
+      generated = { ...generated, prefixSha256: profile.prefixSha256, prefixBytes: profile.prefixBytes,
+        provenance: { original: generated.provenance, profile: profile.provenance },
+        files: [...generated.files.filter(file => file.sourcePath !== 'generated-prefix.js'), profile.file] };
+    }
     if (generated.schemaVersion !== 1 || generated.bunVersion !== options.bunVersion ||
-      !/^[a-f0-9]{64}$/.test(generated.prefixSha256) || !Number.isSafeInteger(generated.prefixBytes) || generated.prefixBytes < 1 ||
+      !/^[a-f0-9]{64}$/.test(generated.prefixSha256) || !Number.isSafeInteger(generated.prefixBytes) || generated.prefixBytes < 0 || (generated.prefixBytes === 0 && !options.generatedProfile) ||
       !Array.isArray(generated.files) || !generated.files.length) {
       throw new Error('Unsupported generated JavaScript notice provenance');
     }
     const bytes = readFileSync(options.cli);
-    const boundary = bytes.indexOf('\n// ');
+    const boundary = bytes.subarray(0, 3).toString() === '// ' ? 0 : bytes.indexOf('\n// ');
     const prefix = bytes.subarray(0, boundary);
     if (boundary < 0 || prefix.length !== generated.prefixBytes || createHash('sha256').update(prefix).digest('hex') !== generated.prefixSha256) {
       throw new Error('Generated JavaScript prefix differs from audited sources');
@@ -147,38 +230,25 @@ export function collectJavascriptNotices(options: {
   const inputs: { path: string; sha256: string; bytes: number; bytesInOutput: number; packageRoot?: string }[] = [];
   for (const [raw, input] of Object.entries(metadata.inputs)) {
     const candidate = path.resolve(stageRoot, raw);
-    if (!within(dependencyRoot, candidate) && !within(stageRoot, candidate)) { throw new Error(`Unexpected bundler input outside staging/dependencies: ${raw}`); }
+    const binding = options.canonicalSources?.files.find(file => file.path === candidate);
+    const canonical = binding !== undefined && options.canonicalSources !== undefined
+      && path.basename(options.canonicalSources.root) === 'src'
+      && realpathSync(options.canonicalSources.root) === options.canonicalSources.root
+      && within(options.canonicalSources.root, candidate)
+      && /^[a-f0-9]{64}$/.test(binding.sha256);
+    if (!canonical && !dependencyRoots.some(root => within(root, candidate)) && !within(stageRoot, candidate)) { throw new Error(`Unexpected bundler input outside staging/dependencies: ${raw}`); }
     const filename = realpathSync(candidate);
-    const dependency = within(dependencyRoot, filename);
-    if (!dependency && !within(stageRoot, filename)) { throw new Error(`Unexpected bundler input outside staging/dependencies: ${raw}`); }
+    const dependencyRoot = dependencyRoots.find(root => within(root, filename));
+    const dependency = dependencyRoot !== undefined;
+    if (dependencyRoots.some(root => within(root, candidate)) && !dependency) throw new Error(`Unexpected bundler input outside staging/dependencies: ${raw}`);
+    if (!dependency && !within(stageRoot, filename) && !(canonical && filename === candidate)) { throw new Error(`Unexpected bundler input outside staging/dependencies: ${raw}`); }
+    if (canonical && sha256File(filename) !== binding!.sha256) throw new Error('Canonical source hash changed');
     if (!Number.isFinite(input.bytes) || input.bytes < 0 || !Array.isArray(input.imports)) { throw new Error(`Invalid bundler input: ${raw}`); }
     let packageRoot: string | undefined;
     if (dependency) {
-      const owner = packageOwner(filename, dependencyRoot);
-      packageRoot = `node_modules/${slash(path.relative(dependencyRoot, owner.root))}`;
-      let entry = packages.get(packageRoot);
-      if (!entry) {
-        const notices: NoticeFile[] = noticeCandidates(owner.root).map((file) => {
-          const sha256 = sha256File(file);
-          const object = `objects/${sha256}.txt`;
-          objects.set(object, file);
-          return { sourcePath: slash(path.relative(owner.root, file)), object, sha256 };
-        });
-        const supplemental = supplementIndex.get(JSON.stringify([owner.info.name, owner.info.version]));
-        for (const file of supplemental?.files ?? []) {
-          const source = path.join(options.supplements!, file.object);
-          if (sha256File(source) !== file.sha256) { throw new Error(`JavaScript supplement hash mismatch: ${file.object}`); }
-          objects.set(file.object, source);
-          notices.push({ ...file, provenance: supplemental!.provenance });
-        }
-        entry = {
-          name: owner.info.name as string, version: owner.info.version as string, root: packageRoot,
-          packageJsonSha256: sha256File(path.join(owner.root, 'package.json')),
-          declaredLicense: owner.info.license ?? owner.info.licenses ?? null,
-          inputCount: 0, noticeStatus: notices.length > 0 ? 'collected-candidates' : 'missing-original', files: notices,
-        };
-        packages.set(packageRoot, entry);
-      }
+      const owner = packageOwner(filename, dependencyRoot!);
+      packageRoot = dependencyPath(dependencyRoot!, owner.root);
+      const entry = registerPackage(owner.root, owner.info, packageRoot);
       entry.inputCount += 1;
     }
     let bytesInOutput = 0;
@@ -187,39 +257,103 @@ export function collectJavascriptNotices(options: {
       if (!Number.isFinite(contribution) || contribution < 0) { throw new Error(`Invalid output contribution: ${raw}`); }
       bytesInOutput += contribution;
     }
+    const actualSha256 = sha256File(filename), projection = projectedInputs.get(candidate);
+    if (projection && projection.sha256 !== actualSha256) throw new Error('Projected input bytes changed');
+    if (projection) usedProjections.add(candidate);
+    const inputPath = projection?.logicalPath ?? (dependency ? dependencyPath(dependencyRoot!, filename) : slash(path.relative(stageRoot, filename)));
+    if (emittedInputPaths.has(inputPath)) throw new Error('Projected input path collision');
+    emittedInputPaths.add(inputPath);
     inputs.push({
-      path: dependency ? `node_modules/${slash(path.relative(dependencyRoot, filename))}` : slash(path.relative(stageRoot, filename)),
-      sha256: sha256File(filename), bytes: input.bytes, bytesInOutput,
+      path: inputPath,
+      sha256: actualSha256, bytes: input.bytes, bytesInOutput,
       ...(packageRoot ? { packageRoot } : {}),
     });
     for (const imported of input.imports) {
       if (!imported.external) { continue; }
       let name = imported.path;
       if (path.isAbsolute(name)) {
-        if (within(dependencyRoot, name)) { name = `node_modules/${slash(path.relative(dependencyRoot, name))}`; }
+        const importedRoot = dependencyRoots.find(root => within(root, name));
+        if (importedRoot) { name = dependencyPath(importedRoot, name); }
         else if (within(stageRoot, name)) { name = slash(path.relative(stageRoot, name)); }
         else { throw new Error('Unexpected absolute external import outside staging/dependencies'); }
       }
       externalImports.add(name);
     }
   }
+  if (usedProjections.size !== projectedInputs.size) throw new Error('Unused explicit input path binding');
+  for (const declaredRoot of options.vendoredRoots ?? []) {
+    const root = realpathSync(declaredRoot);
+    const info = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')) as Record<string, unknown>;
+    if (typeof info.name !== 'string' || !/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/i.test(info.name) || typeof info.version !== 'string' || !info.version) {
+      throw new Error('Invalid vendored JavaScript package identity');
+    }
+    const entry = registerPackage(root, info, `node_modules/${info.name}`); entry.vendored = true;
+    if (options.requireVendoredOriginals && entry.noticeStatus === 'missing-original') { throw new Error('Vendored JavaScript original notice missing'); }
+  }
   const cliSha256 = sha256File(options.cli);
+  // The file-level exception must bind an actual input and its retained original terms.
+  const cliui = [...packages.values()].find(entry => entry.name === 'cliui' && entry.version === '8.0.1');
+  const covered = cliui && inputs.find(input => input.packageRoot === cliui.root
+    && input.path === `${cliui.root}/build/lib/string-utils.js`);
+  const modification = covered && (() => {
+    const sourceNotice = cliui!.files.find(file => file.sha256 === covered.sha256);
+    const termsNotice = cliui!.files.find(file => {
+      const provenance = file.provenance as { coveredSourcePath?: string; coveredSourceSha256?: string; fileDeclaredLicense?: string } | undefined;
+      return file.sourcePath === 'npm fixed upstream LICENSE' && provenance?.fileDeclaredLicense === 'Artistic-2.0'
+        && provenance.coveredSourcePath === 'build/lib/string-utils.js' && provenance.coveredSourceSha256 === covered.sha256;
+    });
+    if (!sourceNotice || !termsNotice) { throw new Error('cliui modification notice requires exact source and original terms'); }
+    return { sourceNotice, termsNotice, covered };
+  })();
   // Inspect every input before writing. Preserve original bytes, including CRLF;
   // no package license declaration is converted into distribution clearance.
-  mkdirSync(path.join(options.destination, 'objects'), { recursive: true });
+  const objectRoot = options.sharedObjectRoot ?? path.join(options.destination, 'objects');
+  if (options.sharedObjectRoot && (!within(stageRoot, path.resolve(objectRoot)) || !within(stageRoot, path.resolve(options.destination)))) { throw new Error('Shared notice object store outside stage'); }
+  if (options.sharedObjectRoot) {
+    for (const target of [objectRoot, options.destination]) {
+      let ancestor = path.resolve(target);
+      while (!existsSync(ancestor)) { const parent = path.dirname(ancestor); if (parent === ancestor) { throw new Error('Shared notice object store outside stage'); } ancestor = parent; }
+      if (!within(stageRoot, realpathSync(ancestor))) { throw new Error('Shared notice object store outside stage'); }
+    }
+  }
+  mkdirSync(objectRoot, { recursive: true }); mkdirSync(options.destination, { recursive: true });
+  if (options.sharedObjectRoot && (!within(stageRoot, realpathSync(objectRoot)) || !within(stageRoot, realpathSync(options.destination)))) { throw new Error('Shared notice object store outside stage'); }
+  const outputReferences = new Map<string, string>();
   for (const [object, source] of objects) {
-    const output = path.join(options.destination, object);
-    cpSync(source, output);
+    const output = path.join(objectRoot, path.basename(object));
+    let existing: ReturnType<typeof lstatSync> | undefined;
+    try { existing = lstatSync(output); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { throw error; } }
+    if (existing) { if (existing.isSymbolicLink() || !existing.isFile()) { throw new Error('Unsafe shared notice object'); } if (sha256File(output) !== path.basename(object, '.txt')) { throw new Error('Shared notice object hash mismatch'); } }
+    else { cpSync(source, output); }
     if (sha256File(output) !== path.basename(object, '.txt')) { throw new Error(`JavaScript notice changed during copy: ${object}`); }
+    outputReferences.set(object, slash(path.relative(options.destination, output)));
+  }
+  function withOutputReferences<T>(value: T): T {
+    return JSON.parse(JSON.stringify(value, (key, entry) => key === 'object' && outputReferences.has(entry) ? outputReferences.get(entry) : entry));
+  }
+  const modifications = [];
+  if (modification) {
+    const { sourceNotice, termsNotice, covered } = modification;
+    const text = renderCliuiModificationNotice({
+      payload: slash(path.relative(options.destination, options.cli)),
+      sourceNotice: outputReferences.get(sourceNotice.object)!,
+      termsNotice: outputReferences.get(termsNotice.object)!,
+    });
+    const member = 'MODIFICATIONS.md';
+    writeFileSync(path.join(options.destination, member), text);
+    modifications.push({ path: member, sha256: createHash('sha256').update(text).digest('hex'), cliSha256,
+      coveredSourcePath: covered.path, coveredSourceSha256: covered.sha256,
+      sourceNotice: withOutputReferences(sourceNotice), termsNotice: withOutputReferences(termsNotice) });
   }
   writeFileSync(path.join(options.destination, 'index.json'), JSON.stringify({
     schemaVersion: 1, status: 'partial-collection', target: options.target, bunVersion: options.bunVersion,
     cliSha256,
-    ...(generated ? { generated } : {}),
+    ...(modifications.length ? { modifications } : {}),
+    ...(generated ? { generated: withOutputReferences(generated) } : {}),
     scope: 'All inputs of this portable JS bundle invocation, including zero output contributions; no Bun/Node runtime is shipped. This is not a complete file-level license audit.',
-    packages: [...packages.values()].sort((a, b) => a.root.localeCompare(b.root)),
+    packages: withOutputReferences([...packages.values()]).sort((a, b) => a.root.localeCompare(b.root)),
     inputs: inputs.sort((a, b) => a.path.localeCompare(b.path)),
     externalImports: [...externalImports].sort(),
   }, null, 2) + '\n');
-  return ['index.json', ...objects.keys()];
+  return ['index.json', ...outputReferences.values(), ...modifications.map(entry => entry.path)];
 }

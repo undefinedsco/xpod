@@ -9,8 +9,9 @@
  * Agent SDK.
  */
 import yargs from 'yargs';
+import { XPOD_CLI_VERSION } from './manifest';
 
-export const XPOD_CLI_VERSION = '0.1.0-preview.1';
+export { XPOD_CLI_VERSION } from './manifest';
 
 /** Client commands; server/control commands are not registered here. */
 export async function createClientParser() {

@@ -1875,7 +1875,15 @@ export class PostgresRdfEngine implements RdfEngineLike {
     ) {
       throw new Error('Native SPARQL ABI returned an invalid envelope');
     }
-    return result as RdfNativeSparqlResult;
+    // The envelope check above guarantees both fields.
+    const typed = result as RdfNativeSparqlResult;
+    if (typed.status === 'unsupported') {
+      // Safe diagnostic for fresh-account `query-options-failed`: only an allow-listed reason and
+      // typed option metadata. Queries, URIs, principals, tokens and arbitrary upstream text never
+      // enter the log. See nativeSparqlUnsupportedDiagnostic.
+      this.logger.warn(`Native SPARQL unsupported: ${nativeSparqlUnsupportedDiagnostic(wireOptions, typed)}`);
+    }
+    return typed;
   }
 
   private async probeNativeSparql(): Promise<void> {
@@ -12399,4 +12407,154 @@ function uniqueQuads(quads: Quad[]): Quad[] {
     }
   }
   return result;
+}
+
+
+/**
+ * Reasons the native ABI may publish for an `unsupported` result. Only these exact enum values
+ * survive into logs; anything else collapses to `unknown-native-error` so an upstream message can
+ * never smuggle a query, URI, principal, token or response body into a log line.
+ */
+const NATIVE_SPARQL_UNSUPPORTED_REASONS = new Set([
+  'query-options-failed',
+  'query-options-invalid',
+  'query-options-missing',
+  'access-scope-unsupported',
+  'operation-unsupported',
+  'query-unsupported',
+  'unsupported-query',
+]);
+
+const NATIVE_SPARQL_OPTION_KEYS = [
+  'basePath',
+  'sourceUri',
+  'defaultDataset',
+  'operation',
+  'timeoutMs',
+  'acceptMediaType',
+  'loadDocument',
+  'accessScope',
+  'vectorQuery',
+] as const;
+
+const NATIVE_SPARQL_OPERATIONS = new Set(['queryBindings', 'queryBoolean', 'queryQuads', 'prepareUpdate']);
+const NATIVE_SPARQL_DATASETS = new Set(['physical', 'exactSource', 'scopedUnion']);
+const NATIVE_SPARQL_SCOPE_MODES = new Set(['read', 'append', 'delete', 'write']);
+const NATIVE_SPARQL_METRICS = new Set(['cosine', 'dot', 'euclidean']);
+
+function nativeSparqlUnsupportedReason(result: Pick<RdfNativeSparqlResult, 'error' | 'body'>): string {
+  for (const candidate of [result.error, result.body]) {
+    if (typeof candidate !== 'string') continue;
+    const sample = candidate.slice(0, 512);
+    for (const reason of NATIVE_SPARQL_UNSUPPORTED_REASONS) {
+      if (sample.includes(reason)) return reason;
+    }
+  }
+  return 'unknown-native-error';
+}
+
+function nativeSparqlValueType(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  return typeof value;
+}
+
+function nativeSparqlEnum(value: unknown, allowed: ReadonlySet<string>): string {
+  return typeof value === 'string' && allowed.has(value) ? value : value === undefined ? 'absent' : 'invalid';
+}
+
+function nativeSparqlList(value: unknown): string {
+  if (value === undefined) return 'absent';
+  if (!Array.isArray(value)) return 'invalid';
+  return value.every((item) => typeof item === 'string') ? `${value.length}:valid` : `${value.length}:invalid`;
+}
+
+function nativeSparqlTimeoutBucket(value: unknown): string {
+  if (value === undefined) return 'absent';
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 'invalid';
+  if (value <= 0) return 'zero-or-negative';
+  if (value <= 1_000) return '1-1000';
+  if (value <= 30_000) return '1001-30000';
+  if (value <= 300_000) return '30001-300000';
+  return 'over-300000';
+}
+
+function nativeSparqlObject(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+/**
+ * Bounded, typed description of an unsupported native SPARQL call.
+ *
+ * Deliberately never serializes wire options: a `basePath`/`sourceUri` can carry query-string
+ * credentials, an access scope can carry principals and graph URLs, and the upstream error/body is
+ * arbitrary text. Callers get enum presence and cardinality only.
+ */
+export function nativeSparqlUnsupportedDiagnostic(
+  options: Record<string, unknown>,
+  result: Pick<RdfNativeSparqlResult, 'error' | 'body'>,
+): string {
+  const parts = [
+    `reason=${nativeSparqlUnsupportedReason(result)}`,
+    `optionTypes=${NATIVE_SPARQL_OPTION_KEYS
+      .filter((key) => key in options)
+      .map((key) => `${key}:${nativeSparqlValueType(options[key])}`)
+      .join(',') || 'none'}`,
+    `basePath=${options.basePath === undefined ? 'absent' : 'present'}`,
+    `sourceUri=${options.sourceUri === undefined ? 'absent' : 'present'}`,
+    `operation=${nativeSparqlEnum(options.operation, NATIVE_SPARQL_OPERATIONS)}`,
+    `defaultDataset=${nativeSparqlEnum(options.defaultDataset, NATIVE_SPARQL_DATASETS)}`,
+    `timeoutMs=${nativeSparqlTimeoutBucket(options.timeoutMs)}`,
+    `acceptMediaType=${options.acceptMediaType === undefined ? 'absent' : 'present'}`,
+  ];
+
+  const loadDocument = nativeSparqlObject(options.loadDocument);
+  if (!loadDocument) {
+    parts.push(`loadDocument=${options.loadDocument === undefined ? 'absent' : 'invalid'}`);
+  } else {
+    const bodyLength = typeof loadDocument.body === 'string' ? loadDocument.body.length : -1;
+    parts.push(
+      `loadDocument=present(sourceUri:${loadDocument.sourceUri === undefined ? 'absent' : 'present'},`
+      + `mediaType:${loadDocument.mediaType === undefined ? 'absent' : 'present'},`
+      + `bodyLength:${bodyLength >= 0 ? bodyLength : 'invalid'})`,
+    );
+  }
+
+  const scope = nativeSparqlObject(options.accessScope);
+  if (!scope) {
+    parts.push(`accessScope=${options.accessScope === undefined ? 'absent' : 'invalid'}`);
+  } else {
+    parts.push(
+      `accessScope=present(basePath:${scope.basePath === undefined ? 'absent' : 'present'},`
+      + `mode:${nativeSparqlEnum(scope.mode, NATIVE_SPARQL_SCOPE_MODES)},`
+      + `allowedGraphUrls:${nativeSparqlList(scope.allowedGraphUrls)},`
+      + `deniedGraphUrls:${nativeSparqlList(scope.deniedGraphUrls)},`
+      + `deniedGraphPrefixes:${nativeSparqlList(scope.deniedGraphPrefixes)},`
+      + `allowedSourceUrls:${nativeSparqlList(scope.allowedSourceUrls)},`
+      + `deniedSourceUrls:${nativeSparqlList(scope.deniedSourceUrls)},`
+      + `deniedSourcePrefixes:${nativeSparqlList(scope.deniedSourcePrefixes)},`
+      + `hasPrincipal:${typeof scope.principal === 'string' && scope.principal.length > 0},`
+      + `hasVersion:${typeof scope.version === 'string' && scope.version.length > 0},`
+      + `resolved:${scope.resolved === undefined ? 'absent' : scope.resolved === true})`,
+    );
+  }
+
+  const vectorQuery = nativeSparqlObject(options.vectorQuery);
+  if (!vectorQuery) {
+    parts.push(`vectorQuery=${options.vectorQuery === undefined ? 'absent' : 'invalid'}`);
+  } else {
+    parts.push(
+      `vectorQuery=present(embedding:${Array.isArray(vectorQuery.embedding)
+        ? vectorQuery.embedding.every((value) => typeof value === 'number' && Number.isFinite(value))
+          ? `valid:${vectorQuery.embedding.length}`
+          : `invalid:${vectorQuery.embedding.length}`
+        : 'invalid'},`
+      + `metric:${nativeSparqlEnum(vectorQuery.metric, NATIVE_SPARQL_METRICS)},`
+      + `limit:${nativeSparqlTimeoutBucket(vectorQuery.limit)})`,
+    );
+  }
+
+  return parts.join(' ');
 }

@@ -11,8 +11,10 @@ import { registerTaskRoutes } from '../../src/api/handlers/TaskHandler';
 import { expect, it, vi } from 'vitest';
 import { AiConnectionsInvocationKeyIssuer } from '../../src/api/ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import { AesInvocationTokenCodec } from '../../src/api/ai-gateway/auth/InvocationTokenCodec';
-import { acceptPackagedDesktopPermissions, assertOwnedTaskRows, DesktopAcceptanceError, describeFailure,
-  publishedFailures, requirePackagedInvocationKey, rendererOwnerFetch, requestPackagedForeignRun } from '../../scripts/accept-packaged-desktop-permissions';
+import { acceptPackagedDesktopPermissions, assertOwnedTaskRows, classifyLaunchDetail, DesktopAcceptanceError,
+  describeFailure, failureLine, isDesktopLaunchDetail, publishedFailures, requirePackagedInvocationKey,
+  rendererOwnerFetch, requestPackagedForeignRun,
+  summarizeStartupTelemetry } from '../../scripts/accept-packaged-desktop-permissions';
 import { acceptMountedPodPermissions, attributeMountedOperation, MountedPermissionError } from '../../scripts/helpers/packaged-desktop-permissions';
 import { attributeOidcOperation, OidcApprovalError } from '../../tests/helpers/browserSolidOidc';
 
@@ -265,6 +267,56 @@ it('preserves mounted attribution through the driver final failure projection', 
   }
 });
 
+it('emits ONE safe closed failure line for a pod-permission failure with no launch phase', () => {
+  const secret = 'bearer secret-token-value https://local.example/private';
+  const failure = new MountedPermissionError('service-access', `rejected: ${secret}`, undefined, 'foreign-pod');
+  const published = describeFailure(failure);
+  // The REAL projection the acceptor prints, not a re-implementation.
+  const line = failureLine(published, [failure], undefined, undefined);
+  const wire = JSON.stringify(line);
+  expect(line).toMatchObject({ runner: 'desktop-permission-acceptance', failed: true, code: 'pod-permission' });
+  expect(line.detail).toBe('foreign-pod');
+  expect(line.evidence).toBe('service-access');
+  // No launch phase => no launch-only fields, and the line is still emitted.
+  expect(line.phase).toBeUndefined();
+  expect(line.explanation).toBeUndefined();
+  // Privacy: nothing from the underlying message reaches the line.
+  expect(wire).not.toContain('secret-token-value');
+  expect(wire).not.toMatch(/https?:\/\//u);
+  // Only the reviewed closed key set appears.
+  expect(Object.keys(line).sort()).toEqual(['code', 'detail', 'evidence', 'failed', 'runner']);
+  // A failure with no closed detail still yields a safe line.
+  const plain = failureLine(describeFailure(new MountedPermissionError('grant-apply', secret)), [], undefined, undefined);
+  expect(plain.detail).toBeUndefined();
+  expect(JSON.stringify(plain)).not.toContain('secret-token-value');
+});
+
+it('retains safe startup telemetry through the real launch error wrapper', async () => {
+  const parent = path.join(process.cwd(), '.test-data', 'packaged-desktop-runner');
+  await mkdir(parent, { recursive: true });
+  const directory = await mkdtemp(path.join(parent, 'gateway-projection-'));
+  const secret = 'synthetic-private-startup-detail';
+  const rejection = new Error(secret);
+  const telemetry = { probes: 42, lastOutcome: 'connect-failed', elapsedMs: 60_000, appAlive: true };
+  Object.defineProperty(rejection, 'gatewayTelemetry', { value: telemetry });
+  const verify = vi.spyOn(packagedSource, 'verifyPackagedSourceCheckout').mockResolvedValue(undefined);
+  const launch = vi.spyOn(packagedFixture, 'launchOwnedPackagedDesktop').mockRejectedValue(rejection);
+  try {
+    await expect(acceptPackagedDesktopPermissions({ archive: 'synthetic-launch-rejection', version: '0.4.31',
+      sourceSha: 'a'.repeat(40), issuer: 'https://id.example/', privateDirectory: directory,
+      evidenceFile: path.join(directory, 'public.json') })).rejects.toThrow('private evidence retained');
+    const safe = JSON.parse(await readFile(path.join(directory, 'failure-safe.json'), 'utf8'));
+    expect(safe).toMatchObject({ stage: 'launch', launchTelemetry: telemetry,
+      failures: [{ code: 'packaged-launch' }] });
+    expect(JSON.stringify(safe)).not.toContain(secret);
+    expect(await readFile(path.join(directory, 'failure-private.json'), 'utf8')).toContain(secret);
+    await expect(readFile(path.join(directory, 'public.json'))).rejects.toHaveProperty('code', 'ENOENT');
+  } finally {
+    verify.mockRestore(); launch.mockRestore();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 it('consumes real Pod-bound issuer credentials through the packaged acceptance boundary', async () => {
   const codec = new AesInvocationTokenCodec({ active: { kid: 'test', secret: 'packaged-invocation-contract' } });
   const issuer = new AiConnectionsInvocationKeyIssuer({ codec, deployment: 'local', baseUrl: 'https://gateway.example/v1' });
@@ -357,4 +409,307 @@ it('does not start a renderer request when the caller has already cancelled it',
     'http://127.0.0.1:41234/api/tasks', { signal: controller.signal },
   )).rejects.toBe(reason);
   expect(evaluateHandle).not.toHaveBeenCalled();
+});
+
+it('makes --key-file optional without inventing an empty external provider file', async () => {
+  const { parsePackagedPermissionArguments } = await import('../../scripts/accept-packaged-desktop-permissions');
+  const base = ['--archive', 'archive.zip', '--version', '0.4.31', '--source-sha', 'a'.repeat(40),
+    '--issuer', 'https://id.undefineds.co', '--private-directory', '/private', '--evidence', '/evidence.json'];
+  expect(parsePackagedPermissionArguments(base)).toMatchObject({ archive: 'archive.zip' });
+  expect(parsePackagedPermissionArguments(base)).not.toHaveProperty('keyFile');
+  expect(parsePackagedPermissionArguments([...base, '--key-file', '/external.env']))
+    .toMatchObject({ keyFile: '/external.env' });
+  expect(() => parsePackagedPermissionArguments(['--archive', 'archive.zip'])).toThrow('Missing packaged runner argument');
+});
+
+it('defers default platform issuance until the authoritative binding WebID and cleans up exactly once', async () => {
+  const { configureDefaultPlatformProvider } = await import('../../scripts/accept-packaged-desktop-permissions');
+  const calls: Array<{ webId: string; baseUrl: string }> = [];
+  const revoke = vi.fn(async () => undefined);
+  const issue = vi.fn(async (input: { webId: string; baseUrl: string }) => {
+    calls.push({ webId: input.webId, baseUrl: input.baseUrl });
+    return { provider: { id: 'custom' as const, offeringId: 'openai-compatible' as const,
+      apiKey: 'sk-process-only', baseUrl: 'https://id.undefineds.co/v1', expected: ['linx-lite'], source: 'file' as const }, revoke };
+  });
+  const options = { baseUrl: 'https://id.undefineds.co/', authorization: 'CSS-Account-Token fixture',
+    controls: { account: { clientCredentials: 'https://id.undefineds.co/.account/client-credentials' } },
+    webId: 'https://id.undefineds.co/alice/profile/card#me', issue };
+  const handle = await configureDefaultPlatformProvider(options);
+  expect(handle.provider).toMatchObject({ id: 'custom', offeringId: 'openai-compatible', expected: ['linx-lite'] });
+  expect(calls).toEqual([{ webId: options.webId, baseUrl: options.baseUrl }]);
+  await handle.revoke();
+  expect(revoke).toHaveBeenCalledTimes(1);
+});
+
+it('rejects a default platform descriptor with a foreign origin or wrong kind and revokes it', async () => {
+  const { configureDefaultPlatformProvider } = await import('../../scripts/accept-packaged-desktop-permissions');
+  for (const provider of [
+    { id: 'custom' as const, offeringId: 'openai-compatible' as const, apiKey: 'sk-process-only',
+      baseUrl: 'https://evil.example/v1', expected: ['linx-lite'], source: 'file' as const },
+    { id: 'openai' as const, offeringId: 'api-platform' as const, apiKey: 'sk-process-only',
+      baseUrl: 'https://id.undefineds.co/v1', expected: ['linx-lite'], source: 'file' as const },
+  ]) {
+    const revoke = vi.fn(async () => undefined);
+    const issue = vi.fn(async () => ({ provider, revoke }));
+    await expect(configureDefaultPlatformProvider({ baseUrl: 'https://id.undefineds.co/',
+      authorization: 'CSS-Account-Token fixture',
+      controls: { account: { clientCredentials: 'https://id.undefineds.co/.account/client-credentials' } },
+      webId: 'https://id.undefineds.co/alice/profile/card#me',
+      // The negative fixture deliberately violates the helper's typed return contract.
+      issue: issue as unknown as NonNullable<Parameters<typeof configureDefaultPlatformProvider>[0]['issue']>,
+    })).rejects.toBeInstanceOf(Error);
+    expect(revoke).toHaveBeenCalledTimes(1);
+  }
+  const revoke = vi.fn(async () => undefined);
+  await expect(configureDefaultPlatformProvider({ baseUrl: 'https://id.undefineds.co/',
+    authorization: 'CSS-Account-Token fixture',
+    controls: { account: { clientCredentials: 'https://id.undefineds.co/.account/client-credentials' } },
+    webId: 'https://foreign.example/card#me', issue: vi.fn(async () => ({ provider: {} as never, revoke })) }))
+    .rejects.toThrow('authoritative');
+  expect(revoke).not.toHaveBeenCalled();
+});
+
+it('publishes an audited packaged-launch code with a closed-enum phase', () => {
+  // The launch stage reclassifies a bare fixture Error to the already-reviewed
+  // packaged-launch code; the phase is a closed enum token.
+  const typed = new DesktopAcceptanceError('packaged-launch', 'private detail with oc_sk_live_9f2c1d4b8a7e6f5c');
+  expect(describeFailure(typed)).toEqual({ code: 'packaged-launch',
+    explanation: 'The owned packaged desktop failed during its startup launch phases' });
+  expect(JSON.stringify(describeFailure(typed))).not.toContain('oc_sk_live_9f2c1d4b8a7e6f5c');
+
+  // A published failure may carry only one of the reviewed phase tokens.
+  const published = { ...describeFailure(typed), phase: 'native-version' as const };
+  expect(JSON.stringify(published)).toContain('"phase":"native-version"');
+  expect(JSON.stringify(published)).not.toContain('oc_sk_live_9f2c1d4b8a7e6f5c');
+
+  // An unreviewed value must never serialize into the public record.
+  const store = new Map<string, unknown>();
+  store.set('phase', '{"stage":"launch","error":"secret"}');
+  expect(JSON.stringify([...store.entries()])).not.toContain('"phase":"native-version"');
+});
+
+it('keeps a bare fixture error unclassified outside the launch wrapper', () => {
+  // Guard against over-broad reclassification: only the launch call site
+  // upgrades the code, describeFailure itself stays strict.
+  const bare = new Error('Bundled runtime version mismatch at /Users/x/secret');
+  expect(describeFailure(bare).code).toBe('unclassified');
+  expect(describeFailure(bare).phase).toBeUndefined();
+});
+
+it('never masks a reviewed failure that surfaces during launch', () => {
+  // Regression: wrapping the launch call must upgrade ONLY unclassified errors.
+  // A reviewed permission failure thrown from inside launch keeps its own code.
+  const mounted = new (Object.getPrototypeOf(new DesktopAcceptanceError('pod-permission', 'x')).constructor)(
+    'pod-permission', 'private mounted detail', 'mounted-runtime');
+  expect(describeFailure(mounted).code).toBe('pod-permission');
+
+  // The upgrade predicate is exactly "would otherwise be unclassified".
+  const upgraded = describeFailure(new Error('Bundled runtime version mismatch')).code === 'unclassified'
+    ? 'packaged-launch' : 'preserved';
+  expect(upgraded).toBe('packaged-launch');
+});
+
+it('retains the original launch error privately while the public code stays fixed', () => {
+  // The launch wrapper must not destroy private debuggability: the original
+  // error rides along as `cause`, but describeFailure only ever publishes the
+  // reviewed code plus the closed-enum phase.
+  const original = new Error('Bundled runtime version mismatch at /Users/runner/secret');
+  original.stack = 'Error: Bundled runtime version mismatch at /Users/runner/secret\n    at launch';
+  const wrapped = new DesktopAcceptanceError('packaged-launch', original.message, undefined, original);
+  expect(wrapped.cause).toBe(original);
+  const published = describeFailure(wrapped);
+  expect(published.code).toBe('packaged-launch');
+  expect(JSON.stringify(published)).not.toContain('/Users/runner/secret');
+  // The private chain is still reachable for the 0600 evidence writer.
+  expect((wrapped.cause as Error).stack).toContain('launch');
+});
+
+it('keeps an injected cleanup failure visible in the safe record shape', () => {
+  // Models the diagnostic's contract: cleanup failure must never degrade to a
+  // success-looking record, and the phase stays a closed enum token.
+  type Safe = { outcome: string; cleanup: 'closed' | 'failed' | 'unproven'; phase?: string };
+  const evaluate = (closeThrows: boolean): Safe => {
+    const record: Safe = { outcome: 'reached-local-edition', cleanup: 'unproven' };
+    try { if (closeThrows) throw new Error('close failed'); record.cleanup = 'closed'; }
+    catch { record.cleanup = 'failed'; }
+    return record;
+  };
+  expect(evaluate(false)).toEqual({ outcome: 'reached-local-edition', cleanup: 'closed' });
+  // A launched-but-not-cleaned fixture can never look successful.
+  const failed = evaluate(true);
+  expect(failed.cleanup).toBe('failed');
+  expect(failed.cleanup === 'closed').toBe(false);
+});
+
+
+it('publishes the startup cause as closed enums and never as child text', () => {
+  // The projection is allowlist-only: every field is an enum, integer or boolean,
+  // so a hostile child stream can never reach the job log through it.
+  const projected = summarizeStartupTelemetry({
+    probes: 237, lastOutcome: 'connect-failed', elapsedMs: 60_083, appAlive: true,
+    startupLastEmittedTerminal: true, runtimeChildPresent: false,
+    startupLastEmittedAgeMs: 1_250,
+    startupLastEmitted: { schemaVersion: 1, sequence: 4, emittedAtMs: 1_700_000_000_000,
+      event: 'exited', managerState: 'failed', ownership: 'desktop',
+      childSeen: false, pidPresent: false, exitCode: 1, outputClass: 'eaddrinuse' },
+    modulePresence: [{ id: 'css', pointerPresent: true, anyPackagedTree: true },
+      { id: 'api', pointerPresent: false, anyPackagedTree: true }],
+  })!;
+  expect(projected).toMatchObject({ probes: 237, lastOutcome: 'connect-failed',
+    startupLastEmitted: { event: 'exited', managerState: 'failed', exitCode: 1, outputClass: 'eaddrinuse' },
+    startupLastEmittedTerminal: true, runtimeChildPresent: false, startupLastEmittedAgeMs: 1_250 });
+  // The emission identity is preserved so a stale frame stays provably stale.
+  expect(Object.keys(projected.startupLastEmitted as object).sort()).toEqual(['childSeen', 'emittedAtMs',
+    'event', 'exitCode', 'managerState', 'outputClass', 'ownership', 'pidPresent', 'sequence']);
+  // The old at-timeout names must never reappear: they claim a live observation.
+  expect(JSON.stringify(projected)).not.toMatch(/startupAtTimeout|startupTerminal|"startup":/u);
+  // Absent telemetry stays absent, never fabricated.
+  expect(summarizeStartupTelemetry(undefined)).toBeUndefined();
+  // A launch that failed BEFORE any gateway probe must still publish the frame:
+  // the startup observation is independent of probe count.
+  const early = summarizeStartupTelemetry({ probes: 0,
+    startupLastEmitted: { schemaVersion: 1, sequence: 2, emittedAtMs: 1_700_000_000_000,
+      event: 'spawn-error', managerState: 'failed', ownership: 'none',
+      childSeen: false, pidPresent: false, errorClass: 'enoent' },
+    startupLastEmittedAgeMs: 0, startupLastEmittedTerminal: true })!;
+  expect(early).toMatchObject({ probes: 0, startupLastEmitted: { event: 'spawn-error',
+    errorClass: 'enoent' }, startupLastEmittedTerminal: true });
+});
+
+it('keeps a still-starting launch distinguishable from an exited child in the safe record', async () => {
+  const parent = path.join(process.cwd(), '.test-data', 'packaged-desktop-runner');
+  await mkdir(parent, { recursive: true });
+  const directory = await mkdtemp(path.join(parent, 'startup-cause-'));
+  const verify = vi.spyOn(packagedSource, 'verifyPackagedSourceCheckout').mockResolvedValue(undefined);
+  const launch = vi.spyOn(packagedFixture, 'launchOwnedPackagedDesktop');
+  try {
+    const cases = [
+      { startupLastEmitted: { schemaVersion: 1, sequence: 1, emittedAtMs: 1_700_000_000_000,
+          event: 'spawned', managerState: 'starting',
+          ownership: 'desktop', childSeen: true, pidPresent: true },
+        startupLastEmittedAgeMs: 59_500, startupLastEmittedTerminal: false },
+      { startupLastEmitted: { schemaVersion: 1, sequence: 2, emittedAtMs: 1_700_000_059_000,
+          event: 'exited', managerState: 'failed',
+          ownership: 'desktop', childSeen: false, pidPresent: false, exitCode: 1, outputClass: 'sqlite' },
+        startupLastEmittedAgeMs: 500, startupLastEmittedTerminal: true },
+    ];
+    for (const [index, cause] of cases.entries()) {
+      const rejection = new Error('synthetic-private-child-detail');
+      Object.defineProperty(rejection, 'gatewayTelemetry', { value: { probes: 237,
+        lastOutcome: 'connect-failed', elapsedMs: 60_083, appAlive: true, ...cause } });
+      launch.mockRejectedValue(rejection);
+      await expect(acceptPackagedDesktopPermissions({ archive: 'synthetic-launch-rejection', version: '0.4.31',
+        sourceSha: 'a'.repeat(40), issuer: 'https://id.example/', privateDirectory: directory,
+        evidenceFile: path.join(directory, `public-${index}.json`) })).rejects.toThrow('private evidence retained');
+      const safe = JSON.parse(await readFile(path.join(directory, 'failure-safe.json'), 'utf8'));
+      expect(safe.launchTelemetry).toMatchObject(cause);
+      expect(JSON.stringify(safe)).not.toContain('synthetic-private-child-detail');
+    }
+  } finally {
+    verify.mockRestore(); launch.mockRestore();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it('classifies each launch failure branch to one closed token and never leaks text', () => {
+  const hostile = 'https://local.example/private?token=abc Authorization: Bearer sk-live-9f2c1d password=hunter2';
+  const cases = [
+    ['bridge-missing', new Error(`Missing packaged desktop bridge ${hostile}`)],
+    ['bridge-missing', new Error('Unknown navigation failure', { cause: new Error('Missing packaged desktop bridge') })],
+    ['bridge-navigation-context', new Error(`page.evaluate: Execution context was destroyed, most likely because of a navigation ${hostile}`)],
+    ['bridge-ipc-untrusted', new Error(`Device settings require the trusted product shell ${hostile}`)],
+    ['runtime-failed', new Error('Packaged runtime reported failed before it became ready')],
+    ['runtime-stopped', new Error('Packaged runtime reported stopped before it became ready')],
+    ['runtime-not-owned', new Error('Packaged runtime is not owned by the installed desktop')],
+    ['runtime-not-ready', new Error('Packaged runtime did not reach the running state')],
+    ['other', new Error(hostile)],
+    ['other', new Error('unrelated launch failure')],
+  ] as const;
+  for (const [expected, error] of cases) {
+    const wrapped = new DesktopAcceptanceError('packaged-launch', 'private launch detail', undefined, error);
+    // The REAL launched-path wrapper supplies the token; assert the classifier too.
+    expect(classifyLaunchDetail(error)).toBe(expected);
+    expect(wrapped.code).toBe('packaged-launch');
+  }
+  // Only closed tokens can ever be produced.
+  const allowed = new Set(['bridge-missing', 'bridge-navigation-context', 'bridge-ipc-untrusted',
+    'runtime-failed', 'runtime-stopped', 'runtime-not-owned', 'runtime-not-ready', 'other']);
+  for (const [, error] of cases) expect(allowed.has(classifyLaunchDetail(error))).toBe(true);
+});
+
+it('launch detail reaches the safe JSON and the failure line without leaking, and never pollutes non-launch failures', () => {
+  const hostile = 'https://id.example/private?token=abc Authorization: Bearer sk-live-9f2c1d4b8a7e6f5c password=hunter2';
+  const original = new Error(`Execution context was destroyed, most likely because of a navigation ${hostile}`);
+  const wrapped = new DesktopAcceptanceError('packaged-launch', 'private launch detail', undefined, original,
+    classifyLaunchDetail(original));
+  const published = describeFailure(wrapped);
+  const line = failureLine(published, [wrapped], 'bridge', undefined);
+  expect(line.launchDetail).toBe('bridge-navigation-context');
+  expect(line.code).toBe('packaged-launch');
+  // The fixed text no longer claims a Local-edition failure.
+  expect(line.explanation).toBe('The owned packaged desktop failed during its startup launch phases');
+  const wire = JSON.stringify(line);
+  for (const secret of ['token=abc', 'Bearer', 'sk-live', 'hunter2', 'https://id.example']) {
+    expect(wire).not.toContain(secret);
+  }
+  // Only reviewed closed keys leave the process.
+  expect(Object.keys(line).sort()).toEqual(['code', 'explanation', 'failed', 'launchDetail', 'phase', 'runner']);
+
+  // A non-launch failure must not gain the launch-only field.
+  const mounted = new MountedPermissionError('service-access', 'private mounted detail', undefined, 'foreign-pod');
+  const mountedLine = failureLine(describeFailure(mounted), [mounted], undefined, undefined);
+  expect(mountedLine.launchDetail).toBeUndefined();
+  expect(Object.keys(mountedLine).sort()).toEqual(['code', 'detail', 'evidence', 'failed', 'runner']);
+  // A launch failure with only an unrecognized message still yields 'other'.
+  const odd = new DesktopAcceptanceError('packaged-launch', 'x', undefined, new Error('no pattern'), 'other');
+  expect(failureLine(describeFailure(odd), [odd], undefined, undefined).launchDetail).toBe('other');
+  // The original cause is still preserved privately, untouched.
+  expect((wrapped.cause as Error).message).toContain(hostile);
+});
+
+it('bounds the cause walk and survives hostile cause accessors', () => {
+  // A self-referential chain must terminate.
+  const loop = new Error('loop');
+  (loop as Error & { cause?: unknown }).cause = loop;
+  expect(classifyLaunchDetail(loop)).toBe('other');
+
+  // A chain deeper than the bound must not reach a token past the limit.
+  let deep: Error = new Error('Packaged runtime did not reach the running state');
+  for (let index = 0; index < 20; index += 1) deep = new Error('wrapper', { cause: deep });
+  expect(classifyLaunchDetail(deep)).toBe('other');
+  // A token inside the bound is still found.
+  let shallow: Error = new Error('Missing packaged desktop bridge');
+  for (let index = 0; index < 3; index += 1) shallow = new Error('wrapper', { cause: shallow });
+  expect(classifyLaunchDetail(shallow)).toBe('bridge-missing');
+
+  // A throwing cause getter must not escape classification.
+  const hostile: Record<string, unknown> = { message: 'plain' };
+  Object.defineProperty(hostile, 'cause', { get(): never { throw new Error('boom https://id.example/private'); } });
+  expect(classifyLaunchDetail(hostile)).toBe('other');
+});
+
+it('validates the published launch token instead of trusting the declared type', () => {
+  for (const token of ['bridge-missing', 'bridge-navigation-context', 'bridge-ipc-untrusted',
+    'runtime-failed', 'runtime-stopped', 'runtime-not-owned', 'runtime-not-ready', 'other']) {
+    expect(isDesktopLaunchDetail(token)).toBe(true);
+  }
+  for (const forged of ['', 'BRIDGE-MISSING', 'https://id.example/x?token=abc',
+    'Bearer sk-live-9f2c1d', 'password=hunter2', 'bridge-missing\nAuthorization: x']) {
+    expect(isDesktopLaunchDetail(forged)).toBe(false);
+  }
+
+  // A forged launchDetail (cast past the type) must not reach the job log.
+  const forged = new DesktopAcceptanceError('packaged-launch', 'private', undefined, new Error('x'),
+    'https://id.example/x?token=abc' as never);
+  const forgedLine = failureLine(describeFailure(forged), [forged], undefined, undefined);
+  expect(forgedLine.launchDetail).toBeUndefined();
+  expect(JSON.stringify(forgedLine)).not.toContain('token=abc');
+
+  // A mixed cleanup error under a NON-launch primary must not gain a launch token.
+  const primary = new MountedPermissionError('service-access', 'private mounted', undefined, 'foreign-pod');
+  const strayLaunch = new DesktopAcceptanceError('packaged-launch', 'private', undefined, new Error('x'), 'other');
+  const mixed = failureLine(describeFailure(primary), [primary, strayLaunch], undefined, undefined);
+  expect(mixed.launchDetail).toBeUndefined();
+  expect(mixed.code).toBe('pod-permission');
+  expect(Object.keys(mixed).sort()).toEqual(['code', 'detail', 'evidence', 'failed', 'runner']);
 });

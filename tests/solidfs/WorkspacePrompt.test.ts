@@ -1,3 +1,4 @@
+import { buildWorkspaceSemanticsPrompt as publicHelper } from '@undefineds.co/xpod-afs/workcopy/WorkspacePrompt';
 import { describe, expect, it } from 'vitest';
 import { buildWorkspaceSemanticsPrompt, buildWorkspaceSummaryPrompt } from '../../src/solidfs';
 
@@ -66,3 +67,5 @@ describe('workspace prompt helpers', () => {
     expect(prompt).not.toContain('\u0085next');
   });
 });
+
+it('keeps the root compatibility export identical to the public AFS helper', () => { expect(buildWorkspaceSemanticsPrompt).toBe(publicHelper); });

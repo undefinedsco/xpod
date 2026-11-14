@@ -31,3 +31,26 @@ it('identifies producer failures at checkpoint without copying provider text', (
     acceptancePhase: 'approved:checkpoint', failureDetails: { substage: 'checkpoint-match', category: 'assertion' }, cleanup: { ok: true } } as unknown as LiveTaskEvidence;
   expect(summarizeLiveTaskFailure(evidence)).toEqual({ phase: 'approved:checkpoint', substage: 'checkpoint-match', category: 'assertion', producerStatus: 'failed', producerErrorClass: 'provider_error', completedCases: 0, cleanupOk: true });
 });
+
+it('retains the failed producer stage through the shared safe projection', () => {
+  const evidence = { cases: [{ ok: false, producerFailure: { status: 'failed', errorClass: 'unknown' },
+    failureDiagnostic: { code: 'TASK_EXECUTION_ERROR', stage: 'retrieve_context', status: 'failed', message: 'private-key' } }],
+    cleanup: { ok: true } } as unknown as LiveTaskEvidence;
+  expect(summarizeLiveTaskFailure(evidence).failureDiagnostic).toEqual({
+    code: 'TASK_EXECUTION_ERROR', stage: 'retrieve_context', status: 'failed',
+  });
+  expect(JSON.stringify(summarizeLiveTaskFailure(evidence))).not.toContain('private-key');
+  evidence.cases[0].failureDiagnostic!.stage = 'private-key' as never;
+  expect(summarizeLiveTaskFailure(evidence).failureDiagnostic).toBeUndefined();
+});
+
+it('does not attach a stale diagnostic from another case or a successful producer', () => {
+  const diagnostic = { code: 'TASK_EXECUTION_ERROR', stage: 'retrieve_context', status: 'failed' };
+  const evidence = { cases: [{ ok: false, producerFailure: { status: 'failed', errorClass: 'unknown' }, failureDiagnostic: diagnostic },
+    { ok: false, producerFailure: { status: 'completed', errorClass: 'none' }, failureDiagnostic: diagnostic }],
+    cleanup: { ok: true } } as unknown as LiveTaskEvidence;
+  expect(summarizeLiveTaskFailure(evidence).failureDiagnostic).toBeUndefined();
+  delete evidence.cases[1].failureDiagnostic;
+  evidence.cases[1].producerFailure!.status = 'failed';
+  expect(summarizeLiveTaskFailure(evidence).failureDiagnostic).toBeUndefined();
+});

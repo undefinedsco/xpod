@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 1,
+  "bunVersion": "1.4.2",
+  "prefixSha256": "3ebc0b0d70e161eed359ca6057bdb960e72ea886916b35534b57e9a2b34c21d5",
+  "prefixBytes": 755,
+  "provenance": {
+    "artifact": "preview",
+    "auditedRuntime": {
+      "bunCommit": "744846f844374847c902b5e7fd59b4342a51ef99",
+      "revision": "1.4.2+744846f84",
+      "tag": "bun-v1.4.2",
+      "releaseUrl": "https://github.com/oven-sh/bun/releases/tag/bun-v1.4.2",
+      "compiler": {
+        "platform": "darwin-arm64",
+        "executableSha256": "35d20dd0263e5c950194434b925454fdfa9ba6e4467da960410fa05b08a7a5b5",
+        "officialArchiveUrl": "https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/bun-darwin-aarch64.zip",
+        "officialArchiveSha256": "90987a3a16d7db556d886ac3d551e7b6d3edf0a1cf43acaed622e8676be1d12f",
+        "archiveHashEvidence": "Digest supplied by the official GitHub release asset metadata; executable revision and hash measured locally."
+      },
+      "generatedHelpers": [
+        {
+          "name": "__defProp",
+          "sourcePath": "src/runtime.js",
+          "sourceLine": 10,
+          "preambleLine": 2,
+          "sourceUrl": "https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/runtime.js#L10"
+        },
+        {
+          "name": "__commonJS",
+          "sourcePath": "src/runtime.js",
+          "sourceLine": 107,
+          "preambleLine": 3,
+          "sourceUrl": "https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/runtime.js#L107"
+        },
+        {
+          "name": "__returnValue",
+          "sourcePath": "src/runtime.js",
+          "sourceLine": 122,
+          "preambleLine": 4,
+          "sourceUrl": "https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/runtime.js#L122"
+        },
+        {
+          "name": "__exportSetter",
+          "sourcePath": "src/runtime.js",
+          "sourceLine": 123,
+          "preambleLine": 5,
+          "sourceUrl": "https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/runtime.js#L123"
+        },
+        {
+          "name": "__export",
+          "sourcePath": "src/runtime.js",
+          "sourceLine": 127,
+          "preambleLine": 8,
+          "sourceUrl": "https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/runtime.js#L127"
+        },
+        {
+          "name": "__esm",
+          "sourcePath": "src/runtime.js",
+          "sourceLine": 329,
+          "preambleLine": 17,
+          "sourceUrl": "https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/runtime.js#L329"
+        }
+      ],
+      "createRequire": {
+        "sourcePath": "src/bundler/ParseTask.rs",
+        "target": "node",
+        "sourceLines": [
+          394,
+          395
+        ],
+        "targetSelectionLine": 567,
+        "assemblyLine": 574,
+        "sourceUrl": "https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/bundler/ParseTask.rs#L393",
+        "finding": "Node target adds the createRequire import and __require binding to the shared runtime.js. No Node createRequire implementation is embedded in this prefix."
+      },
+      "license": {
+        "bunSource": "LICENSE.md:1 and :83",
+        "bunFinding": "Original root LICENSE states Bun itself is MIT-licensed and credits esbuild ancestry. Original text is retained without inventing a copyright-holder line or full Bun MIT grant.",
+        "esbuildSupplement": "esbuild-LICENSE.md",
+        "esbuildCopyrightAsWritten": "Copyright (c) 2020 Evan Wallace",
+        "esbuildFixedCommit": "cd832972927f1f67b6d2cc895c06a8759c1cf309",
+        "referenceInCurrentBun": "https://github.com/oven-sh/bun/blob/744846f844374847c902b5e7fd59b4342a51ef99/src/bundler/linker_context/computeChunks.rs#L115",
+        "referenceSourceSha256": "0ed81b72a3bb80e94ba38c400aaa6b3103ba8a5536f8d7dc64ee62d9f4a475c1",
+        "referenceRole": "The current Bun chunk-computation source cites this fixed esbuild commit; it provides a deterministic conservative LICENSE source, not the exact runtime.js port baseline.",
+        "exactEsbuildRuntimePortBaselineKnown": false,
+        "limits": [
+          "No full Bun 1.4.2 source-archive notice scan was performed.",
+          "No claim of complete file-level license coverage or binary-runtime license clearance."
+        ]
+      },
+      "scope": "Only the emitted JavaScript prefix. No Bun/Node/JSC executable is bundled. Original root LICENSE binary sections remain as source context, not evidence those binaries are distributed."
+    },
+    "binding": "One exact emitted prefix for this product; other profiles are not accepted."
+  },
+  "file": {
+    "sourcePath": "generated-prefix.js",
+    "object": "objects/3ebc0b0d70e161eed359ca6057bdb960e72ea886916b35534b57e9a2b34c21d5.txt",
+    "sha256": "3ebc0b0d70e161eed359ca6057bdb960e72ea886916b35534b57e9a2b34c21d5",
+    "provenance": {
+      "role": "Actual prefix emitted by Bun 1.4.2+744846f84 for the hermetic --cli-only --target darwin-arm64 build with canonical SDK and output sources. Exact prior audited prefix with only unused __toESM helpers removed; original runtime.js and ParseTask source attribution retained."
+    }
+  }
+}

@@ -6,30 +6,16 @@ import { nodeRuntimeDriver } from '../../src/runtime/driver/node/NodeRuntimeDriv
 import { XpodTestStack } from './XpodTestStack';
 import { setupAccount } from '../integration/helpers/solidAccount';
 import { getFreePort } from '../../src/runtime/port-finder';
+import { deriveRefreshConfig, refreshPolicy } from './browserRefreshPolicy';
+
+if (Object.prototype.hasOwnProperty.call(process.env, 'XPOD_E2E_REFRESH_MANIFEST')) {
+  throw new Error('External deployment must not start the source refresh fixture');
+}
 
 const mode = process.argv[2];
 if (mode !== 'renew' && mode !== 'expire') throw new Error('Expected renew or expire fixture mode');
 const root = path.resolve('.test-data/browser-session-refresh', randomUUID());
-const accessTokenTtl = 30;
-const refreshTokenTtl = mode === 'expire' ? 5 : 180;
-function applyTokenPolicy(value: unknown): boolean {
-  if (!value || typeof value !== 'object') return false;
-  const record = value as Record<string, any>;
-  if (record.ttl?.AccessToken && record.ttl?.RefreshToken) {
-    record.clockTolerance = 0;
-    record.ttl = { ...record.ttl, AccessToken: accessTokenTtl, RefreshToken: refreshTokenTtl };
-    return true;
-  }
-  // Components.js normalizes JSON config parameters into RDF JSON literals.
-  if (typeof record['@value'] === 'string' && record['@type'] === 'http://www.w3.org/1999/02/22-rdf-syntax-ns#JSON') {
-    const literal = JSON.parse(record['@value']);
-    if (applyTokenPolicy(literal)) {
-      record['@value'] = JSON.stringify(literal);
-      return true;
-    }
-  }
-  return Object.values(record).some(applyTokenPolicy);
-}
+const { accessTokenTtl, refreshTokenTtl } = refreshPolicy(mode);
 const stack = new XpodTestStack();
 let stopping: Promise<void> | undefined;
 function stop(): Promise<void> {
@@ -53,9 +39,8 @@ try {
         // Xpod generates this disposable config copy before invoking its runner.
         // Keep the existing provider config/keys intact; change only TTL policy.
         const copiedPath = path.join(root, 'config', 'main.json');
-        const copiedConfig = JSON.parse(readFileSync(copiedPath, 'utf8'));
-        if (!applyTokenPolicy(copiedConfig)) throw new Error('Missing IdP config in isolated runtime copy');
-        writeFileSync(copiedPath, JSON.stringify(copiedConfig));
+        const derived = deriveRefreshConfig(readFileSync(copiedPath, 'utf8'), mode);
+        writeFileSync(copiedPath, derived.config);
         return nodeRuntimeDriver.cssRunner.start(options);
       },
     },

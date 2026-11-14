@@ -14,7 +14,13 @@ import { normalizeXpodReturnTo } from './xpod-login-route';
 import {
   rememberPendingXpodAccountEmail,
 } from './xpod-remembered-login';
-import { safeXpodLoginMessage, xpodAccountPageCopy, xpodAccountCredentialsCopy } from './xpod-account-copy';
+import {
+  isInvalidOidcInteractionResponseBody,
+  safeXpodLoginMessage,
+  xpodAccountPageCopy,
+  xpodAccountCredentialsCopy,
+  xpodInvalidInteractionRecovery,
+} from './xpod-account-copy';
 import { XpodBlockingAccountCredentialsSurface } from './XpodAuthSurface';
 
 export interface XpodAccountCredentialsProps {
@@ -25,11 +31,13 @@ export interface XpodAccountCredentialsProps {
 
 class PasswordLoginStatusError extends Error {
   public readonly status: number;
+  public readonly invalidOidcInteraction: boolean;
 
-  public constructor(status: number) {
+  public constructor(status: number, invalidOidcInteraction = false) {
     super(`Password login failed with status ${status}`);
     this.name = 'PasswordLoginStatusError';
     this.status = status;
+    this.invalidOidcInteraction = invalidOidcInteraction;
   }
 }
 
@@ -63,7 +71,17 @@ export function XpodAccountCredentials({
         remember: rememberAccount,
         fetchImpl: async (input, init) => {
           const response = await fetch(typeof input === 'string' || input instanceof URL ? scopeAccountUrl(input) : input, init);
-          if (!response.ok) throw new PasswordLoginStatusError(response.status);
+          if (!response.ok) {
+            // Read a clone only: the login helper still owns the original body.
+            // Classification is strict and the body text is never rendered.
+            const body = response.status === 400
+              ? await response.clone().json().catch(() => undefined)
+              : undefined;
+            throw new PasswordLoginStatusError(
+              response.status,
+              isInvalidOidcInteractionResponseBody(body, response.status),
+            );
+          }
           return response;
         },
       });
@@ -77,9 +95,9 @@ export function XpodAccountCredentials({
       }
       await onAuthenticated?.();
     } catch (error: unknown) {
-      setFormError(error instanceof PasswordLoginStatusError
-        ? safeXpodLoginMessage(error.status)
-        : safeXpodLoginMessage(500));
+      setFormError(error instanceof PasswordLoginStatusError && error.invalidOidcInteraction
+        ? xpodInvalidInteractionRecovery.message
+        : safeXpodLoginMessage(error instanceof PasswordLoginStatusError ? error.status : 500));
     } finally {
       submittingRef.current = false;
       setPending(false);

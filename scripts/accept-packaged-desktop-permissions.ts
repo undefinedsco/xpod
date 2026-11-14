@@ -9,9 +9,12 @@ import { getSolidDataset, getThing, getPodUrlAllFrom } from '@inrupt/solid-clien
 import { AI_CONNECTIONS_SERVICE_RESOURCE_IDS } from '@undefineds.co/ai-connections/service-access-resources';
 import { discoverSolidLocalRoute } from '@undefineds.co/solid-sdk/local-route-fetch';
 import { createCloudAccountPassword, prepareManagedLocalAcceptancePods, parseKeyFile } from './accept-live-gateway-login-chat';
-import { launchOwnedPackagedDesktop, type OwnedPackagedDesktop } from './helpers/packaged-desktop-fixture';
+import { createPlatformProviderForAccount } from './prepare-rc-platform-provider';
+import { launchOwnedPackagedDesktop, isLaunchSubphase, readGatewayTelemetry, type GatewayTelemetry, type LaunchSubphase,
+  type OwnedPackagedDesktop } from './helpers/packaged-desktop-fixture';
 import { acceptMountedPodPermissions, attributeMountedOperation, MountedPermissionError,
-  observeOwnedPodTraffic, type MountedPermissionCondition, type MountedPodPermissionPhase } from './helpers/packaged-desktop-permissions';
+  observeOwnedPodTraffic, type MountedPermissionCondition, type MountedPermissionDetail,
+  type MountedPodPermissionPhase } from './helpers/packaged-desktop-permissions';
 import { createConfirmedMountedProvider, createMountedKeyInUi, acceptMountedFirstChat, acceptHeldSolidCredential,
   attributePackagedOperation, PackagedOperationError, type PackagedOperationCondition } from './helpers/packaged-desktop-operations';
 import { verifyPackagedSourceCheckout } from './helpers/packaged-desktop-source';
@@ -20,14 +23,75 @@ import { completeOidcLogin, consentBindingProven, OidcApprovalError, type Browse
   type OidcApprovalCondition } from '../tests/helpers/browserSolidOidc';
 import { captureBrowserAiConnections, readBrowserXpodRuntime } from '../tests/helpers/browserXpodRuntime';
 
-const { verifyEvidence } = createRequire(import.meta.url)('./desktop-permission-acceptance.cjs') as {
+const { verifyEvidence, readArchiveRuntime } = createRequire(import.meta.url)('./desktop-permission-acceptance.cjs') as {
   verifyEvidence(record: unknown, expected: unknown): { valid: boolean; errors: unknown[] };
+  /** Reads the packaged CLI manifest from the SAME input archive; independent
+   * expectation for the launcher's own `--version`, never the observed output. */
+  readArchiveRuntime(archive: string): Promise<{ cliVersion: string; launcherSha256: string;
+    desktopVersion?: string }>;
 };
 
 type Stage = 'input' | 'launch' | 'provision' | 'pod-a' | 'operations-a' | 'switch' | 'pod-b' | 'operations-b' | 'cleanup' | 'verify';
 export interface PackagedPermissionOptions {
-  archive: string; version: string; sourceSha: string; issuer: string; keyFile: string;
+  archive: string; version: string; sourceSha: string; issuer: string;
+  /** Explicit external diagnostic input. Omit to use the normal Account-issued
+   * platform provider from the same owned test account. */
+  keyFile?: string;
   privateDirectory: string; evidenceFile: string;
+}
+
+const ALLOWED_PLATFORM_ORIGINS = ['https://id-rc.undefineds.cn', 'https://id.undefineds.co'] as const;
+
+type PlatformProviderIssue = typeof createPlatformProviderForAccount;
+type PlatformProviderHandle = Awaited<ReturnType<PlatformProviderIssue>>;
+
+export interface DefaultPlatformProviderOptions {
+  baseUrl: string;
+  authorization: string;
+  controls: Parameters<PlatformProviderIssue>[0]['controls'];
+  /** The authoritative binding WebID; issuance is deferred until it is known. */
+  webId: string;
+  fetchImpl?: typeof fetch;
+  /** Test seam; production uses the shared normal Account lifecycle. */
+  issue?: PlatformProviderIssue;
+}
+
+/** Validate the descriptor the shared helper returns and revoke it if the
+ * platform kind, endpoint or expected model is not the approved one. */
+export async function configureDefaultPlatformProvider(
+  options: DefaultPlatformProviderOptions,
+): Promise<PlatformProviderHandle> {
+  let issuer: URL;
+  try { issuer = new URL(options.baseUrl); } catch { throw new DesktopAcceptanceError('provider-input', 'Invalid platform issuer'); }
+  if (issuer.protocol !== 'https:' || !(ALLOWED_PLATFORM_ORIGINS as readonly string[]).includes(issuer.origin)
+    || issuer.pathname !== '/' || issuer.search || issuer.hash || issuer.username || issuer.password
+    || options.authorization.trim() === '' || options.controls.account?.clientCredentials === undefined) {
+    throw new DesktopAcceptanceError('provider-input', 'Platform issuer or Account controls are not approved');
+  }
+  let webId: URL;
+  try { webId = new URL(options.webId); } catch { throw new DesktopAcceptanceError('provider-input', 'Invalid authoritative WebID'); }
+  if (!webId.hash || webId.origin !== issuer.origin) {
+    throw new DesktopAcceptanceError('provider-input', 'Platform provider requires the authoritative same-issuer WebID');
+  }
+  const issue = options.issue ?? createPlatformProviderForAccount;
+  const handle = await issue({ baseUrl: options.baseUrl, authorization: options.authorization,
+    controls: options.controls, webId: options.webId, fetchImpl: options.fetchImpl });
+  try {
+    const provider = handle.provider;
+    let base: URL;
+    try { base = new URL(provider.baseUrl); } catch { throw new Error('Platform provider base URL is invalid'); }
+    if (provider.id !== 'custom' || provider.offeringId !== 'openai-compatible'
+      || !provider.expected.includes('linx-lite') || typeof provider.apiKey !== 'string'
+      || !provider.apiKey.startsWith('sk-') || base.origin !== issuer.origin
+      || base.pathname !== '/v1' || base.search || base.hash || base.username || base.password) {
+      throw new Error('Platform provider descriptor is not the approved custom linx-lite provider');
+    }
+  } catch (error) {
+    try { await handle.revoke(); }
+    catch (cleanup) { throw new AggregateError([error, cleanup], 'Platform provider validation and cleanup failed'); }
+    throw error;
+  }
+  return handle;
 }
 
 /** HTTP document location loses its fragment; subject identity never does.
@@ -86,7 +150,7 @@ export const DESKTOP_FAILURE_EXPLANATIONS: Record<DesktopFailureCode, string> = 
   'invalid-arguments': 'The packaged desktop runner arguments failed validation',
   'invalid-source': 'The runner checkout did not match the exact packaged source',
   'provider-input': 'The declared provider acceptance input was missing or not private',
-  'packaged-launch': 'The owned packaged desktop did not reach the expected Local edition',
+  'packaged-launch': 'The owned packaged desktop failed during its startup launch phases',
   'local-authority': 'The packaged Local authority or no-public-route proof was missing',
   'identity-binding': 'The managed Cloud card and two-Pod identity/storage binding proof failed',
   'consent-binding': 'The actual browser callback or exact Consent binding proof was missing',
@@ -105,21 +169,83 @@ export const DESKTOP_FAILURE_EXPLANATIONS: Record<DesktopFailureCode, string> = 
  * the fixed vocabulary their own helper owns, never raw diagnostic text. */
 export type DesktopFailureEvidence = OidcApprovalCondition | MountedPermissionCondition | PackagedOperationCondition | 'remember-not-posted';
 
+/** Closed launch sub-cause. Diagnostics only: it never feeds retry policy,
+ * permission decisions or the pass/fail condition. Only these fixed tokens may
+ * leave the process; message/stack/URL/headers/keys never do. */
+export type DesktopLaunchDetail = 'bridge-missing' | 'bridge-navigation-context' | 'bridge-ipc-untrusted'
+  | 'runtime-failed' | 'runtime-stopped' | 'runtime-not-owned' | 'runtime-not-ready' | 'other';
+
+/** Fixed message fragments the existing launch branches already raise. Reading
+ * them only SELECTS a token; the text itself is never published. */
+const LAUNCH_DETAIL_PATTERNS: readonly (readonly [DesktopLaunchDetail, RegExp])[] = [
+  ['bridge-missing', /Missing packaged desktop bridge/u],
+  ['bridge-navigation-context', /Execution context was destroyed, most likely because of a navigation/u],
+  ['bridge-ipc-untrusted', /Device settings require the trusted product shell/u],
+  ['runtime-failed', /Packaged runtime reported failed before it became ready/u],
+  ['runtime-stopped', /Packaged runtime reported stopped before it became ready/u],
+  ['runtime-not-owned', /Packaged runtime is not owned by the installed desktop/u],
+  ['runtime-not-ready', /Packaged runtime did not reach the running state/u],
+];
+
+/** The SAME closed vocabulary, derived from the pattern table plus `other`:
+ * publishing never trusts a caller-supplied string, it must be a member here. */
+const LAUNCH_DETAIL_TOKENS: ReadonlySet<string> = new Set<string>([
+  ...LAUNCH_DETAIL_PATTERNS.map(([token]) => token), 'other',
+]);
+
+/** True only for a reviewed closed token; anything else is not publishable. */
+export function isDesktopLaunchDetail(value: unknown): value is DesktopLaunchDetail {
+  return typeof value === 'string' && LAUNCH_DETAIL_TOKENS.has(value);
+}
+
+/** Hard bound on the cause walk: a hostile/self-referential chain cannot spin. */
+const LAUNCH_DETAIL_MAX_DEPTH = 8;
+
+/** Project the launch failure (and its BOUNDED cause chain) to one closed token.
+ * Depth is capped and every property access is guarded, so a malicious cause
+ * getter cannot throw out of classification. Unrecognised input yields `other`. */
+export function classifyLaunchDetail(error: unknown): DesktopLaunchDetail {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  for (let depth = 0; depth < LAUNCH_DETAIL_MAX_DEPTH; depth += 1) {
+    if (current === undefined || current === null || seen.has(current)) break;
+    seen.add(current);
+    let message = '';
+    try { message = current instanceof Error ? current.message : typeof current === 'string' ? current : ''; }
+    catch { message = ''; }
+    if (typeof message === 'string') {
+      for (const [detail, pattern] of LAUNCH_DETAIL_PATTERNS) if (pattern.test(message)) return detail;
+    }
+    try { current = (current as { cause?: unknown }).cause; }
+    catch { break; }
+  }
+  return 'other';
+}
+
 /** A failure whose public projection is its reviewed code, never its text.
  * `message` keeps the exact private diagnostic for the 600-mode evidence file. */
 export class DesktopAcceptanceError extends Error {
   readonly code: DesktopFailureCode;
   /** Optional closed-vocabulary sub-condition, never raw diagnostic text. */
   readonly evidence?: DesktopFailureEvidence;
-  constructor(code: DesktopFailureCode, detail: string, evidence?: DesktopFailureEvidence) {
+  /** The original error for PRIVATE debugging; describeFailure never reads it. */
+  override readonly cause?: unknown;
+  /** Closed launch sub-cause for the job log; undefined for non-launch codes. */
+  readonly launchDetail?: DesktopLaunchDetail;
+  constructor(code: DesktopFailureCode, detail: string, evidence?: DesktopFailureEvidence, cause?: unknown,
+    launchDetail?: DesktopLaunchDetail) {
     super(detail);
     this.name = 'DesktopAcceptanceError';
     this.code = code;
     this.evidence = evidence;
+    this.cause = cause;
+    if (launchDetail !== undefined) this.launchDetail = launchDetail;
   }
 }
 
-export interface PublishedDesktopFailure { code: DesktopFailureCode; explanation: string; evidence?: DesktopFailureEvidence }
+export interface PublishedDesktopFailure { code: DesktopFailureCode; explanation: string; evidence?: DesktopFailureEvidence;
+  /** Only ever a closed-enum launch subphase token, never raw text. */
+  phase?: LaunchSubphase }
 
 /** The only failure data allowed in a public artifact or CI log. Anything that
  * is not one of our reviewed typed failures degrades to the generic code, so an
@@ -156,8 +282,94 @@ export function publishedFailures(errors: unknown[]): PublishedDesktopFailure[] 
   return [...published.values()];
 }
 
+/**
+ * Closed, publishable projection of the launch telemetry.
+ *
+ * Everything here is an enum, a bounded integer or a boolean already projected
+ * by the fixture; there is deliberately no free-form field. This projection can
+ * only DESCRIBE a failure: it never feeds a pass/fail decision.
+ */
+export function summarizeStartupTelemetry(telemetry: GatewayTelemetry | undefined): Record<string, unknown> | undefined {
+  if (!telemetry) return undefined;
+  const out: Record<string, unknown> = { probes: telemetry.probes };
+  if (telemetry.lastOutcome !== undefined) out.lastOutcome = telemetry.lastOutcome;
+  if (telemetry.lastHttpStatus !== undefined) out.lastHttpStatus = telemetry.lastHttpStatus;
+  if (telemetry.elapsedMs !== undefined) out.elapsedMs = telemetry.elapsedMs;
+  if (telemetry.appAlive !== undefined) out.appAlive = telemetry.appAlive;
+  if (telemetry.startupLastEmittedAgeMs !== undefined) out.startupLastEmittedAgeMs = telemetry.startupLastEmittedAgeMs;
+  if (telemetry.startupLastEmittedTerminal !== undefined) out.startupLastEmittedTerminal = telemetry.startupLastEmittedTerminal;
+  if (telemetry.runtimeChildPresent !== undefined) out.runtimeChildPresent = telemetry.runtimeChildPresent;
+  // Deliberately named "lastEmitted": this is the LAST FRAME THE APP WROTE, with
+  // its own emission time and staleness. It is NOT re-observed live manager state
+  // and must never be read as the state at timeout.
+  if (telemetry.startupLastEmitted) {
+    const startup = telemetry.startupLastEmitted;
+    out.startupLastEmitted = {
+      sequence: startup.sequence, emittedAtMs: startup.emittedAtMs,
+      event: startup.event, managerState: startup.managerState, ownership: startup.ownership,
+      childSeen: startup.childSeen, pidPresent: startup.pidPresent,
+      ...(startup.exitCode === undefined ? {} : { exitCode: startup.exitCode }),
+      ...(startup.signal === undefined ? {} : { signal: startup.signal }),
+      ...(startup.errorClass === undefined ? {} : { errorClass: startup.errorClass }),
+      ...(startup.outputClass === undefined ? {} : { outputClass: startup.outputClass }),
+    };
+  }
+  if (telemetry.modulePresence) {
+    out.modules = telemetry.modulePresence.map(row => ({ id: row.id,
+      pointerPresent: row.pointerPresent, anyPackagedTree: row.anyPackagedTree }));
+  }
+  return out;
+}
+
+/** The publishable launch sub-cause: only for a packaged-launch projection, and
+ * only when the stored value is a reviewed closed token (never the raw type). */
+function closedLaunchDetail(errors: unknown[], code: DesktopFailureCode): DesktopLaunchDetail | undefined {
+  if (code !== 'packaged-launch') return undefined;
+  for (const error of errors) {
+    if (!(error instanceof DesktopAcceptanceError) || error.code !== 'packaged-launch') continue;
+    const candidate: unknown = error.launchDetail;
+    if (isDesktopLaunchDetail(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+/** The closed detail token of a mounted-permission failure, if one exists. */
+function closedMountedDetail(errors: unknown[]): MountedPermissionDetail | undefined {
+  for (const error of errors) {
+    if (error instanceof MountedPermissionError && error.detail !== undefined) return error.detail;
+  }
+  return undefined;
+}
+
+/**
+ * The ONE safe failure line for the job log.
+ *
+ * Emitted for EVERY failed stage, not only launch: a pod-permission or
+ * operation failure must be observable too. Only reviewed closed tokens appear
+ * (code, evidence sub-condition, detail enum, phase); never a message, body,
+ * URL or token.
+ */
+export function failureLine(published: PublishedDesktopFailure, failures: unknown[],
+  launchPhase: LaunchSubphase | undefined,
+  launchTelemetry: GatewayTelemetry | undefined): Record<string, unknown> {
+  const detail = closedMountedDetail(failures);
+  const launchDetail = closedLaunchDetail(failures, published.code);
+  const launch = isLaunchSubphase(launchPhase);
+  return { runner: 'desktop-permission-acceptance', failed: true,
+    code: published.code,
+    ...(published.evidence === undefined ? {} : { evidence: published.evidence }),
+    ...(detail === undefined ? {} : { detail }),
+    ...(launchDetail === undefined ? {} : { launchDetail }),
+    ...(launch ? { phase: launchPhase } : {}),
+    ...(launch
+      ? { explanation: DESKTOP_FAILURE_EXPLANATIONS[published.code],
+          ...(launchTelemetry ? { telemetry: summarizeStartupTelemetry(launchTelemetry) } : {}) }
+      : {}) };
+}
+
 function privateError(error: unknown): unknown {
-  const cause = error instanceof OidcApprovalError || error instanceof MountedPermissionError || error instanceof PackagedOperationError ? error.cause : undefined;
+  const cause = error instanceof OidcApprovalError || error instanceof MountedPermissionError
+    || error instanceof PackagedOperationError || error instanceof DesktopAcceptanceError ? error.cause : undefined;
   return error instanceof Error ? { name: error.name, message: error.message, stack: error.stack,
     ...(cause === undefined ? {} : { cause: privateError(cause) }),
     ...(error instanceof AggregateError ? { errors: error.errors.map(privateError) } : {}) }
@@ -239,21 +451,54 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
   let phase: MountedPodPermissionPhase | undefined;
   let keyHandle: MountedPodPermissionPhase['handle'] | undefined;
   let provider: Awaited<ReturnType<typeof createConfirmedMountedProvider>> | undefined;
+  let platformProvider: PlatformProviderHandle | undefined;
   let key: Awaited<ReturnType<typeof createMountedKeyInUi>> | undefined;
   let fixtureCleanup: Awaited<ReturnType<OwnedPackagedDesktop['close']>> | undefined;
   let record: Record<string, unknown> | undefined;
+  /** Last CLOSED-ENUM launch subphase reached; published only as an enum token. */
+  let launchPhase: LaunchSubphase | undefined;
+  let launchTelemetry: ReturnType<typeof readGatewayTelemetry>;
   let taskSnapshot: LiveTaskEvidence | undefined;
   const advance = (next: Stage): void => { stage = next; console.log(JSON.stringify({ stage })); };
   await mkdir(options.privateDirectory, { recursive: true, mode: 0o700 });
   try {
     if (!/^[a-f0-9]{40}$/u.test(options.sourceSha)) throw new DesktopAcceptanceError('invalid-arguments', 'Invalid source SHA');
     await verifyPackagedSourceCheckout({ cwd: process.cwd(), sourceSha: options.sourceSha, version: options.version });
-    if ((await stat(options.keyFile)).mode & 0o077) throw new DesktopAcceptanceError('provider-input', 'Provider key file is not private');
-    const configuration = parseKeyFile(await readFile(options.keyFile, 'utf8'));
-    if (!configuration?.apiKey || !configuration.expected.length) throw new DesktopAcceptanceError('provider-input', 'Missing declared provider acceptance input');
+    let externalConfiguration: Awaited<ReturnType<typeof parseKeyFile>>;
+    if (options.keyFile !== undefined) {
+      if ((await stat(options.keyFile)).mode & 0o077) throw new DesktopAcceptanceError('provider-input', 'Provider key file is not private');
+      externalConfiguration = parseKeyFile(await readFile(options.keyFile, 'utf8'));
+      if (!externalConfiguration?.apiKey || !externalConfiguration.expected.length) {
+        throw new DesktopAcceptanceError('provider-input', 'Missing declared provider acceptance input');
+      }
+    }
     advance('launch');
-    fixture = await launchOwnedPackagedDesktop({ archive: options.archive, version: options.version,
-      issuer: options.issuer, evidenceDirectory: options.privateDirectory });
+    try {
+      fixture = await launchOwnedPackagedDesktop({ archive: options.archive, version: options.version,
+        issuer: options.issuer, evidenceDirectory: options.privateDirectory,
+        // Closed enum only: the fixture can never hand back a path, URL, argv or
+        // message here, so this line is safe to publish.
+        onPhase: (phase) => {
+          if (!isLaunchSubphase(phase)) return;
+          launchPhase = phase;
+          console.log(JSON.stringify({ stage: 'launch', phase }));
+        } });
+    } catch (error) {
+      launchTelemetry = readGatewayTelemetry(error);
+      // The fixture raises bare Errors, which the reviewed mapping would degrade
+      // to `unclassified`. Attribute ONLY those to the already-audited
+      // `packaged-launch` code: any error that already carries a reviewed type
+      // (a permission/consent/operation failure surfacing through launch) must
+      // keep its own precise code, so this reclassification can never mask it.
+      if (describeFailure(error).code !== 'unclassified') throw error;
+      // Public projection is the fixed code + enum phase. The ORIGINAL error is
+      // preserved as `cause` so privateError() still records its real message and
+      // stack in the 0600 evidence file - public sanitisation must not blind
+      // private debugging.
+      throw new DesktopAcceptanceError('packaged-launch',
+        error instanceof Error ? error.message : 'packaged launch failed', undefined, error,
+        classifyLaunchDetail(error));
+    }
     const { page, gateway } = fixture;
     advance('provision');
     const status = await (await fetch(new URL('provision/status', gateway), { signal: AbortSignal.timeout(35_000) })).json() as {
@@ -317,10 +562,27 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
       const invocation = requirePackagedInvocationKey(descriptor);
       if (index === 0) firstInvocation = invocation;
       advance(index === 0 ? 'operations-a' : 'operations-b');
-      provider = await createConfirmedMountedProvider(phase, { provider: configuration.id,
-        credential: { apiKey: configuration.apiKey, offeringId: configuration.offeringId,
-          baseUrl: configuration.baseUrl, proxyUrl: process.env.XPOD_AI_PROXY_URL?.trim() || undefined,
-          label: `desktop-${unique}-${index}` }, expectedModels: configuration.expected });
+      let mountedInput: { id: Parameters<typeof createConfirmedMountedProvider>[1]['provider'];
+        offeringId: string; apiKey: string; baseUrl?: string; expected: string[] };
+      if (externalConfiguration) {
+        mountedInput = { id: externalConfiguration.id, offeringId: externalConfiguration.offeringId,
+          apiKey: externalConfiguration.apiKey, baseUrl: externalConfiguration.baseUrl, expected: externalConfiguration.expected };
+      } else {
+        // Default platform path: the same owned test account issues a normal
+        // Account client credential once the authoritative binding WebID is
+        // known. The Local mounted Pod registers it as its own custom
+        // OpenAI-compatible provider; the key never goes to a file.
+        platformProvider = await attributePackagedOperation('provider-create', () =>
+          configureDefaultPlatformProvider({ baseUrl: options.issuer, authorization: account.authorization,
+            controls: account.controls, webId: binding.webId, fetchImpl: fetch }));
+        mountedInput = { id: 'custom', offeringId: platformProvider.provider.offeringId,
+          apiKey: platformProvider.provider.apiKey, baseUrl: platformProvider.provider.baseUrl,
+          expected: platformProvider.provider.expected };
+      }
+      provider = await createConfirmedMountedProvider(phase, { provider: mountedInput.id,
+        credential: { apiKey: mountedInput.apiKey, offeringId: mountedInput.offeringId,
+          baseUrl: mountedInput.baseUrl, proxyUrl: process.env.XPOD_AI_PROXY_URL?.trim() || undefined,
+          label: `desktop-${unique}-${index}` }, expectedModels: mountedInput.expected });
       // Account controls may commit a new host after the Pod-only handle was
       // retained. Keep the original grant actor for restore; bind Key UI work
       // to the current committed host with the exact same identity/storage.
@@ -352,6 +614,7 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
       const chat = chatOutcome.value;
       await privateJson(options.privateDirectory, `operations-${index}-private.json`, {
         credentialId: provider.credentialId, model: provider.model, quotaObserved: provider.quotaObserved,
+        quotaStatus: provider.quotaStatus,
         keyId: key.id, accountActor: key.accountActor, samePodReuse, chat,
       });
       if (index === 0) {
@@ -394,10 +657,16 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
         } finally { writes.stop(); }
       }
       podEvidence.push({ ...phase.evidence, webIdSha256: createHash('sha256').update(binding.webId).digest('hex'), selectedInUi: true,
+        // Public: the quota capability was handled safely, not that the provider
+        // reported quota capacity. The actual status stays in the private file.
         management: { configuration: true, models: true, quota: true } });
       await attributePackagedOperation('key-cleanup', () => key!.remove()); key = undefined;
       await keyHandle.dispose(); keyHandle = undefined;
       await provider.remove(); provider = undefined;
+      if (platformProvider) {
+        await attributePackagedOperation('provider-cleanup', () => platformProvider!.revoke());
+        platformProvider = undefined;
+      }
       await phase.restore(); await phase.handle.dispose(); phase = undefined;
       if (index === 0) {
         advance('switch');
@@ -417,7 +686,9 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
     advance('cleanup');
     try { if (taskSnapshot) await privateJson(options.privateDirectory, 'tasks-private.json', taskSnapshot); }
     catch (error) { failures.push(error); }
-    for (const cleanup of [async () => { if (key) await attributePackagedOperation('key-cleanup', () => key!.remove()); }, async () => { if (provider) await provider.remove(); },
+    for (const cleanup of [async () => { if (key) await attributePackagedOperation('key-cleanup', () => key!.remove()); },
+      async () => { if (provider) await provider.remove(); },
+      async () => { if (platformProvider) await attributePackagedOperation('provider-cleanup', () => platformProvider!.revoke()); },
       async () => { if (phase) await phase.restore(); }]) {
       try { await cleanup(); } catch (error) { failures.push(error); }
     }
@@ -431,20 +702,45 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
     // A failed run must stay diagnosable even when the workflow skips the
     // private upload. This record publishes only the allowlisted stage and
     // reviewed failure codes; the raw errors stay in the 600-mode private file.
+    // ONE projection is used for the safe record and the job log, so the
+    // published code and its closed launch detail can never disagree.
+    const published = describeFailure(primaryFailure ?? failures[0]);
+    const safeLaunchDetail = closedLaunchDetail(failures, published.code);
     await writeFile(path.join(options.privateDirectory, SAFE_FAILURE_FILE), JSON.stringify({ schemaVersion: 1,
       kind: 'desktop-permission-failure', sourceSha: options.sourceSha, version: options.version, stage: failed,
+      ...(failed === 'launch' && isLaunchSubphase(launchPhase) ? { phase: launchPhase } : {}),
+      ...(failed === 'launch' && safeLaunchDetail !== undefined
+        ? { launchDetail: safeLaunchDetail } : {}),
       failures: publishedFailures(failures),
+      ...(failed === 'launch' && launchTelemetry ? { launchTelemetry } : {}),
       ...(taskSnapshot ? { task: summarizeLiveTaskFailure(taskSnapshot) } : {}) }, null, 2) + '\n', { mode: 0o644 });
     // The stdout projection must name the real reviewed code, so a CI run stays
-    // diagnosable without the private evidence upload.
-    const published = describeFailure(primaryFailure ?? failures[0]);
+    // diagnosable without the private evidence upload. Only closed enums leave
+    // this process: no child text, path, argv, URL or message.
+    // UNCONDITIONAL safe line: a failure that never reached the launch phase
+    // (pod-permission/operation stages) must still be observable in the job log.
+    // Only closed tokens leave this process: the reviewed code, the closed
+    // evidence sub-condition, and the closed detail enum. Never a message, body,
+    // URL or token.
+    console.log(JSON.stringify(failureLine(published, failures, launchPhase, launchTelemetry)));
     throw new DesktopAcceptanceError(published.code,
       `Packaged desktop permission acceptance failed at stage=${failed}; private evidence retained`, published.evidence);
   }
   advance('verify');
   record.cleanup = { ...fixtureCleanup, providerRemoved: true, keyRemoved: true, attributedGrantsRestored: true };
   record.completedAt = new Date().toISOString();
-  const result = verifyEvidence(record, { sourceSha: options.sourceSha, version: options.version, archive: fixture.archive,
+  // The launcher CLI is versioned independently of the desktop candidate, so the
+  // expected CLI version comes from this archive's own packaged CLI manifest -
+  // not from `options.version` and not from the observed `--version` output.
+  const archiveRuntime = await readArchiveRuntime(options.archive);
+  if (archiveRuntime.desktopVersion !== undefined && archiveRuntime.desktopVersion !== options.version) {
+    throw new DesktopAcceptanceError('evidence-contract', 'Desktop archive version differs from the declared candidate');
+  }
+  if (fixture.runtime.binarySha256 !== archiveRuntime.launcherSha256) {
+    throw new DesktopAcceptanceError('evidence-contract', 'Observed launcher is not the archived launcher');
+  }
+  const result = verifyEvidence(record, { sourceSha: options.sourceSha, version: options.version,
+    cliVersion: archiveRuntime.cliVersion, archive: fixture.archive,
     runtimeBinarySha256: fixture.runtime.binarySha256, resourceIds: AI_CONNECTIONS_SERVICE_RESOURCE_IDS });
   if (!result.valid) {
     await privateJson(options.privateDirectory, 'verification-private.json', { result, record });
@@ -453,17 +749,28 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
   await writeFile(options.evidenceFile, JSON.stringify(record, null, 2) + '\n');
 }
 
-async function main(argv: string[]): Promise<void> {
-  const keys = ['--archive', '--version', '--source-sha', '--issuer', '--key-file', '--private-directory', '--evidence'];
+const PACKAGED_ARGUMENTS = ['--archive', '--version', '--source-sha', '--issuer', '--key-file', '--private-directory', '--evidence'] as const;
+const PACKAGED_REQUIRED_ARGUMENTS = ['--archive', '--version', '--source-sha', '--issuer', '--private-directory', '--evidence'] as const;
+
+/** `--key-file` is an explicit external diagnostic only; omitting it keeps the
+ * default platform path and never invents an empty provider file. */
+export function parsePackagedPermissionArguments(argv: string[]): PackagedPermissionOptions {
   const values = new Map<string, string>();
   for (let index = 0; index < argv.length; index += 2) {
-    if (!keys.includes(argv[index]) || !argv[index + 1] || values.has(argv[index])) throw new DesktopAcceptanceError('invalid-arguments', 'Invalid packaged runner argument');
+    if (!(PACKAGED_ARGUMENTS as readonly string[]).includes(argv[index]) || !argv[index + 1] || values.has(argv[index])) {
+      throw new DesktopAcceptanceError('invalid-arguments', 'Invalid packaged runner argument');
+    }
     values.set(argv[index], argv[index + 1]);
   }
-  if (keys.some(key => !values.has(key))) throw new DesktopAcceptanceError('invalid-arguments', 'Missing packaged runner argument');
-  await acceptPackagedDesktopPermissions({ archive: values.get('--archive')!, version: values.get('--version')!,
-    sourceSha: values.get('--source-sha')!, issuer: values.get('--issuer')!, keyFile: values.get('--key-file')!,
-    privateDirectory: values.get('--private-directory')!, evidenceFile: values.get('--evidence')! });
+  if (PACKAGED_REQUIRED_ARGUMENTS.some(key => !values.has(key))) throw new DesktopAcceptanceError('invalid-arguments', 'Missing packaged runner argument');
+  return { archive: values.get('--archive')!, version: values.get('--version')!,
+    sourceSha: values.get('--source-sha')!, issuer: values.get('--issuer')!,
+    ...(values.has('--key-file') ? { keyFile: values.get('--key-file')! } : {}),
+    privateDirectory: values.get('--private-directory')!, evidenceFile: values.get('--evidence')! };
+}
+
+async function main(argv: string[]): Promise<void> {
+  await acceptPackagedDesktopPermissions(parsePackagedPermissionArguments(argv));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

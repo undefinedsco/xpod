@@ -93,6 +93,43 @@ describe('Pod HTTP contract fixture used by the AgentFS mount lower', () => {
     expect(server.log[0].responseBytes).toBeLessThan(Buffer.byteLength('ALPHA_BODY_0123456789\n'));
   });
 
+  it('metadata HEAD neither consumes the body barrier nor loses its range header contract', async () => {
+    // A GET body barrier must be consumed ONLY by a GET body read: HEAD and
+    // Range-HEAD answer metadata (content-length/content-range/etag) without
+    // touching the stall, so the following GET is the one that stalls.
+    server.stallOnce('big.txt', 32);
+    const head = await fetch(fileUrl('big.txt'), { method: 'HEAD', headers: authorized() });
+    expect(head.status).toBe(200);
+    expect(head.headers.get('content-length')).toBe(String(Buffer.byteLength(BIG_BODY)));
+    expect(head.headers.get('accept-ranges')).toBe('bytes');
+    expect(await head.text()).toBe('');
+
+    const rangeHead = await fetch(fileUrl('big.txt'), { method: 'HEAD', headers: authorized({ range: 'bytes=0-9' }) });
+    expect(rangeHead.status).toBe(206);
+    // The original 206 header contract is preserved (range length, not 0).
+    expect(rangeHead.headers.get('content-length')).toBe('10');
+    expect(rangeHead.headers.get('content-range')).toBe(`bytes 0-9/${Buffer.byteLength(BIG_BODY)}`);
+
+    // The barrier is still armed: consuming a GET BODY of the same resource
+    // stalls until release. fetch() resolves at HEADERS, so the meaningful
+    // assertion is that the BODY read (arrayBuffer) does not complete while the
+    // barrier holds — measured under a finite Abort.
+    let bodySettled = false;
+    const pending = fetch(fileUrl('big.txt'), { headers: authorized(), signal: AbortSignal.timeout(500) })
+      .then(async (response) => { const text = await response.text(); bodySettled = true; return { status: response.status, text }; })
+      .catch((error) => { bodySettled = true; return { error: String(error) }; });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      expect(bodySettled, 'GET body must be held by the barrier HEAD did not consume').toBe(false);
+    } finally {
+      server.releaseStall();
+    }
+    const held = await pending;
+    if ('error' in held) throw new Error(held.error);
+    expect(held.status).toBe(200);
+    expect(held.text.length).toBe(Buffer.byteLength(BIG_BODY));
+  });
+
   it('conditional create uses If-None-Match and rejects an existing resource', async () => {
     const created = await fetch(fileUrl('created.txt'), {
       method: 'PUT',

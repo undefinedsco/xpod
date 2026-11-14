@@ -84,6 +84,48 @@ describe('port allocation under Bun', () => {
   });
 });
 
+describe('two assigned internal ports under an occupied preferred port', () => {
+  /**
+   * Contract the CLI's two-call allocation depends on: the `excluded` set must be honoured even
+   * for a candidate that is NOT bound by the OS. When CSS and the API are allocated in sequence,
+   * the CSS port is only *reserved* (the child binds it later, during DI startup), so an API call
+   * that forgets it walks forward and hands out the very port CSS already owns - the observed
+   * EADDRINUSE restart loop. This asserts the allocator side of that contract; it deliberately
+   * does not claim to be the caller regression (that is the real remote unpatched/patched proof).
+   */
+  test('never returns an excluded candidate that is merely reserved and still unbound', async() => {
+    // Two real ports this process owns: the gateway and the client's preferred (occupied) port.
+    const mainPort = await holdPort('127.0.0.1');
+    const preferred = await holdPort('127.0.0.1');
+
+    // CSS: walk forward past the occupied preferred port, never onto the gateway.
+    const css = await getFreePortForWildcard(preferred, undefined, new Set([mainPort]));
+
+    expect(css).not.toBe(preferred);
+    expect(css > preferred).toBe(true);
+    expect(css).not.toBe(mainPort);
+
+    // The hazard: `css` is reserved but not yet bound, so an allocation that ignores the
+    // reservation returns it verbatim. This is exactly what the second call must not do.
+    await expect(getFreePortForWildcard(css)).resolves.toBe(css);
+    await expect(bindOnce(css, '127.0.0.1')).resolves.toBeUndefined();
+
+    // API: same walk, but now both assigned ports are excluded, so the reserved `css` port is
+    // skipped even though nothing listens on it yet.
+    const api = await getFreePortForWildcard(css, undefined, new Set([mainPort, css]));
+
+    expect(api).not.toBe(css);
+    expect(api).not.toBe(mainPort);
+    expect(api).not.toBe(preferred);
+    expect(api > css).toBe(true);
+
+    // Both assignments must be genuinely usable by the loopback children the runtime starts.
+    await expect(bindOnce(css, '127.0.0.1')).resolves.toBeUndefined();
+    await expect(bindOnce(api, '127.0.0.1')).resolves.toBeUndefined();
+    await expect(bindOnce(api, '0.0.0.0')).resolves.toBeUndefined();
+  });
+});
+
 describe('default runtime port planning under Bun', () => {
   /**
    * The default runtime path (`bootstrap` -> `NodeRuntimeHost.allocatePorts`) is what the CLI

@@ -227,10 +227,10 @@ export class SolidRdfDataAccessor implements DataAccessor {
     if (this.initializing) {
       await this.initializing.catch(() => {});
     }
-    if (this.initialized) {
-      await this.rdfEngine.close();
-      this.initialized = false;
-    }
+    // The configured engine can auto-open during Components instantiation,
+    // before this accessor's first request or initializer has run.
+    await this.rdfEngine.close();
+    this.initialized = false;
   }
 
   public async canHandle(representation: Representation): Promise<void> {

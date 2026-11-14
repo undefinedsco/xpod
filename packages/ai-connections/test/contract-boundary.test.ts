@@ -2,34 +2,14 @@ import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-/**
- * The package ships two layers from one package: the applet (components,
- * controller, brand artwork, wording) and `src/contract` (the interoperability
- * contract the server-side gateway and the applet both consume).
- *
- * They are one package because the contract is ai-connections' own: nothing
- * outside this capability consumes it, so it does not deserve a published
- * package of its own. Keeping it in `src/contract` is what makes the layer
- * enforced instead of aspirational - these assertions read that directory
- * rather than deriving an import closure and trusting the derivation.
- *
- * What the contract layer must not carry:
- *
- * - **React or components** — behaviour belongs to the applet (`AGENTS.md`:
- *   行为留 applet). A `.tsx` file here would mean the contract ships a renderer.
- * - **Third-party brand assets** — provider logos are trademarks; shipping them
- *   in the contract would put them in every consumer's bundle by default. They
- *   live in the applet's `provider-visuals.ts`.
- * - **User-facing wording** — the applet's `display-wording.ts` owns the words a
- *   user reads, decided from an entry's id. The one exception below is a product
- *   *name*, which is catalog content.
- * - **Imports that escape into the applet** — the applet depends on the
- *   contract; a contract file reaching back would make the applet part of it.
+/** The capability runtime owns the only implementation; the applet preserves public forwards.
+ * Runtime guards reject React, assets, wording and reverse applet dependencies.
  */
 
 const packageRoot = path.resolve(__dirname, '..')
 const sourceRoot = path.join(packageRoot, 'src')
-const contractRoot = path.join(sourceRoot, 'contract')
+const runtimeRoot = path.resolve(packageRoot, '../ai-connections-runtime')
+const contractRoot = path.join(runtimeRoot, 'src/contract')
 
 function contractFiles(): string[] {
   const files: string[] = []
@@ -56,7 +36,7 @@ function escapesContract(file: string, text: string): boolean {
   return false
 }
 
-describe('contract layer inside the ai-connections package', () => {
+describe('canonical ai-connections capability runtime', () => {
   it('reads a directory worth guarding', () => {
     // Guards the guard: an empty or mis-rooted walk would pass everything else.
     expect(contract.size).toBeGreaterThanOrEqual(10)
@@ -122,13 +102,24 @@ describe('contract layer inside the ai-connections package', () => {
     for (const subpath of [ './client', './provider-catalog', './client-config', './endpoint-urls', './service-access-resources' ]) {
       expect(manifest.exports[subpath]?.import, `${subpath} must stay exported`).toBeTruthy()
     }
-    // The applet entries ship from the same package; nothing is published twice.
+    // The old public paths remain forwards, while only the runtime owns implementations.
     for (const subpath of [ '.', './manifest' ]) {
       expect(manifest.exports[subpath]?.import, `${subpath} must stay exported`).toBeTruthy()
     }
     expect(Object.keys(manifest.exports).sort()).toEqual(
       [ '.', './client', './client-config', './endpoint-urls', './manifest', './provider-catalog', './service-access-resources' ],
     )
+  })
+
+  it('keeps installation dependencies and implementation authority separate', () => {
+    const runtime = JSON.parse(readFileSync(path.join(runtimeRoot, 'package.json'), 'utf8'))
+    expect(Object.keys(runtime.dependencies).sort()).toEqual(['@undefineds.co/extension-host-contracts', '@undefineds.co/models'])
+    expect(runtime.peerDependencies).toBeUndefined()
+    for (const filename of ['ai-connections-client.ts', 'provider-catalog.ts', 'endpoint-urls.ts', 'credential-storage.ts']) {
+      const adapter = readFileSync(path.join(sourceRoot, 'contract', filename), 'utf8')
+      expect(adapter).toContain('@undefineds.co/ai-connections-runtime/')
+      expect(adapter).not.toMatch(/(?:class|function|const)\s+/)
+    }
   })
 
   it('keeps the applet wording in the applet layer', () => {

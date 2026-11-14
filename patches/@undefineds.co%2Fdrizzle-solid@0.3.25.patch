@@ -1,7 +1,28 @@
+diff --git a/dist/core/comunica-patch.js b/dist/core/comunica-patch.js
+index a882828bdbf003ee166b3f1f5c07aea94c822d49..5a8df5064d6a2cb59865f4ff5ab54a2515eb89e9 100644
+--- a/dist/core/comunica-patch.js
++++ b/dist/core/comunica-patch.js
+@@ -82,5 +82,4 @@ const applyComunicaPatches = (requireModule = defaultRequireModule) => {
+         .some(Boolean);
+ };
+ exports.applyComunicaPatches = applyComunicaPatches;
+-(0, exports.applyComunicaPatches)();
+ //# sourceMappingURL=comunica-patch.js.map
+\ No newline at end of file
+diff --git a/dist/core/comunica-patch.js.map b/dist/core/comunica-patch.js.map
+index dacfd124fdb8148f44e98b0eec9c4a01914a7583..345864ba31e9099c645a577ff3e8c65cb0b45dda 100644
+--- a/dist/core/comunica-patch.js.map
++++ b/dist/core/comunica-patch.js.map
+@@ -1 +1 @@
+-{"version":3,"file":"comunica-patch.js","sourceRoot":"","sources":["../../src/core/comunica-patch.ts"],"names":[],"mappings":"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"}
+\ No newline at end of file
++{"version":3,"file":"comunica-patch.js","sourceRoot":"","sources":["../../src/core/comunica-patch.ts"],"names":[],"mappings":"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"}
+\ No newline at end of file
 diff --git a/dist/core/execution/ldp-executor.js b/dist/core/execution/ldp-executor.js
+index c30fa804a5655e624f7554cd0128a79a4d92c8ef..fda6c2a0b7ab1b17fb09857d625c1af0de3cad7c 100644
 --- a/dist/core/execution/ldp-executor.js
 +++ b/dist/core/execution/ldp-executor.js
-@@ -160,6 +160,11 @@
+@@ -160,6 +160,11 @@ class LdpExecutor {
                          body: sparql
                      });
                      via = 'patch';
@@ -13,7 +34,7 @@ diff --git a/dist/core/execution/ldp-executor.js b/dist/core/execution/ldp-execu
                      if (response.status === 404) {
                          const body = triples.join('\n');
                          response = await this.fetchFn(docResourceUrl, {
-@@ -180,6 +185,11 @@
+@@ -180,6 +185,11 @@ class LdpExecutor {
                          body: sparql
                      });
                      via = 'patch';
@@ -25,7 +46,7 @@ diff --git a/dist/core/execution/ldp-executor.js b/dist/core/execution/ldp-execu
                  }
                  else {
                      // 资源不存在，使用 PUT 创建
-@@ -219,6 +229,12 @@
+@@ -219,6 +229,12 @@ class LdpExecutor {
              headers: { 'Content-Type': 'application/sparql-update' },
              body: sparql
          });
@@ -38,7 +59,7 @@ diff --git a/dist/core/execution/ldp-executor.js b/dist/core/execution/ldp-execu
          // 如果返回 201（创建）但实际可能没创建资源，验证一下
          // 如果资源不存在 (404) 或创建后仍不可访问，先 PUT 创建再重试
          if (response.status === 404 || response.status === 201) {
-@@ -259,7 +275,7 @@
+@@ -259,7 +275,7 @@ class LdpExecutor {
          }
          // Also invalidate global cache to ensure SPARQL endpoint queries see the new data
          await this.sparqlExecutor.invalidateHttpCache(undefined).catch(() => undefined);
@@ -47,7 +68,7 @@ diff --git a/dist/core/execution/ldp-executor.js b/dist/core/execution/ldp-execu
      }
      async repairContainerAndRetryPutIfNeeded(response, containerUrl, resourceUrl, body, contentType, repairContainer) {
          if (!repairContainer || !containerUrl || !this.isMissingParentContainerResponse(response)) {
-@@ -310,7 +326,7 @@
+@@ -310,7 +326,7 @@ class LdpExecutor {
                  if (col._virtualId || col.options?.predicate === '@id')
                      continue;
                  // 检查是否是内联对象列
@@ -56,7 +77,7 @@ diff --git a/dist/core/execution/ldp-executor.js b/dist/core/execution/ldp-execu
                      (col.dataType === 'array' && (col.elementType === 'object' || col.options?.baseType === 'object'));
                  if (!isInline)
                      continue;
-@@ -421,6 +437,11 @@
+@@ -421,6 +437,11 @@ class LdpExecutor {
          error.status = status;
          return error;
      }
@@ -68,7 +89,7 @@ diff --git a/dist/core/execution/ldp-executor.js b/dist/core/execution/ldp-execu
      async buildUpdatePatchPayload(subject, table, data, resourceUrl) {
          const deleteTriples = [];
          const insertTriples = [];
-@@ -438,7 +459,7 @@
+@@ -438,7 +459,7 @@ class LdpExecutor {
              if (col._virtualId || col.options?.predicate === '@id')
                  continue;
              // 内联对象特殊处理在 executeUpdate 主循环中做
@@ -77,7 +98,7 @@ diff --git a/dist/core/execution/ldp-executor.js b/dist/core/execution/ldp-execu
                  (col.dataType === 'array' && (col.elementType === 'object' || col.options?.baseType === 'object'));
              if (isInline) {
                  // 只处理插入部分，删除部分由主循环处理
-@@ -518,8 +539,8 @@
+@@ -518,8 +539,8 @@ class LdpExecutor {
                      shouldRetry: false
                  };
              }
@@ -88,7 +109,7 @@ diff --git a/dist/core/execution/ldp-executor.js b/dist/core/execution/ldp-execu
                  const fallbackDeletes = deleteWherePatterns.length > 0
                      ? [...deleteTriples, ...deleteWherePatterns]
                      : deleteTriples;
-@@ -652,7 +673,7 @@
+@@ -652,7 +673,7 @@ class LdpExecutor {
                  for (const [, col] of Object.entries(table.columns)) {
                      const predicate = this.tripleBuilder.getPredicateUri(col, table);
                      // Check if column is inline
@@ -97,10 +118,24 @@ diff --git a/dist/core/execution/ldp-executor.js b/dist/core/execution/ldp-execu
                          (col.dataType === 'array' && (col.elementType === 'object' || col.options?.baseType === 'object'));
                      if (predicate === pVal && isInline && typeof o.value === 'string') {
                          childSubjects.push(o.value);
+diff --git a/dist/core/pod-database.js b/dist/core/pod-database.js
+index fcd0d84ea1829d5e54806e1e6f14eb07b68590b2..3ff27b85ad18f0353e8e8b933a56d56c9699c318 100644
+--- a/dist/core/pod-database.js
++++ b/dist/core/pod-database.js
+@@ -898,7 +898,7 @@ LIMIT 50`,
+                 else if (row[key] === undefined) {
+                     row[key] = object;
+                 }
+-                if ((column.dataType === 'object' || column.dataType === 'json')
++                if ((column.dataType === 'object')
+                     && typeof object === 'string'
+                     && isAbsoluteIri(object)) {
+                     hasUnhydratedInlineObject = true;
 diff --git a/dist/core/pod-dialect.js b/dist/core/pod-dialect.js
+index 9b45f65db4723989e57a9bf7523d9088a03a6d7e..508f3724e6175c67a4e55a0e40e114ddff5b5554 100644
 --- a/dist/core/pod-dialect.js
 +++ b/dist/core/pod-dialect.js
-@@ -38,7 +38,7 @@
+@@ -38,7 +38,7 @@ class PodDialect {
          });
          // 从session中获取webId
          const webId = session.info.webId;
@@ -110,9 +145,10 @@ diff --git a/dist/core/pod-dialect.js b/dist/core/pod-dialect.js
              throw new Error('Session中未找到webId');
          }
 diff --git a/dist/core/query-builders/select-query-builder.js b/dist/core/query-builders/select-query-builder.js
+index 415f08e32afc8ea6167c782192484277d9fb8c83..3cdaf673c3bcc529e716e1eb1379a6a65b4d6b6b 100644
 --- a/dist/core/query-builders/select-query-builder.js
 +++ b/dist/core/query-builders/select-query-builder.js
-@@ -1215,7 +1215,7 @@
+@@ -1215,7 +1215,7 @@ class SelectQueryBuilder {
                  this.normalizeInlineIri(row.subject) ??
                  this.normalizeInlineIri(row.uri) ??
                  (typeof row.id === 'string' ? row.id : undefined);
@@ -121,7 +157,7 @@ diff --git a/dist/core/query-builders/select-query-builder.js b/dist/core/query-
                  console.log('mergeRowsBySubject key', key);
              }
              if (!key) {
-@@ -1318,6 +1318,9 @@
+@@ -1318,6 +1318,9 @@ class SelectQueryBuilder {
          if (hashIndex > 0) {
              return childIri.slice(0, hashIndex);
          }
@@ -131,7 +167,7 @@ diff --git a/dist/core/query-builders/select-query-builder.js b/dist/core/query-
          const resourcePath = table.getResourcePath?.() || table.config.base || table.getContainerPath?.();
          if (resourcePath) {
              const absolute = resourcePath.startsWith('http')
-@@ -1330,11 +1333,11 @@
+@@ -1330,11 +1333,11 @@ class SelectQueryBuilder {
      isInlineObjectColumn(column) {
          if (!column)
              return false;
@@ -145,393 +181,11 @@ diff --git a/dist/core/query-builders/select-query-builder.js b/dist/core/query-
          }
          return false;
      }
-diff --git a/dist/core/utils/pod-root.js b/dist/core/utils/pod-root.js
---- a/dist/core/utils/pod-root.js
-+++ b/dist/core/utils/pod-root.js
-@@ -35,6 +35,14 @@
- };
- function resolvePodBase(options) {
-     const { webId, podUrl, storages } = options;
-+    if (podUrl?.trim()) {
-+        try {
-+            return normalize(new URL(podUrl).href);
-+        }
-+        catch {
-+            // Invalid explicit URLs retain the existing discovery fallback.
-+        }
-+    }
-     const storageCandidates = (storages || []).filter(Boolean);
-     if (storageCandidates.length > 0) {
-         const sameOrigin = pickSameOrigin(webId, storageCandidates);
-diff --git a/dist/esm/core/execution/ldp-executor.js b/dist/esm/core/execution/ldp-executor.js
---- a/dist/esm/core/execution/ldp-executor.js
-+++ b/dist/esm/core/execution/ldp-executor.js
-@@ -157,6 +157,11 @@
-                         body: sparql
-                     });
-                     via = 'patch';
-+                    if (await this.shouldFallbackToN3Patch(response)) {
-+                        const n3Result = await this.executeN3PatchInternal(docResourceUrl, [], triples);
-+                        response = new Response(null, { status: n3Result[0]?.status ?? 200 });
-+                        via = 'n3';
-+                    }
-                     if (response.status === 404) {
-                         const body = triples.join('\n');
-                         response = await this.fetchFn(docResourceUrl, {
-@@ -177,6 +182,11 @@
-                         body: sparql
-                     });
-                     via = 'patch';
-+                    if (await this.shouldFallbackToN3Patch(response)) {
-+                        const n3Result = await this.executeN3PatchInternal(docResourceUrl, [], triples);
-+                        response = new Response(null, { status: n3Result[0]?.status ?? 200 });
-+                        via = 'n3';
-+                    }
-                 }
-                 else {
-                     // 资源不存在，使用 PUT 创建
-@@ -216,6 +226,12 @@
-             headers: { 'Content-Type': 'application/sparql-update' },
-             body: sparql
-         });
-+        let via = 'sparql-update';
-+        if (await this.shouldFallbackToN3Patch(response)) {
-+            const n3Result = await this.executeN3PatchInternal(resourceUrl, [], insertTriples);
-+            response = new Response(null, { status: n3Result[0]?.status ?? 200 });
-+            via = 'n3';
-+        }
-         // 如果返回 201（创建）但实际可能没创建资源，验证一下
-         // 如果资源不存在 (404) 或创建后仍不可访问，先 PUT 创建再重试
-         if (response.status === 404 || response.status === 201) {
-@@ -256,7 +272,7 @@
-         }
-         // Also invalidate global cache to ensure SPARQL endpoint queries see the new data
-         await this.sparqlExecutor.invalidateHttpCache(undefined).catch(() => undefined);
--        return [{ success: true, source: resourceUrl, status: response.status, via: 'sparql-update' }];
-+        return [{ success: true, source: resourceUrl, status: response.status, via }];
-     }
-     async repairContainerAndRetryPutIfNeeded(response, containerUrl, resourceUrl, body, contentType, repairContainer) {
-         if (!repairContainer || !containerUrl || !this.isMissingParentContainerResponse(response)) {
-@@ -307,7 +323,7 @@
-                 if (col._virtualId || col.options?.predicate === '@id')
-                     continue;
-                 // 检查是否是内联对象列
--                const isInline = col.dataType === 'object' || col.dataType === 'json' ||
-+                const isInline = col.dataType === 'object' ||
-                     (col.dataType === 'array' && (col.elementType === 'object' || col.options?.baseType === 'object'));
-                 if (!isInline)
-                     continue;
-@@ -418,6 +434,11 @@
-         error.status = status;
-         return error;
-     }
-+    async shouldFallbackToN3Patch(response) {
-+        return response.status === 415 || response.status === 405 ||
-+            (response.status === 400 &&
-+                (await response.clone().text().catch(() => '')).includes('prepared update source provenance is not uniquely identified'));
-+    }
-     async buildUpdatePatchPayload(subject, table, data, resourceUrl) {
-         const deleteTriples = [];
-         const insertTriples = [];
-@@ -435,7 +456,7 @@
-             if (col._virtualId || col.options?.predicate === '@id')
-                 continue;
-             // 内联对象特殊处理在 executeUpdate 主循环中做
--            const isInline = col.dataType === 'object' || col.dataType === 'json' ||
-+            const isInline = col.dataType === 'object' ||
-                 (col.dataType === 'array' && (col.elementType === 'object' || col.options?.baseType === 'object'));
-             if (isInline) {
-                 // 只处理插入部分，删除部分由主循环处理
-@@ -515,8 +536,8 @@
-                     shouldRetry: false
-                 };
-             }
--            // SPARQL UPDATE not supported, fallback to N3 Patch
--            if (res.status === 415 || res.status === 405) {
-+            // SPARQL UPDATE not supported, or provider provenance is ambiguous; fallback to N3 Patch
-+            if (await this.shouldFallbackToN3Patch(res)) {
-                 const fallbackDeletes = deleteWherePatterns.length > 0
-                     ? [...deleteTriples, ...deleteWherePatterns]
-                     : deleteTriples;
-@@ -649,7 +670,7 @@
-                 for (const [, col] of Object.entries(table.columns)) {
-                     const predicate = this.tripleBuilder.getPredicateUri(col, table);
-                     // Check if column is inline
--                    const isInline = col.dataType === 'object' || col.dataType === 'json' ||
-+                    const isInline = col.dataType === 'object' ||
-                         (col.dataType === 'array' && (col.elementType === 'object' || col.options?.baseType === 'object'));
-                     if (predicate === pVal && isInline && typeof o.value === 'string') {
-                         childSubjects.push(o.value);
-diff --git a/dist/esm/core/pod-dialect.js b/dist/esm/core/pod-dialect.js
---- a/dist/esm/core/pod-dialect.js
-+++ b/dist/esm/core/pod-dialect.js
-@@ -35,7 +35,7 @@
-         });
-         // 从session中获取webId
-         const webId = session.info.webId;
--        const clientId = session.info.clientId || session.info.client_id || process.env.SOLID_CLIENT_ID;
-+        const clientId = session.info.clientId || session.info.client_id || (typeof process !== 'undefined' ? process.env?.SOLID_CLIENT_ID : undefined);
-         if (!webId) {
-             throw new Error('Session中未找到webId');
-         }
-diff --git a/dist/esm/core/query-builders/select-query-builder.js b/dist/esm/core/query-builders/select-query-builder.js
---- a/dist/esm/core/query-builders/select-query-builder.js
-+++ b/dist/esm/core/query-builders/select-query-builder.js
-@@ -1212,7 +1212,7 @@
-                 this.normalizeInlineIri(row.subject) ??
-                 this.normalizeInlineIri(row.uri) ??
-                 (typeof row.id === 'string' ? row.id : undefined);
--            if (process.env.DEBUG_INLINE_MERGE === '1') {
-+            if (typeof process !== 'undefined' && process.env?.DEBUG_INLINE_MERGE === '1') {
-                 console.log('mergeRowsBySubject key', key);
-             }
-             if (!key) {
-@@ -1315,6 +1315,9 @@
-         if (hashIndex > 0) {
-             return childIri.slice(0, hashIndex);
-         }
-+        if (childIri.startsWith('http://') || childIri.startsWith('https://')) {
-+            return childIri;
-+        }
-         const resourcePath = table.getResourcePath?.() || table.config.base || table.getContainerPath?.();
-         if (resourcePath) {
-             const absolute = resourcePath.startsWith('http')
-@@ -1327,11 +1330,11 @@
-     isInlineObjectColumn(column) {
-         if (!column)
-             return false;
--        if (column.dataType === 'object' || column.dataType === 'json')
-+        if (column.dataType === 'object')
-             return true;
-         if (column.dataType === 'array') {
-             const elementType = column.elementType ?? column.options?.baseType;
--            return elementType === 'object' || elementType === 'json';
-+            return elementType === 'object';
-         }
-         return false;
-     }
-diff --git a/dist/esm/core/utils/pod-root.js b/dist/esm/core/utils/pod-root.js
---- a/dist/esm/core/utils/pod-root.js
-+++ b/dist/esm/core/utils/pod-root.js
-@@ -32,6 +32,14 @@
- };
- export function resolvePodBase(options) {
-     const { webId, podUrl, storages } = options;
-+    if (podUrl?.trim()) {
-+        try {
-+            return normalize(new URL(podUrl).href);
-+        }
-+        catch {
-+            // Invalid explicit URLs retain the existing discovery fallback.
-+        }
-+    }
-     const storageCandidates = (storages || []).filter(Boolean);
-     if (storageCandidates.length > 0) {
-         const sameOrigin = pickSameOrigin(webId, storageCandidates);
-diff --git a/dist/core/triple/handlers/default.js b/dist/core/triple/handlers/default.js
---- a/dist/core/triple/handlers/default.js
-+++ b/dist/core/triple/handlers/default.js
-@@ -18,10 +18,16 @@
-     }
-     canHandle(column) {
-         const type = column.dataType;
--        return type === 'string' || type === 'integer' || type === 'boolean' || type === 'datetime';
-+        return type === 'string' || type === 'integer' || type === 'boolean' || type === 'datetime' || type === 'json';
-     }
-     formatValue(value, column, _context) {
-         switch (column.dataType) {
-+            case 'json':
-+                return {
-+                    termType: 'Literal',
-+                    value: JSON.stringify(value),
-+                    datatype: { termType: 'NamedNode', value: `${XSD}json` },
-+                };
-             case 'string':
-                 return {
-                     termType: 'Literal',
-@@ -58,6 +64,8 @@
-     parseValue(term, column) {
-         const datatypeUri = term.datatype?.value ?? '';
-         switch (column.dataType) {
-+            case 'json':
-+                return JSON.parse(term.value);
-             case 'integer':
-                 return parseInt(term.value, 10);
-             case 'boolean':
-diff --git a/dist/core/triple/handlers/inline.js b/dist/core/triple/handlers/inline.js
---- a/dist/core/triple/handlers/inline.js
-+++ b/dist/core/triple/handlers/inline.js
-@@ -2,7 +2,7 @@
- /**
-  * Inline Object Column Handler
-  *
-- * 处理内联对象类型列 (object/json)，创建嵌套三元组结构
-+ * 处理内联对象类型列 (object)，创建嵌套三元组结构
-  */
- Object.defineProperty(exports, "__esModule", { value: true });
- exports.InlineObjectHandler = void 0;
-@@ -20,12 +20,12 @@
-         this.name = 'inline';
-     }
-     canHandle(column) {
--        if (column.dataType === 'object' || column.dataType === 'json') {
-+        if (column.dataType === 'object') {
-             return true;
-         }
-         if (column.dataType === 'array') {
-             const baseType = column.elementType || column.options?.baseType;
--            return baseType === 'object' || baseType === 'json';
-+            return baseType === 'object';
-         }
-         return false;
-     }
-diff --git a/dist/core/triple/handlers/array.js b/dist/core/triple/handlers/array.js
---- a/dist/core/triple/handlers/array.js
-+++ b/dist/core/triple/handlers/array.js
-@@ -30,6 +30,12 @@
-     }
-     formatSingleValue(value, elementType) {
-         switch (elementType) {
-+            case 'json':
-+                return {
-+                    termType: 'Literal',
-+                    value: JSON.stringify(value),
-+                    datatype: { termType: 'NamedNode', value: `${XSD}json` },
-+                };
-             case 'string':
-                 return {
-                     termType: 'Literal',
-@@ -72,6 +78,8 @@
-         const elementType = column.options?.baseType ?? 'string';
-         const datatypeUri = term.datatype?.value ?? '';
-         switch (elementType) {
-+            case 'json':
-+                return JSON.parse(term.value);
-             case 'integer':
-                 return parseInt(term.value, 10);
-             case 'boolean':
-diff --git a/dist/core/triple/builder.js b/dist/core/triple/builder.js
---- a/dist/core/triple/builder.js
-+++ b/dist/core/triple/builder.js
-@@ -64,7 +64,7 @@
-         const predicate = this.getPredicateUri(column, table);
-         const varName = `old_${column.name}${varSuffix}`;
-         // 检查是否是内联对象
--        if (column.dataType === 'object' || column.dataType === 'json') {
-+        if (column.dataType === 'object') {
-             return this.buildInlineDeleteTriples(subject, predicate, column.name, varSuffix);
-         }
-         // 检查是否是逆向谓词
-diff --git a/dist/esm/core/triple/handlers/default.js b/dist/esm/core/triple/handlers/default.js
---- a/dist/esm/core/triple/handlers/default.js
-+++ b/dist/esm/core/triple/handlers/default.js
-@@ -15,10 +15,16 @@
-     }
-     canHandle(column) {
-         const type = column.dataType;
--        return type === 'string' || type === 'integer' || type === 'boolean' || type === 'datetime';
-+        return type === 'string' || type === 'integer' || type === 'boolean' || type === 'datetime' || type === 'json';
-     }
-     formatValue(value, column, _context) {
-         switch (column.dataType) {
-+            case 'json':
-+                return {
-+                    termType: 'Literal',
-+                    value: JSON.stringify(value),
-+                    datatype: { termType: 'NamedNode', value: `${XSD}json` },
-+                };
-             case 'string':
-                 return {
-                     termType: 'Literal',
-@@ -55,6 +61,8 @@
-     parseValue(term, column) {
-         const datatypeUri = term.datatype?.value ?? '';
-         switch (column.dataType) {
-+            case 'json':
-+                return JSON.parse(term.value);
-             case 'integer':
-                 return parseInt(term.value, 10);
-             case 'boolean':
-diff --git a/dist/esm/core/triple/handlers/inline.js b/dist/esm/core/triple/handlers/inline.js
---- a/dist/esm/core/triple/handlers/inline.js
-+++ b/dist/esm/core/triple/handlers/inline.js
-@@ -1,7 +1,7 @@
- /**
-  * Inline Object Column Handler
-  *
-- * 处理内联对象类型列 (object/json)，创建嵌套三元组结构
-+ * 处理内联对象类型列 (object)，创建嵌套三元组结构
-  */
- const XSD = 'http://www.w3.org/2001/XMLSchema#';
- /**
-@@ -17,12 +17,12 @@
-         this.name = 'inline';
-     }
-     canHandle(column) {
--        if (column.dataType === 'object' || column.dataType === 'json') {
-+        if (column.dataType === 'object') {
-             return true;
-         }
-         if (column.dataType === 'array') {
-             const baseType = column.elementType || column.options?.baseType;
--            return baseType === 'object' || baseType === 'json';
-+            return baseType === 'object';
-         }
-         return false;
-     }
-diff --git a/dist/esm/core/triple/handlers/array.js b/dist/esm/core/triple/handlers/array.js
---- a/dist/esm/core/triple/handlers/array.js
-+++ b/dist/esm/core/triple/handlers/array.js
-@@ -27,6 +27,12 @@
-     }
-     formatSingleValue(value, elementType) {
-         switch (elementType) {
-+            case 'json':
-+                return {
-+                    termType: 'Literal',
-+                    value: JSON.stringify(value),
-+                    datatype: { termType: 'NamedNode', value: `${XSD}json` },
-+                };
-             case 'string':
-                 return {
-                     termType: 'Literal',
-@@ -69,6 +75,8 @@
-         const elementType = column.options?.baseType ?? 'string';
-         const datatypeUri = term.datatype?.value ?? '';
-         switch (elementType) {
-+            case 'json':
-+                return JSON.parse(term.value);
-             case 'integer':
-                 return parseInt(term.value, 10);
-             case 'boolean':
-diff --git a/dist/esm/core/triple/builder.js b/dist/esm/core/triple/builder.js
---- a/dist/esm/core/triple/builder.js
-+++ b/dist/esm/core/triple/builder.js
-@@ -61,7 +61,7 @@
-         const predicate = this.getPredicateUri(column, table);
-         const varName = `old_${column.name}${varSuffix}`;
-         // 检查是否是内联对象
--        if (column.dataType === 'object' || column.dataType === 'json') {
-+        if (column.dataType === 'object') {
-             return this.buildInlineDeleteTriples(subject, predicate, column.name, varSuffix);
-         }
-         // 检查是否是逆向谓词
-diff --git a/dist/core/pod-database.js b/dist/core/pod-database.js
---- a/dist/core/pod-database.js
-+++ b/dist/core/pod-database.js
-@@ -898,7 +898,7 @@
-                 else if (row[key] === undefined) {
-                     row[key] = object;
-                 }
--                if ((column.dataType === 'object' || column.dataType === 'json')
-+                if ((column.dataType === 'object')
-                     && typeof object === 'string'
-                     && isAbsoluteIri(object)) {
-                     hasUnhydratedInlineObject = true;
 diff --git a/dist/core/sparql/builder/update-builder.js b/dist/core/sparql/builder/update-builder.js
+index e53cf2c31807d975b6493112d9062bb582a58849..7e748af95107233af99d870ec7a7c7313253bce1 100644
 --- a/dist/core/sparql/builder/update-builder.js
 +++ b/dist/core/sparql/builder/update-builder.js
-@@ -392,11 +392,22 @@
+@@ -392,11 +392,22 @@ class UpdateBuilder {
              const predicate = (0, helpers_1.getPredicateForColumn)(column, table);
              const variableName = `old_${columnName}_${index}`;
              const isInline = column.dataType === 'object' ||
@@ -555,10 +209,248 @@ diff --git a/dist/core/sparql/builder/update-builder.js b/dist/core/sparql/build
              if (isInline) {
                  const childVarPredicate = { termType: 'Variable', value: `p_${variableName}` };
                  const childVarObject = { termType: 'Variable', value: `o_${variableName}` };
+diff --git a/dist/core/triple/builder.js b/dist/core/triple/builder.js
+index e61e9a9ab5ea4c34c9a5d01afd30a61ff54a8c96..b78236ec9c84c6ecb9eaa21ac3cfc39b43cbe8d4 100644
+--- a/dist/core/triple/builder.js
++++ b/dist/core/triple/builder.js
+@@ -64,7 +64,7 @@ class TripleBuilderImpl {
+         const predicate = this.getPredicateUri(column, table);
+         const varName = `old_${column.name}${varSuffix}`;
+         // 检查是否是内联对象
+-        if (column.dataType === 'object' || column.dataType === 'json') {
++        if (column.dataType === 'object') {
+             return this.buildInlineDeleteTriples(subject, predicate, column.name, varSuffix);
+         }
+         // 检查是否是逆向谓词
+diff --git a/dist/core/triple/handlers/array.js b/dist/core/triple/handlers/array.js
+index a9c342a65f033fd1530aea496af5b14679517c68..1c7fac2ab60744653e866d983cd0816469608e7f 100644
+--- a/dist/core/triple/handlers/array.js
++++ b/dist/core/triple/handlers/array.js
+@@ -30,6 +30,12 @@ class ArrayHandler {
+     }
+     formatSingleValue(value, elementType) {
+         switch (elementType) {
++            case 'json':
++                return {
++                    termType: 'Literal',
++                    value: JSON.stringify(value),
++                    datatype: { termType: 'NamedNode', value: `${XSD}json` },
++                };
+             case 'string':
+                 return {
+                     termType: 'Literal',
+@@ -72,6 +78,8 @@ class ArrayHandler {
+         const elementType = column.options?.baseType ?? 'string';
+         const datatypeUri = term.datatype?.value ?? '';
+         switch (elementType) {
++            case 'json':
++                return JSON.parse(term.value);
+             case 'integer':
+                 return parseInt(term.value, 10);
+             case 'boolean':
+diff --git a/dist/core/triple/handlers/default.js b/dist/core/triple/handlers/default.js
+index d02e5b44c0dc5bafe0e453c750d527888b8cfcc6..c4901dd57af4a61feb4417eca6e2ccec4a8b9733 100644
+--- a/dist/core/triple/handlers/default.js
++++ b/dist/core/triple/handlers/default.js
+@@ -18,10 +18,16 @@ class DefaultHandler {
+     }
+     canHandle(column) {
+         const type = column.dataType;
+-        return type === 'string' || type === 'integer' || type === 'boolean' || type === 'datetime';
++        return type === 'string' || type === 'integer' || type === 'boolean' || type === 'datetime' || type === 'json';
+     }
+     formatValue(value, column, _context) {
+         switch (column.dataType) {
++            case 'json':
++                return {
++                    termType: 'Literal',
++                    value: JSON.stringify(value),
++                    datatype: { termType: 'NamedNode', value: `${XSD}json` },
++                };
+             case 'string':
+                 return {
+                     termType: 'Literal',
+@@ -58,6 +64,8 @@ class DefaultHandler {
+     parseValue(term, column) {
+         const datatypeUri = term.datatype?.value ?? '';
+         switch (column.dataType) {
++            case 'json':
++                return JSON.parse(term.value);
+             case 'integer':
+                 return parseInt(term.value, 10);
+             case 'boolean':
+diff --git a/dist/core/triple/handlers/inline.js b/dist/core/triple/handlers/inline.js
+index b33f81aa4a9eab334f10ee97a4423bbd42b6d791..194bf1d9cf33d20f9225c096ac0aeb360ba69794 100644
+--- a/dist/core/triple/handlers/inline.js
++++ b/dist/core/triple/handlers/inline.js
+@@ -2,7 +2,7 @@
+ /**
+  * Inline Object Column Handler
+  *
+- * 处理内联对象类型列 (object/json)，创建嵌套三元组结构
++ * 处理内联对象类型列 (object)，创建嵌套三元组结构
+  */
+ Object.defineProperty(exports, "__esModule", { value: true });
+ exports.InlineObjectHandler = void 0;
+@@ -20,12 +20,12 @@ class InlineObjectHandler {
+         this.name = 'inline';
+     }
+     canHandle(column) {
+-        if (column.dataType === 'object' || column.dataType === 'json') {
++        if (column.dataType === 'object') {
+             return true;
+         }
+         if (column.dataType === 'array') {
+             const baseType = column.elementType || column.options?.baseType;
+-            return baseType === 'object' || baseType === 'json';
++            return baseType === 'object';
+         }
+         return false;
+     }
+diff --git a/dist/core/utils/pod-root.js b/dist/core/utils/pod-root.js
+index 061b399a81c245672b55d5c5f6f5bb6efe51b619..d146d7bd58857c29124e26b92c7e5518da67ffb4 100644
+--- a/dist/core/utils/pod-root.js
++++ b/dist/core/utils/pod-root.js
+@@ -35,6 +35,14 @@ const deriveFromUrl = (raw) => {
+ };
+ function resolvePodBase(options) {
+     const { webId, podUrl, storages } = options;
++    if (podUrl?.trim()) {
++        try {
++            return normalize(new URL(podUrl).href);
++        }
++        catch {
++            // Invalid explicit URLs retain the existing discovery fallback.
++        }
++    }
+     const storageCandidates = (storages || []).filter(Boolean);
+     if (storageCandidates.length > 0) {
+         const sameOrigin = pickSameOrigin(webId, storageCandidates);
+diff --git a/dist/esm/core/comunica-patch.js b/dist/esm/core/comunica-patch.js
+index 00945661e4033fcecc594a91b51f94f3e5f487a5..70a7c15f7de2c5819af43c3144d453e11a0bcdd2 100644
+--- a/dist/esm/core/comunica-patch.js
++++ b/dist/esm/core/comunica-patch.js
+@@ -78,5 +78,4 @@ export const applyComunicaPatches = (requireModule = defaultRequireModule) => {
+         .map((moduleName) => patchActionObserverHttp(requireModule, moduleName))
+         .some(Boolean);
+ };
+-applyComunicaPatches();
+ //# sourceMappingURL=comunica-patch.js.map
+\ No newline at end of file
+diff --git a/dist/esm/core/comunica-patch.js.map b/dist/esm/core/comunica-patch.js.map
+index e64a2430c6b50ceb5fef249944bb7c21262d5d67..a1c50a0e475c1e1be1330169b1f8cd86f46db944 100644
+--- a/dist/esm/core/comunica-patch.js.map
++++ b/dist/esm/core/comunica-patch.js.map
+@@ -1 +1 @@
+-{"version":3,"file":"comunica-patch.js","sourceRoot":"","sources":["../../../src/core/comunica-patch.ts"],"names":[],"mappings":"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"}
+\ No newline at end of file
++{"version":3,"file":"comunica-patch.js","sourceRoot":"","sources":["../../../src/core/comunica-patch.ts"],"names":[],"mappings":"AAAA,iBAAiB;AACjB,gDAAgD;AAIhD,MAAM,oBAAoB,GAAG,GAA6B,EAAE;IAC1D,IAAI,OAAO,MAAM,KAAK,WAAW,EAAE,CAAC;QAClC,OAAO,IAAI,CAAC;IACd,CAAC;IAED,IAAI,CAAC;QACH,MAAM,WAAW,GAAG,IAAI,CAAC,SAAS,CAA4B,CAAC;QAC/D,IAAI,CAAC,WAAW,EAAE,CAAC;YACjB,OAAO,IAAI,CAAC;QACd,CAAC;QAED,MAAM,SAAS,GAAG,WAAW,CAAC,QAAQ,CAAsD,CAAC;QAC7F,IAAI,CAAC,SAAS,IAAI,OAAO,SAAS,CAAC,aAAa,KAAK,UAAU,EAAE,CAAC;YAChE,OAAO,IAAI,CAAC;QACd,CAAC;QAED,OAAO,SAAS,CAAC,aAAa,CAAC;IACjC,CAAC;IAAC,MAAM,CAAC;QACP,OAAO,IAAI,CAAC;IACd,CAAC;AACH,CAAC,CAAC;AAEF,MAAM,eAAe,GAAG,oBAAoB,EAAE,CAAC;AAC/C,MAAM,wBAAwB,GAAG,CAAC,KAAa,EAAW,EAAE,CAC1D,KAAK,CAAC,UAAU,CAAC,OAAO,CAAC,IAAI,KAAK,CAAC,UAAU,CAAC,GAAG,CAAC,IAAI,iBAAiB,CAAC,IAAI,CAAC,KAAK,CAAC,CAAC;AAEtF,MAAM,cAAc,GAAG,OAAO,UAAU,KAAK,QAAQ,IAAI,wBAAwB,CAAC,UAAU,CAAC;IAC3F,CAAC,CAAC,UAAU;IACZ,CAAC,CAAC,CAAC,OAAO,OAAO,KAAK,WAAW,IAAI,OAAO,OAAO,CAAC,GAAG,KAAK,UAAU;QAClE,CAAC,CAAC,GAAG,OAAO,CAAC,GAAG,EAAE,CAAC,OAAO,CAAC,KAAK,EAAE,EAAE,CAAC,eAAe;QACpD,CAAC,CAAC,eAAe,CAAC,CAAC;AAEzB,MAAM,0BAA0B,GAAG,GAAuB,EAAE;IAC1D,IAAI,CAAC,eAAe,EAAE,CAAC;QACrB,OAAO,IAAI,CAAC;IACd,CAAC;IACD,IAAI,CAAC;QACH,OAAO,eAAe,CAAC,cAAc,CAAC,CAAC;IACzC,CAAC;IAAC,MAAM,CAAC;QACP,OAAO,IAAI,CAAC;IACd,CAAC;AACH,CAAC,CAAC;AAEF,MAAM,oBAAoB,GAAG,0BAA0B,EAAE,CAAC;AAQ1D,MAAM,uBAAuB,GAAG,CAAC,aAAiC,EAAE,UAAkB,EAAE,EAAE;IACxF,IAAI,CAAC,aAAa,EAAE,CAAC;QACnB,OAAO,KAAK,CAAC;IACf,CAAC;IAED,IAAI,CAAC;QACH,MAAM,QAAQ,GAAG,aAAa,CAAC,UAAU,CAAC,CAAC;QAE3C,IAAI,QAAQ,IAAI,QAAQ,CAAC,kBAAkB,EAAE,CAAC;YAC5C,IAAI,QAAQ,CAAC,kBAAkB,CAAC,SAAS,CAAC,wCAAwC,EAAE,CAAC;gBACnF,OAAO,IAAI,CAAC;YACd,CAAC;YAED,MAAM,aAAa,GAAG,QAAQ,CAAC,kBAAkB,CAAC,SAAS,CAAC,KAAqB,CAAC;YAElF,QAAQ,CAAC,kBAAkB,CAAC,SAAS,CAAC,KAAK,GAAG,UAAS,KAAc,EAAE,OAAgB,EAAE,OAAgB;gBACvG,IAAI,CAAC,IAAI,CAAC,cAAc,IAAI,CAAC,KAAK,CAAC,OAAO,CAAC,IAAI,CAAC,cAAc,CAAC,EAAE,CAAC;oBAChE,IAAI,CAAC,cAAc,GAAG,EAAE,CAAC;gBAC3B,CAAC;gBAED,OAAO,aAAa,CAAC,IAAI,CAAC,IAAI,EAAE,KAAK,EAAE,OAAO,EAAE,OAAO,CAAC,CAAC;YAC3D,CAAC,CAAC;YAEF,QAAQ,CAAC,kBAAkB,CAAC,SAAS,CAAC,wCAAwC,GAAG,IAAI,CAAC;YACtF,OAAO,IAAI,CAAC;QACd,CAAC;QACD,OAAO,KAAK,CAAC;IACf,CAAC;IAAC,MAAM,CAAC;QACP,OAAO,KAAK,CAAC;IACf,CAAC;AACH,CAAC,CAAC;AAEF,MAAM,CAAC,MAAM,oBAAoB,GAAG,CAAC,gBAAoC,oBAAoB,EAAW,EAAE;IACxG,IAAI,CAAC,aAAa,EAAE,CAAC;QACnB,OAAO,KAAK,CAAC;IACf,CAAC;IAED,MAAM,OAAO,GAAG;QACd,oDAAoD;QACpD,8CAA8C;QAC9C,8FAA8F;QAC9F,wFAAwF;KACzF,CAAC;IAEF,OAAO,OAAO;SACX,GAAG,CAAC,CAAC,UAAU,EAAE,EAAE,CAAC,uBAAuB,CAAC,aAAa,EAAE,UAAU,CAAC,CAAC;SACvE,IAAI,CAAC,OAAO,CAAC,CAAC;AACnB,CAAC,CAAC"}
+\ No newline at end of file
+diff --git a/dist/esm/core/execution/ldp-executor.js b/dist/esm/core/execution/ldp-executor.js
+index 1050cbcd8c25b0b95c580b59eff76f15830f2499..2525aec63d8d87f4c6a4b72c8c27598ee5d910c8 100644
+--- a/dist/esm/core/execution/ldp-executor.js
++++ b/dist/esm/core/execution/ldp-executor.js
+@@ -157,6 +157,11 @@ export class LdpExecutor {
+                         body: sparql
+                     });
+                     via = 'patch';
++                    if (await this.shouldFallbackToN3Patch(response)) {
++                        const n3Result = await this.executeN3PatchInternal(docResourceUrl, [], triples);
++                        response = new Response(null, { status: n3Result[0]?.status ?? 200 });
++                        via = 'n3';
++                    }
+                     if (response.status === 404) {
+                         const body = triples.join('\n');
+                         response = await this.fetchFn(docResourceUrl, {
+@@ -177,6 +182,11 @@ export class LdpExecutor {
+                         body: sparql
+                     });
+                     via = 'patch';
++                    if (await this.shouldFallbackToN3Patch(response)) {
++                        const n3Result = await this.executeN3PatchInternal(docResourceUrl, [], triples);
++                        response = new Response(null, { status: n3Result[0]?.status ?? 200 });
++                        via = 'n3';
++                    }
+                 }
+                 else {
+                     // 资源不存在，使用 PUT 创建
+@@ -216,6 +226,12 @@ export class LdpExecutor {
+             headers: { 'Content-Type': 'application/sparql-update' },
+             body: sparql
+         });
++        let via = 'sparql-update';
++        if (await this.shouldFallbackToN3Patch(response)) {
++            const n3Result = await this.executeN3PatchInternal(resourceUrl, [], insertTriples);
++            response = new Response(null, { status: n3Result[0]?.status ?? 200 });
++            via = 'n3';
++        }
+         // 如果返回 201（创建）但实际可能没创建资源，验证一下
+         // 如果资源不存在 (404) 或创建后仍不可访问，先 PUT 创建再重试
+         if (response.status === 404 || response.status === 201) {
+@@ -256,7 +272,7 @@ export class LdpExecutor {
+         }
+         // Also invalidate global cache to ensure SPARQL endpoint queries see the new data
+         await this.sparqlExecutor.invalidateHttpCache(undefined).catch(() => undefined);
+-        return [{ success: true, source: resourceUrl, status: response.status, via: 'sparql-update' }];
++        return [{ success: true, source: resourceUrl, status: response.status, via }];
+     }
+     async repairContainerAndRetryPutIfNeeded(response, containerUrl, resourceUrl, body, contentType, repairContainer) {
+         if (!repairContainer || !containerUrl || !this.isMissingParentContainerResponse(response)) {
+@@ -307,7 +323,7 @@ export class LdpExecutor {
+                 if (col._virtualId || col.options?.predicate === '@id')
+                     continue;
+                 // 检查是否是内联对象列
+-                const isInline = col.dataType === 'object' || col.dataType === 'json' ||
++                const isInline = col.dataType === 'object' ||
+                     (col.dataType === 'array' && (col.elementType === 'object' || col.options?.baseType === 'object'));
+                 if (!isInline)
+                     continue;
+@@ -418,6 +434,11 @@ export class LdpExecutor {
+         error.status = status;
+         return error;
+     }
++    async shouldFallbackToN3Patch(response) {
++        return response.status === 415 || response.status === 405 ||
++            (response.status === 400 &&
++                (await response.clone().text().catch(() => '')).includes('prepared update source provenance is not uniquely identified'));
++    }
+     async buildUpdatePatchPayload(subject, table, data, resourceUrl) {
+         const deleteTriples = [];
+         const insertTriples = [];
+@@ -435,7 +456,7 @@ export class LdpExecutor {
+             if (col._virtualId || col.options?.predicate === '@id')
+                 continue;
+             // 内联对象特殊处理在 executeUpdate 主循环中做
+-            const isInline = col.dataType === 'object' || col.dataType === 'json' ||
++            const isInline = col.dataType === 'object' ||
+                 (col.dataType === 'array' && (col.elementType === 'object' || col.options?.baseType === 'object'));
+             if (isInline) {
+                 // 只处理插入部分，删除部分由主循环处理
+@@ -515,8 +536,8 @@ export class LdpExecutor {
+                     shouldRetry: false
+                 };
+             }
+-            // SPARQL UPDATE not supported, fallback to N3 Patch
+-            if (res.status === 415 || res.status === 405) {
++            // SPARQL UPDATE not supported, or provider provenance is ambiguous; fallback to N3 Patch
++            if (await this.shouldFallbackToN3Patch(res)) {
+                 const fallbackDeletes = deleteWherePatterns.length > 0
+                     ? [...deleteTriples, ...deleteWherePatterns]
+                     : deleteTriples;
+@@ -649,7 +670,7 @@ export class LdpExecutor {
+                 for (const [, col] of Object.entries(table.columns)) {
+                     const predicate = this.tripleBuilder.getPredicateUri(col, table);
+                     // Check if column is inline
+-                    const isInline = col.dataType === 'object' || col.dataType === 'json' ||
++                    const isInline = col.dataType === 'object' ||
+                         (col.dataType === 'array' && (col.elementType === 'object' || col.options?.baseType === 'object'));
+                     if (predicate === pVal && isInline && typeof o.value === 'string') {
+                         childSubjects.push(o.value);
 diff --git a/dist/esm/core/pod-database.js b/dist/esm/core/pod-database.js
+index 1c62cdf6e7cebc0f408fbc73a2d1f946d132a664..d58794d0d0cef043591f9771a6cf3e3714d45302 100644
 --- a/dist/esm/core/pod-database.js
 +++ b/dist/esm/core/pod-database.js
-@@ -862,7 +862,7 @@
+@@ -862,7 +862,7 @@ LIMIT 50`,
                  else if (row[key] === undefined) {
                      row[key] = object;
                  }
@@ -567,10 +459,61 @@ diff --git a/dist/esm/core/pod-database.js b/dist/esm/core/pod-database.js
                      && typeof object === 'string'
                      && isAbsoluteIri(object)) {
                      hasUnhydratedInlineObject = true;
+diff --git a/dist/esm/core/pod-dialect.js b/dist/esm/core/pod-dialect.js
+index 9a1eb64b8d3acf52f4e5b9f28a0afcf6439a87cc..f6fc6a0d9d881e03c9f570154edee7b6befd67f9 100644
+--- a/dist/esm/core/pod-dialect.js
++++ b/dist/esm/core/pod-dialect.js
+@@ -35,7 +35,7 @@ export class PodDialect {
+         });
+         // 从session中获取webId
+         const webId = session.info.webId;
+-        const clientId = session.info.clientId || session.info.client_id || process.env.SOLID_CLIENT_ID;
++        const clientId = session.info.clientId || session.info.client_id || (typeof process !== 'undefined' ? process.env?.SOLID_CLIENT_ID : undefined);
+         if (!webId) {
+             throw new Error('Session中未找到webId');
+         }
+diff --git a/dist/esm/core/query-builders/select-query-builder.js b/dist/esm/core/query-builders/select-query-builder.js
+index 78221dc0edb6294967d17f519008fed3dfe40732..ba98dc4f3ac88831ae3dadd61db3fd3fb8a1902f 100644
+--- a/dist/esm/core/query-builders/select-query-builder.js
++++ b/dist/esm/core/query-builders/select-query-builder.js
+@@ -1212,7 +1212,7 @@ export class SelectQueryBuilder {
+                 this.normalizeInlineIri(row.subject) ??
+                 this.normalizeInlineIri(row.uri) ??
+                 (typeof row.id === 'string' ? row.id : undefined);
+-            if (process.env.DEBUG_INLINE_MERGE === '1') {
++            if (typeof process !== 'undefined' && process.env?.DEBUG_INLINE_MERGE === '1') {
+                 console.log('mergeRowsBySubject key', key);
+             }
+             if (!key) {
+@@ -1315,6 +1315,9 @@ export class SelectQueryBuilder {
+         if (hashIndex > 0) {
+             return childIri.slice(0, hashIndex);
+         }
++        if (childIri.startsWith('http://') || childIri.startsWith('https://')) {
++            return childIri;
++        }
+         const resourcePath = table.getResourcePath?.() || table.config.base || table.getContainerPath?.();
+         if (resourcePath) {
+             const absolute = resourcePath.startsWith('http')
+@@ -1327,11 +1330,11 @@ export class SelectQueryBuilder {
+     isInlineObjectColumn(column) {
+         if (!column)
+             return false;
+-        if (column.dataType === 'object' || column.dataType === 'json')
++        if (column.dataType === 'object')
+             return true;
+         if (column.dataType === 'array') {
+             const elementType = column.elementType ?? column.options?.baseType;
+-            return elementType === 'object' || elementType === 'json';
++            return elementType === 'object';
+         }
+         return false;
+     }
 diff --git a/dist/esm/core/sparql/builder/update-builder.js b/dist/esm/core/sparql/builder/update-builder.js
+index 645104cc749bd08684a45d99d399c7831fc384dd..c7437eda4162418e29368b432b45ac9eb22ec194 100644
 --- a/dist/esm/core/sparql/builder/update-builder.js
 +++ b/dist/esm/core/sparql/builder/update-builder.js
-@@ -356,11 +356,22 @@
+@@ -356,11 +356,22 @@ export class UpdateBuilder {
              const predicate = getPredicateForColumn(column, table);
              const variableName = `old_${columnName}_${index}`;
              const isInline = column.dataType === 'object' ||
@@ -594,3 +537,120 @@ diff --git a/dist/esm/core/sparql/builder/update-builder.js b/dist/esm/core/spar
              if (isInline) {
                  const childVarPredicate = { termType: 'Variable', value: `p_${variableName}` };
                  const childVarObject = { termType: 'Variable', value: `o_${variableName}` };
+diff --git a/dist/esm/core/triple/builder.js b/dist/esm/core/triple/builder.js
+index a259de35b9e610b876a5464cc645732f077bd19f..8ab890e9ed19a539d0202a60d44a4c31839f33b7 100644
+--- a/dist/esm/core/triple/builder.js
++++ b/dist/esm/core/triple/builder.js
+@@ -61,7 +61,7 @@ export class TripleBuilderImpl {
+         const predicate = this.getPredicateUri(column, table);
+         const varName = `old_${column.name}${varSuffix}`;
+         // 检查是否是内联对象
+-        if (column.dataType === 'object' || column.dataType === 'json') {
++        if (column.dataType === 'object') {
+             return this.buildInlineDeleteTriples(subject, predicate, column.name, varSuffix);
+         }
+         // 检查是否是逆向谓词
+diff --git a/dist/esm/core/triple/handlers/array.js b/dist/esm/core/triple/handlers/array.js
+index 40f6ac63661408d50d5708634881580b47779c9d..11d86b02eb5028e8568300f2ba626f2fde67230f 100644
+--- a/dist/esm/core/triple/handlers/array.js
++++ b/dist/esm/core/triple/handlers/array.js
+@@ -27,6 +27,12 @@ export class ArrayHandler {
+     }
+     formatSingleValue(value, elementType) {
+         switch (elementType) {
++            case 'json':
++                return {
++                    termType: 'Literal',
++                    value: JSON.stringify(value),
++                    datatype: { termType: 'NamedNode', value: `${XSD}json` },
++                };
+             case 'string':
+                 return {
+                     termType: 'Literal',
+@@ -69,6 +75,8 @@ export class ArrayHandler {
+         const elementType = column.options?.baseType ?? 'string';
+         const datatypeUri = term.datatype?.value ?? '';
+         switch (elementType) {
++            case 'json':
++                return JSON.parse(term.value);
+             case 'integer':
+                 return parseInt(term.value, 10);
+             case 'boolean':
+diff --git a/dist/esm/core/triple/handlers/default.js b/dist/esm/core/triple/handlers/default.js
+index 381c8480647c81bb4ee8c2ed20185e6f3942c786..caab8a8bd720797e85e24230f9977ee2c649a5fc 100644
+--- a/dist/esm/core/triple/handlers/default.js
++++ b/dist/esm/core/triple/handlers/default.js
+@@ -15,10 +15,16 @@ export class DefaultHandler {
+     }
+     canHandle(column) {
+         const type = column.dataType;
+-        return type === 'string' || type === 'integer' || type === 'boolean' || type === 'datetime';
++        return type === 'string' || type === 'integer' || type === 'boolean' || type === 'datetime' || type === 'json';
+     }
+     formatValue(value, column, _context) {
+         switch (column.dataType) {
++            case 'json':
++                return {
++                    termType: 'Literal',
++                    value: JSON.stringify(value),
++                    datatype: { termType: 'NamedNode', value: `${XSD}json` },
++                };
+             case 'string':
+                 return {
+                     termType: 'Literal',
+@@ -55,6 +61,8 @@ export class DefaultHandler {
+     parseValue(term, column) {
+         const datatypeUri = term.datatype?.value ?? '';
+         switch (column.dataType) {
++            case 'json':
++                return JSON.parse(term.value);
+             case 'integer':
+                 return parseInt(term.value, 10);
+             case 'boolean':
+diff --git a/dist/esm/core/triple/handlers/inline.js b/dist/esm/core/triple/handlers/inline.js
+index 86c9875fde51d5687e05fe7bd9a480f6035c9f83..f4eae203359e977b7d5de3846f7144d67393e166 100644
+--- a/dist/esm/core/triple/handlers/inline.js
++++ b/dist/esm/core/triple/handlers/inline.js
+@@ -1,7 +1,7 @@
+ /**
+  * Inline Object Column Handler
+  *
+- * 处理内联对象类型列 (object/json)，创建嵌套三元组结构
++ * 处理内联对象类型列 (object)，创建嵌套三元组结构
+  */
+ const XSD = 'http://www.w3.org/2001/XMLSchema#';
+ /**
+@@ -17,12 +17,12 @@ export class InlineObjectHandler {
+         this.name = 'inline';
+     }
+     canHandle(column) {
+-        if (column.dataType === 'object' || column.dataType === 'json') {
++        if (column.dataType === 'object') {
+             return true;
+         }
+         if (column.dataType === 'array') {
+             const baseType = column.elementType || column.options?.baseType;
+-            return baseType === 'object' || baseType === 'json';
++            return baseType === 'object';
+         }
+         return false;
+     }
+diff --git a/dist/esm/core/utils/pod-root.js b/dist/esm/core/utils/pod-root.js
+index b4e5a80c05cb3397067061376a20f68fd41f2b72..2295ef95947a77837afe6639e95288e8e0f4d544 100644
+--- a/dist/esm/core/utils/pod-root.js
++++ b/dist/esm/core/utils/pod-root.js
+@@ -32,6 +32,14 @@ const deriveFromUrl = (raw) => {
+ };
+ export function resolvePodBase(options) {
+     const { webId, podUrl, storages } = options;
++    if (podUrl?.trim()) {
++        try {
++            return normalize(new URL(podUrl).href);
++        }
++        catch {
++            // Invalid explicit URLs retain the existing discovery fallback.
++        }
++    }
+     const storageCandidates = (storages || []).filter(Boolean);
+     if (storageCandidates.length > 0) {
+         const sameOrigin = pickSameOrigin(webId, storageCandidates);

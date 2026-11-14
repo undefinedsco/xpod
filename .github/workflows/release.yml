@@ -33,8 +33,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      - id: verifier_tooling
+        uses: ./.github/actions/setup-legacy-root-verifier
+
       - name: Validate release tag and accepted candidate evidence
         id: acceptance
+        env:
+          VERIFIER_NODE_PATH: ${{ steps.verifier_tooling.outputs.node-path }}
+          VERIFIER_NODE_OPTIONS: ${{ steps.verifier_tooling.outputs.node-options }}
         run: |
           set -euo pipefail
           TAG_REGEX='^v[0-9]+\.[0-9]+\.[0-9]+$'
@@ -84,8 +90,8 @@ jobs:
             -n "release-acceptance-${TAG_SHA}" \
             -D "$ACCEPTANCE_DIR"
 
-          MANIFEST_PATH="$(find "$ACCEPTANCE_DIR" -type f -name 'release-acceptance.json' -print -quit)"
-          if [[ -z "$MANIFEST_PATH" ]]; then
+          MANIFEST_PATH="$ACCEPTANCE_DIR/release-acceptance.json"
+          if [[ ! -f "$MANIFEST_PATH" ]]; then
             echo "::error::release acceptance manifest artifact is missing release-acceptance.json"
             exit 1
           fi
@@ -109,10 +115,58 @@ jobs:
             --required-check ai-connections \
             --required-check models \
             --required-check chat \
+            --required-check rc-pod-sparql \
+            --required-check rc-builtin-models-chat \
+            --required-check rc-matrix-collaboration \
+            --required-check rc-browser-consent \
             --required-check task-approval \
+            --required-check native-sparql \
+            --required-check native-public16 \
+            --required-check native-private17 \
+            --required-check native-namespace-pull \
             --required-check qlever-local \
             --required-check package-consumers \
+            --required-check legacy-root-compat \
+            --required-check runtime-mode-matrix \
             --required-check desktop > "$RUNNER_TEMP/acceptance-validation.json"
+
+          # Original compat proof is a sibling in this same accepted artifact.
+          # A manifest-only passed value cannot authorize old service delivery.
+          NODE_PATH="$VERIFIER_NODE_PATH" NODE_OPTIONS="$VERIFIER_NODE_OPTIONS" node scripts/release-gate-evidence.cjs verify-root-compat \
+            --source-sha "$TAG_SHA" --run-id "$CANDIDATE_RUN_ID" \
+            --archive-dir "$ACCEPTANCE_DIR/compat" \
+            --evidence "$ACCEPTANCE_DIR/compat/compat.receipt.json" \
+            > "$RUNNER_TEMP/compat-validation.json"
+
+          # Re-observe the actual successful matrix job, including retained successes across partial reruns.
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${CANDIDATE_RUN_ID}" > "$RUNNER_TEMP/accepted-candidate-run.json"
+          ACCEPTED_IMAGE="$(node -e 'process.stdout.write("ghcr.io/undefinedsco/xpod@" + require(process.argv[1]).imageDigest)' "$MANIFEST_PATH")"
+          MODE_SELECTION_FIELDS="$(MODE_SELECTION_FILE="$ACCEPTANCE_DIR/mode-authority/selection.safe.json" ACCEPTED_IMAGE="$ACCEPTED_IMAGE" CANDIDATE_RUN_ID="$CANDIDATE_RUN_ID" node - <<'NODE'
+          const fs = require('node:fs'); const path = require('node:path');
+          const { readCanonicalFile } = require('./scripts/lib/mode-evidence-reader.cjs');
+          const { validateModeSelection } = require('./scripts/lib/mode-artifact-authority.cjs');
+          (async () => {
+            const run = JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'accepted-candidate-run.json'), 'utf8'));
+            if (String(run.id) !== process.env.CANDIDATE_RUN_ID || run.head_sha !== process.env.TAG_SHA || run.conclusion !== 'success') throw new Error('Candidate run identity mismatch');
+            const file = process.env.MODE_SELECTION_FILE;
+            const selection = JSON.parse((await readCanonicalFile(path.dirname(file), path.basename(file))).toString());
+            validateModeSelection(selection, { sourceSha: process.env.TAG_SHA, image: process.env.ACCEPTED_IMAGE, platform: 'linux/amd64', runId: process.env.CANDIDATE_RUN_ID });
+            process.stdout.write(`${selection.artifactId} ${selection.runAttempt}`);
+          })().catch(() => { process.stderr.write('Accepted matrix selection invalid\n'); process.exitCode = 1; });
+          NODE
+          )"
+          read -r MODE_ARTIFACT_ID MODE_MATRIX_ATTEMPT <<< "$MODE_SELECTION_FIELDS"
+          mkdir -m 700 "$RUNNER_TEMP/current-mode-authority"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${MODE_ARTIFACT_ID}" > "$RUNNER_TEMP/current-mode-authority/artifact.original.json"
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${CANDIDATE_RUN_ID}/jobs?filter=all&per_page=100" > "$RUNNER_TEMP/current-mode-authority/jobs.original.json"
+          node scripts/verify-service-image-modes.cjs \
+            --directory "$ACCEPTANCE_DIR/mode-matrix" \
+            --source-sha "$TAG_SHA" --image "$ACCEPTED_IMAGE" --platform linux/amd64 \
+            --run-id "$CANDIDATE_RUN_ID" --run-attempt "$MODE_MATRIX_ATTEMPT" \
+            --selection-file "$ACCEPTANCE_DIR/mode-authority/selection.safe.json" \
+            --artifact-file "$RUNNER_TEMP/current-mode-authority/artifact.original.json" \
+            --jobs-file "$RUNNER_TEMP/current-mode-authority/jobs.original.json" \
+            > "$RUNNER_TEMP/mode-matrix-validation.json"
 
           MANIFEST_PATH="$MANIFEST_PATH" VERSION="$VERSION" CANDIDATE_RUN_ID="$CANDIDATE_RUN_ID" node - <<'NODE'
           const fs = require('node:fs');
@@ -473,8 +527,6 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT: ${{ github.workspace }}/.test-data/qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-      XPOD_LIVE_PROVIDER_API_KEY_CONFIG: ${{ secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG }}
-      XPOD_AI_PROXY_URL: ${{ secrets.XPOD_AI_PROXY_URL }}
     steps:
       - uses: actions/checkout@v4
 
@@ -486,19 +538,68 @@ jobs:
         with:
           node-version: 22
 
-      - name: Download the accepted native runtime without rebuilding
+      # Retain the ORIGINAL accepted QLever artifact through the SAME shared
+      # acquisition contract the RC and diagnostic paths use. The accepted
+      # candidate RUN and the accepted SHA are the identity breadth: the helper
+      # selects exactly ONE nonexpired artifact named
+      # qlever-local-runtime-darwin-arm64-<accepted sha> inside that run, then
+      # validates metadata source/id/digest and the ZIP SHA before retaining the
+      # untouched original. No latest-run lookup and no native recompile.
+      - name: Retain the accepted original QLever artifact without rebuilding
+        env:
+          QLEVER_ARTIFACT_SOURCE_RUN_ID: ${{ needs.promotion_guard.outputs.candidate_run_id }}
+          QLEVER_SOURCE_SHA: ${{ github.sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RUNNER_TEMP: ${{ runner.temp }}
         run: |
           set -euo pipefail
-          mkdir -p "$(dirname "$XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT")"
-          gh run download "$CANDIDATE_RUN_ID" \
-            -n "qlever-local-runtime-darwin-arm64-${XPOD_ACCEPTED_SHA}" \
-            -D "$(dirname "$XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT")"
+          python3 scripts/diagnostics/retain-qlever-materials.py
           test -s "$XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT"
 
       - run: bun install --frozen-lockfile
 
+
+      # Same prerequisite as the RC desktop job: desktop contracts and the
+      # staged native producer import workspace package SOURCE that resolves
+      # @undefineds.co/xpod-client through `exports` -> dist/*, absent on a cold
+      # runner. Build packages BEFORE the native build; canonical order kept.
+      - name: Build workspace packages required by the desktop contracts
+        run: bun run build:packages
+
+      - name: Produce the API capability from clean source
+        run: |
+          set -euo pipefail
+          XPOD_API_CAPABILITY_ROOT="$PWD/.test-data/api-capability-$(git rev-parse HEAD)"
+          echo "XPOD_API_CAPABILITY_ROOT=$XPOD_API_CAPABILITY_ROOT" >> "$GITHUB_ENV"
+          bun -e 'import { prepareApiCapability } from "./desktop/scripts/api-capability-producer.ts"; prepareApiCapability({ repoRoot: process.cwd() });'
+          test -d "$XPOD_API_CAPABILITY_ROOT"
+
+      # Restore root declarations after filtered API production, before stamping
+      # or compiling the root package. The finalized API receipt/archive is retained.
+      - name: Restore the normal full-frozen root dependency tree
+        run: bun scripts/restore-root-dependencies.ts "$PWD"
+      # Bun skips Electron's postinstall during the canonical root install, and the
+      # restore above replaces node_modules, so the vendor binary is initialized
+      # exactly once AFTER the final tree exists.
       - name: Bootstrap the Electron vendor binary
         run: node node_modules/electron/install.js
+
+
+      # Failure evidence only: the producer already writes its own receipt and
+      # evidence/ before exiting, so retain those narrow members (never a
+      # workspace/source/env dump). Diagnostic artifact, not qualification.
+      - name: Upload failed API preparation diagnostics separately
+        if: failure() && env.XPOD_API_CAPABILITY_ROOT != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-capability-diagnostics-release-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.XPOD_API_CAPABILITY_ROOT }}/producer.receipt.json
+            ${{ env.XPOD_API_CAPABILITY_ROOT }}/evidence/
+            ${{ env.XPOD_API_CAPABILITY_ROOT }}/originals/prepare-inputs.receipt.safe.json
+          if-no-files-found: warn
+          retention-days: 30
+
 
       - name: Validate desktop version
         run: |
@@ -509,10 +610,22 @@ jobs:
             }
           '
 
+      # M1 (cold runner): this desktop job has no root build, but the desktop
+      # native producer hard-requires dist/index.js + dist/components/
+      # components.jsonld. Compile them explicitly BEFORE the DMG/ZIP build.
+      - name: Compile root package outputs required by the desktop native producer
+        run: |
+          set -euo pipefail
+          bun run build:ts
+          bun run build:components
+          test -s dist/runtime/index.js
+          test -s dist/components/components.jsonld
+
       - name: Build DMG and ZIP
         working-directory: desktop
         run: |
           set -euo pipefail
+          bun x --no-install tsc --noEmit -p tsconfig.scripts.json
           bun run dist
           test -d release/mac-arm64/Xpod.app
           find release -maxdepth 1 -type f -name '*-mac.zip' -print -quit | grep -q .
@@ -533,10 +646,6 @@ jobs:
       - name: Accept actual stable packaged desktop permissions and operations
         run: |
           set -euo pipefail
-          test -n "$XPOD_LIVE_PROVIDER_API_KEY_CONFIG"
-          provider_file="${RUNNER_TEMP}/desktop-provider-api-key"
-          printf '%s\n' "$XPOD_LIVE_PROVIDER_API_KEY_CONFIG" > "$provider_file"
-          chmod 600 "$provider_file"
           new_zip="$(find "$PWD/desktop/release" -maxdepth 1 -type f -name '*-mac.zip' -print -quit)"
           test -n "$new_zip"
           bun scripts/accept-packaged-desktop-permissions.ts \
@@ -544,7 +653,6 @@ jobs:
             --version "$RELEASE_VERSION" \
             --source-sha "$XPOD_ACCEPTED_SHA" \
             --issuer "https://id.undefineds.co/" \
-            --key-file "$provider_file" \
             --private-directory "${RUNNER_TEMP}/desktop-permission-private" \
             --evidence "${RUNNER_TEMP}/desktop-permission-evidence.json"
 

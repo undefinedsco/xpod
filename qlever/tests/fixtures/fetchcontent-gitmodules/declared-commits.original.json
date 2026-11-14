@@ -1,0 +1,105 @@
+{
+  "scope": "ordinary exact-version upstream syntax fixtures; HTTP 404 is not source absence authority; runtime proves every child from actual parent PACK",
+  "qleverCommit": "c1708167f6e08c16a639f165df580adc464d9b84",
+  "dependencies": [
+    {
+      "name": "googletest",
+      "repository": "https://github.com/google/googletest.git",
+      "commit": "7917641ff965959afae189afb5f052524395525c",
+      "url": "https://raw.githubusercontent.com/google/googletest/7917641ff965959afae189afb5f052524395525c/.gitmodules",
+      "status": 404
+    },
+    {
+      "name": "antlr",
+      "repository": "https://github.com/antlr/antlr4.git",
+      "commit": "cc82115a4e7f53d71d9d905caa2c2dfa4da58899",
+      "url": "https://raw.githubusercontent.com/antlr/antlr4/cc82115a4e7f53d71d9d905caa2c2dfa4da58899/.gitmodules",
+      "status": 404
+    },
+    {
+      "name": "range-v3",
+      "repository": "https://github.com/joka921/range-v3",
+      "commit": "42340ef354f7b4e4660268b788e37008d9cc85aa",
+      "url": "https://raw.githubusercontent.com/joka921/range-v3/42340ef354f7b4e4660268b788e37008d9cc85aa/.gitmodules",
+      "status": 200,
+      "bytes": 118,
+      "sha256": "3f0035c0ba1f69103364c2f94540c3a831cf305594578376bd96d1c2c30106db",
+      "rawBase64": "W3N1Ym1vZHVsZSAiZG9jL2doLXBhZ2VzIl0KCXBhdGggPSBkb2MvZ2gtcGFnZXMKCXVybCA9IGh0dHBzOi8vZ2l0aHViLmNvbS9lcmljbmllYmxlci9yYW5nZS12My5naXQKCWJyYW5jaCA9IGdoLXBhZ2VzCg==",
+      "blobOid": "0f9433c824990cb4b37854049dd90814a3f350a6",
+      "gitlinks": [
+        {
+          "path": "doc/gh-pages",
+          "mode": "160000",
+          "type": "commit",
+          "sha": "2dae74bb693e42d850fb0adcc9045c5b71fbdeae"
+        }
+      ]
+    },
+    {
+      "name": "spatialjoin",
+      "repository": "https://github.com/ad-freiburg/spatialjoin",
+      "commit": "2d2a6d74ddf28447afabb75943913a6445a27d4f",
+      "url": "https://raw.githubusercontent.com/ad-freiburg/spatialjoin/2d2a6d74ddf28447afabb75943913a6445a27d4f/.gitmodules",
+      "status": 200,
+      "bytes": 87,
+      "sha256": "dcf83df11118604a4aa01a70d813cef80273c06c829335e01b085c3eaf20c60f",
+      "rawBase64": "W3N1Ym1vZHVsZSAic3JjL3V0aWwiXQoJcGF0aCA9IHNyYy91dGlsCgl1cmwgPSBodHRwczovL2dpdGh1Yi5jb20vYWQtZnJlaWJ1cmcvdXRpbC5naXQK",
+      "blobOid": "3dff2487b4cf17887c4e17d3aa51862178fd7bde",
+      "gitlinks": [
+        {
+          "path": "src/util",
+          "mode": "160000",
+          "type": "commit",
+          "sha": "f3d23af88d95475fda6fa91b1d3bd318de1a91b0"
+        }
+      ]
+    },
+    {
+      "name": "ctre",
+      "repository": "https://github.com/hanickadot/compile-time-regular-expressions.git",
+      "commit": "e34c26ba149b9fd9c34aa0f678e39739641a0d1e",
+      "url": "https://raw.githubusercontent.com/hanickadot/compile-time-regular-expressions/e34c26ba149b9fd9c34aa0f678e39739641a0d1e/.gitmodules",
+      "status": 200,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "rawBase64": "",
+      "blobOid": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "gitlinks": []
+    },
+    {
+      "name": "abseil",
+      "repository": "https://github.com/abseil/abseil-cpp.git",
+      "commit": "93ac3a4f9ee7792af399cebd873ee99ce15aed08",
+      "url": "https://raw.githubusercontent.com/abseil/abseil-cpp/93ac3a4f9ee7792af399cebd873ee99ce15aed08/.gitmodules",
+      "status": 404
+    },
+    {
+      "name": "s2",
+      "repository": "https://github.com/google/s2geometry.git",
+      "commit": "5b5eccd54a08ae03b4467e79ffbb076d0b5f221e",
+      "url": "https://raw.githubusercontent.com/google/s2geometry/5b5eccd54a08ae03b4467e79ffbb076d0b5f221e/.gitmodules",
+      "status": 404
+    },
+    {
+      "name": "fsst",
+      "repository": "https://github.com/cwida/fsst.git",
+      "commit": "b228af6356196095eaf9f8f5654b0635f969661e",
+      "url": "https://raw.githubusercontent.com/cwida/fsst/b228af6356196095eaf9f8f5654b0635f969661e/.gitmodules",
+      "status": 404
+    },
+    {
+      "name": "re2",
+      "repository": "https://github.com/google/re2.git",
+      "commit": "bc0faab533e2b27b85b8ad312abf061e33ed6b5d",
+      "url": "https://raw.githubusercontent.com/google/re2/bc0faab533e2b27b85b8ad312abf061e33ed6b5d/.gitmodules",
+      "status": 404
+    },
+    {
+      "name": "uriparser",
+      "repository": "https://github.com/uriparser/uriparser.git",
+      "commit": "04d8b8df5e0c6bf6c06e472540c015943a613bd2",
+      "url": "https://raw.githubusercontent.com/uriparser/uriparser/04d8b8df5e0c6bf6c06e472540c015943a613bd2/.gitmodules",
+      "status": 404
+    }
+  ]
+}

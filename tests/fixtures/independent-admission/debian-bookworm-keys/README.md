@@ -1,0 +1,9 @@
+# Official Bookworm public originals
+
+The three armored keys were independently fetched from `https://ftp-master.debian.org/keys/{archive-key-12.asc,archive-key-12-security.asc,release-12.asc}` on 2026-10-18. Reviewed primary fingerprints are published at https://ftp-master.debian.org/keys.html and announced at https://lists.debian.org/debian-devel-announce/2023/03/msg00001.html . Exact bytes/SHA and primary/signing packet fingerprints are pinned in `qlever-debian-signature-policy.ts`; this folder is a test fixture, not a registry of trust capabilities.
+
+The three InRelease originals came from the fixed official Bookworm, Bookworm-updates and Bookworm-security distribution URLs. `official-gpgv-status.json` retains machine status and full verified body identities from actual isolated `/usr/bin/gpgv --output` execution with only the three reviewed keys. Unknown co-signers are expressly unverified; their missing-key statuses do not extend the keyring. These fixtures test parser/policy mechanics, never mint private SDK or source qualification.
+
+The current official body/status originals were independently compared byte-for-byte with the strict single-envelope parser. The controller executable SHA and keyring SHA are retained in the status fixture. No credentials, local filesystem paths or candidate SDK execution receipts are included.
+
+The production observer requires an actual private SDK capability and the prior private checksum observation for that same SDK. It uses the controller OS gpgv execution contract and a fixed reviewed key snapshot; it does not claim an independent real-time revocation oracle. Debian gpgv explicitly treats all provided keys as trusted and does not enforce expired/revoked-key policy itself: https://manpages.debian.org/bookworm/gpgv/gpgv.1.en.html .

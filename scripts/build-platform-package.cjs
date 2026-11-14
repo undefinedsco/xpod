@@ -23,8 +23,17 @@ function run(command, args, options = {}) {
     ...options,
   });
 
+  // Throw instead of process.exit(): this module is ALSO imported in-process by
+  // desktop/scripts/stage-runtime.ts. Exiting here would skip the caller's
+  // finally (scratch/evidence cleanup) and hide the real rejection. The CLI
+  // entry point below still converts a throw into a non-zero exit.
+  if (result.error) {
+    throw result.error;
+  }
   if (result.status !== 0) {
-    process.exit(result.status ?? 1);
+    throw new Error(
+      `[build:platform-package] ${command} ${args.join(' ')} failed with status ${result.status ?? 'signal'}`,
+    );
   }
 }
 

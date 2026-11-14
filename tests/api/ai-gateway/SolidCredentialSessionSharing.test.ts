@@ -1,4 +1,6 @@
 import type { IncomingMessage } from 'node:http';
+import http from 'node:http';
+import { EmbeddedJWK, jwtVerify } from 'jose';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ClientCredentialsAuthenticator } from '../../../src/api/auth/ClientCredentialsAuthenticator';
@@ -76,4 +78,73 @@ describe('Solid credential session sharing', () => {
     })).resolves.toBeUndefined();
     expect(POD_INTERFACE_KEY_MISSING).toBe('pod_interface_key_missing');
   });
+
+  it('signs every Matrix operation against a real DPoP-verifying HTTP Pod', async() => {
+    const requests: string[] = [];
+    const server = http.createServer(async(request, response) => {
+      requests.push(`${request.method} ${request.url}`);
+      if (request.url === '/.oidc/token') {
+        const tokenBody = JSON.stringify({ access_token: 'real-pod-token', token_type: 'DPoP', expires_in: 300, webid: OWNER });
+        response.writeHead(200, { 'content-type': 'application/json' }).end(tokenBody);
+        return;
+      }
+      try {
+        const proof = String(request.headers.dpop ?? '');
+        const { payload } = await jwtVerify(proof, EmbeddedJWK, {
+          typ: 'dpop+jwt',
+          maxTokenAge: '60s',
+        });
+        expect(request.headers.authorization).toBe('DPoP real-pod-token');
+        expect(payload.htm).toBe(request.method);
+        expect(payload.htu).toBe(`http://127.0.0.1:${podPort}${request.url}`);
+        expect(payload.jti).toBeTruthy();
+        response.writeHead(200, { 'content-type': 'text/turtle' }).end('');
+      } catch (error) {
+        response.writeHead(401, { 'content-type': 'text/plain' }).end(String(error));
+      }
+    });
+    const podPort = await listenOnLoopback(server);
+    const tokenEndpoint = `http://127.0.0.1:${podPort}/.oidc/token`;
+    try {
+      const sessions = new SolidSessionFactory({ tokenEndpoint, publicBaseUrl: `http://127.0.0.1:${podPort}` });
+      const authenticator = new ClientCredentialsAuthenticator({ sessions });
+      const access = new OwnerPodAccess({ sessions });
+      const result = await authenticator.authenticate({ headers: { authorization: `Bearer ${SK_KEY}` } } as IncomingMessage);
+      const auth = result.success && result.context?.type === 'solid' ? result.context : undefined;
+      const podFetch = await access.getPodFetch(OWNER, { auth });
+
+      // The same server-owned DPoP key is reused for every Matrix operation shape.
+      const operations: Array<[string, string]> = [
+        ['POST', '/alice/chat/rooms/'],
+        ['POST', '/alice/chat/rooms/room-1/invite/'],
+        ['PUT', '/alice/chat/messages/room-1.ttl'],
+        ['GET', '/alice/chat/messages/room-1.ttl'],
+      ];
+      for (const [method, path] of operations) {
+        const response = await podFetch!(`http://127.0.0.1:${podPort}${path}`, { method });
+        expect(response.status).toBe(200);
+      }
+      expect(requests.slice(1)).toEqual(operations.map(([method, path]) => `${method} ${path}`));
+    } finally {
+      await closeServer(server);
+    }
+  });
 });
+
+function listenOnLoopback(server: http.Server): Promise<number> {
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        reject(new Error('No TCP address'));
+        return;
+      }
+      resolve(address.port);
+    });
+  });
+}
+
+function closeServer(server: http.Server): Promise<void> {
+  return new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+}

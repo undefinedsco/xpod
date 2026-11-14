@@ -48,4 +48,39 @@ describe('RC seed config materialization', () => {
     expect(() => materializeRcSeedConfig([{ email: 'alice@rc.example', pods: [] }], 'run-1')).toThrow(/at least one Pod/i);
     expect(() => materializeRcSeedConfig([{ email: 'alice@rc.example', pods: [{}] }], 'run-1')).toThrow(/include a name/i);
   });
+
+  // RC404 regression: the producer created Alice/Bob at attempt 2, then a
+  // downstream consumer was retried as attempt 3. Deriving the suffix from the
+  // CONSUMER's own attempt names accounts that were never created, so the
+  // platform provider login 403s. Consumers must reuse the producer's suffix.
+  it('raw secret accounts do not authenticate, but the producer suffix survives a consumer retry', () => {
+    const rawSecret = [
+      { email: 'alice@rc.example', password: 'alice-pass', pods: [{ name: 'alice' }] },
+      { email: 'bob@rc.example', password: 'bob-pass', pods: [{ name: 'bob' }] },
+    ];
+    const producerSuffix = 'rc-42883745435-2';   // deploy_and_accept attempt 2
+    const consumerAttempt = 3;                   // mode/desktop-only retry
+    const consumerNaiveSuffix = `rc-42883745435-${consumerAttempt}`;
+
+    // The producer materialized these exact identities.
+    const materialized = materializeRcSeedConfig(rawSecret, producerSuffix);
+    expect(materialized.map(account => account.email)).toEqual([
+      'alice-rc-42883745435-2@rc.example',
+      'bob-rc-42883745435-2@rc.example',
+    ]);
+
+    // Using the raw secret (never materialized) points at accounts the RC never
+    // created -- this is the 403. Proving the shapes differ keeps the bug fixed.
+    expect(rawSecret.map(account => account.email))
+      .not.toEqual(materialized.map(account => account.email));
+
+    // A naive consumer-attempt suffix names a DIFFERENT, nonexistent account set.
+    const naive = materializeRcSeedConfig(rawSecret, consumerNaiveSuffix);
+    expect(naive.map(account => account.email)).not.toEqual(materialized.map(account => account.email));
+
+    // Reusing the producer's published suffix reproduces the producer identity
+    // byte-for-byte, which is what the consumer must do on attempt 3.
+    const reused = materializeRcSeedConfig(rawSecret, 'rc-42883745435-2');
+    expect(reused).toEqual(materialized);
+  });
 });

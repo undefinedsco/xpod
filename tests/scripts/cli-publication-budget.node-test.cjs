@@ -1,0 +1,35 @@
+'use strict';
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const { spawnSync } = require('node:child_process');
+const path = require('node:path');
+const { publicationBudget, createPublicationDeadline } = require('../../scripts/lib/cli-publication-budget.cjs');
+const { PUBLICATION_BUDGET, PATCHES } = require('../../scripts/check-cli-publication.cjs');
+test('one budget projects the actual recipe, capture limits and cumulative deadline', () => {
+  const b = publicationBudget(PATCHES.length + 6);
+  assert.deepEqual(PUBLICATION_BUDGET, b);
+  assert.equal(b.commandWindowMs, 10 * 180000 + 2 * 600000);
+  assert.equal(b.producerWindowMs, b.commandWindowMs + 12 * b.terminationGraceMs + b.synchronousAllowanceMs);
+  let now = 0; const deadline = createPublicationDeadline(b, () => now);
+  assert.equal(deadline.commandTimeout('core'), b.coreCommandMs);
+  now = b.producerWindowMs - b.terminationGraceMs - 17;
+  assert.equal(deadline.commandTimeout('capture'), 17);
+  now += 17; assert.throws(() => deadline.commandTimeout('core'), /exhausted/);
+  now = b.producerWindowMs; assert.throws(() => deadline.assertRemaining(), /deadline/);
+});
+test('independent publication job and every step fit the same projected parent window', () => {
+  const workflow = path.resolve(__dirname, '../../.github/workflows/cli-package.yml');
+  const parsed = spawnSync('bun', ['-e', 'console.log(JSON.stringify(Bun.YAML.parse(require("node:fs").readFileSync(process.argv[1],"utf8"))))', workflow], { encoding: 'utf8' });
+  assert.equal(parsed.status, 0, parsed.stderr);
+  const jobs = JSON.parse(parsed.stdout).jobs, job = jobs['normal-publication'];
+  assert.equal(jobs['standalone-cli']['timeout-minutes'], 15);
+  assert.ok(!jobs['standalone-cli'].steps.some(step => step.run === 'node scripts/check-cli-publication.cjs'));
+  assert.ok(!job.steps.some(step => step.run === 'node scripts/check-cli-package.cjs'));
+  const keys = ['checkout', 'setupBun', 'setupNode', 'bindCheckout', 'producerContracts', 'publicationBuild', 'publicationUpload'];
+  assert.deepEqual(job.steps.map(step => step['timeout-minutes']), keys.map(key => PUBLICATION_BUDGET.steps[key]));
+  assert.equal(job['timeout-minutes'], PUBLICATION_BUDGET.standalonePublicationJobMinutes);
+  assert.equal(job['timeout-minutes'], job.steps.reduce((sum, step) => sum + step['timeout-minutes'], 1));
+  assert.ok(job.steps.find(step => step.name === 'Upload publication preparation originals').with.name.includes('steps.source.outputs.sha'));
+  assert.ok(job.steps.find(step => step.name === 'Build normal CLI publication preparation').env.EVENT_HEAD_SHA);
+});

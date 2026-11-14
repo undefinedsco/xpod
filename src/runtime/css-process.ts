@@ -6,7 +6,7 @@ import { rewriteConfigAssetPaths } from './config-asset-paths';
 import { oidcTokenEndpoint } from './oidc-issuer';
 import type { AuthMode } from '../authorization/AuthMode';
 import { applyAuthModeEnv, isAuthModeEnvKey, resolveAuthModeInput } from '../authorization/AuthMode';
-import { cssAuthModeConfigImports } from './bootstrap';
+import { cssAuthModeConfigImports } from './css-auth-config';
 import { normalizeDatabaseUrl, sqliteDatabaseFilePath } from './database-url';
 
 const CSS_CONFIG_BASE = 'https://linkedsoftwaredependencies.org/bundles/npm/@solid/community-server/^8.0.0/config/';
