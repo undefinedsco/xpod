@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import path from 'node:path';
 import { test } from 'vitest';
 import {
+  classifyInitialDenial, INITIAL_DENIAL_CLASSES,
   EXTERNAL_PHASES, EXTERNAL_REASONS, externalPhaseDiagnostic, describeExternalPhase,
   isExternalPhaseDiagnostic, failureSafeEnvelope, isFailureSafeEnvelope, FAILURE_SAFE_FILE,
   recordExternalFailure, assertRestartObserver, RESTART_SILENT_AUTHORIZATION_CODES,
@@ -106,6 +107,155 @@ test('new phase names cover restart read, observer binding and cleanup-final', (
   for (const phase of ['restart-private-read', 'observer-binding', 'cleanup-final'] as const) {
     assert.ok(EXTERNAL_PHASES.includes(phase), phase);
   }
+});
+
+
+test('the denied initial write maps observed SHAPES to neutral closed classes', () => {
+  // CAUTION: a JSON H403/ForbiddenHttpError body is written by several CSS/product
+  // forbidden paths. The class names the observed shape and never attributes the
+  // producer or proves an internal reason.
+  // The product proxy's own root-mutation 403 carries one exact cause literal.
+  assert.equal(classifyInitialDenial({ status: 403, body: JSON.stringify({
+    name: 'ForbiddenHttpError', message: 'Write to server root is not allowed.',
+    statusCode: 403, errorCode: 'H403', details: { cause: 'root-container-write' },
+  }) }), 'root-container-write');
+  // A generic forbiddden shape stays NEUTRAL: no producer, no authenticated proof.
+  assert.equal(classifyInitialDenial({ status: 403, body: JSON.stringify({
+    name: 'ForbiddenHttpError', message: 'Forbidden', statusCode: 403, errorCode: 'H403', details: {},
+  }) }), 'forbidden');
+  // The exact root marker outranks the generic shape.
+  assert.equal(classifyInitialDenial({ status: 403, body: JSON.stringify({
+    name: 'ForbiddenHttpError', statusCode: 403, errorCode: 'H403',
+    details: { cause: 'root-container-write' },
+  }) }), 'root-container-write');
+  // 401 proves only "unauthorized"; 400 only "bad request".
+  assert.equal(classifyInitialDenial({ status: 401, body: '' }), 'unauthorized');
+  assert.equal(classifyInitialDenial({ status: 400, body: 'not json' }), 'bad-request');
+  // E0001 counts ONLY as the identifier-space cause with a matching 5xx HTTP shape.
+  assert.equal(classifyInitialDenial({ status: 500, body: JSON.stringify({
+    name: 'InternalServerError', message: 'x', statusCode: 500, errorCode: 'E0001',
+  }) }), 'identifier-outside-space');
+  assert.equal(classifyInitialDenial({ status: 404, body: JSON.stringify({
+    name: 'NotFoundHttpError', message: 'x', statusCode: 404, errorCode: 'E0001',
+  }) }), 'unknown');
+  assert.equal(classifyInitialDenial({ status: 500, body: JSON.stringify({
+    name: 'InternalServerError', message: 'x', statusCode: 500, errorCode: 'H500',
+  }) }), 'unknown');
+  // A mismatched statusCode field never confers the authorised shape.
+  assert.equal(classifyInitialDenial({ status: 403, body: JSON.stringify({
+    name: 'ForbiddenHttpError', statusCode: 200, errorCode: 'H403', details: {},
+  }) }), 'unknown');
+  // Everything else is honestly unknown rather than guessed.
+  for (const response of [
+    { status: 403, body: 'plain text' },
+    { status: 502, body: '{}' },
+    { status: 201, body: '{}' },
+    { status: undefined, body: undefined },
+    undefined,
+  ]) assert.equal(classifyInitialDenial(response as never), 'unknown', JSON.stringify(response));
+  // The closed set is exactly what the recorder may ever emit.
+  assert.deepEqual([...INITIAL_DENIAL_CLASSES].sort(), [
+    'bad-request', 'forbidden', 'identifier-outside-space',
+    'root-container-write', 'unauthorized', 'unknown',
+  ]);
+});
+
+test('the classifier agrees with the REAL CSS error serializer output', () => {
+  // Use the installed authoritative serializer and error classes, not a hand-copied
+  // object, so the shape cannot silently drift from the CSS this product ships.
+  const { ErrorToJsonConverter } = require('@solid/community-server/dist/storage/conversion/ErrorToJsonConverter.js');
+  const { ForbiddenHttpError } = require('@solid/community-server/dist/util/errors/ForbiddenHttpError.js');
+  const { BadRequestHttpError } = require('@solid/community-server/dist/util/errors/BadRequestHttpError.js');
+  const { UnauthorizedHttpError } = require('@solid/community-server/dist/util/errors/UnauthorizedHttpError.js');
+  const serialize = (error: unknown): string => JSON.stringify(new ErrorToJsonConverter().errorToJson(error));
+
+  // The real generic forbidden serialization: neutral class, no producer claim.
+  assert.equal(classifyInitialDenial({ status: 403, body: serialize(new ForbiddenHttpError()) }), 'forbidden');
+  // The real 400/401 serializations: shape-only classes.
+  assert.equal(classifyInitialDenial({ status: 400, body: serialize(new BadRequestHttpError('nope')) }), 'bad-request');
+  assert.equal(classifyInitialDenial({ status: 401, body: serialize(new UnauthorizedHttpError()) }), 'unauthorized');
+  // Adding the product's root marker to that SAME real shape changes the class,
+  // proving the discriminator is the exact literal and nothing else.
+  const realForbidden = JSON.parse(serialize(new ForbiddenHttpError())) as Record<string, unknown>;
+  assert.equal(classifyInitialDenial({ status: 403, body: JSON.stringify({
+    ...realForbidden, details: { cause: 'root-container-write' },
+  }) }), 'root-container-write');
+  // Re-serialized real bytes must not leak the stack/message through the projection.
+  const withSecret = classifyInitialDenial({ status: 403,
+    body: JSON.stringify({ ...realForbidden, message: 'SEKRET-STACK-VALUE' }) });
+  assert.equal(withSecret, 'forbidden');
+  assert.equal(JSON.stringify(withSecret).includes('SEKRET'), false);
+});
+
+test('a denied initial write cannot carry secret-like text into the projection', () => {
+  const secret = 'Bearer SEKRET https://id-rc.example/?access_token=SEKRET alice@example.test';
+  // A hostile body smuggling secret text in EVERY field still classifies by the
+  // fixed literals only; the text itself is never returned.
+  const hostile = classifyInitialDenial({ status: 403, body: JSON.stringify({
+    statusCode: 403, name: 'ForbiddenHttpError', message: secret, errorCode: 'H403',
+    details: { cause: secret, path: secret },
+  }) });
+  assert.equal(hostile, 'forbidden');
+  assert.equal(JSON.stringify(hostile).includes('SEKRET'), false);
+  // An over-bound body is not parsed at all.
+  assert.equal(classifyInitialDenial({ status: 400, body: `${'x'.repeat(5000)}` }), 'bad-request');
+  // A non-enum class is rejected by the serializer instead of being written.
+  const row = externalPhaseDiagnostic({
+    phase: 'initial-put', reason: 'assertion-failed',
+    initialHttpStatus: 403, initialTokenTtl: 30, initialRefreshIssued: true,
+    initialDenial: `BEARER ${secret}` as never,
+  });
+  assert.equal(row.initialSession.initialDenial, undefined);
+  assert.equal(JSON.stringify(row).includes('SEKRET'), false);
+  // And an injected enum value never survives validation.
+  assert.equal(isInitialSessionDiagnostic({
+    initialHttpStatus: 403, initialTokenTtl: 30, initialRefreshIssued: 1,
+    initialDenial: secret,
+  }), false);
+});
+
+test('the denial enum reaches the real failure file and stays backward compatible', () => {
+  const root = path.resolve('.test-data/browser-external-phase');
+  mkdirSync(root, { recursive: true });
+  const dir = mkdtempSync(path.join(root, 'denial-'));
+  try {
+    recordExternalFailure({
+      outputDirectory: dir, phase: 'initial-put', reason: 'assertion-failed',
+      initialHttpStatus: 403, initialTokenTtl: 30, initialRefreshIssued: true,
+      initialDenial: 'root-container-write',
+    });
+    const onDisk = JSON.parse(readFileSync(path.join(dir, FAILURE_SAFE_FILE), 'utf8'));
+    // The FAILED status is preserved even though the cause is known.
+    assert.equal(onDisk.diagnostic.initialSession.initialHttpStatus, 403);
+    assert.equal(onDisk.diagnostic.initialSession.initialDenial, 'root-container-write');
+    assert.equal(onDisk.diagnostic.phase, 'initial-put');
+    assert.equal(isFailureSafeEnvelope(onDisk), true);
+    // Re-projection keeps the class and the real numbers.
+    const again = failureSafeEnvelope(onDisk.diagnostic).diagnostic;
+    assert.equal(again.initialSession.initialDenial, 'root-container-write');
+    assert.equal(again.initialSession.initialTokenTtl, 30);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+
+  // A historical receipt with exactly three keys stays admissible and unchanged,
+  // and re-projection does not invent a denial class for it.
+  const historical = { initialHttpStatus: 403, initialTokenTtl: 30, initialRefreshIssued: 1 };
+  assert.equal(isInitialSessionDiagnostic(historical), true);
+  const reprojected = failureSafeEnvelope(externalPhaseDiagnostic({
+    phase: 'initial-put', reason: 'assertion-failed',
+    initialHttpStatus: 403, initialTokenTtl: 30, initialRefreshIssued: true,
+  })).diagnostic;
+  assert.equal('initialDenial' in reprojected.initialSession, false);
+  assert.equal(reprojected.initialSession.initialHttpStatus, 403);
+});
+
+test('a successful initial write records NO denial class', () => {
+  // The spec only classifies a non-201, so success keeps the three-key shape.
+  const row = externalPhaseDiagnostic({
+    phase: 'initial-private-read', reason: 'assertion-failed',
+    initialHttpStatus: 201, initialTokenTtl: 30, initialRefreshIssued: true,
+  });
+  assert.equal('initialDenial' in row.initialSession, false);
+  assert.equal(isInitialSessionDiagnostic(row.initialSession), true);
 });
 
 test('the FIVE initial-session checkpoints all survive and stay ordered', () => {

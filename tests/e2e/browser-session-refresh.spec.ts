@@ -10,7 +10,7 @@ import { recordOwnedHost, closeOwnedHost, cleanupOwnedHostGroup, hostGroupPassed
 import { startBrowserExternalRp } from '../helpers/browserExternalRp';
 import { completeOidcLogin, OidcApprovalError } from '../helpers/browserSolidOidc';
 import { fetchBrowserXpodPod, readBrowserXpodRuntime } from '../helpers/browserXpodRuntime';
-import { assertRestartObserver, inspectRestartObserver, recordExternalFailure, privateReadOutcomeForStatus, type ExternalPhase, type PrivateReadOutcome, type RestartObserverInput } from '../helpers/browserExternalPhase';
+import { assertRestartObserver, inspectRestartObserver, recordExternalFailure, privateReadOutcomeForStatus, classifyInitialDenial, type ExternalPhase, type InitialDenialClass, type PrivateReadOutcome, type RestartObserverInput } from '../helpers/browserExternalPhase';
 
 const external = externalRefreshFromEnvironment();
 
@@ -182,6 +182,9 @@ for (const mode of profiles) {
     let initialHttpStatus = 0;
     let initialTokenTtl: number | undefined;
     let initialRefreshIssued: boolean | undefined;
+    // Closed cause class of the FIRST denied initial Pod write. Only the enum
+    // survives; the response body text never leaves this scope.
+    let initialDenial: InitialDenialClass | undefined;
     let failureAuthenticated = false;
     let failureHostReady = false;
     // Fixed-enum checkpoint so the EXTERNAL failure keeps its location without
@@ -296,8 +299,15 @@ for (const mode of profiles) {
       // reported as the status of the operation that actually failed. A rejected
       // fetch leaves 0 ("no response"); a real response records its real value.
       initialHttpStatus = 0;
-      const initialPut = await fetchBrowserXpodPod(page, resource, { method: 'PUT', headers: { 'content-type': 'text/plain' }, body: payload });
+      // Content negotiation for the FAILURE representation only: CSS converts an
+      // error can render as HTML/text without an explicit JSON preference. Method,
+      // target, content type and body are unchanged, and the 201 assertion below
+      // is untouched.
+      const initialPut = await fetchBrowserXpodPod(page, resource, { method: 'PUT', headers: { 'content-type': 'text/plain', accept: 'application/json' }, body: payload });
       initialHttpStatus = initialPut.status;
+      // Classify BEFORE asserting so a denied write leaves a closed cause class
+      // while the SAME 201 assertion still fails the run. A success records no class.
+      if (initialPut.status !== 201) initialDenial = classifyInitialDenial(initialPut);
       expect(initialPut.status).toBe(201);
       const acl = `@prefix acl: <http://www.w3.org/ns/auth/acl#>. <#owner> a acl:Authorization; acl:accessTo <${resource}>; acl:agent <${fixture.ready.account.webId}>; acl:mode acl:Read, acl:Write, acl:Control.`;
       phase = 'initial-acl-put';
@@ -495,6 +505,7 @@ for (const mode of profiles) {
           initialHttpStatus,
           initialTokenTtl,
           initialRefreshIssued,
+          initialDenial,
           authenticated: failureAuthenticated,
           hostReady: failureHostReady,
         }));

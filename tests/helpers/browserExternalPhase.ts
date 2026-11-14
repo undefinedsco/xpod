@@ -138,6 +138,94 @@ export interface InitialSessionDiagnostic {
   initialHttpStatus: number;
   initialTokenTtl: number;
   initialRefreshIssued: number;
+  /**
+   * Closed class of the FIRST denied initial Pod write's cause, or absent on
+   * receipts written before this field existed. Derived ONLY from the response
+   * status plus the fixed JSON error fields `classifyInitialDenial` documents.
+   * Never the error text, headers, URL, WebID, token, key or proof.
+   */
+  initialDenial?: InitialDenialClass;
+}
+
+/**
+ * Closed denial classes for the denied initial write.
+ *
+ * These name the OBSERVED response shape only. They do NOT attribute a producer or
+ * prove an internal reason: a JSON `H403`/`ForbiddenHttpError` body is emitted by
+ * several product/CSS forbidden paths, and 401/400 prove only "unauthorized" and
+ * "bad request" respectively.
+ *
+ * - `root-container-write`    the product proxy's own 403, matched by the exact
+ *                             `details.cause` literal it alone writes
+ * - `forbidden`               any other 403 carrying the CSS/Product forbidden
+ *                             error shape; the producer is NOT identified
+ * - `unauthorized`            401: the response was unauthorized. It does not prove
+ *                             which credential check failed
+ * - `bad-request`             400: the response was a bad request. It does not prove
+ *                             DPoP, the proof, or any specific rejection reason
+ * - `identifier-outside-space` CSS explicit `E0001`, only with a matching 5xx
+ *                             status/errorCode shape
+ * - `unknown`                 non-JSON, malformed, oversized, or non-authoritative
+ */
+export const INITIAL_DENIAL_CLASSES = [
+  'root-container-write',
+  'forbidden',
+  'unauthorized',
+  'bad-request',
+  'identifier-outside-space',
+  'unknown',
+] as const;
+
+export type InitialDenialClass = typeof INITIAL_DENIAL_CLASSES[number];
+
+/** Only these exact CSS `errorCode` values are admitted; any other text is dropped. */
+const DENIAL_ERROR_CODES: Readonly<Record<string, InitialDenialClass>> = Object.freeze({
+  E0001: 'identifier-outside-space',
+});
+
+/**
+ * Classify the FIRST denied initial Pod write from its status and body.
+ *
+ * The body is parsed defensively. Only fixed fields are consulted:
+ * `statusCode` (must equal the HTTP status), `errorCode` (matched against the
+ * closed table) and `details.cause` (one exact
+ * literal). A non-JSON, hostile, oversized or non-authoritative body yields
+ * `unknown`; no field value is ever copied into the result.
+ */
+export function classifyInitialDenial(response: { status?: unknown; body?: unknown } | undefined): InitialDenialClass {
+  const status = response?.status;
+  const body = response?.body;
+  let parsed: unknown;
+  if (typeof body === 'string' && body.length > 0 && body.length <= 4096) {
+    try { parsed = JSON.parse(body); } catch { parsed = undefined; }
+  }
+  const row = parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : undefined;
+  const details = row && typeof row.details === 'object' && row.details !== null
+    ? row.details as Record<string, unknown> : undefined;
+  // The product proxy's own root-mutation 403 is identified by the exact
+  // `details.cause` literal only it writes (src/runtime/Proxy.ts). This is the one
+  // strong cause marker; everything below names a shape, never a producer.
+  if (status === 403 && details?.cause === 'root-container-write') return 'root-container-write';
+  // The CSS/Product HTTP-error serializer writes statusCode + that status's default
+  // `H<status>` errorCode (util/errors/HttpError.js). Requiring BOTH keeps an
+  // arbitrary `errorCode` string from steering the class.
+  const httpErrorShape = row !== undefined
+    && typeof row.statusCode === 'number' && row.statusCode === status
+    && (row.errorCode === `H${status}` || row.errorCode === 'E0001');
+  const code = row?.errorCode;
+  if (typeof code === 'string' && Object.prototype.hasOwnProperty.call(DENIAL_ERROR_CODES, code)) {
+    // E0001 is the identifier-space code only when the body is a 5xx HTTP error of
+    // that exact shape (statusCode matching the HTTP status, errorCode as CSS
+    // writes them). Any other status carrying the text is not that cause.
+    if (typeof status === 'number' && status >= 500 && status <= 599 && httpErrorShape) {
+      return DENIAL_ERROR_CODES[code];
+    }
+    return 'unknown';
+  }
+  if (status === 403 && httpErrorShape) return 'forbidden';
+  if (status === 401) return 'unauthorized';
+  if (status === 400) return 'bad-request';
+  return 'unknown';
 }
 
 /** `expires_in` is a positive small TTL; 0 says "absent/non-numeric", never text. */
@@ -151,24 +239,41 @@ export function initialSessionDiagnostic(input: {
   initialHttpStatus?: number;
   initialTokenTtl?: number;
   initialRefreshIssued?: boolean;
+  initialDenial?: InitialDenialClass;
 } | undefined): InitialSessionDiagnostic {
   const ttl = input?.initialTokenTtl;
+  const denial = INITIAL_DENIAL_CLASSES.includes(input?.initialDenial as InitialDenialClass)
+    ? input?.initialDenial as InitialDenialClass
+    : undefined;
   return {
     initialHttpStatus: privateReadStatusValue(input?.initialHttpStatus),
     initialTokenTtl: Number.isSafeInteger(ttl) && (ttl as number) > 0 && (ttl as number) <= TOKEN_TTL_MAX
       ? ttl as number
       : 0,
     initialRefreshIssued: flag(input?.initialRefreshIssued),
+    // Omitted entirely when no class applies, so pre-existing receipts keep their
+    // exact three-key shape and are not rewritten.
+    ...(denial === undefined ? {} : { initialDenial: denial }),
   };
 }
 
-/** Exactly the three numeric keys; rejects fractions, strings, extras and flags > 1. */
+/**
+ * The three numeric keys plus the OPTIONAL denial enum. A historical receipt with
+ * exactly three keys stays valid; a fourth key is admissible only when it is
+ * `initialDenial` with a closed-enum value, so no text can ride along.
+ */
 export function isInitialSessionDiagnostic(value: unknown): value is InitialSessionDiagnostic {
   if (!value || typeof value !== 'object') return false;
   const row = value as Record<string, unknown>;
   const keys = ['initialHttpStatus', 'initialTokenTtl', 'initialRefreshIssued'];
-  if (Object.keys(row).length !== keys.length) return false;
-  if (!keys.every(key => Object.prototype.hasOwnProperty.call(row, key))) return false;
+  const withDenial = [...keys, 'initialDenial'];
+  const present = Object.keys(row);
+  const shape = present.length === keys.length ? keys
+    : present.length === withDenial.length ? withDenial
+    : undefined;
+  if (!shape) return false;
+  if (!shape.every(key => Object.prototype.hasOwnProperty.call(row, key))) return false;
+  if (shape === withDenial && !INITIAL_DENIAL_CLASSES.includes(row.initialDenial as InitialDenialClass)) return false;
   const status = row.initialHttpStatus;
   if (!Number.isSafeInteger(status) || (status as number) < 0 || (status as number) > 599
     || (status as number) > 0 && (status as number) < 100) return false;
@@ -286,6 +391,8 @@ export function externalPhaseDiagnostic(input: {
   initialHttpStatus?: number;
   initialTokenTtl?: number;
   initialRefreshIssued?: boolean;
+  /** Closed cause class of the denied initial write; omitted when unclassified. */
+  initialDenial?: InitialDenialClass;
   authenticated?: boolean;
   hostReady?: boolean;
 }): ExternalPhaseDiagnostic {
@@ -308,6 +415,7 @@ export function externalPhaseDiagnostic(input: {
       initialHttpStatus: input.initialHttpStatus,
       initialTokenTtl: input.initialTokenTtl,
       initialRefreshIssued: input.initialRefreshIssued,
+      initialDenial: input.initialDenial,
     }),
     authenticated: flag(input.authenticated),
     hostReady: flag(input.hostReady),
@@ -424,6 +532,9 @@ export function failureSafeEnvelope(diagnostic: ExternalPhaseDiagnostic): {
       initialHttpStatus: diagnostic.initialSession?.initialHttpStatus,
       initialTokenTtl: diagnostic.initialSession?.initialTokenTtl,
       initialRefreshIssued: diagnostic.initialSession?.initialRefreshIssued === 1,
+      // Absent stays absent: a historical record is never given a fabricated class.
+      ...(diagnostic.initialSession?.initialDenial === undefined
+        ? {} : { initialDenial: diagnostic.initialSession.initialDenial }),
       authenticated: diagnostic.authenticated === 1,
       hostReady: diagnostic.hostReady === 1,
     }),
@@ -454,6 +565,8 @@ export function recordExternalFailure(input: {
   initialHttpStatus?: number;
   initialTokenTtl?: number;
   initialRefreshIssued?: boolean;
+  /** Closed cause class of the denied initial write; omitted when unclassified. */
+  initialDenial?: InitialDenialClass;
   authenticated?: boolean;
   hostReady?: boolean;
 }): string {
