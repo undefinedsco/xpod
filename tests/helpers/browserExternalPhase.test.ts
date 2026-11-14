@@ -7,7 +7,7 @@ import {
   isExternalPhaseDiagnostic, failureSafeEnvelope, isFailureSafeEnvelope, FAILURE_SAFE_FILE,
   recordExternalFailure, assertRestartObserver, RESTART_SILENT_AUTHORIZATION_CODES,
   inspectRestartObserver, restartObserverDiagnostic, isRestartObserverDiagnostic,
-  privateReadOutcomeForStatus,
+  privateReadOutcomeForStatus, initialSessionDiagnostic, isInitialSessionDiagnostic,
 } from './browserExternalPhase';
 
 /**
@@ -54,16 +54,18 @@ test('the projection is a fixed key set so extra fields cannot leak', () => {
     pageText: 'secret body text',
     token: 'SEKRET',
   } as never);
-  assert.equal(Object.keys(row).length, 12);
+  assert.equal(Object.keys(row).length, 13);
   assert.equal(JSON.stringify(row).includes('SEKRET'), false);
   assert.equal(JSON.stringify(row).includes('secret body text'), false);
   assert.deepEqual(Object.keys(row).sort(), [
-    'authenticated', 'authorizationCodes', 'hostReady', 'passwordPosts', 'phase',
-    'privateRead', 'privateReadStatus', 'reason', 'refreshFailures', 'refreshGrants',
-    'requestCount', 'restartObserver',
+    'authenticated', 'authorizationCodes', 'hostReady', 'initialSession', 'passwordPosts',
+    'phase', 'privateRead', 'privateReadStatus', 'reason', 'refreshFailures',
+    'refreshGrants', 'requestCount', 'restartObserver',
   ]);
   // The nested observer projection is itself a closed numeric key set.
   assert.equal(Object.keys(row.restartObserver).length, 8);
+  // The initial-session projection is a closed numeric key set too.
+  assert.equal(Object.keys(row.initialSession).length, 3);
 });
 
 test('validator rejects the bounds-violating counters it used to accept', () => {
@@ -76,7 +78,7 @@ test('validator rejects the bounds-violating counters it used to accept', () => 
   }
   assert.equal(isExternalPhaseDiagnostic({ phase: 'renewal', reason: 'assertion-failed',
     authorizationCodes: 0, passwordPosts: 0, refreshGrants: 0, refreshFailures: 0, requestCount: 0,
-    restartObserver: restartObserverDiagnostic(undefined),
+    restartObserver: restartObserverDiagnostic(undefined), initialSession: initialSessionDiagnostic(undefined),
     privateRead: 'not-reached', privateReadStatus: 0, authenticated: 0, hostReady: 0 }), true);
 });
 
@@ -104,6 +106,136 @@ test('new phase names cover restart read, observer binding and cleanup-final', (
   for (const phase of ['restart-private-read', 'observer-binding', 'cleanup-final'] as const) {
     assert.ok(EXTERNAL_PHASES.includes(phase), phase);
   }
+});
+
+test('the FIVE initial-session checkpoints all survive and stay ordered', () => {
+  // Each of the five historically-conflated initial assert groups gets its own
+  // closed token. `initial-private-read` is retained for the actual initial GET.
+  const checkpoints = ['initial-token-ttl', 'initial-token-refresh', 'initial-put',
+    'initial-acl-put', 'initial-private-read'] as const;
+  for (const phase of checkpoints) {
+    assert.ok(EXTERNAL_PHASES.includes(phase), phase);
+    const row = externalPhaseDiagnostic({ phase, reason: 'assertion-failed' });
+    assert.equal(row.phase, phase);
+    // A realistic initial failure is writable and still admissible.
+    assert.equal(isExternalPhaseDiagnostic(row), true);
+  }
+  const i = (p: string) => EXTERNAL_PHASES.indexOf(p as never);
+  // Before the token asserts is `login`; the five are strictly ordered and the
+  // GET token is last, immediately before the unchanged anonymous-denied phase.
+  assert.ok(i('initial-token-ttl') > i('login'));
+  assert.ok(i('initial-token-refresh') > i('initial-token-ttl'));
+  assert.ok(i('initial-put') > i('initial-token-refresh'));
+  assert.ok(i('initial-acl-put') > i('initial-put'));
+  assert.ok(i('initial-private-read') > i('initial-acl-put'));
+  assert.ok(i('anonymous-denied') > i('initial-private-read'));
+});
+
+test('initial-session projection accepts only three bounded numbers', () => {
+  // Real contract shape: 30s deployment TTL, HTTP 201, refresh issued.
+  const row = externalPhaseDiagnostic({
+    phase: 'initial-put', reason: 'assertion-failed',
+    initialHttpStatus: 500, initialTokenTtl: 30, initialRefreshIssued: true,
+  });
+  assert.deepEqual(row.initialSession, {
+    initialHttpStatus: 500, initialTokenTtl: 30, initialRefreshIssued: 1,
+  });
+  assert.equal(isInitialSessionDiagnostic(row.initialSession), true);
+  // Absent initial data is honest zeros, never a fabricated pass value.
+  assert.deepEqual(initialSessionDiagnostic(undefined), {
+    initialHttpStatus: 0, initialTokenTtl: 0, initialRefreshIssued: 0,
+  });
+  // A rejected fetch/unknown TTL projects as 0; only the number survives.
+  assert.deepEqual(initialSessionDiagnostic({
+    initialHttpStatus: undefined, initialTokenTtl: undefined, initialRefreshIssued: false,
+  }), { initialHttpStatus: 0, initialTokenTtl: 0, initialRefreshIssued: 0 });
+});
+
+test('arbitrary secret-like initial values cannot enter the projection', () => {
+  const secret = 'Bearer SEKRET https://id-rc.example/?access_token=SEKRET 30 expires_in';
+  const row = externalPhaseDiagnostic({
+    phase: 'initial-token-ttl', reason: 'assertion-failed',
+    initialHttpStatus: secret as never,
+    initialTokenTtl: secret as never,
+    initialRefreshIssued: 'true' as never,
+  });
+  const text = JSON.stringify(row);
+  assert.equal(text.includes('SEKRET'), false);
+  assert.equal(text.includes('id-rc.example'), false);
+  assert.equal(text.includes('Bearer'), false);
+  // Non-numbers clamp: status 0, ttl 0, refresh bit 0 (a string is not `true`).
+  assert.deepEqual(row.initialSession, {
+    initialHttpStatus: 0, initialTokenTtl: 0, initialRefreshIssued: 0,
+  });
+  // Bounds: out-of-range/fractional TTLs and statuses are rejected, not shipped.
+  for (const ttl of [-1, 0.5, 86_401, Number.NaN, '30']) {
+    assert.equal(isInitialSessionDiagnostic({
+      initialHttpStatus: 0, initialTokenTtl: ttl, initialRefreshIssued: 0,
+    }), false, String(ttl));
+  }
+  for (const status of [99, 600, -1, 1.5, Number.NaN, '401', '403 Unauthorized']) {
+    assert.equal(isInitialSessionDiagnostic({
+      initialHttpStatus: status, initialTokenTtl: 0, initialRefreshIssued: 0,
+    }), false, String(status));
+  }
+  // Extra foreign keys are inadmissible, so text cannot ride along.
+  assert.equal(isInitialSessionDiagnostic({
+    initialHttpStatus: 0, initialTokenTtl: 0, initialRefreshIssued: 0, token: 'SEKRET',
+  }), false);
+  // A raw boolean flag is not 0|1 and must be rejected.
+  assert.equal(isInitialSessionDiagnostic({
+    initialHttpStatus: 0, initialTokenTtl: 0, initialRefreshIssued: true,
+  }), false);
+});
+
+test('initial-session facts survive the real file pipeline and re-projection', () => {
+  const root = path.resolve('.test-data/browser-external-phase');
+  mkdirSync(root, { recursive: true });
+  const dir = mkdtempSync(path.join(root, 'initial-'));
+  try {
+    recordExternalFailure({
+      outputDirectory: dir, phase: 'initial-put', reason: 'assertion-failed',
+      initialHttpStatus: 500, initialTokenTtl: 30, initialRefreshIssued: true,
+    });
+    const onDisk = JSON.parse(readFileSync(path.join(dir, FAILURE_SAFE_FILE), 'utf8'));
+    assert.equal(onDisk.diagnostic.phase, 'initial-put');
+    assert.deepEqual(onDisk.diagnostic.initialSession, {
+      initialHttpStatus: 500, initialTokenTtl: 30, initialRefreshIssued: 1,
+    });
+    assert.equal(isFailureSafeEnvelope(onDisk), true);
+    // Re-projection is idempotent and keeps the real numbers (30 is the exact TTL).
+    const again = failureSafeEnvelope(onDisk.diagnostic).diagnostic;
+    assert.deepEqual(again.initialSession, onDisk.diagnostic.initialSession);
+    assert.equal(again.initialSession.initialTokenTtl, 30);
+    // The later post-renew field is untouched and stays independently 0 here.
+    assert.equal(onDisk.diagnostic.privateReadStatus, 0);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('each of the five initial checkpoints writes a distinct record', () => {
+  // Proves every checkpoint can actually reach failure.safe.json, not just exist
+  // in the enum: an RC failure stops at exactly one of these five labels.
+  const root = path.resolve('.test-data/browser-external-phase');
+  mkdirSync(root, { recursive: true });
+  const phases = ['initial-token-ttl', 'initial-token-refresh', 'initial-put',
+    'initial-acl-put', 'initial-private-read'] as const;
+  const written: string[] = [];
+  try {
+    for (const phase of phases) {
+      const dir = mkdtempSync(path.join(root, `${phase}-`));
+      try {
+        recordExternalFailure({ outputDirectory: dir, phase, reason: 'assertion-failed',
+          initialHttpStatus: phase === 'initial-private-read' ? 200 : 0, initialTokenTtl: 30 });
+        const onDisk = JSON.parse(readFileSync(path.join(dir, FAILURE_SAFE_FILE), 'utf8'));
+        assert.equal(onDisk.diagnostic.phase, phase);
+        assert.equal(isFailureSafeEnvelope(onDisk), true);
+        written.push(onDisk.diagnostic.phase);
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    }
+    // Five distinct labels, no collapse back into one checkpoint.
+    assert.deepEqual(written, [...phases]);
+    assert.equal(new Set(written).size, 5);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test('per-field restart binding phases exist and are ordered after restart-runtime', () => {
@@ -374,6 +506,7 @@ test('new readiness flags reject raw booleans, strings and out-of-range values',
     phase: 'restart-private-read' as const, reason: 'assertion-failed' as const,
     authorizationCodes: 0, passwordPosts: 0, refreshGrants: 0, refreshFailures: 0,
     requestCount: 0, restartObserver: restartObserverDiagnostic(undefined),
+    initialSession: initialSessionDiagnostic(undefined),
     privateRead: 'ok' as const, privateReadStatus: 200, authenticated: 1, hostReady: 0,
   });
   assert.equal(isExternalPhaseDiagnostic(base()), true);
@@ -483,6 +616,7 @@ test('privateReadStatus accepts 0 and 100..599 only; fractions, strings and junk
     phase: 'restart-private-read' as const, reason: 'assertion-failed' as const,
     authorizationCodes: 0, passwordPosts: 0, refreshGrants: 0, refreshFailures: 0,
     requestCount: 0, restartObserver: restartObserverDiagnostic(undefined),
+    initialSession: initialSessionDiagnostic(undefined),
     privateRead: 'not-reached' as const, privateReadStatus: 0,
     authenticated: 0, hostReady: 0,
   });
