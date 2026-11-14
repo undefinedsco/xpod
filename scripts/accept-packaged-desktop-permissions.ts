@@ -150,7 +150,7 @@ export const DESKTOP_FAILURE_EXPLANATIONS: Record<DesktopFailureCode, string> = 
   'invalid-arguments': 'The packaged desktop runner arguments failed validation',
   'invalid-source': 'The runner checkout did not match the exact packaged source',
   'provider-input': 'The declared provider acceptance input was missing or not private',
-  'packaged-launch': 'The owned packaged desktop did not reach the expected Local edition',
+  'packaged-launch': 'The owned packaged desktop failed during its startup launch phases',
   'local-authority': 'The packaged Local authority or no-public-route proof was missing',
   'identity-binding': 'The managed Cloud card and two-Pod identity/storage binding proof failed',
   'consent-binding': 'The actual browser callback or exact Consent binding proof was missing',
@@ -169,6 +169,59 @@ export const DESKTOP_FAILURE_EXPLANATIONS: Record<DesktopFailureCode, string> = 
  * the fixed vocabulary their own helper owns, never raw diagnostic text. */
 export type DesktopFailureEvidence = OidcApprovalCondition | MountedPermissionCondition | PackagedOperationCondition | 'remember-not-posted';
 
+/** Closed launch sub-cause. Diagnostics only: it never feeds retry policy,
+ * permission decisions or the pass/fail condition. Only these fixed tokens may
+ * leave the process; message/stack/URL/headers/keys never do. */
+export type DesktopLaunchDetail = 'bridge-missing' | 'bridge-navigation-context' | 'bridge-ipc-untrusted'
+  | 'runtime-failed' | 'runtime-stopped' | 'runtime-not-owned' | 'runtime-not-ready' | 'other';
+
+/** Fixed message fragments the existing launch branches already raise. Reading
+ * them only SELECTS a token; the text itself is never published. */
+const LAUNCH_DETAIL_PATTERNS: readonly (readonly [DesktopLaunchDetail, RegExp])[] = [
+  ['bridge-missing', /Missing packaged desktop bridge/u],
+  ['bridge-navigation-context', /Execution context was destroyed, most likely because of a navigation/u],
+  ['bridge-ipc-untrusted', /Device settings require the trusted product shell/u],
+  ['runtime-failed', /Packaged runtime reported failed before it became ready/u],
+  ['runtime-stopped', /Packaged runtime reported stopped before it became ready/u],
+  ['runtime-not-owned', /Packaged runtime is not owned by the installed desktop/u],
+  ['runtime-not-ready', /Packaged runtime did not reach the running state/u],
+];
+
+/** The SAME closed vocabulary, derived from the pattern table plus `other`:
+ * publishing never trusts a caller-supplied string, it must be a member here. */
+const LAUNCH_DETAIL_TOKENS: ReadonlySet<string> = new Set<string>([
+  ...LAUNCH_DETAIL_PATTERNS.map(([token]) => token), 'other',
+]);
+
+/** True only for a reviewed closed token; anything else is not publishable. */
+export function isDesktopLaunchDetail(value: unknown): value is DesktopLaunchDetail {
+  return typeof value === 'string' && LAUNCH_DETAIL_TOKENS.has(value);
+}
+
+/** Hard bound on the cause walk: a hostile/self-referential chain cannot spin. */
+const LAUNCH_DETAIL_MAX_DEPTH = 8;
+
+/** Project the launch failure (and its BOUNDED cause chain) to one closed token.
+ * Depth is capped and every property access is guarded, so a malicious cause
+ * getter cannot throw out of classification. Unrecognised input yields `other`. */
+export function classifyLaunchDetail(error: unknown): DesktopLaunchDetail {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  for (let depth = 0; depth < LAUNCH_DETAIL_MAX_DEPTH; depth += 1) {
+    if (current === undefined || current === null || seen.has(current)) break;
+    seen.add(current);
+    let message = '';
+    try { message = current instanceof Error ? current.message : typeof current === 'string' ? current : ''; }
+    catch { message = ''; }
+    if (typeof message === 'string') {
+      for (const [detail, pattern] of LAUNCH_DETAIL_PATTERNS) if (pattern.test(message)) return detail;
+    }
+    try { current = (current as { cause?: unknown }).cause; }
+    catch { break; }
+  }
+  return 'other';
+}
+
 /** A failure whose public projection is its reviewed code, never its text.
  * `message` keeps the exact private diagnostic for the 600-mode evidence file. */
 export class DesktopAcceptanceError extends Error {
@@ -177,12 +230,16 @@ export class DesktopAcceptanceError extends Error {
   readonly evidence?: DesktopFailureEvidence;
   /** The original error for PRIVATE debugging; describeFailure never reads it. */
   override readonly cause?: unknown;
-  constructor(code: DesktopFailureCode, detail: string, evidence?: DesktopFailureEvidence, cause?: unknown) {
+  /** Closed launch sub-cause for the job log; undefined for non-launch codes. */
+  readonly launchDetail?: DesktopLaunchDetail;
+  constructor(code: DesktopFailureCode, detail: string, evidence?: DesktopFailureEvidence, cause?: unknown,
+    launchDetail?: DesktopLaunchDetail) {
     super(detail);
     this.name = 'DesktopAcceptanceError';
     this.code = code;
     this.evidence = evidence;
     this.cause = cause;
+    if (launchDetail !== undefined) this.launchDetail = launchDetail;
   }
 }
 
@@ -264,6 +321,18 @@ export function summarizeStartupTelemetry(telemetry: GatewayTelemetry | undefine
   return out;
 }
 
+/** The publishable launch sub-cause: only for a packaged-launch projection, and
+ * only when the stored value is a reviewed closed token (never the raw type). */
+function closedLaunchDetail(errors: unknown[], code: DesktopFailureCode): DesktopLaunchDetail | undefined {
+  if (code !== 'packaged-launch') return undefined;
+  for (const error of errors) {
+    if (!(error instanceof DesktopAcceptanceError) || error.code !== 'packaged-launch') continue;
+    const candidate: unknown = error.launchDetail;
+    if (isDesktopLaunchDetail(candidate)) return candidate;
+  }
+  return undefined;
+}
+
 /** The closed detail token of a mounted-permission failure, if one exists. */
 function closedMountedDetail(errors: unknown[]): MountedPermissionDetail | undefined {
   for (const error of errors) {
@@ -284,11 +353,13 @@ export function failureLine(published: PublishedDesktopFailure, failures: unknow
   launchPhase: LaunchSubphase | undefined,
   launchTelemetry: GatewayTelemetry | undefined): Record<string, unknown> {
   const detail = closedMountedDetail(failures);
+  const launchDetail = closedLaunchDetail(failures, published.code);
   const launch = isLaunchSubphase(launchPhase);
   return { runner: 'desktop-permission-acceptance', failed: true,
     code: published.code,
     ...(published.evidence === undefined ? {} : { evidence: published.evidence }),
     ...(detail === undefined ? {} : { detail }),
+    ...(launchDetail === undefined ? {} : { launchDetail }),
     ...(launch ? { phase: launchPhase } : {}),
     ...(launch
       ? { explanation: DESKTOP_FAILURE_EXPLANATIONS[published.code],
@@ -425,7 +496,8 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
       // stack in the 0600 evidence file - public sanitisation must not blind
       // private debugging.
       throw new DesktopAcceptanceError('packaged-launch',
-        error instanceof Error ? error.message : 'packaged launch failed', undefined, error);
+        error instanceof Error ? error.message : 'packaged launch failed', undefined, error,
+        classifyLaunchDetail(error));
     }
     const { page, gateway } = fixture;
     advance('provision');
@@ -630,16 +702,21 @@ export async function acceptPackagedDesktopPermissions(options: PackagedPermissi
     // A failed run must stay diagnosable even when the workflow skips the
     // private upload. This record publishes only the allowlisted stage and
     // reviewed failure codes; the raw errors stay in the 600-mode private file.
+    // ONE projection is used for the safe record and the job log, so the
+    // published code and its closed launch detail can never disagree.
+    const published = describeFailure(primaryFailure ?? failures[0]);
+    const safeLaunchDetail = closedLaunchDetail(failures, published.code);
     await writeFile(path.join(options.privateDirectory, SAFE_FAILURE_FILE), JSON.stringify({ schemaVersion: 1,
       kind: 'desktop-permission-failure', sourceSha: options.sourceSha, version: options.version, stage: failed,
       ...(failed === 'launch' && isLaunchSubphase(launchPhase) ? { phase: launchPhase } : {}),
+      ...(failed === 'launch' && safeLaunchDetail !== undefined
+        ? { launchDetail: safeLaunchDetail } : {}),
       failures: publishedFailures(failures),
       ...(failed === 'launch' && launchTelemetry ? { launchTelemetry } : {}),
       ...(taskSnapshot ? { task: summarizeLiveTaskFailure(taskSnapshot) } : {}) }, null, 2) + '\n', { mode: 0o644 });
     // The stdout projection must name the real reviewed code, so a CI run stays
     // diagnosable without the private evidence upload. Only closed enums leave
     // this process: no child text, path, argv, URL or message.
-    const published = describeFailure(primaryFailure ?? failures[0]);
     // UNCONDITIONAL safe line: a failure that never reached the launch phase
     // (pod-permission/operation stages) must still be observable in the job log.
     // Only closed tokens leave this process: the reviewed code, the closed

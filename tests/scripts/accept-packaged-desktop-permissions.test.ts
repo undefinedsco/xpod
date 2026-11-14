@@ -11,8 +11,9 @@ import { registerTaskRoutes } from '../../src/api/handlers/TaskHandler';
 import { expect, it, vi } from 'vitest';
 import { AiConnectionsInvocationKeyIssuer } from '../../src/api/ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import { AesInvocationTokenCodec } from '../../src/api/ai-gateway/auth/InvocationTokenCodec';
-import { acceptPackagedDesktopPermissions, assertOwnedTaskRows, DesktopAcceptanceError, describeFailure, failureLine,
-  publishedFailures, requirePackagedInvocationKey, rendererOwnerFetch, requestPackagedForeignRun,
+import { acceptPackagedDesktopPermissions, assertOwnedTaskRows, classifyLaunchDetail, DesktopAcceptanceError,
+  describeFailure, failureLine, isDesktopLaunchDetail, publishedFailures, requirePackagedInvocationKey,
+  rendererOwnerFetch, requestPackagedForeignRun,
   summarizeStartupTelemetry } from '../../scripts/accept-packaged-desktop-permissions';
 import { acceptMountedPodPermissions, attributeMountedOperation, MountedPermissionError } from '../../scripts/helpers/packaged-desktop-permissions';
 import { attributeOidcOperation, OidcApprovalError } from '../../tests/helpers/browserSolidOidc';
@@ -473,7 +474,7 @@ it('publishes an audited packaged-launch code with a closed-enum phase', () => {
   // packaged-launch code; the phase is a closed enum token.
   const typed = new DesktopAcceptanceError('packaged-launch', 'private detail with oc_sk_live_9f2c1d4b8a7e6f5c');
   expect(describeFailure(typed)).toEqual({ code: 'packaged-launch',
-    explanation: 'The owned packaged desktop did not reach the expected Local edition' });
+    explanation: 'The owned packaged desktop failed during its startup launch phases' });
   expect(JSON.stringify(describeFailure(typed))).not.toContain('oc_sk_live_9f2c1d4b8a7e6f5c');
 
   // A published failure may carry only one of the reviewed phase tokens.
@@ -608,4 +609,107 @@ it('keeps a still-starting launch distinguishable from an exited child in the sa
     verify.mockRestore(); launch.mockRestore();
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+it('classifies each launch failure branch to one closed token and never leaks text', () => {
+  const hostile = 'https://local.example/private?token=abc Authorization: Bearer sk-live-9f2c1d password=hunter2';
+  const cases = [
+    ['bridge-missing', new Error(`Missing packaged desktop bridge ${hostile}`)],
+    ['bridge-missing', new Error('Unknown navigation failure', { cause: new Error('Missing packaged desktop bridge') })],
+    ['bridge-navigation-context', new Error(`page.evaluate: Execution context was destroyed, most likely because of a navigation ${hostile}`)],
+    ['bridge-ipc-untrusted', new Error(`Device settings require the trusted product shell ${hostile}`)],
+    ['runtime-failed', new Error('Packaged runtime reported failed before it became ready')],
+    ['runtime-stopped', new Error('Packaged runtime reported stopped before it became ready')],
+    ['runtime-not-owned', new Error('Packaged runtime is not owned by the installed desktop')],
+    ['runtime-not-ready', new Error('Packaged runtime did not reach the running state')],
+    ['other', new Error(hostile)],
+    ['other', new Error('unrelated launch failure')],
+  ] as const;
+  for (const [expected, error] of cases) {
+    const wrapped = new DesktopAcceptanceError('packaged-launch', 'private launch detail', undefined, error);
+    // The REAL launched-path wrapper supplies the token; assert the classifier too.
+    expect(classifyLaunchDetail(error)).toBe(expected);
+    expect(wrapped.code).toBe('packaged-launch');
+  }
+  // Only closed tokens can ever be produced.
+  const allowed = new Set(['bridge-missing', 'bridge-navigation-context', 'bridge-ipc-untrusted',
+    'runtime-failed', 'runtime-stopped', 'runtime-not-owned', 'runtime-not-ready', 'other']);
+  for (const [, error] of cases) expect(allowed.has(classifyLaunchDetail(error))).toBe(true);
+});
+
+it('launch detail reaches the safe JSON and the failure line without leaking, and never pollutes non-launch failures', () => {
+  const hostile = 'https://id.example/private?token=abc Authorization: Bearer sk-live-9f2c1d4b8a7e6f5c password=hunter2';
+  const original = new Error(`Execution context was destroyed, most likely because of a navigation ${hostile}`);
+  const wrapped = new DesktopAcceptanceError('packaged-launch', 'private launch detail', undefined, original,
+    classifyLaunchDetail(original));
+  const published = describeFailure(wrapped);
+  const line = failureLine(published, [wrapped], 'bridge', undefined);
+  expect(line.launchDetail).toBe('bridge-navigation-context');
+  expect(line.code).toBe('packaged-launch');
+  // The fixed text no longer claims a Local-edition failure.
+  expect(line.explanation).toBe('The owned packaged desktop failed during its startup launch phases');
+  const wire = JSON.stringify(line);
+  for (const secret of ['token=abc', 'Bearer', 'sk-live', 'hunter2', 'https://id.example']) {
+    expect(wire).not.toContain(secret);
+  }
+  // Only reviewed closed keys leave the process.
+  expect(Object.keys(line).sort()).toEqual(['code', 'explanation', 'failed', 'launchDetail', 'phase', 'runner']);
+
+  // A non-launch failure must not gain the launch-only field.
+  const mounted = new MountedPermissionError('service-access', 'private mounted detail', undefined, 'foreign-pod');
+  const mountedLine = failureLine(describeFailure(mounted), [mounted], undefined, undefined);
+  expect(mountedLine.launchDetail).toBeUndefined();
+  expect(Object.keys(mountedLine).sort()).toEqual(['code', 'detail', 'evidence', 'failed', 'runner']);
+  // A launch failure with only an unrecognized message still yields 'other'.
+  const odd = new DesktopAcceptanceError('packaged-launch', 'x', undefined, new Error('no pattern'), 'other');
+  expect(failureLine(describeFailure(odd), [odd], undefined, undefined).launchDetail).toBe('other');
+  // The original cause is still preserved privately, untouched.
+  expect((wrapped.cause as Error).message).toContain(hostile);
+});
+
+it('bounds the cause walk and survives hostile cause accessors', () => {
+  // A self-referential chain must terminate.
+  const loop = new Error('loop');
+  (loop as Error & { cause?: unknown }).cause = loop;
+  expect(classifyLaunchDetail(loop)).toBe('other');
+
+  // A chain deeper than the bound must not reach a token past the limit.
+  let deep: Error = new Error('Packaged runtime did not reach the running state');
+  for (let index = 0; index < 20; index += 1) deep = new Error('wrapper', { cause: deep });
+  expect(classifyLaunchDetail(deep)).toBe('other');
+  // A token inside the bound is still found.
+  let shallow: Error = new Error('Missing packaged desktop bridge');
+  for (let index = 0; index < 3; index += 1) shallow = new Error('wrapper', { cause: shallow });
+  expect(classifyLaunchDetail(shallow)).toBe('bridge-missing');
+
+  // A throwing cause getter must not escape classification.
+  const hostile: Record<string, unknown> = { message: 'plain' };
+  Object.defineProperty(hostile, 'cause', { get(): never { throw new Error('boom https://id.example/private'); } });
+  expect(classifyLaunchDetail(hostile)).toBe('other');
+});
+
+it('validates the published launch token instead of trusting the declared type', () => {
+  for (const token of ['bridge-missing', 'bridge-navigation-context', 'bridge-ipc-untrusted',
+    'runtime-failed', 'runtime-stopped', 'runtime-not-owned', 'runtime-not-ready', 'other']) {
+    expect(isDesktopLaunchDetail(token)).toBe(true);
+  }
+  for (const forged of ['', 'BRIDGE-MISSING', 'https://id.example/x?token=abc',
+    'Bearer sk-live-9f2c1d', 'password=hunter2', 'bridge-missing\nAuthorization: x']) {
+    expect(isDesktopLaunchDetail(forged)).toBe(false);
+  }
+
+  // A forged launchDetail (cast past the type) must not reach the job log.
+  const forged = new DesktopAcceptanceError('packaged-launch', 'private', undefined, new Error('x'),
+    'https://id.example/x?token=abc' as never);
+  const forgedLine = failureLine(describeFailure(forged), [forged], undefined, undefined);
+  expect(forgedLine.launchDetail).toBeUndefined();
+  expect(JSON.stringify(forgedLine)).not.toContain('token=abc');
+
+  // A mixed cleanup error under a NON-launch primary must not gain a launch token.
+  const primary = new MountedPermissionError('service-access', 'private mounted', undefined, 'foreign-pod');
+  const strayLaunch = new DesktopAcceptanceError('packaged-launch', 'private', undefined, new Error('x'), 'other');
+  const mixed = failureLine(describeFailure(primary), [primary, strayLaunch], undefined, undefined);
+  expect(mixed.launchDetail).toBeUndefined();
+  expect(mixed.code).toBe('pod-permission');
+  expect(Object.keys(mixed).sort()).toEqual(['code', 'detail', 'evidence', 'failed', 'runner']);
 });
