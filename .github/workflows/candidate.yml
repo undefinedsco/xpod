@@ -1568,6 +1568,20 @@ jobs:
           # Authenticate the pinned GitHub API docs tree with the existing workflow token.
           GH_TOKEN: ${{ github.token }}
         run: bun run dist
+      # Artifact custody: the product archive is uploaded ONCE, immediately after
+      # the build succeeds, so a later acceptance failure still leaves the exact
+      # original ZIP/DMG bytes. Retention is not qualification: every gate below
+      # and the finalizer still run against these same bytes, and uploading never
+      # satisfies them.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xpod-desktop-macos-${{ needs.metadata.outputs.candidate }}
+          path: |
+            desktop/release/*.dmg
+            desktop/release/*.zip
+            desktop/release/*.blockmap
+          if-no-files-found: error
+          retention-days: 30
       # The Account document links `/app/assets/main.css` by name. A build that
       # emits the stylesheet under another name (or not at all) ships a login page
       # with no styles, which already happened once in production.
@@ -1751,17 +1765,8 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: xpod-desktop-macos-${{ needs.metadata.outputs.candidate }}
-          path: |
-            desktop/release/*.dmg
-            desktop/release/*.zip
-            desktop/release/*.blockmap
-          if-no-files-found: error
-          retention-days: 30
-      # Keep the redacted producer failure summary last so the release archive
-      # stays the first upload in this job and no gate reads it as the artifact.
+      # Failure summary last; only failure() reaches this step. The product
+      # archive was already uploaded once, right after the build.
       - name: Upload desktop permission failure summary
         if: failure()
         uses: actions/upload-artifact@v4
