@@ -143,7 +143,8 @@ it('keeps published RC398 canonical bindings frozen while the current tail follo
   const RC398_ACCEPT='3bcd2a9c254689fc26785556752347625bc6ca4f7ed367584b998562f9e3938b';
 
   // Published RC398 groups keep their reviewed literals even though the files moved.
-  for(const index of [CONSUMER.length-3, CONSUMER.length-2]){
+  // They are FIXED indices: 112/113 are RC398, 114 is published RC399, 115+ are appends.
+  for(const index of [112, 113]){
     const group=CONSUMER[index]!;
     expect(role(group,canonical)).toEqual([RC398_CANONICAL]);
     expect(role(group,accept)).toEqual([RC398_ACCEPT]);

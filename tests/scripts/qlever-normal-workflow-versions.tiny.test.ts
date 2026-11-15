@@ -96,10 +96,12 @@ test('the production set derives from the normal axis and keeps the published co
 
 test('the ACTUAL on-disk candidate workflow is reviewed and resolves on the consumer axis',()=>{
  // Independent of any policy value: the bytes really in the tree.
- // CURRENT reviewed candidate bytes (this generation moved only the workspace
- // build+consumer ahead of the candidate-version transform in build_desktop_rc;
- // RC409 additionally compiles the root outputs BEFORE the desktop build).
- expect(DISK_WORKFLOW_SHA).toBe('837d5a9fffe362c926f5121a718a79d0da359d79669ba2f78a1ae248434db673');
+ // CURRENT reviewed candidate bytes (this generation pins the referenced-graph PG
+ // image digest and names the retained SDK393 digest for the checked incremental
+ // build; the qlever/ tree is unchanged, so recipe identity rows stay byte-exact).
+ expect(DISK_WORKFLOW_SHA).toBe('3b3bb13fd5abd3670ba9577a1dc7082b420732d4552f5d5cfe2cf57269baf8cf');
+ // The previously reviewed RC399 bytes stay accepted history, never replaced.
+ expect(normalWorkflowVersions()).toContain('43a9114d330a544f5ffd3a54e1ab6530dca6a28379da2c26b2fcf1a089235ec8');
  // The previously reviewed RC398 bytes stay accepted history, never replaced.
  expect(normalWorkflowVersions()).toContain('f488709ab38b7d42f58accd90cbe59a162eae89ee23169db9b28ecdf264a7581');
  // The real production set must review those exact bytes.

@@ -27,10 +27,12 @@ env:
   # One canonical immutable PG17 input. The same digest feeds the pre-K8s
   # 17-semantic + 6-wire gate, the pull preflight, the RC-only PostgreSQL
   # StatefulSet and its bootstrap Job. No second copy exists.
-  NATIVE_PG_IMAGE: ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:6a5731d7df8b4d677d3de51c53961fa8f484f8a1f87e7fd667dd0db1ffa3e1db
+  NATIVE_PG_IMAGE: ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:ba4a58e3533d0bb1ceae0db9ac6f9a946ebb7f0c774c286e7a57b81052737bd5
   # Current shared production workload digest. It is a CREDENTIAL SOURCE, not a
-  # target: its imagePullSecret is reused, its image and data are untouched.
-  PG_REGISTRY_AUTHORITY_IMAGE: ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:635a5eee0ea1461c8cde8425fdf0ca7d0965bc083d8860bb7aa04498c9688986
+  # target: its imagePullSecret is reused, its image and data are untouched. It
+  # must be the ACTUAL live workload image because the selector requires strict
+  # membership in the declared {current,target} pair.
+  PG_REGISTRY_AUTHORITY_IMAGE: ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:6a5731d7df8b4d677d3de51c53961fa8f484f8a1f87e7fd667dd0db1ffa3e1db
 
 jobs:
   metadata:
@@ -73,6 +75,16 @@ jobs:
             fs.appendFileSync(process.env.GITHUB_OUTPUT, `sourceSha=${metadata.sourceSha}\n`);
             fs.appendFileSync(process.env.GITHUB_OUTPUT, `runAttempt=${process.env.RUN_ATTEMPT}\n`);
           ' "$metadata"
+          # A released version is immutable. Fail in seconds, not at tag time an
+          # hour later, when staging still carries a version already released
+          # from another commit. Re-qualifying the tagged commit itself (e.g. its
+          # desktop) stays allowed.
+          target="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).targetVersion)' "$metadata")"
+          released="$(git ls-remote --tags origin "refs/tags/v${target}" "refs/tags/v${target}^{}" | awk '{print $1}' | tail -n 1)"
+          if [[ -n "$released" && "$released" != "$SOURCE_SHA" ]]; then
+            echo "::error::v${target} is already released from ${released}; bump the root package.json version before requesting a new candidate"
+            exit 1
+          fi
 
   legacy_root_compat:
     permissions:
@@ -168,6 +180,9 @@ jobs:
     with:
       source_commit: ${{ needs.metadata.outputs.sourceSha }}
       sdk_profile: service-trixie
+      # SDK393 was built from the same qlever/ tree as this candidate; the existing
+      # prior input still validates the full normal identity, recipe and digest.
+      prior_runtime_sdk_digest: sha256:393e47bc1633409152a59691ac240345d6b70f3906215787b4a23dff005874e2
 
   publish_qlever_local_runtime:
     needs: publish_qlever_runtime_sdk

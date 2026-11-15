@@ -175,7 +175,8 @@ async function publish() {
     consume(root, { tarballs: plan.mixed });
     for (const { manifest, tarball } of plan.publish) {
       run('npm', ['publish', tarball, '--access', 'public', '--tag', 'stable-staging', '--registry', registry]);
-      run('node', ['scripts/wait-for-npm-package.cjs', `${manifest.name}@${manifest.version}`, '180', '1000']);
+      // npm can take minutes to serve a fresh version; poll up to ~10 minutes.
+      run('node', ['scripts/wait-for-npm-package.cjs', `${manifest.name}@${manifest.version}`, '60', '10000']);
     }
     // After staging, re-fetch metadata and bind the registry's full raw integrity to the
     // selected mixed tarball for EVERY package (reused and freshly published) before the
