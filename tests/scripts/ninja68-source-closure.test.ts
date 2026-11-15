@@ -12,6 +12,7 @@ import {
 import {
   selectGitHubSourceBindingGroup, sourceBindingKey,
 } from '../../scripts/lib/independent-admission/github-source-binding-groups';
+import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 
 const ROOT = path.resolve(import.meta.dir, '../..');
 const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex');
@@ -25,7 +26,7 @@ const current = () => QLEVER_SDK_CONSUMER_GROUPS.at(-1)!;
 const observedFromDisk = () => {
   const g = current();
   const rows = [...g.selectors, ...(g.secondarySelectors ?? []), ...g.sourceBindings];
-  return new Map(rows.map(r => [sourceBindingKey(r), sha(readFileSync(path.join(ROOT, r.path)))]));
+  return new Map(rows.map(r => [sourceBindingKey(r), sha(readTrackedSource(path.join(ROOT, r.path)))]));
 };
 
 /** The immutable e4 declaration pins HISTORICAL bytes. It must keep the exact
@@ -50,7 +51,7 @@ test('the CURRENT slice binds the same three paths to the real bytes today', () 
   for (const row of QLEVER_SDK_NINJA_SOURCE_BINDINGS) {
     const live = rows.find(r => r.path === row.path);
     expect(live).toBeDefined();
-    expect(live!.sha256).toBe(sha(readFileSync(path.join(ROOT, row.path))));
+    expect(live!.sha256).toBe(sha(readTrackedSource(path.join(ROOT, row.path))));
     expect(live!.sha256).not.toBe(row.sha256);
   }
 });

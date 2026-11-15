@@ -14,6 +14,7 @@ const {
   sha512Integrity,
   assertIntegrity,
   PROVENANCE_FIELDS,
+  sha256,
 } = require('../../scripts/workspace-package-payload.cjs');
 const {
   planSharedPublication,
@@ -121,6 +122,137 @@ test('content-equivalence ignores only the fixed gitHead provenance field', () =
   const result = comparePackagePayloads(published, local);
   assert.equal(result.ok, true, result.reasons.join('; '));
   assert.deepEqual(result.reasons, []);
+});
+
+// Real material-provenance shape: the deployment collector embeds the accepted
+// commit, and the index records each material file's digest, so the two files that
+// contain the commit also carry commit-derived index rows.
+function materialEntries(commit, overrides = {}) {
+  const authority = (sourceCommit) => ({
+    sourceCommit,
+    tracked: true,
+    dirty: false,
+    snapshotSHA256: 'c3b65827fdfc0e13c743cd5129b9db7626ec2419e12b06d8478d97fc859e851a',
+    missingTrackedSourceCount: 0,
+    scope: 'canonical package source and actual shared material collector',
+  });
+  const sourceFile = 'export const value = 1;\n';
+  const inventory = (sourceCommit) => `${JSON.stringify({ schemaVersion: 1, sourceAuthority: authority(sourceCommit),
+    files: [{ path: 'src/index.ts', bytes: Buffer.byteLength(sourceFile), sha256: sha256(Buffer.from(sourceFile)), tracked: true }] }, null, 2)}\n`;
+  const provenance = (sourceCommit) => `${JSON.stringify({ schemaVersion: 1, sourceAuthority: authority(sourceCommit), compiler: null, bundles: [] }, null, 2)}\n`;
+  const index = (sourceCommit) => `${JSON.stringify({ schemaVersion: 1, sourceAuthority: authority(sourceCommit), files: [
+    { path: 'build-provenance.json', bytes: Buffer.byteLength(provenance(sourceCommit)), sha256: sha256(Buffer.from(provenance(sourceCommit))) },
+    { path: 'source-inventory.json', bytes: Buffer.byteLength(inventory(sourceCommit)), sha256: sha256(Buffer.from(inventory(sourceCommit))) },
+    { path: 'source/src/index.ts', bytes: Buffer.byteLength(sourceFile), sha256: sha256(Buffer.from(sourceFile)) },
+  ] }, null, 2)}\n`;
+  const files = { provenance: provenance(commit), inventory: inventory(commit), index: index(commit) };
+  for (const [key, value] of Object.entries(overrides)) files[key] = value;
+  return [
+    { path: 'package/dist/index.js', content: 'export const value = 1;\n' },
+    { path: 'package/dist/materials/build-provenance.json', content: files.provenance },
+    { path: 'package/dist/materials/source-inventory.json', content: files.inventory },
+    { path: 'package/dist/materials/index.json', content: files.index },
+    { path: 'package/dist/materials/source/src/index.ts', content: sourceFile },
+    { path: 'package/package.json', content: manifestBytes({ gitHead: commit }) },
+  ];
+}
+
+test('a new accepted commit is reusable when only the material provenance commit moves', () => {
+  const published = makeTarball(materialEntries('4'.repeat(40)));
+  const local = makeTarball(materialEntries('d'.repeat(40)));
+  const result = comparePackagePayloads(published, local);
+  assert.equal(result.ok, true, result.reasons.join('; '));
+  assert.deepEqual(result.reasons, []);
+});
+
+test('material provenance fails closed on any real drift or stale summary', () => {
+  const published = materialEntries('4'.repeat(40));
+  const base = Object.fromEntries(published.map((entry) => [entry.path, entry.content]));
+  const publishedTar = makeTarball(published);
+  const withEntry = (path, body) => makeTarball(published.map((entry) => entry.path === path ? { ...entry, content: body } : entry));
+  // Rebuild the index so its recorded digests describe the CURRENT material bytes.
+  const reindex = (entries) => {
+    const byPath = Object.fromEntries(entries.map((entry) => [entry.path, Buffer.from(entry.content)]));
+    const index = JSON.parse(byPath['package/dist/materials/index.json'].toString());
+    for (const row of index.files) {
+      const body = byPath[`package/dist/materials/${row.path}`];
+      if (!body) continue;
+      row.bytes = body.length;
+      row.sha256 = sha256(body);
+    }
+    return makeTarball(entries.map((entry) => entry.path === 'package/dist/materials/index.json'
+      ? { ...entry, content: `${JSON.stringify(index, null, 2)}\n` } : entry));
+  };
+  // 1) a stale ORIGINAL index digest for EACH commit-derived child must be refused,
+  //    with every other fact unchanged: this is the exact case normalization could hide.
+  for (const child of ['build-provenance.json', 'source-inventory.json']) {
+    const index = JSON.parse(base['package/dist/materials/index.json'].toString());
+    const row = index.files.find((value) => value.path === child);
+    row.sha256 = 'a'.repeat(64);
+    const forged = `${JSON.stringify(index, null, 2)}\n`;
+    const result = comparePackagePayloads(publishedTar,
+      withEntry('package/dist/materials/index.json', forged));
+    assert.equal(result.ok, false, `stale ${child} digest must be refused`);
+    assert.match(result.reasons.join('; '), /stale digest/u);
+  }
+  // 2) a changed snapshot digest must be refused.
+  const snapshot = `${JSON.stringify({ ...JSON.parse(base['package/dist/materials/build-provenance.json'].toString()),
+    sourceAuthority: { ...JSON.parse(base['package/dist/materials/build-provenance.json'].toString()).sourceAuthority,
+      snapshotSHA256: 'b'.repeat(64) } }, null, 2)}\n`;
+  assert.equal(comparePackagePayloads(publishedTar,
+    withEntry('package/dist/materials/build-provenance.json', snapshot)).ok, false);
+  // 3) an unknown EXTRA provenance fact must be refused even when the index is rebuilt
+  //    to be internally VALID, so the failure can only come from the semantic comparison.
+  const extraEntries = published.map((entry) => {
+    if (entry.path !== 'package/dist/materials/build-provenance.json') return entry;
+    const parsed = JSON.parse(entry.content.toString());
+    parsed.sourceAuthority.extraFact = 'x';
+    return { ...entry, content: `${JSON.stringify(parsed, null, 2)}\n` };
+  });
+  const extraResult = comparePackagePayloads(publishedTar, reindex(extraEntries));
+  assert.equal(extraResult.ok, false, 'unknown extra fact must be refused');
+  assert.match(extraResult.reasons.join('; '), /content changed beyond sourceCommit/u);
+  // 4) the three files disagreeing about the commit must be refused with a VALID index.
+  const disagreeing = published.map((entry) => {
+    if (entry.path !== 'package/dist/materials/source-inventory.json') return entry;
+    const parsed = JSON.parse(entry.content.toString());
+    parsed.sourceAuthority.sourceCommit = 'c'.repeat(40);
+    return { ...entry, content: `${JSON.stringify(parsed, null, 2)}\n` };
+  });
+  assert.equal(comparePackagePayloads(publishedTar, reindex(disagreeing)).ok, false);
+  // 5) duplicate JSON keys are not in the collector's canonical form and are refused.
+  const duplicated = base['package/dist/materials/build-provenance.json'].toString()
+    .replace('"schemaVersion": 1,', '"schemaVersion": 1,\n  "schemaVersion": 1,');
+  assert.equal(comparePackagePayloads(publishedTar,
+    withEntry('package/dist/materials/build-provenance.json', duplicated)).ok, false);
+  // 6) real runtime bytes changing must still be refused.
+  assert.equal(comparePackagePayloads(publishedTar,
+    withEntry('package/dist/index.js', 'export const value = 2;\n')).ok, false);
+});
+
+test('partial material packets keep the strict byte comparison in BOTH directions', () => {
+  const complete = makeTarball(materialEntries('d'.repeat(40)));
+  const partial = (drop) => makeTarball(materialEntries('d'.repeat(40)).filter((entry) => !drop.includes(entry.path)));
+  // One side complete, the other missing files: membership differs and is refused.
+  for (const drop of [['package/dist/materials/source-inventory.json'],
+    ['package/dist/materials/source-inventory.json', 'package/dist/materials/index.json']]) {
+    assert.equal(comparePackagePayloads(complete, partial(drop)).ok, false);
+    assert.equal(comparePackagePayloads(partial(drop), complete).ok, false);
+  }
+  // BOTH sides partial with DIFFERENT provenance content must not be exempted.
+  const changedPartial = (drop, dirty) => makeTarball(materialEntries('d'.repeat(40)).filter((entry) => !drop.includes(entry.path))
+    .map((entry) => {
+      if (!dirty || entry.path !== 'package/dist/materials/build-provenance.json') return entry;
+      const parsed = JSON.parse(entry.content.toString());
+      parsed.sourceAuthority.dirty = true;
+      return { ...entry, content: `${JSON.stringify(parsed, null, 2)}\n` };
+    }));
+  for (const drop of [['package/dist/materials/source-inventory.json'],
+    ['package/dist/materials/source-inventory.json', 'package/dist/materials/index.json']]) {
+    const result = comparePackagePayloads(changedPartial(drop, false), changedPartial(drop, true));
+    assert.equal(result.ok, false, 'partial packets must use the strict byte comparison');
+    assert.match(result.reasons.join('; '), /content changed/u);
+  }
 });
 
 test('reason labels read published first, then packed local', () => {

@@ -23,10 +23,11 @@ import {CLI_SOURCE_VERSION_GROUPS as CLI} from '../../scripts/lib/independent-ad
 import {selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import {decodeCatalog} from './sdk-helper-catalog.fixture';
 import {CURRENT_CANONICAL_SOURCE_ROWS, CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
+import { shaFrozenTracked } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 
 const ROOT=path.resolve(import.meta.dirname,'../..');
 const whole=(g:unknown)=>createHash('sha256').update(JSON.stringify(g)).digest('hex');
-const sha=(p:string)=>createHash('sha256').update(readFileSync(path.join(ROOT,p))).digest('hex');
+const sha=(p:string)=>shaFrozenTracked(ROOT, p);
 const OLD_CANDIDATE='76373a179ec6ac63d24c79fc0b759e09f1045087bd66ce46c26214963d12dc5d';
 const NEW_CANDIDATE='92846c4b16da8dec7afcecac757ee2f18ac4db9e6b54805a6b59cf25a8ef7420';
 

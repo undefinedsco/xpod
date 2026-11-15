@@ -7,7 +7,8 @@ import {selectGitHubSourceBindingGroup as select,secondaryGitHubSourceBindingSel
 import {controlledApiSourceRecipe} from '../../scripts/lib/independent-admission/module-source-phases';
 import tcb from '../../scripts/lib/independent-admission/consumer-execution-current.json';
 import {CURRENT_CANONICAL_SOURCE_ROWS,CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
-const read=(p:string)=>fs.readFileSync(path.resolve(import.meta.dir,'../..',p));const sha=(b:Buffer)=>createHash('sha256').update(b).digest('hex');
+import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
+const read=(p:string)=>readTrackedSource(path.resolve(import.meta.dir,'../..',p));const sha=(b:Buffer)=>createHash('sha256').update(b).digest('hex');
 test('website projection is a separate exact source group while every Node and earlier source tree remains selectable',()=>{
  expect(groups).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.api);expect(consumers).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.consumer);expect(ci).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.ci);expect(tcb).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
  expect(groups.find(g=>'name' in g&&g.name==='root-minimal-node-public-tool-input')!.sourceBindings).toBe(previous);

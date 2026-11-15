@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { verifyCliBuildExecution, compactPortableSourceMaterials, portableMetafileInputPath, portableSourceMaterialView, verifyCollectedCliBuildExecution, type CliExecutionInput, type BuildArchiveMember } from '../../scripts/lib/independent-admission/source-execution';
+import { readFrozenTracked } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 const require = createRequire(import.meta.url);
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 let tracked = spawnSync('git', ['ls-tree', '-r', '--name-only', '-z', 'HEAD'], { encoding: 'utf8' }).stdout.split('\0').filter(Boolean);
@@ -15,8 +16,18 @@ const prefixes = [...CLI_ENTRIES.map((name: string) => 'packages/xpod-cli/' + na
 const exact = [...TOOLS, ...PATCHES.map((name: string) => 'scripts/' + name), 'scripts/check-cli-publication.cjs', 'scripts/cli-build-inputs.cjs', '.github/workflows/cli-package.yml', 'bunfig.toml', 'package.json', 'packages/xpod-cli/publication.bun.lock',
   ...JSON.parse(readFileSync('packages/xpod-cli/scripts/canonical-host-sources.json', 'utf8')).map((name: string) => 'src/' + name)];
 const names = tracked.filter(name => exact.includes(name) || prefixes.some(prefix => name === prefix || name.startsWith(prefix + '/')));
-const sourceBytes = new Map(names.map(name => [name, readFileSync(name)]));
-const readTracked = (name: string) => { const bytes = name === 'bun.lock' ? readFileSync(name) : sourceBytes.get(name); if (!bytes) throw Error('untracked fixture input'); return bytes; };
+const sourceBytes = new Map(names.map(name => [name, readFrozenTracked(process.cwd(), name)]));
+// Populate owned fixture bytes through the shared captured-source reader. The
+// manifest reads below also supply policy context outside the tracked input set;
+// every other name must retain the fixture's own bytes or fail as untracked.
+const readTracked = (name: string) => {
+  if (name === 'bun.lock' || name === 'package.json' || name === 'desktop/package.json') {
+    return readFrozenTracked(process.cwd(), name);
+  }
+  const bytes = sourceBytes.get(name);
+  if (!bytes) throw Error('untracked fixture input');
+  return bytes;
+};
 
 // Real policy and tracked first-party input bytes; synthetic command/output
 // originals never grant origin authority or qualify a product for publication.

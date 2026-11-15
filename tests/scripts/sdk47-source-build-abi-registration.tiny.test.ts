@@ -8,13 +8,14 @@ import {CONSUMER_SOURCE_GROUPS as consumer,CI_CONSUMER_SOURCE_GROUPS as ci} from
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
 import {sourceBindingKey as key,selectGitHubSourceBindingGroup as select} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import {CURRENT_CANONICAL_SOURCE_ROWS, completeObserved,observedSecondaryBindings} from './source-binding-group.fixture';
+import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 const sha=(raw:Buffer|string)=>createHash('sha256').update(raw).digest('hex');
 test('SDK47 preserves all 242 exact Git0d complete recipes and binds current 420 physical originals',()=>{
  expect(before.base).toBe('0d9115f3f6721daaf205874f4b7a4ff75319560a');
  expect(Object.values(before.hashes).reduce((sum,rows)=>sum+rows.length,0)).toBe(242);
 
  for(const [name,values] of Object.entries({api,sdk,consumer,ci})){const old=before.hashes[name as keyof typeof before.hashes];expect(values.slice(0,old.length).map(row=>sha(JSON.stringify(row)))).toEqual(old);}
- for(const row of [...current,...actualApi,...currentSdkConsumer.at(-1)!.selectors,...currentSdkConsumer.at(-1)!.sourceBindings])expect(sha(readFileSync(row.path))).toBe(row.sha256);
+ for(const row of [...current,...actualApi,...currentSdkConsumer.at(-1)!.selectors,...currentSdkConsumer.at(-1)!.sourceBindings])expect(sha(readTrackedSource(row.path))).toBe(row.sha256);
  expect(api.at(-1)!.sourceBindings).toBe(actualApi);
 });
 test('SDK47 complete current recipe rejects every absent or mixed mandatory role',()=>{

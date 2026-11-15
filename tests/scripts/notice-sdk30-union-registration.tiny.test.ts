@@ -4,13 +4,14 @@ import parents from '../fixtures/independent-admission/notice-sdk30-parent-whole
 import {CONSUMER_SOURCE_GROUPS as c,CI_CONSUMER_SOURCE_GROUPS as ci} from '../../scripts/lib/independent-admission/consumer-observer-policy';
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
 import {CURRENT_CANONICAL_SOURCE_ROWS} from './source-binding-group.fixture';
+import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 const hash=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 test('SDK30 and Notice fork whole originals both survive before the single actual joint current',()=>{
  // SDK80 append: one new whole group per consumer family; tcb current canonical unchanged.
  // RC383 appends consumer100 for the queued-run state fix.
  expect(c).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.consumer);expect(ci).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.ci);expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
  for(const [groups,prior]of [[c,parents.sdk30Consumer],[ci,parents.sdk30CI],[c,parents.noticeConsumer],[ci,parents.noticeCI]]as const){const all=new Set(groups.map(hash));for(const sha of prior)expect(all.has(sha)).toBe(true);}
- for(const row of current)expect(createHash('sha256').update(fs.readFileSync(path.resolve(import.meta.dir,'../..',row.path))).digest('hex')).toBe(row.sha256);
+ for(const row of current)expect(createHash('sha256').update(readTrackedSource(path.resolve(import.meta.dir,'../..',row.path))).digest('hex')).toBe(row.sha256);
  // The Notice joint recipe, the subsequent SDK31 recipe AND the ORM 0.3.26 joint
  // tail each remain complete: every published parent hash is still present.
  // Frozen 0d parents stay unchanged; only the genuine post-0d tails are appended:
