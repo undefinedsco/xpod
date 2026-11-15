@@ -6,9 +6,10 @@ import current1a01 from './fixtures/rc381-1a01-current-ci-baseline.json';
 import {CI_CONSUMER_SOURCE_GROUPS,CONSUMER_SOURCE_GROUPS} from '../../scripts/lib/independent-admission/consumer-observer-policy';
 import {selectGitHubSourceBindingGroup,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import {CURRENT_SOURCE_GROUP_COUNTS,completeObserved} from './source-binding-group.fixture';
+import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 
 const sha=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
-const disk=(p:string)=>createHash('sha256').update(readFileSync(p)).digest('hex');
+const disk=(p:string)=>createHash('sha256').update(readTrackedSource(p)).digest('hex');
 const PUBLISHED_CI=baseline.ci.aggregates as readonly string[];
 const PUBLISHED_CONSUMER=baseline.consumer.aggregates as readonly string[];
 const ORIGIN='scripts/lib/independent-admission/github-origin.ts';

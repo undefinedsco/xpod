@@ -19,10 +19,11 @@ import {it,expect} from 'vitest';
 import {QLEVER_SDK_EXECUTION_GROUPS as SDK,QLEVER_LINUX_EXECUTION_GROUPS as LINUX} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import {selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import {CURRENT_CANONICAL_SOURCE_ROWS, CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
+import { shaFrozenTracked } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 
 const ROOT=path.resolve(import.meta.dirname,'../..');
 const whole=(g:unknown)=>createHash('sha256').update(JSON.stringify(g)).digest('hex');
-const sha=(p:string)=>createHash('sha256').update(readFileSync(path.join(ROOT,p))).digest('hex');
+const sha=(p:string)=>shaFrozenTracked(ROOT, p);
 const read=(p:string)=>readFileSync(path.join(ROOT,p),'utf8');
 const RECIPE='qlever/scripts/build-qlever-runtime-sdk.sh';
 const VALIDATOR='qlever/scripts/validate-prior-sdk.py';

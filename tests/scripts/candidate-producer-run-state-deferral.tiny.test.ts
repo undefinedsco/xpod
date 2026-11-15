@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {observeCandidateServiceImageGitHubOrigin,observedGitHubRunStateAccepted} from '../../scripts/lib/independent-admission/github-origin';
 import fixture from './fixtures/rc381-queued-run-producer.json';
+import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 
 /** RC381: GitHub reported the global run state as `queued` while the `build_image`
  * producer job had already completed successfully, so the origin observer refused
@@ -55,7 +56,7 @@ function serve(over:{run?:any;producer?:any;artifact?:any;ancestors?:any[]}={}){
       const file=path.join(ROOT,name);
       if(!fs.existsSync(file))throw Error('unexpected contents fixture '+name);
       return new Response(JSON.stringify({type:'file',path:name,encoding:'base64',
-        content:fs.readFileSync(file).toString('base64')}));
+        content:readTrackedSource(file).toString('base64')}));
     }
     throw Error('unexpected fixture request '+rel);
   }) as unknown as typeof fetch;

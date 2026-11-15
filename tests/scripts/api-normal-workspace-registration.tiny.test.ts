@@ -8,8 +8,9 @@ import {CONSUMER_SOURCE_GROUPS,CI_CONSUMER_SOURCE_GROUPS,CONTROLLER_POLICY_BINDI
 import {sourceBindingKey,selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import {controlledApiSourceRecipe,reviewedModuleProducerSource} from '../../scripts/lib/independent-admission/module-source-phases';
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
+import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 const pathResolve=(name:string)=>path.resolve(import.meta.dir,'../..',name);
-const hash=(path:string)=>createHash('sha256').update(readFileSync(pathResolve(path))).digest('hex');
+const hash=(path:string)=>createHash('sha256').update(readTrackedSource(pathResolve(path))).digest('hex');
 const observed=(group:any)=>new Map([...group.selectors,...group.secondarySelectors??[]].map((row:any)=>[sourceBindingKey(row),row.sha256]));
 describe('API normal workspace lifecycle atomic registration',()=>{
  it('all actual candidate source and controller originals match, including shared runtime closure',()=>{
@@ -18,7 +19,7 @@ describe('API normal workspace lifecycle atomic registration',()=>{
  });
  it('retains each old API group and selects only the complete new source tuple',()=>{
   for(const group of API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS)expect(selectGitHubSourceBindingGroup(API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS,completeObserved(API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS,group))).toBe(group);
-  const group=API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS[API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS.length-1]!;const originals=new Map(API_SERVICE_BUILD_SOURCE_BINDINGS.map(row=>[row.path,readFileSync(pathResolve(row.path))]));
+  const group=API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS[API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS.length-1]!;const originals=new Map(API_SERVICE_BUILD_SOURCE_BINDINGS.map(row=>[row.path,readTrackedSource(pathResolve(row.path))]));
   expect(reviewedModuleProducerSource('api',hash('scripts/api-module-producer.py'))).toBe(true);expect(controlledApiSourceRecipe(p=>originals.get(p)!,hash('scripts/api-module-producer.py'),'darwin-arm64').rows).toBe(API_SERVICE_BUILD_SOURCE_BINDINGS);
   const mixed=observed(group);mixed.set('source:scripts/lib/inngest-controlled-build.py','0'.repeat(64));expect(()=>selectGitHubSourceBindingGroup(API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS,mixed)).toThrow();
   originals.set('scripts/lib/api-install-selection.cjs',Buffer.from('changed'));expect(()=>controlledApiSourceRecipe(p=>originals.get(p)!,hash('scripts/api-module-producer.py'),'darwin-arm64')).toThrow();

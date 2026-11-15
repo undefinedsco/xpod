@@ -9,6 +9,7 @@ import {archiveConsumerArtifactName} from '../../scripts/lib/independent-admissi
 import {registryConsumerArtifactName} from '../../scripts/lib/independent-admission/registry-consumer-originals';
 import {CI_CONSUMER_SOURCE_GROUPS,CONSUMER_SOURCE_GROUPS,CALLABLE_PUBLICATION_WORKFLOW_SHA,STAGING_CHECKED_PUBLICATION_WORKFLOW_SHA} from '../../scripts/lib/independent-admission/consumer-observer-policy';
 import {selectGitHubSourceBindingGroup,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
+import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 const root=path.resolve(import.meta.dir,'../..');
 // Current repository originals are source API fixtures, never a real GitHub run.
 const integration=process.env.XPOD_ORIGIN_SOURCE_FIXTURE??root;
@@ -24,7 +25,7 @@ async function scenario(stage:'prepublish'|'postpublish',change:{event?:string;b
   const endpoint=new URL(String(value)).pathname.replace('/repos/undefinedsco/xpod/','');let body:any;
   if(endpoint==='actions/runs/5/attempts/1')body={id:5,run_attempt:1,head_sha:source,repository:{full_name:'undefinedsco/xpod'},head_repository:{full_name:'undefinedsco/xpod'},status:change.status??'in_progress',conclusion:change.conclusion===undefined?null:change.conclusion,event:change.event??'workflow_dispatch',head_branch:change.branch??'staging',workflow_id:7,path:'.github/workflows/ci.yml'};
   else if(endpoint==='actions/workflows/7')body={id:7,path:'.github/workflows/ci.yml'};
-  else if(endpoint.startsWith('contents/')){const name=endpoint.slice(9);let data=fs.readFileSync(path.join(overrides.has(name)?root:integration,name));if(change.legacyWorkflow&&name==='.github/workflows/independent-publication.yml'){
+  else if(endpoint.startsWith('contents/')){const name=endpoint.slice(9);let data=readTrackedSource(path.join(overrides.has(name)?root:integration,name));if(change.legacyWorkflow&&name==='.github/workflows/independent-publication.yml'){
     const block=`      - name: Require exact staging ancestry before installing or executing source
         env:
           SOURCE_SHA: \${{ inputs.source_sha }}
@@ -36,7 +37,7 @@ async function scenario(stage:'prepublish'|'postpublish',change:{event?:string;b
           test -z "$(git status --porcelain --untracked-files=all)"
 `;
     const text=data.toString(),offset=text.lastIndexOf(block);if(offset<0)throw Error('Fixed ancestry fixture block missing');data=Buffer.from(text.slice(0,offset)+text.slice(offset+block.length));
-   }if(name===change.mutate)data=Buffer.concat([data,Buffer.from('\n# unreviewed mutation\n')]);body={type:'file',path:name,encoding:'base64',content:(data.toString('base64').match(/.{1,60}/gu)??[]).join('\n')+'\n'};if(change.nonePolicy&&name==='scripts/lib/independent-admission/consumer-observer-policy.ts')body=JSON.parse(fs.readFileSync(path.join(root,'tests/fixtures/independent-admission/sdk32-policy-contents-none.original.json'),'utf8'));}
+   }if(name===change.mutate)data=Buffer.concat([data,Buffer.from('\n# unreviewed mutation\n')]);body={type:'file',path:name,encoding:'base64',content:(data.toString('base64').match(/.{1,60}/gu)??[]).join('\n')+'\n'};if(change.nonePolicy&&name==='scripts/lib/independent-admission/consumer-observer-policy.ts')body=JSON.parse(readTrackedSource(path.join(root,'tests/fixtures/independent-admission/sdk32-policy-contents-none.original.json'),'utf8'));}
   else if(endpoint==='actions/artifacts/8')body={id:8,expired:false,workflow_run:{id:5,head_sha:source},digest:'sha256:'+digest,size_in_bytes:100,name:stage==='prepublish'?archiveConsumerArtifactName(coordinates):registryConsumerArtifactName(coordinates),created_at:change.artifactTime??'2026-10-17T00:01:00Z'};
   else if(endpoint==='actions/runs/5/attempts/1/jobs')body={total_count:1,jobs:[{id:10,run_id:5,run_attempt:1,head_sha:source,name:change.job??job,status:'completed',conclusion:change.jobConclusion??'success',started_at:'2026-10-17T00:00:00Z',completed_at:'2026-10-17T00:02:00Z',steps:[stage==='prepublish'?'Run fixed archive-installed product consumer':'Run fixed registry-installed product consumer',stage==='prepublish'?'Upload archive consumer originals':'Upload registry consumer originals'].map(name=>({name,status:'completed',conclusion:'success'}))}]};
   else throw Error('Unexpected fixture request '+endpoint);
@@ -59,7 +60,7 @@ test('fixed preinstall reusable workflow selects a separate exact group and reta
  expect(CI_CONSUMER_SOURCE_GROUPS).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.ci);
  expect(githubOriginFacts(await scenario('prepublish'))?.workflowPath).toBe('.github/workflows/ci.yml');
  expect(githubOriginFacts(await scenario('prepublish',{legacyWorkflow:true}))?.workflowPath).toBe('.github/workflows/ci.yml');
- const actualOrigin=createHash('sha256').update(fs.readFileSync(path.join(root,'scripts/lib/independent-admission/github-origin.ts'))).digest('hex');
+ const actualOrigin=createHash('sha256').update(readTrackedSource(path.join(root,'scripts/lib/independent-admission/github-origin.ts'))).digest('hex');
  const currentGroup=(workflow:string)=>CI_CONSUMER_SOURCE_GROUPS.find(group=>group.selectors.some(row=>row.path==='.github/workflows/independent-publication.yml'&&row.sha256===workflow)&&group.sourceBindings.some(row=>row.path==='scripts/lib/independent-admission/github-origin.ts'&&row.sha256===actualOrigin))!;
  const old=currentGroup(CALLABLE_PUBLICATION_WORKFLOW_SHA),fixed=currentGroup(STAGING_CHECKED_PUBLICATION_WORKFLOW_SHA);const tuple=completeObserved(CI_CONSUMER_SOURCE_GROUPS,fixed!);
  expect(selectGitHubSourceBindingGroup(CI_CONSUMER_SOURCE_GROUPS,tuple)).toBe(fixed!);
@@ -67,5 +68,5 @@ test('fixed preinstall reusable workflow selects a separate exact group and reta
 });
 
 test('actual GitHub Contents none response never substitutes for complete source bytes',async()=>{
- const original=fs.readFileSync(path.join(root,'tests/fixtures/independent-admission/sdk32-policy-contents-none.original.json'));expect(createHash('sha256').update(original).digest('hex')).toBe('95255eade9c680d9af1ad81d05747eb1249973c05681737990f29a73596e6bc0');const response=JSON.parse(original.toString());expect(response.encoding).toBe('none');expect(response.content).toBe('');expect(response.size>1024**2).toBe(true);await expect(scenario('prepublish',{nonePolicy:true})).rejects.toThrow();
+ const original=readTrackedSource(path.join(root,'tests/fixtures/independent-admission/sdk32-policy-contents-none.original.json'));expect(createHash('sha256').update(original).digest('hex')).toBe('95255eade9c680d9af1ad81d05747eb1249973c05681737990f29a73596e6bc0');const response=JSON.parse(original.toString());expect(response.encoding).toBe('none');expect(response.content).toBe('');expect(response.size>1024**2).toBe(true);await expect(scenario('prepublish',{nonePolicy:true})).rejects.toThrow();
 });

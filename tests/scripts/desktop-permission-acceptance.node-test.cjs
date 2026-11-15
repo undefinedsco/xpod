@@ -180,6 +180,111 @@ test('hashes the actual bundled launcher chosen by the product resolver; missing
   await assert.rejects(bundledRuntimeHash(missing), /bundled runtime launcher is missing/);
   await assert.rejects(readArchiveRuntime(missing), /bundled runtime launcher is missing/);
 });
+test('reads the runtime from a REAL large bundle whose listings exceed the small-metadata bound', async t => {
+  // The published 0.4.31-rc.425 bundle carries ~82.5k members. Its `unzip -Z1`
+  // name listing is ~12.4MB and its `unzip -Z` long listing ~16.8MB, both larger
+  // than the small-metadata bound that guards a single manifest read. A reader
+  // that buffered either listing through that bound failed with
+  // "archive member exceeds metadata bound" on the REAL artifact.
+  //
+  // The fixture writes the ZIP DIRECTLY with a streaming writer: an extracted
+  // tree of ~80k files/directories would cost enormous inode and IO time while
+  // proving the same archive shape.
+  const parent = path.resolve('.test-data'); fs.mkdirSync(parent, { recursive: true });
+  const directory = fs.mkdtempSync(path.join(parent, 'desktop-permission-large-listing-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const archive = path.join(directory, 'large-bundle.zip');
+
+  const CLI = 'Xpod.app/Contents/Resources/runtime/node_modules/@undefineds.co/xpod-cli';
+  const launcherBytes = Buffer.from('large-bundle launcher bytes');
+  const members = [
+    ['Xpod.app/Contents/Resources/runtime/bin/bun', launcherBytes, 0o755],
+    [`${CLI}/dist/xpod.mjs`, Buffer.from('export {}\n'), 0o644],
+    [`${CLI}/package.json`, Buffer.from(JSON.stringify({
+      name: '@undefineds.co/xpod-cli', version: '0.1.0-preview.2',
+    }) + '\n'), 0o644],
+    ['Xpod.app/Contents/Info.plist', Buffer.from(
+      '<?xml version="1.0"?><plist><dict><key>CFBundleShortVersionString</key><string>0.4.31-rc.425</string></dict></plist>\n'), 0o644],
+  ];
+  // Long names so BOTH listings cross the 8MiB metadata bound. The count is
+  // derived from the measured per-line cost of this layout (~166B in `unzip -Z1`),
+  // with headroom; the test still ASSERT both sizes rather than trusting it.
+  const longName = 'n'.repeat(120);
+  for (let index = 0; index < 60_000; index += 1) {
+    members.push([`Xpod.app/Contents/Resources/bulk/${String(index).padStart(5, '0')}/${longName}-${index}.dat`, Buffer.from('x'), 0o644]);
+  }
+
+  // Build the archive in ONE Python process using zipfile's streaming writer.
+  // The manifest rides along as JSON on stdin; no temporary member tree.
+  const manifestFile = path.join(directory, 'members.json');
+  fs.writeFileSync(manifestFile, JSON.stringify(members.map(([name, bytes, mode]) => ({
+    name, mode, data: Buffer.from(bytes).toString('base64'),
+  }))));
+  const writer = spawnSync('python3', ['-c', [
+    'import base64,json,sys,zipfile',
+    'rows=json.load(open(sys.argv[1]))',
+    'out=sys.argv[2]',
+    'z=zipfile.ZipFile(out,"x",zipfile.ZIP_DEFLATED)',
+    'try:',
+    '  for r in rows:',
+    '    i=zipfile.ZipInfo(r["name"], date_time=(2026,11,15,0,0,0))',
+    '    i.external_attr=(0o100000 | (r["mode"] & 0o777)) << 16',
+    '    i.compress_type=zipfile.ZIP_DEFLATED',
+    '    z.writestr(i, base64.b64decode(r["data"]))',
+    'finally:',
+    '  z.close()',
+  ].join('\n'), manifestFile, archive], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  assert.equal(writer.status, 0, writer.stderr);
+  fs.rmSync(manifestFile, { force: true });
+
+  const listingBytes = spawnSync('unzip', ['-Z1', '--', archive], { maxBuffer: 512 * 1024 * 1024 }).stdout.length;
+  const longBytes = spawnSync('unzip', ['-Z', '--', archive], { maxBuffer: 512 * 1024 * 1024 }).stdout.length;
+  // The fixture must actually reproduce the reported shape, or it proves nothing.
+  assert.ok(listingBytes > 8 * 1024 * 1024, `name listing ${listingBytes} must exceed the 8MiB metadata bound`);
+  assert.ok(longBytes > 8 * 1024 * 1024, `long listing ${longBytes} must exceed the 8MiB metadata bound`);
+
+  const runtime = await readArchiveRuntime(archive);
+  assert.equal(runtime.launcherMember, 'Xpod.app/Contents/Resources/runtime/bin/bun');
+  assert.equal(runtime.launcherSha256, createHash('sha256').update(launcherBytes).digest('hex'));
+  assert.equal(runtime.cliVersion, '0.1.0-preview.2');
+  assert.equal(runtime.desktopVersion, '0.4.31-rc.425');
+  assert.equal(await bundledRuntimeHash(archive), runtime.launcherSha256);
+});
+
+test('reads a real bundle whose tree contains multibyte paths', async t => {
+  // HONEST SCOPE: this proves the shipped reader tolerates a REAL archive with
+  // multibyte member paths and still resolves the ASCII runtime members. It does
+  // NOT prove reassembly of a codepoint split across stdout chunks - that would
+  // need a controlled chunk boundary, and macOS Info-ZIP `unzip` does not even
+  // round-trip non-ASCII names, so no such claim is made here.
+  const parent = path.resolve('.test-data'); fs.mkdirSync(parent, { recursive: true });
+  const directory = fs.mkdtempSync(path.join(parent, 'desktop-permission-utf8-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const archive = path.join(directory, 'unicode.zip');
+  const cliRoot = path.join(directory, 'Xpod.app/Contents/Resources/runtime/node_modules/@undefineds.co/xpod-cli');
+  fs.mkdirSync(path.join(cliRoot, 'dist'), { recursive: true });
+  fs.mkdirSync(path.join(directory, 'Xpod.app/Contents/Resources/runtime/bin'), { recursive: true });
+  fs.writeFileSync(path.join(directory, 'Xpod.app/Contents/Resources/runtime/bin/bun'), 'bun', { mode: 0o755 });
+  fs.writeFileSync(path.join(cliRoot, 'dist/xpod.mjs'), 'export {}\n');
+  fs.writeFileSync(path.join(cliRoot, 'package.json'),
+    JSON.stringify({ name: '@undefineds.co/xpod-cli', version: '0.1.0-preview.2' }) + '\n');
+  fs.writeFileSync(path.join(directory, 'Xpod.app/Contents/Info.plist'),
+    '<?xml version="1.0"?><plist><dict><key>CFBundleShortVersionString</key><string>0.4.31-rc.425</string></dict></plist>\n');
+  const resources = path.join(directory, 'Xpod.app/Contents/Resources');
+  for (let index = 0; index < 300; index += 1) {
+    fs.writeFileSync(path.join(resources, `资源-${index}-🚀.dat`), 'x');
+  }
+  assert.equal(spawnSync('zip', ['-qr', archive, 'Xpod.app'], { cwd: directory }).status, 0);
+  // The fixture is only meaningful if multibyte paths really are in the archive.
+  const rawNames = spawnSync('unzip', ['-Z1', '--', archive], { encoding: 'buffer', maxBuffer: 64 * 1024 * 1024 }).stdout;
+  assert.ok(rawNames.length > 0);
+
+  const runtime = await readArchiveRuntime(archive);
+  assert.equal(runtime.launcherMember, 'Xpod.app/Contents/Resources/runtime/bin/bun');
+  assert.equal(runtime.cliVersion, '0.1.0-preview.2');
+  assert.equal(await bundledRuntimeHash(archive), runtime.launcherSha256);
+});
+
 test('rejects a bundled CLI manifest with a wrong name, version or missing member', async t => {
   const parent = path.resolve('.test-data'); fs.mkdirSync(parent, { recursive: true });
   const directory = fs.mkdtempSync(path.join(parent, 'desktop-permission-cli-'));

@@ -10,6 +10,7 @@ import {QLEVER_SDK_EXECUTION_GROUPS as sdk} from '../../scripts/lib/independent-
 import {CONSUMER_SOURCE_GROUPS as consumer,CI_CONSUMER_SOURCE_GROUPS as ci} from '../../scripts/lib/independent-admission/consumer-observer-policy';
 import {sourceBindingKey as key,selectGitHubSourceBindingGroup as select} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import {CURRENT_CANONICAL_SOURCE_ROWS,completeObserved,observedSecondaryBindings} from './source-binding-group.fixture';
+import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 const sha=(bytes:string|Buffer)=>createHash('sha256').update(bytes).digest('hex');
 test('API18 preserves all SDK31 complete historical groups and binds actual runtime closure',()=>{
  const groups={api,sdk,consumer,ci};
@@ -17,7 +18,7 @@ test('API18 preserves all SDK31 complete historical groups and binds actual runt
  const root=fileURLToPath(new URL('../../',import.meta.url));expect(current.length).toBe(CURRENT_CANONICAL_SOURCE_ROWS);// CURRENT alias follows the newest reviewed tuple: API33 adds exactly ONE owned CJS row
  // (the historical API32 tuple keeps its own 82 rows and frozen whole hash).
  expect(API_SERVICE_BUILD_SOURCE_BINDINGS.length).toBe(83);
- for(const row of [...current,...API_SERVICE_BUILD_SOURCE_BINDINGS])expect(sha(readFileSync(join(root,row.path)))).toBe(row.sha256);
+ for(const row of [...current,...API_SERVICE_BUILD_SOURCE_BINDINGS])expect(sha(readTrackedSource(join(root,row.path)))).toBe(row.sha256);
 });
 // Keep every historical tuple and missing-role assertion in its own bounded test.
 for(const [name,groups] of Object.entries({api,sdk,consumer,ci}))for(const [index,group] of groups.entries())

@@ -9,8 +9,9 @@ import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as api} from '../../scripts/lib/
 import {QLEVER_SDK_EXECUTION_GROUPS as sdk,QLEVER_SDK_CONSUMER_GROUPS as currentSdkConsumer} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import {CONSUMER_SOURCE_GROUPS as consumer,CI_CONSUMER_SOURCE_GROUPS as ci} from '../../scripts/lib/independent-admission/consumer-observer-policy';
 import {sourceBindingKey as key,secondaryGitHubSourceBindingSelectors as secondary,selectGitHubSourceBindingGroup as select} from '../../scripts/lib/independent-admission/github-source-binding-groups';
+import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 import{CURRENT_CANONICAL_SOURCE_ROWS, completeObserved,observedSecondaryBindings}from'./source-binding-group.fixture';
-const root=fileURLToPath(new URL('../../',import.meta.url)),read=(p:string)=>readFileSync(join(root,p)),sha=(b:string|Buffer)=>createHash('sha256').update(b).digest('hex');
+const root=fileURLToPath(new URL('../../',import.meta.url)),read=(p:string)=>readTrackedSource(join(root,p)),sha=(b:string|Buffer)=>createHash('sha256').update(b).digest('hex');
 test('SDK33 preserves every SDK32/API18 complete original tree and binds its actual diagnostic helpers',()=>{
  // API29/CLI unchanged; the SDK80 append adds one whole group per family.
  const groups={api,sdk,consumer,ci};
