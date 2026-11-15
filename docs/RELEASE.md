@@ -618,8 +618,10 @@ image 并等待 readiness，然后输出 diagnostics。回滚不是新发布；�
 stable promotion 不得覆写它。`scripts/publish-workspace-packages.cjs` 对已存在的
 版本执行只读复用校验：从 registry 下载该版本的精确 tarball，先按
 `dist.integrity` 校验原始字节，再逐项比较完整载荷——成员文件名、类型、权限位、
-内容以及 manifest 语义字段——仅显式排除 provenance 字段 `gitHead`。内容一致
-（只有 `gitHead` 不同）时，直接复用该已验证的已发布 tarball，不再重新发布。
+内容以及 manifest 语义字段。只允许两类构建来源差异：manifest 的 `gitHead`，以及
+材料收集器生成的 `dist/materials/{build-provenance,source-inventory,index}.json`
+中的 `sourceAuthority.sourceCommit` 和由其变化产生的两个子文件索引摘要。
+其余载荷一致时，直接复用已验证的已发布 tarball，不再重新发布或改写其来源记录。
 
 必须区分两个 SHA：
 
@@ -627,10 +629,15 @@ stable promotion 不得覆写它。`scripts/publish-workspace-packages.cjs` 对�
   也是 `npm pack` 注入到 `gitHead` 的值；
 - **shared artifact original gitHead**：该共享包版本最初发布时的 commit。
 
-用一个新的 accepted root SHA 重跑时，`gitHead` 必然变化，所以重新打包的 tarball
-字节不可能与已发布版本逐字节相同；这不是内容漂移。只要该版本的运行时、类型、
-CSS、文件集合、权限位与 manifest 语义字段都未变、仅 `gitHead` 不同，就判定为可
-复用并沿用已发布字节，而不是重新发布。若除 `gitHead` 外任何内容、成员集合、
+用一个新的 accepted root SHA 重跑时，`gitHead` 和材料中的 `sourceCommit` 会变化，
+因此重新打包的 tarball 不要求与已发布版本逐字节相同。比较器须先分别核对两份材料的
+原始索引大小和摘要，包括 `build-provenance.json`、`source-inventory.json` 的真实摘要；
+再确认三份材料的提交一致、格式符合收集器输出、源文件清单与实际字节对应，才能在
+比较时排除上述来源差异。缺失材料走原有逐字节比较，不得获得来源差异豁免。
+
+运行时、类型、CSS、源内容快照、编译器与目标平台、文件集合、权限位以及其他材料
+和 manifest 语义字段仍须一致。复用保留发布原件的来源提交，不把它改标为本轮
+accepted root SHA。若除上述来源差异外任何内容、成员集合、
 权限或 manifest 语义字段（`name`、`version`、`types`、`exports`、`dependencies`、
 `peerDependencies`、`optionalDependencies`、`devDependencies` 等）发生变化，或
 tarball 损坏、integrity 不匹配、出现重复成员、路径穿越、链接或不受支持的条目
