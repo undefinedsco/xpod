@@ -1261,6 +1261,12 @@ static int source_scope_resolution_calls = 0;
 static xpod_rdf_status source_scope_resolution_status = XPOD_RDF_STATUS_OK;
 static xpod_rdf_status graph_lookup_status = XPOD_RDF_STATUS_OK;
 static int graph_lookup_calls = 0;
+// Dictionary presence and graph membership are separate facts: a graph IRI can
+// be interned as another document's subject/object while the graph owns nothing.
+static bool graph_owns_facts = false;
+static int graph_membership_probe_calls = 0;
+static xpod_rdf_status graph_membership_probe_status = XPOD_RDF_STATUS_OK;
+static uint64_t last_membership_probe_limit = 0;
 static const xpod_rdf_cancellation* expected_vector_cancellation = nullptr;
 static std::string vector_events;
 static std::string qec_cache_modes;
@@ -1784,6 +1790,33 @@ static xpod_rdf_status scan(
         request->term_tuple_filter == nullptr
             ? 0
             : request->term_tuple_filter->row_count);
+  }
+  // Prepared-update ownership probe: exact graph scope, unbound pattern, no
+  // access scope, and a row limit. Answer from graph membership (not the global
+  // dictionary) and never exceed the requested limit.
+  if (request->graph_scope.kind == XPOD_RDF_GRAPH_SCOPE_EXACT &&
+      !request->pattern.has_subject && !request->pattern.has_predicate &&
+      !request->pattern.has_object && !request->pattern.has_graph &&
+      request->access_scope == nullptr && request->limit == 1) {
+    graph_membership_probe_calls += 1;
+    last_membership_probe_limit = request->limit;
+    if (expected_vector_cancellation != nullptr &&
+        request->cancellation != expected_vector_cancellation) {
+      return XPOD_RDF_STATUS_BACKEND_ERROR;
+    }
+    if (graph_membership_probe_status != XPOD_RDF_STATUS_OK) {
+      return graph_membership_probe_status;
+    }
+    if (!graph_owns_facts ||
+        request->graph_scope.exact_graph != 40) {
+      return XPOD_RDF_STATUS_OK;
+    }
+    xpod_rdf_quad_key rows[1] = {{10, 20, 30, 40}};
+    xpod_rdf_quad_batch batch = {};
+    batch.rows = rows;
+    batch.row_count = 1;
+    batch.scanned_rows = 1;
+    return on_batch(callback_user_data, &batch);
   }
   if (request->snapshot.snapshot_token.size != 7) return XPOD_RDF_STATUS_BACKEND_ERROR;
   if (std::string_view(request->snapshot.snapshot_token.data, request->snapshot.snapshot_token.size) != "snap-v1") return XPOD_RDF_STATUS_BACKEND_ERROR;
@@ -2558,17 +2591,36 @@ int main() {
       scan_state.transaction_commit_calls;
   const int rollbacks_before_existing_graph =
       scan_state.transaction_rollback_calls;
+  const int probe_calls_before_existing_graph =
+      graph_membership_probe_calls;
+  // REGRESSION A (old failure): the graph IRI urn:g is already interned, but
+  // only as another document's object. The graph owns no facts, so this is a
+  // legitimate FIRST insert into a new graph and must prepare successfully.
+  graph_owns_facts = false;
   status = xpod_qlever_adapter_query_request(
       adapter, &prepared_request, &result);
-  if (status != XPOD_RDF_STATUS_UNSUPPORTED) return 110;
-  if (scan_state.mutation_calls != mutations_before_existing_graph) {
-    return 111;
+  body = std::string_view(result.result_json.data, result.result_json.size);
+  if (status != XPOD_RDF_STATUS_OK) return 110;
+  if (std::string_view(result.result_media_type.data,
+                       result.result_media_type.size) != prepared_media_type) {
+    return 201;
   }
-  if (graph_lookup_calls != graph_lookups_before_existing_graph + 1) {
+  if (body.find("\\"graphIri\\":\\"urn:g\\"") == std::string_view::npos) return 202;
+  if (body.find("\\"sourceUri\\":\\"urn:g\\"") == std::string_view::npos) return 203;
+  if (body.find("\\"inserts\\":[{\\"subject\\":{\\"type\\":\\"uri\\",\\"value\\":\\"urn:s\\"}") == std::string_view::npos) return 204;
+  // One lookup to resolve the graph term, one more by the staged-quad
+  // existence scan once the prepare progresses past validation.
+  if (graph_lookup_calls != graph_lookups_before_existing_graph + 2) {
     return 112;
   }
+  if (graph_membership_probe_calls !=
+      probe_calls_before_existing_graph + 1) return 205;
+  if (last_membership_probe_limit != 1) return 206;
   if (source_scope_resolution_calls !=
       source_scope_calls_before_existing_graph + 1) return 120;
+  if (scan_state.mutation_calls != mutations_before_existing_graph + 1) {
+    return 111;
+  }
   if (scan_state.transaction_begin_calls != begins_before_existing_graph + 1) {
     return 121;
   }
@@ -2581,6 +2633,49 @@ int main() {
       scan_state.committed_prepared_quad_exists) return 124;
 
   xpod_qlever_adapter_release_result(adapter, &result);
+
+  // REGRESSION B (preserved rejection): the same interned IRI, but the graph
+  // actually owns facts and has no resolvable source. This is genuine ambiguous
+  // ownership and must stay fail-closed.
+  graph_owns_facts = true;
+  const int mutations_before_orphan_graph = scan_state.mutation_calls;
+  const int begins_before_orphan_graph = scan_state.transaction_begin_calls;
+  const int probe_calls_before_orphan_graph =
+      graph_membership_probe_calls;
+  status = xpod_qlever_adapter_query_request(
+      adapter, &prepared_request, &result);
+  {
+    std::string_view orphan_error(
+        result.error_message.data, result.error_message.size);
+    if (status != XPOD_RDF_STATUS_UNSUPPORTED) return 207;
+    if (orphan_error.find(
+            "prepared update source provenance is not uniquely identified") ==
+        std::string_view::npos) return 208;
+  }
+  if (graph_membership_probe_calls !=
+      probe_calls_before_orphan_graph + 1) return 209;
+  if (scan_state.mutation_calls != mutations_before_orphan_graph) return 210;
+  // Rejection happens after the transaction opened but before any mutation was
+  // applied, so the transaction must be rolled back and left inactive.
+  if (scan_state.transaction_begin_calls != begins_before_orphan_graph + 1) {
+    return 211;
+  }
+  if (scan_state.transaction_active) return 214;
+
+  xpod_qlever_adapter_release_result(adapter, &result);
+
+  // REGRESSION C (preserved rejection): a failed membership probe must fail
+  // closed instead of falling through to "new graph".
+  graph_owns_facts = false;
+  graph_membership_probe_status = XPOD_RDF_STATUS_BACKEND_ERROR;
+  status = xpod_qlever_adapter_query_request(
+      adapter, &prepared_request, &result);
+  graph_membership_probe_status = XPOD_RDF_STATUS_OK;
+  if (status != XPOD_RDF_STATUS_BACKEND_ERROR) return 212;
+  if (scan_state.mutation_calls != mutations_before_orphan_graph) return 213;
+
+  xpod_qlever_adapter_release_result(adapter, &result);
+
 
   graph_lookup_status = XPOD_RDF_STATUS_NOT_FOUND;
   const int source_scope_calls_before_new_graph =
