@@ -19,7 +19,12 @@ import publishedSdk94 from './fixtures/published-sdk94-source-binding-versioning
 import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 
 const ROOT=path.resolve(import.meta.dir,'../..');
+// REFERENCED_GRAPH_PG_REGISTRATION appends exactly ONE variant each to the SDK/Linux
+// consumer tails and to the reviewed normal-source allow-list; the single shared
+// CURRENT registration fixture carries those totals, so this file reads it directly
+// and keeps no second copy.
 const CURRENT_SDK_CONSUMER_GROUP_COUNT=CURRENT_SOURCE_GROUP_COUNTS.sdkConsumer;
+const CURRENT_NORMAL_SOURCE_GROUP_COUNT=CURRENT_SOURCE_GROUP_COUNTS.normal;
 const sha=(value:Buffer|string)=>createHash('sha256').update(value).digest('hex');
 const disk=(name:string)=>sha(readTrackedSource(path.join(ROOT,name)));
 const whole=(group:unknown)=>sha(JSON.stringify(group));
@@ -314,7 +319,7 @@ test('SDK103 stays the FROZEN consumer for the RC380 GNU long-name pack repair',
   expect(sdk103.secondarySelectors).toEqual(sdk102.secondarySelectors);
   // Frozen axes must not move: every published normal-source group stays at its
   // history, and only the appended CURRENT generations track live bytes.
-  expect(QLEVER_NORMAL_SOURCE_GROUPS).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.normal);
+  expect(QLEVER_NORMAL_SOURCE_GROUPS).toHaveLength(CURRENT_NORMAL_SOURCE_GROUP_COUNT);
   expect(whole(QLEVER_SDK_NORMAL_SOURCE_BINDINGS)).toBe(publishedSdk93.published.normalFlatBindingsSha256);
   expect(QLEVER_SDK_NORMAL_SOURCE_BINDINGS).toHaveLength(23);
   // SDK103 is FROZEN history, so its bytes are checked against the published
@@ -489,8 +494,8 @@ test('SDK96/97/98/99/100/101/102/103 trees select their own tuple; current tree 
 });
 
 test('normal producer keeps the frozen 23-row flat list and all earlier groups',()=>{
-  expect(QLEVER_NORMAL_SOURCE_GROUPS).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.normal);
-  const [old,next,dockerignore,registry,currentNormal,scopeNormal,retryPredecessor,activeNormal,platformNormal,currentCleanup]=QLEVER_NORMAL_SOURCE_GROUPS;
+  expect(QLEVER_NORMAL_SOURCE_GROUPS).toHaveLength(CURRENT_NORMAL_SOURCE_GROUP_COUNT);
+  const [old,next,dockerignore,registry,currentNormal,scopeNormal,retryPredecessor,activeNormal,platformNormal,rc399Cleanup,currentCleanup]=QLEVER_NORMAL_SOURCE_GROUPS;
   // RC397: groups 6 (RC392), 7 (RC396 scope) and 8 (RC398 platform) are FROZEN
   // history; only the appended group 9 tracks today's candidate-workflow bytes.
   // Compare whole groups, not one row.
@@ -504,6 +509,9 @@ test('normal producer keeps the frozen 23-row flat list and all earlier groups',
   // reviewed CURRENT bytes are the ones now in the tree. RC396/397/398 above keep
   // their frozen values. Root declarations are restored after API preparation.
   const RC399_CANDIDATE='43a9114d330a544f5ffd3a54e1ab6530dca6a28379da2c26b2fcf1a089235ec8';
+  // Group 10 is the appended CURRENT variant (referenced-graph PG pin); group 9
+  // keeps its reviewed RC399 bytes as frozen history.
+  const REFERENCED_GRAPH_PG_CANDIDATE='3b3bb13fd5abd3670ba9577a1dc7082b420732d4552f5d5cfe2cf57269baf8cf';
   expect(old!.sourceBindings).toBe(QLEVER_SDK_NORMAL_SOURCE_BINDINGS);
   expect(QLEVER_SDK_NORMAL_SOURCE_BINDINGS).toHaveLength(23);
   expect(whole(QLEVER_SDK_NORMAL_SOURCE_BINDINGS)).toBe(publishedSdk93.published.normalFlatBindingsSha256);
@@ -537,9 +545,12 @@ test('normal producer keeps the frozen 23-row flat list and all earlier groups',
   // Group 8 is now FROZEN history: it keeps the reviewed RC398 bytes.
   expect(row(platformNormal!,'.github/workflows/candidate.yml').map(value=>value.sha256))
     .toEqual([RC398_CANDIDATE]);
-  // Group 9 is the CURRENT reviewed version: the actual bytes in the tree.
-  expect(row(currentCleanup!,'.github/workflows/candidate.yml').map(value=>value.sha256))
+  // Group 9 is FROZEN published history: it keeps its reviewed RC399 bytes.
+  expect(row(rc399Cleanup!,'.github/workflows/candidate.yml').map(value=>value.sha256))
     .toEqual([RC399_CANDIDATE]);
+  // Group 10 is the CURRENT reviewed version: the actual bytes in the tree.
+  expect(row(currentCleanup!,'.github/workflows/candidate.yml').map(value=>value.sha256))
+    .toEqual([REFERENCED_GRAPH_PG_CANDIDATE]);
   expect(row(currentCleanup!,'.github/workflows/candidate.yml').map(value=>value.sha256))
     .toEqual([disk('.github/workflows/candidate.yml')]);
   expect(row(activeNormal!,'.github/workflows/candidate.yml').map(value=>value.sha256))
@@ -551,7 +562,7 @@ test('normal producer keeps the frozen 23-row flat list and all earlier groups',
   // The appended generation rebinds only the owned candidate row: the stage
   // shape and selectors are inherited unchanged.
   expect((currentCleanup!.secondarySelectorStages??[]).length)
-    .toBe((platformNormal!.secondarySelectorStages??[]).length);
+    .toBe((rc399Cleanup!.secondarySelectorStages??[]).length);
   expect(platformNormal!.selectors).toEqual(activeNormal!.selectors);
   expect(currentCleanup!.selectors).toEqual(platformNormal!.selectors);
   expect(scopeNormal!.selectors).toEqual(retryPredecessor!.selectors);
