@@ -1,3 +1,4 @@
+import {currentProgramSdkConsumerGroups} from '../../scripts/lib/independent-admission/current-program-definition';
 import {test,expect} from 'bun:test';import {createHash} from 'node:crypto';import fs from 'node:fs';import path from 'node:path';
 import previous from '../fixtures/independent-admission/sdk26-pre-template-source-groups.original.json';
 import {QLEVER_SDK_EXECUTION_GROUPS as sdk,QLEVER_SDK_CONSUMER_GROUPS as consumerSdk} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
@@ -15,5 +16,5 @@ test('SDK26 preserves every old whole source recipe and promotes only its own ma
   }
  }
  expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);for(const row of current)expect(createHash('sha256').update(readTrackedSource(path.resolve(import.meta.dir,'../..',row.path))).digest('hex')).toBe(row.sha256);
- const latest=consumerSdk[consumerSdk.length-1]!;for(const row of [...latest.selectors,...latest.sourceBindings])expect(createHash('sha256').update(readTrackedSource(path.resolve(import.meta.dir,'../..',row.path))).digest('hex')).toBe(row.sha256);
+ const latest=currentProgramSdkConsumerGroups().at(-1)!;for(const row of [...latest.selectors,...latest.sourceBindings])expect(createHash('sha256').update(readTrackedSource(path.resolve(import.meta.dir,'../..',row.path))).digest('hex')).toBe(row.sha256);
 });

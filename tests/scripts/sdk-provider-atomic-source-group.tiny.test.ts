@@ -1,3 +1,4 @@
+import {currentProgramSdkConsumerGroups} from '../../scripts/lib/independent-admission/current-program-definition';
 import {completeObserved} from './source-binding-group.fixture';
 import {test,expect} from 'bun:test';
 import {CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
@@ -41,7 +42,7 @@ test('all twenty-two SDK whole recipes select uniquely and current runtime impor
  expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.sdk);
  for(const group of QLEVER_SDK_EXECUTION_GROUPS)expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,completeObserved(QLEVER_SDK_EXECUTION_GROUPS,group))).toBe(group);
  const current=QLEVER_SDK_EXECUTION_GROUPS.at(-1)!;
- const currentConsumer=QLEVER_SDK_CONSUMER_GROUPS.at(-1)!;
+ const currentConsumer=currentProgramSdkConsumerGroups().at(-1)!;
  for(const row of [...currentConsumer.selectors,...currentConsumer.sourceBindings])expect(createHash('sha256').update(readTrackedSource(path.join(root,row.path))).digest('hex')).toBe(row.sha256);
  expect(current.sourceBindings.some(row=>row.path==='qlever/scripts/sdk-tool-provider-originals.py')).toBe(true);
  const old=QLEVER_SDK_EXECUTION_GROUPS[17]!;

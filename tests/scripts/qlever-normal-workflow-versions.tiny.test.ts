@@ -3,6 +3,7 @@ import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 import {normalWorkflowVersions,normalWorkflowVersionsFrom} from '../../scripts/lib/independent-admission/github-origin';
 import {resolveCandidateWorkflowContract,resolveCandidateWorkflowContractFrom} from '../../scripts/lib/independent-admission/qlever-sdk-originals';
+import {currentProgramNormalSourceGroups,currentProgramSdkConsumerGroups} from '../../scripts/lib/independent-admission/current-program-definition';
 import {
   QLEVER_NORMAL_SOURCE_GROUPS, QLEVER_SDK_CONSUMER_GROUPS, QLEVER_SDK_EXECUTION_GROUPS,
   QLEVER_SDK_NORMAL_CANDIDATE_WORKFLOW_SHA,
@@ -80,9 +81,10 @@ test('a normal group with no candidate binding, or an invalid hash, fails closed
 
 test('the production set derives from the normal axis and keeps the published constant',()=>{
  const versions=normalWorkflowVersions();
- // Every version is genuinely declared by a normal-source recipe.
+ // Every version is genuinely declared by the CURRENT normal axis (frozen history
+ // plus this program's derived declaration), never an invented value.
  const declared=new Set<string>();
- for(const source of QLEVER_NORMAL_SOURCE_GROUPS as readonly GitHubSourceBindingGroup[]){
+ for(const source of currentProgramNormalSourceGroups() as readonly GitHubSourceBindingGroup[]){
   for(const role of [...source.selectors,...(source.secondarySelectors??[]),
    ...(source.secondarySelectorStages??[]).flat(),...source.sourceBindings]){
    if(role.path===CANDIDATE) declared.add(role.sha256);
@@ -95,17 +97,27 @@ test('the production set derives from the normal axis and keeps the published co
 });
 
 test('the ACTUAL on-disk candidate workflow is reviewed and resolves on the consumer axis',()=>{
- // Independent of any policy value: the bytes really in the tree.
- // CURRENT reviewed candidate bytes (this generation pins the referenced-graph PG
- // image digest and names the retained SDK393 digest for the checked incremental
- // build; the qlever/ tree is unchanged, so recipe identity rows stay byte-exact).
- expect(DISK_WORKFLOW_SHA).toBe('3b3bb13fd5abd3670ba9577a1dc7082b420732d4552f5d5cfe2cf57269baf8cf');
+ // CURRENT identity is DERIVED from this checkout by the one program definition
+ // factory; no workflow hash literal is copied here.
+ const current=currentProgramNormalSourceGroups();
+ const derived=current[current.length-1]!;
+ const derivedWorkflow=derived.secondarySelectors?.filter(role=>role.path===CANDIDATE)??[];
+ expect(derivedWorkflow.map(role=>role.sha256)).toEqual([DISK_WORKFLOW_SHA]);
+ // The frozen prefix is byte-identical history; the derived tail differs ONLY in
+ // candidate-workflow rows and inherits every other role unchanged.
+ expect(current.slice(0,-1)).toEqual(QLEVER_NORMAL_SOURCE_GROUPS);
+ const base=QLEVER_NORMAL_SOURCE_GROUPS[QLEVER_NORMAL_SOURCE_GROUPS.length-1]!;
+ const nonWorkflow=(group:GitHubSourceBindingGroup)=>[
+  ...group.selectors,...(group.secondarySelectors??[]),...(group.secondarySelectorStages??[]).flat(),...group.sourceBindings,
+ ].filter(role=>role.path!==CANDIDATE);
+ expect(nonWorkflow(derived)).toEqual(nonWorkflow(base));
  // The previously reviewed RC399 bytes stay accepted history, never replaced.
  expect(normalWorkflowVersions()).toContain('43a9114d330a544f5ffd3a54e1ab6530dca6a28379da2c26b2fcf1a089235ec8');
  // The previously reviewed RC398 bytes stay accepted history, never replaced.
  expect(normalWorkflowVersions()).toContain('f488709ab38b7d42f58accd90cbe59a162eae89ee23169db9b28ecdf264a7581');
  // The real production set must review those exact bytes.
  expect(normalWorkflowVersions()).toContain(DISK_WORKFLOW_SHA);
+ expect(normalWorkflowVersions()).toContain(currentProgramSdkConsumerGroups()[currentProgramSdkConsumerGroups().length-1]!.candidateServiceRelationship!.workflowSha256);
  // The real production resolver must map them to a contract on the CONSUMER axis.
  const resolved=resolveCandidateWorkflowContract(DISK_WORKFLOW_SHA);
  expect(resolved).toBeDefined();

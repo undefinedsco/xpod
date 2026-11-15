@@ -606,14 +606,36 @@ function rc399ConsumerVariant<T extends GitHubSourceBindingGroup>(
     sourceBindings: Object.freeze(group.sourceBindings.map(rebind)),
   }) as T;
 }
+/** The preceding source recipes are published history. Freeze their former
+ * held-file tuple before adding the CURRENT program declaration below. */
+const REFERENCED_GRAPH_CONTROLLER_BINDINGS = Object.freeze([{"path":"scripts/lib/independent-admission/consumer-observer-policy.ts","sha256":"0d5a051e88249791f0ce6c441d06c01c5599091db32f1d40505dfb0a215b7cec"},{"path":"scripts/lib/independent-admission/consumer-execution-current.json","sha256":"16a9fe4b344b6e6be699676fc626cebed12d0394db582d56f59c33954f9da93a"}].map(row => Object.freeze(row)));
+
+/** CURRENT expectations come from the single canonical program inventory. This
+ * does not qualify an artifact: original acquisition and all custody checks are
+ * unchanged. A changed controller selector discriminates this variant before
+ * any newly owned dependency can be requested. */
+function currentProgramConsumerVariant(group: GitHubSourceBindingGroup): GitHubSourceBindingGroup {
+  const bindings = new Map([...canonicalCurrent, ...CONTROLLER_POLICY_BINDINGS].map(row => [row.path, row]));
+  const rebind = (row: GitHubSourceBinding): GitHubSourceBinding => bindings.get(row.path) ?? row;
+  const helper = bindings.get('scripts/lib/independent-admission/current-program-definition.ts');
+  if (!helper) throw Error('Current program dependency missing from canonical inventory');
+  return Object.freeze({
+    ...group,
+    selectors: Object.freeze(group.selectors.map(rebind)),
+    secondarySelectors: Object.freeze((group.secondarySelectors ?? []).map(rebind)),
+    ...(group.secondarySelectorStages ? {secondarySelectorStages: Object.freeze(group.secondarySelectorStages.map(stage => Object.freeze(stage.map(rebind))))} : {}),
+    sourceBindings: Object.freeze([...group.sourceBindings.map(rebind), helper]),
+  });
+}
 export const CONSUMER_SOURCE_GROUPS = Object.freeze([
   ...reviewedDeclarations.consumer,
   rc398ConsumerVariant(reviewedDeclarations.consumer[112]!),
   rc399ConsumerVariant(reviewedDeclarations.consumer[112]!),
   // REFERENCED_GRAPH_PG_REGISTRATION: ONE appended generic variant after the published
-  // consumer115. It is the only tail that binds the new SDK policy bytes and the live
-  // held-FD controller tuple, so the published prefix above stays byte-exact.
-  rc399ConsumerVariant(reviewedDeclarations.consumer[112]!, QLEVER_REFERENCED_GRAPH_PG_POLICY_SHA256, CONTROLLER_POLICY_BINDINGS),
+  // consumer115. Its former held-file tuple is now frozen; only the final CURRENT
+  // program variant uses the live controller tuple.
+  rc399ConsumerVariant(reviewedDeclarations.consumer[112]!, QLEVER_REFERENCED_GRAPH_PG_POLICY_SHA256, REFERENCED_GRAPH_CONTROLLER_BINDINGS),
+  currentProgramConsumerVariant(rc399ConsumerVariant(reviewedDeclarations.consumer[112]!)),
 ]);
 export const CI_CONSUMER_SOURCE_GROUPS = Object.freeze([
   ...reviewedDeclarations.ci,
@@ -623,8 +645,10 @@ export const CI_CONSUMER_SOURCE_GROUPS = Object.freeze([
   rc399ConsumerVariant(reviewedDeclarations.ci[229]!),
   // REFERENCED_GRAPH_PG_REGISTRATION: ONE appended CI pair after the published ci234,
   // mirroring the two published CI groups.
-  rc399ConsumerVariant(reviewedDeclarations.ci[228]!, QLEVER_REFERENCED_GRAPH_PG_POLICY_SHA256, CONTROLLER_POLICY_BINDINGS),
-  rc399ConsumerVariant(reviewedDeclarations.ci[229]!, QLEVER_REFERENCED_GRAPH_PG_POLICY_SHA256, CONTROLLER_POLICY_BINDINGS),
+  rc399ConsumerVariant(reviewedDeclarations.ci[228]!, QLEVER_REFERENCED_GRAPH_PG_POLICY_SHA256, REFERENCED_GRAPH_CONTROLLER_BINDINGS),
+  rc399ConsumerVariant(reviewedDeclarations.ci[229]!, QLEVER_REFERENCED_GRAPH_PG_POLICY_SHA256, REFERENCED_GRAPH_CONTROLLER_BINDINGS),
+  currentProgramConsumerVariant(rc399ConsumerVariant(reviewedDeclarations.ci[228]!)),
+  currentProgramConsumerVariant(rc399ConsumerVariant(reviewedDeclarations.ci[229]!)),
 ]);
 freezeGitHubSourceBindingGroups(CONSUMER_SOURCE_GROUPS);
 freezeGitHubSourceBindingGroups(CI_CONSUMER_SOURCE_GROUPS);

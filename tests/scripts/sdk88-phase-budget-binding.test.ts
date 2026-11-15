@@ -1,3 +1,4 @@
+import {currentProgramSdkConsumerGroups} from '../../scripts/lib/independent-admission/current-program-definition';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -66,7 +67,7 @@ describe('SDK88 phase-derived budget binding', () => {
     expect(frozen.candidateServiceRelationship!.workflowSha256).toBe(expected);
     expect(frozen.outerExecutor!.additionalWorkflows!.find((row: any) => row.path === candidate)!.sha256).toBe(expected);
     expect(frozen.secondarySelectorStages![1]![0]).toEqual({path: candidate, sha256: expected});
-    const current = CURRENT_SDK.at(-1)!;
+    const current = currentProgramSdkConsumerGroups().at(-1)!;
     expect(current.candidateServiceRelationship!.sdkBuildExecutionModel).toBe('normal-build-v1');
     expect(current.candidateServiceRelationship!.workflowSha256).toBe(sha(candidate));
     expect(current.sourceBindings.find((row: any) => row.path === candidate)!.sha256).toBe(sha(candidate));

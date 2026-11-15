@@ -9,6 +9,7 @@ import {CONSUMER_SOURCE_GROUPS as C,CI_CONSUMER_SOURCE_GROUPS as I} from '../../
 import {QLEVER_SDK_EXECUTION_GROUPS as S,QLEVER_SDK_CONSUMER_GROUPS as SC} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import {selectGitHubSourceBindingGroup as select,secondaryGitHubSourceBindingSelectors as secondary,sourceBindingKey as key,type GitHubSourceBindingGroup} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
+import {currentProgramSdkConsumerGroups} from '../../scripts/lib/independent-admission/current-program-definition';
 const root=path.resolve(import.meta.dir,'../..'),sha=(v:string|Buffer)=>createHash('sha256').update(v).digest('hex');
 test('readonly SDK21 adds a complete producer group and preserves all 9b64 historical own originals',()=>{
  for(const [groups,old,extra] of [[S,previous.sdk,67],[C,previous.consumer,81],[I,previous.ci,162]] as const){
@@ -21,7 +22,7 @@ test('readonly SDK21 adds a complete producer group and preserves all 9b64 histo
  const publishedGroup=S.at(-1)!;
  expect(publishedGroup.sourceBindings.find(row=>row.path==='.github/workflows/publish-qlever-local-runtime.yml')?.sha256).toBe('cf6822cf0c8c204267f959a8b233daa144d4dcbbc394d02ff706a3c29a397715');
  expect(publishedGroup.sourceBindings.find(row=>row.path==='scripts/lib/independent-admission/qlever-sdk-normal-build.ts')?.sha256).toBe('b2fa80d50edf78347eb83416d93255a43a8c0054e66f2476743f975a07aec69a');
- const currentGroup=SC.at(-1)!;expect(S).toHaveLength(93);expect(currentGroup).not.toBe(publishedGroup);
+ const currentGroup=currentProgramSdkConsumerGroups().at(-1)!;expect(S).toHaveLength(93);expect(currentGroup).not.toBe(publishedGroup);
  for(const row of [...currentGroup.selectors,...currentGroup.sourceBindings,...current])expect(sha(readTrackedSource(path.join(root,row.path)))).toBe(row.sha256);
  expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
 });

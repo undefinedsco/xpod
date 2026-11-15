@@ -1,3 +1,4 @@
+import{currentProgramSdkConsumerGroups}from'../../scripts/lib/independent-admission/current-program-definition';
 import fs from 'node:fs';import{createHash}from'node:crypto';import{test,expect}from'bun:test';
 import before from'../fixtures/independent-admission/pre-recursive-gitlink-whole-groups.original.json';
 import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
@@ -8,7 +9,7 @@ const sha=(value:Buffer|string)=>createHash('sha256').update(value).digest('hex'
 test('SDK40 preserves all 210 actual prior whole recipes and binds exact recursive Gitlink and generated-file epoch helper bytes',()=>{
  for(const[name,values]of Object.entries(groups)){const old=before.hashes[name as keyof typeof before.hashes];for(let i=0;i<old.length;i++)expect(sha(JSON.stringify(values[i]))).toBe(old[i]!);}
 
- for(const row of [...current,...currentSdkConsumer.at(-1)!.selectors,...currentSdkConsumer.at(-1)!.sourceBindings])expect(sha(readTrackedSource(row.path))).toBe(row.sha256);
+ for(const row of [...current,...currentProgramSdkConsumerGroups().at(-1)!.selectors,...currentProgramSdkConsumerGroups().at(-1)!.sourceBindings])expect(sha(readTrackedSource(row.path))).toBe(row.sha256);
  expect(sdk[39]!.sourceBindings.find(row=>row.path==='qlever/scripts/sdk-fetchcontent-materials.py')!.sha256).toBe('927d5f119e575d6e4eaabc1a485b338148eceb450486b99c3b4a8569088a215c');
  expect(sdk[39]!.sourceBindings.find(row=>row.path==='qlever/scripts/sdk-generated-vma-originals.py')!.sha256).toBe('cb61ff3bd93190490dd9630751983b45076d60f58f19af64a8df33cb4b236587');
 });
