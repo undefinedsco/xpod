@@ -30,10 +30,11 @@ import {CLI_SOURCE_VERSION_GROUPS as CLI} from '../../scripts/lib/independent-ad
 import {selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import {decodeCatalog} from './sdk-helper-catalog.fixture';
 import {CURRENT_CANONICAL_SOURCE_ROWS, CURRENT_HELPER_GROUP_COUNTS, CURRENT_OBSERVER_GROUPS, CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
+import { shaFrozenTracked } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 
 const ROOT=path.resolve(import.meta.dirname,'../..');
 const whole=(g:unknown)=>createHash('sha256').update(JSON.stringify(g)).digest('hex');
-const sha=(p:string)=>createHash('sha256').update(readFileSync(path.join(ROOT,p))).digest('hex');
+const sha=(p:string)=>shaFrozenTracked(ROOT, p);
 const TOOL='qlever/scripts/sdk-toolchain-materials.py';
 const OLD_TOOL='71ae654dd0795e7f53986ff92c16a998c6db3e1f93b910c1aa62a5d177b983b7';
 const NEW_TOOL='e1b49dec8e74702bb338c0f1fc40dde43f630a45a192bc930511cb95b5c17c77';

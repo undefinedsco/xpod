@@ -17,9 +17,10 @@ import {CLI_SOURCE_VERSION_GROUPS as CLI} from '../../scripts/lib/independent-ad
 import {selectGitHubSourceBindingGroup,acquireOwnedSecondaryBindings,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import {decodeCatalog} from './sdk-helper-catalog.fixture';
 import {CURRENT_CANONICAL_SOURCE_ROWS} from './source-binding-group.fixture';
+import { shaFrozenTracked } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 
 const ROOT=path.resolve(import.meta.dirname,'../..');
-const DISK=(p:string)=>createHash('sha256').update(readFileSync(path.join(ROOT,p))).digest('hex');
+const DISK=(p:string)=>shaFrozenTracked(ROOT, p);
 const whole=(g:unknown)=>createHash('sha256').update(JSON.stringify(g)).digest('hex');
 /** IMMUTABLE tracked copy of the published DCA whole catalogue. It is a
  * committed fixture, so this suite is portable on a clean CI checkout that has
