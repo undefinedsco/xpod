@@ -1,0 +1,504 @@
+"""Original, restorable build inputs and exact stage outputs (no admission flags).
+
+Stdlib Python is used by the existing Python producer. Large files are streamed;
+these archives are evidence, never executed by the admission verifier.
+"""
+import gzip
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import shutil
+import stat
+import subprocess
+import tarfile
+import time
+from datetime import datetime, timezone
+
+
+LIMITS = json.loads((Path(__file__).parent / 'module-artifact-limits.json').read_text())
+MAX_MEMBERS = LIMITS['sourceMembers']
+FLOOR = LIMITS['freeFloorBytes']
+ARCHIVE_LIMIT = LIMITS['shardBytes']
+TOTAL_LIMIT = LIMITS['sourceMaterialBytes']
+_deadline = None
+
+
+def check(file, extra=0):
+    if _deadline is not None and time.monotonic() > _deadline:
+        raise ValueError('Source capture deadline')
+    if shutil.disk_usage(Path(file).parent).free - extra < FLOOR:
+        raise ValueError('Source capture disk reserve')
+
+
+def sensitive(name):
+    parts = name.lower().split('/')
+    return any(p in ('.test-data', '.git', '.env', '.env.local', '.env.cloud', '.env.server', 'credentials.json', '.npmrc', '.netrc', '.ssh') for p in parts) or parts[0] in ('local', 'logs')
+
+
+class GuardedWriter:
+    def __init__(self, file, limit, reserve_bytes=None):
+        self.file, self.limit, self.count = file, limit, 0
+        self.reserve_bytes = reserve_bytes
+    def write(self, data):
+        self.count += len(data)
+        if self.count > self.limit:
+            raise ValueError('Source original archive bound')
+        check(self.file.name, len(data))
+        if self.reserve_bytes is not None:
+            self.reserve_bytes(len(data))
+        return self.file.write(data)
+    def tell(self):
+        return self.file.tell()
+
+
+class GzipBlockWriter:
+    """Standard concatenated gzip, one bounded raw tar window per member."""
+    def __init__(self, writer):
+        self.writer, self.pending, self.blocks = writer, bytearray(), []
+        self.expanded_bytes, self.expanded_sha, self.flushed_bytes = 0, hashlib.sha256(), 0
+    def write(self, data):
+        if self.expanded_bytes + len(data) > ARCHIVE_LIMIT:
+            raise ValueError('Source original expanded archive bound')
+        self.expanded_sha.update(data); self.expanded_bytes += len(data)
+        at = 0
+        while at < len(data):
+            amount = min(LIMITS['rangeBytes'] - len(self.pending), len(data) - at)
+            self.pending.extend(data[at:at + amount]); at += amount
+            if len(self.pending) == LIMITS['rangeBytes']: self.flush_block()
+        return len(data)
+    def flush_block(self):
+        if not self.pending: return
+        if len(self.blocks) >= (ARCHIVE_LIMIT + LIMITS['rangeBytes'] - 1) // LIMITS['rangeBytes']:
+            raise ValueError('Source gzip block count bound')
+        packed = gzip.compress(bytes(self.pending), compresslevel=6, mtime=0)
+        if len(packed) > LIMITS['rangeBytes'] + 1024:
+            raise ValueError('Source gzip encoded block bound')
+        row = dict(offset=self.writer.count, bytes=len(packed), expandedOffset=self.flushed_bytes, expandedBytes=len(self.pending))
+        if self.writer.write(packed) != len(packed): raise ValueError('Source gzip short encoded write')
+        self.blocks.append(row); self.flushed_bytes += len(self.pending); self.pending.clear()
+    def tell(self): return self.expanded_bytes
+    def finish(self): self.flush_block()
+
+
+def originals_tar(file, reserve_bytes=None, archive_encoding='raw', encoding_state=None):
+    if archive_encoding not in ('raw', 'gzip-blocks-v1'):
+        raise ValueError('Unknown source archive encoding')
+    stream = Path(file).open('xb')
+    try:
+        writer = GuardedWriter(stream, ARCHIVE_LIMIT, reserve_bytes)
+        encoded = GzipBlockWriter(writer) if archive_encoding == 'gzip-blocks-v1' else None
+        with tarfile.open(fileobj=encoded or writer, mode='w', format=tarfile.GNU_FORMAT) as archive:
+            yield archive
+        if encoded:
+            encoded.finish()
+            if encoding_state is not None:
+                encoding_state.update(expanded=dict(bytes=encoded.expanded_bytes, sha256=encoded.expanded_sha.hexdigest()), blocks=encoded.blocks)
+    finally:
+        stream.close()
+
+
+from contextlib import contextmanager
+originals_tar = contextmanager(originals_tar)
+
+
+def now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def digest(file):
+    h = hashlib.sha256()
+    with Path(file).open('rb') as source:
+        for block in iter(lambda: source.read(1024 * 1024), b''):
+            check(file)
+            h.update(block)
+    return h.hexdigest()
+
+
+def ref(file, output):
+    return dict(path=Path(file).relative_to(output).as_posix(), bytes=Path(file).stat().st_size, sha256=digest(file))
+
+
+def safe(name):
+    if not name or '\\' in name or name.startswith('/') or any(p in ('', '.', '..') for p in name.split('/')) or any(ord(c) < 32 or ord(c) == 127 for c in name):
+        raise ValueError('Unsafe source material path')
+    return name
+
+
+def diagnostic_path(name):
+    return name.encode('utf-8',errors='backslashreplace')[:4096].decode('utf-8',errors='ignore')
+
+
+def add_original(archive, file, name, root, public_source_inputs=None):
+    safe(name)
+    if sensitive(name) and not (name == '.github/tooling/legacy-root-verifier/.npmrc' and file.read_bytes() == b'registry=https://registry.npmjs.org\n'):
+        declared=(public_source_inputs or {}).get(name)
+        if declared is None:raise ValueError('Sensitive source material forbidden: '+diagnostic_path(name))
+        if root.is_symlink() or file.parent.resolve(strict=True)/file.name != root.resolve()/name or file.is_symlink():raise ValueError('Public source input root differs: '+diagnostic_path(name))
+        fd=os.open(file,os.O_RDONLY|os.O_NOFOLLOW)
+        try:
+            before=os.fstat(fd);identity=lambda row:(row.st_dev,row.st_ino,row.st_mode,row.st_size,row.st_nlink,row.st_mtime_ns,row.st_ctime_ns)
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink!=1 or before.st_size!=declared['bytes'] or not 0<=before.st_size<=LIMITS['metadataBytes'] or ('mode' in declared and stat.S_IMODE(before.st_mode)!=declared['mode']):raise ValueError('Public source input identity differs: '+diagnostic_path(name))
+            data=bytearray()
+            while True:
+                check(file);block=os.read(fd,65536)
+                if not block:break
+                if len(data)+len(block)>before.st_size:raise ValueError('Public source input grew: '+diagnostic_path(name))
+                data.extend(block)
+            if len(data)!=before.st_size or hashlib.sha256(data).hexdigest()!=declared['sha256'] or identity(before)!=identity(os.fstat(fd)) or identity(before)!=identity(file.lstat()):raise ValueError('Public source input bytes differ: '+diagnostic_path(name))
+            info=tarfile.TarInfo(name);info.size=len(data);info.mode=stat.S_IMODE(before.st_mode);info.mtime=0
+            # Write only the already pinned buffer, never reopen a changed config.
+            archive.addfile(info,io.BytesIO(data))
+            if identity(before)!=identity(file.lstat()):raise ValueError('Public source input changed: '+diagnostic_path(name))
+            return dict(path=name,kind='file',bytes=len(data),sha256=declared['sha256'],mode=info.mode)
+        finally:os.close(fd)
+    check(file)
+    before = file.lstat()
+    info = tarfile.TarInfo(name)
+    info.mode = stat.S_IMODE(before.st_mode)
+    info.mtime = 0
+    if stat.S_ISLNK(before.st_mode):
+        target = os.readlink(file)
+        # Workspace links are restored relative to the exact source root.
+        file.resolve(strict=True).relative_to(root)
+        if os.path.isabs(target):
+            raise ValueError('Absolute dependency link')
+        info.type = tarfile.SYMTYPE
+        info.linkname = target
+        archive.addfile(info)
+        return dict(path=name, kind='symlink', target=target)
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError('Ordinary build input required')
+    info.size = before.st_size
+    identity = lambda row: (row.st_dev, row.st_ino, row.st_mode, row.st_size, row.st_nlink, row.st_mtime_ns, row.st_ctime_ns)
+    fd = os.open(file, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode) or identity(before) != identity(os.fstat(fd)):
+            raise ValueError('Build input changed before capture')
+        digest_state = hashlib.sha256()
+        count = 0
+        class OriginalReader:
+            def read(self, size=-1):
+                nonlocal count
+                check(file)
+                remaining = size if size >= 0 else before.st_size - count
+                pieces = []
+                while remaining:
+                    check(file)
+                    block = os.read(fd, min(remaining, 65536))
+                    if not block:
+                        break
+                    count += len(block)
+                    if count > before.st_size:
+                        raise ValueError('Build input grew during capture')
+                    digest_state.update(block)
+                    pieces.append(block)
+                    remaining -= len(block)
+                return b''.join(pieces)
+        archive.addfile(info, OriginalReader())
+        if count != before.st_size or os.read(fd, 1) or identity(before) != identity(os.fstat(fd)) or identity(before) != identity(file.lstat()):
+            raise ValueError('Build input changed during capture')
+        return dict(path=name, kind='file', bytes=count, sha256=digest_state.hexdigest(), mode=info.mode)
+    finally:
+        os.close(fd)
+
+
+def dependency_paths(repo):
+    # Include every installed tree, including nested workspace installations.
+    result = set()
+    for directory, dirs, files in os.walk(repo, followlinks=False):
+        relative = Path(directory).relative_to(repo)
+        if '.git' in relative.parts or '.test-data' in relative.parts:
+            dirs[:] = []
+            continue
+        installed = 'node_modules' in relative.parts
+        for name in [*dirs, *files]:
+            file = Path(directory) / name
+            if (installed or name == 'node_modules') and (file.is_symlink() or file.is_file()):
+                result.add(file.relative_to(repo).as_posix())
+    return sorted(result)
+
+
+def capture_group(root, output, domain, files, repo, tools=None, reserve_bytes=None, public_source_inputs=None, archive_encoding='raw', public_toolchain_inputs=None):
+    if archive_encoding not in ('raw', 'gzip-blocks-v1'):raise ValueError('Unknown source archive encoding')
+    if public_source_inputs is not None and domain!='source':raise ValueError('Public source input classification is source-domain only')
+    if public_toolchain_inputs is not None and domain!='toolchain':raise ValueError('Public tool input classification is toolchain-domain only')
+    if public_source_inputs is not None and public_toolchain_inputs is not None:raise ValueError('Public input classifications cannot mix domains')
+    from contextlib import ExitStack
+    archives, inventories, rows = [], [], []
+    total, number, estimate = 0, 0, 0
+    stack = ExitStack()
+    archive = None
+    encoding_state = {}
+    def finish_archive():
+        stack.close()
+        original = ref(archive_file, output)
+        if archive_encoding == 'gzip-blocks-v1':
+            index_file = Path(str(archive_file) + '.index.json')
+            encoded = json.dumps(dict(schemaVersion=1, kind='source-tar-gzip-block-index', archive=original, **encoding_state), separators=(',', ':')).encode()
+            if len(encoded) > LIMITS['metadataBytes']: raise ValueError('Source gzip index metadata bound')
+            check(index_file, len(encoded))
+            if reserve_bytes is not None: reserve_bytes(len(encoded))
+            with index_file.open('xb') as destination: destination.write(encoded)
+            original.update(encoding=archive_encoding, index=ref(index_file, output))
+        archives.append(original)
+    def flush_rows():
+        if not rows:
+            return
+        file = root / (domain + '-inventory-' + str(len(inventories)).zfill(4) + '.json')
+        encoded = json.dumps(rows, separators=(',', ':')).encode()
+        if len(encoded) > LIMITS['metadataBytes']:
+            raise ValueError('Source inventory shard bound')
+        if reserve_bytes is not None:
+            reserve_bytes(len(encoded))
+        with file.open('xb') as destination:
+            destination.write(encoded)
+        inventories.append(ref(file, output))
+        if len(inventories) > LIMITS['sourceMaterialFiles']:
+            raise ValueError('Source inventory file count bound')
+        rows.clear()
+    try:
+        for name, file in files:
+            size = file.lstat().st_size
+            # GNU long-name/link records plus final tar padding are accounted.
+            cost = ((size + 511) // 512) * 512 + 4096
+            if cost + 10240 > ARCHIVE_LIMIT:
+                raise ValueError('Individual source input shard bound')
+            if archive is None or estimate + cost + 10240 > ARCHIVE_LIMIT:
+                if archive is not None:
+                    finish_archive()
+                archive_file = root / (domain + '-' + str(number).zfill(4) + ('.tar.gz' if archive_encoding == 'gzip-blocks-v1' else '.tar'))
+                number += 1
+                encoding_state = {}
+                archive = stack.enter_context(originals_tar(archive_file, reserve_bytes, archive_encoding, encoding_state))
+                estimate = 0
+            row = add_original(archive, file, name, repo, public_source_inputs if domain=='source' else public_toolchain_inputs)
+            row['archive'] = archive_file.relative_to(output).as_posix()
+            if tools and name in tools:
+                row.update(tools[name])
+            rows.append(row)
+            estimate += cost
+            total += cost
+            if total > LIMITS['dependencyBytes' if domain == 'dependencies' else 'toolchainBytes' if domain == 'toolchain' else 'sourceBytes']:
+                raise ValueError('Source input total bound')
+            if len(rows) == 5000:
+                flush_rows()
+        if archive is not None:
+            finish_archive()
+        flush_rows()
+    finally:
+        stack.close()
+    if len(archives) * (2 if archive_encoding == 'gzip-blocks-v1' else 1) + len(inventories) > LIMITS['sourceMaterialFiles']:
+        raise ValueError('Source archive file count bound')
+    return dict(archives=archives, inventories=inventories)
+
+
+def capture_inputs(repo, output, source_paths=None, reserve_bytes=None):
+    repo, output = Path(repo), Path(output)
+    root = output / 'source-materials'
+    global _deadline
+    _deadline = time.monotonic() + LIMITS['captureTimeoutMs'] / 1000
+    root.mkdir(mode=0o700)
+    started = now()
+    paths = subprocess.check_output(['git', 'ls-files', '-z'], cwd=repo, timeout=60).decode().split('\0')[:-1] if source_paths is None else source_paths
+    if not isinstance(paths, list) or not paths or len(paths) != len(set(paths)) or any(not isinstance(n, str) or not safe(n) for n in paths):
+        raise ValueError('Explicit actual source input paths invalid')
+    installed = dependency_paths(repo)
+    if len(paths) + len(installed) > MAX_MEMBERS or not installed:
+        raise ValueError('Source/dependency input member bound')
+    source = capture_group(root, output, 'source', [(n, repo / n) for n in sorted(paths)], repo, reserve_bytes=reserve_bytes)
+    dependencies = capture_group(root, output, 'dependencies', [(n, repo / n) for n in installed], repo, reserve_bytes=reserve_bytes)
+    tools, files = {}, []
+    for name in ('bun', 'node', 'python3', 'git'):
+        located = shutil.which(name)
+        if located is None:
+            raise ValueError('Build tool missing: ' + name)
+        executable = Path(located).resolve(strict=True)
+        tools[name] = dict(executable=str(executable), version=subprocess.check_output([str(executable), '--version'], timeout=10).decode().strip())
+        files.append((name, executable))
+    toolchain = capture_group(root, output, 'toolchain', files, Path('/'), tools, reserve_bytes=reserve_bytes)
+    value = dict(schemaVersion=1, kind='module-source-build-originals', capturedInputsStartedUTC=started,
+                 capturedInputsClosedUTC=now(), source=source, dependencies=dependencies, toolchain=toolchain)
+    if sum(file.stat().st_size for file in root.iterdir()) > TOTAL_LIMIT:
+        raise ValueError('Source originals total bound')
+    _deadline = None
+    return value
+
+
+def dependency_set_delta(output, expected, observed, inventories, reserve_bytes=None):
+    """Failure-only path metadata; never copy dependency content or environment.
+
+    Hash the COMPLETE sets, but bound the diagnostic samples to 128 paths and
+    64KiB combined UTF-8 JSON. Original before inventories remain untouched.
+    """
+    before, after = set(expected), set(observed)
+    added, removed = sorted(after - before), sorted(before - after)
+    def set_hash(names):
+        value = hashlib.sha256()
+        for name in sorted(names):
+            value.update((json.dumps(name, ensure_ascii=True, separators=(',', ':')) + '\n').encode())
+        return value.hexdigest()
+    remaining_count, remaining_bytes = 128, 64 * 1024
+    def sample(names):
+        nonlocal remaining_count, remaining_bytes
+        result = []
+        for name in names:
+            encoded = json.dumps(name, ensure_ascii=True).encode()
+            if remaining_count and len(encoded) <= min(4096, remaining_bytes):
+                result.append(name)
+                remaining_count -= 1
+                remaining_bytes -= len(encoded)
+        return dict(count=len(names), paths=result, truncated=len(result) != len(names), sha256=set_hash(names))
+    value = dict(schemaVersion=1, kind='source-dependency-set-delta',
+                 hashEncoding='sorted ensure_ascii JSON string plus LF per path',
+                 before=dict(count=len(before), sha256=set_hash(before), inventories=inventories),
+                 after=dict(count=len(after), sha256=set_hash(after)),
+                 sampleLimits=dict(paths=128, totalEncodedPathBytes=64 * 1024, singleEncodedPathBytes=4096),
+                 added=sample(added), removed=sample(removed))
+    evidence = output / 'evidence'
+    evidence.mkdir(mode=0o700, exist_ok=True)
+    if evidence.is_symlink() or not evidence.is_dir():
+        raise ValueError('Ordinary source diagnostic directory required')
+    file = evidence / 'source-dependency-set-delta.json'
+    encoded = (json.dumps(value, sort_keys=True, indent=2) + '\n').encode()
+    if len(encoded) > LIMITS['metadataBytes']:
+        raise ValueError('Source dependency diagnostic metadata bound')
+    check(file, len(encoded))
+    if reserve_bytes is not None:
+        reserve_bytes(len(encoded))
+    with file.open('xb') as destination:
+        destination.write(encoded)
+    return ref(file, output)
+
+
+def revalidate_inputs(repo, output, inputs, reserve_bytes=None):
+    started = now()
+    result = {}
+    for domain in ('source', 'dependencies', 'toolchain'):
+        expected = []
+        group = inputs[domain]
+        for reference in group['inventories']:
+            original = output / reference['path']
+            if digest(original) != reference['sha256']:
+                raise ValueError('Captured input inventory changed')
+            expected.extend(json.loads(original.read_text()))
+        if domain == 'dependencies':
+            observed_paths = dependency_paths(repo)
+            expected_paths = sorted(row['path'] for row in expected)
+            if observed_paths != expected_paths:
+                delta = dependency_set_delta(output, expected_paths, observed_paths, group['inventories'], reserve_bytes=reserve_bytes)
+                raise ValueError('Installed dependency input set changed during build; diagnostic=' + json.dumps(delta, sort_keys=True))
+        observed = []
+        for row in expected:
+            file = Path(row['executable']) if domain == 'toolchain' else repo / row['path']
+            before = file.lstat()
+            actual = dict(row)
+            if row['kind'] == 'symlink':
+                if not stat.S_ISLNK(before.st_mode):
+                    raise ValueError('Build input link changed type')
+                actual['target'] = os.readlink(file)
+                file.resolve(strict=True).relative_to(repo)
+            else:
+                if not stat.S_ISREG(before.st_mode):
+                    raise ValueError('Build input changed type')
+                actual.update(bytes=before.st_size, sha256=digest(file), mode=stat.S_IMODE(before.st_mode))
+            if domain == 'toolchain':
+                located = shutil.which(row['path'])
+                if not located or str(Path(located).resolve(strict=True)) != row['executable']:
+                    raise ValueError('Build tool resolution changed')
+            after = file.lstat()
+            if (before.st_ino, before.st_dev, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_ino, after.st_dev, after.st_size, after.st_mtime_ns, after.st_ctime_ns) or actual != row:
+                raise ValueError('Captured build input changed during production')
+            observed.append(actual)
+        references = []
+        for offset in range(0, len(observed), 5000):
+            number = len(group['inventories']) + len(references)
+            file = output / ('source-materials/' + domain + '-inventory-' + str(number).zfill(4) + '.json')
+            encoded = json.dumps(observed[offset:offset + 5000], separators=(',', ':')).encode()
+            if len(encoded) > LIMITS['metadataBytes']:
+                raise ValueError('Revalidated inventory shard bound')
+            check(file, len(encoded))
+            if reserve_bytes is not None:
+                reserve_bytes(len(encoded))
+            with file.open('xb') as destination:
+                destination.write(encoded)
+            references.append(ref(file, output))
+        result[domain] = references
+    result.update(startedUTC=started, closedUTC=now())
+    return result
+
+
+def capture_outputs(repo, output, inputs, phases, archive, stage_root=None, output_rows=None, reserve_bytes=None, output_member_limit=None):
+    repo, output = Path(repo), Path(output)
+    global _deadline
+    _deadline = time.monotonic() + LIMITS['captureTimeoutMs'] / 1000
+    value = dict(inputs)
+    if output_member_limit is None:
+        value['revalidation'] = revalidate_inputs(repo, output, inputs, reserve_bytes=reserve_bytes)
+    value['phases'] = phases
+    value['archive'] = archive
+    if output_rows is None:
+        stage_root = output / 'stage' if stage_root is None else Path(stage_root)
+        stage_root.relative_to(output)
+        if stage_root.is_symlink() or not stage_root.is_dir():
+            raise ValueError('Actual ordinary output stage required')
+        rows = []
+        for directory, dirs, files in os.walk(stage_root, followlinks=False):
+            for name in [*dirs, *files]:
+                file = Path(directory) / name
+                if file.is_symlink():
+                    raise ValueError('Stage output links forbidden')
+                if file.is_file():
+                    check(file)
+                    row = ref(file, stage_root)
+                    row['mode'] = stat.S_IMODE(file.stat().st_mode)
+                    rows.append(row)
+    else:
+        rows = output_rows
+    if output_member_limit is not None and (type(output_member_limit) is not int or output_member_limit < 0 or len(rows) > output_member_limit):
+        raise ValueError('Explicit product output member bound')
+    if output_member_limit is not None:
+        value['revalidation'] = revalidate_inputs(repo, output, inputs, reserve_bytes=reserve_bytes)
+    output_files = []
+    rows.sort(key=lambda row: row['path'])
+    for offset in range(0, len(rows), 5000):
+        file = output / ('source-materials/outputs-' + str(len(output_files)).zfill(4) + '.json')
+        encoded = json.dumps(rows[offset:offset + 5000], separators=(',', ':')).encode()
+        if len(encoded) > LIMITS['metadataBytes']:
+            raise ValueError('Output inventory shard bound')
+        if reserve_bytes is not None:
+            reserve_bytes(len(encoded))
+        with file.open('xb') as destination:
+            destination.write(encoded)
+        output_files.append(ref(file, output))
+    value['outputs'] = output_files
+    value['capturedOutputsClosedUTC'] = now()
+    encoded = json.dumps(value, separators=(',', ':'))
+    if len(encoded.encode()) > LIMITS['metadataBytes']:
+        raise ValueError('Source metadata bound')
+    file = output / 'source-materials/materials.json'
+    if reserve_bytes is not None:
+        reserve_bytes(len(encoded.encode()))
+    with file.open('x') as destination:
+        destination.write(encoded)
+    _deadline = None
+    return ref(file, output)
+
+
+if __name__ == '__main__':
+    import sys
+    if len(sys.argv) != 5 or sys.argv[1] not in ('portable-before', 'portable-after'):
+        raise ValueError('Fixed portable action, actual workspace, evidence root and request required')
+    action, repo, output, request_file = sys.argv[1:]
+    repo, output = Path(repo).resolve(strict=True), Path(output).resolve(strict=True)
+    request = json.loads(Path(request_file).read_text())
+    state = output / 'source-materials-inputs.json'
+    if action == 'portable-before':
+        result = capture_inputs(repo, output, request['sourcePaths'])
+        with state.open('x') as destination:
+            json.dump(result, destination)
+        print(json.dumps(ref(state, output)))
+    else:
+        result = capture_outputs(repo, output, json.loads(state.read_text()), request['phases'], request['archive'], output_rows=request['outputs'])
+        print(json.dumps(result))

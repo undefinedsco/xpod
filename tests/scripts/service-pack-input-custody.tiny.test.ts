@@ -1,0 +1,16 @@
+import {createRequire} from 'node:module';const {readCopyLedger}=createRequire(import.meta.url)('../../scripts/service-pack-copy-ledger.cjs');
+import {test,expect} from 'bun:test';import fs from 'node:fs';import path from 'node:path';
+import {createTinyServicePackProtocol} from './service-pack-protocol.fixture';
+import {inspectServicePackInputCustody} from '../../scripts/lib/independent-admission/service-pack-input-custody';
+test('actual sole pack resolver/read observations replay with strict source pending and altered absence/sequence/read refusal',()=>{
+ const parent=path.resolve('.test-data/service-pack-input-custody-replay');fs.mkdirSync(parent,{recursive:true});const root=fs.mkdtempSync(path.join(parent,'run-'));
+ try{const afterRoot=Buffer.from(JSON.stringify({name:'@undefineds.co/xpod',version:'1.2.3-rc.1.1'})),actual=createTinyServicePackProtocol(path.join(root,'producer'),afterRoot,'a'.repeat(40)),input={collection:actual.collection,repoRoot:'/app',afterRoot,readObject:(ref:any)=>Buffer.from(actual.objects.get(ref.path)!),readWorkspaceOriginal:()=>{throw Error('fixture has no workspace inputs');},check(){}};
+  const windows=actual.collection.records.filter((row:any)=>row.role==='actual-public-pack-selected-input-window');expect(windows.length).toBeGreaterThan(0);for(const window of windows){const before=readCopyLedger(actual.objects.get(window.before.path)!,()=>{}),after=readCopyLedger(actual.objects.get(window.after.path)!,()=>{});expect(before.length).toBeGreaterThan(0);expect(after.length).toBe(before.length);for(let index=0;index<before.length;index++){expect(before[index].sequence).toBe(index+1);expect(after[index].sequence).toBe(2*before.length+index+1);expect(after[index].sha256).toBe(before[index].sha256);expect(after[index].identity).toEqual(before[index].identity);}const commands=actual.collection.records.slice(window.packCommandRecords.first,window.packCommandRecords.last+1).filter((row:any)=>row.role==='actual-pack-command');expect(commands.length).toBe(1);expect(commands[0].args).toEqual(['pm','pack','--ignore-scripts','--filename',window.archivePath]);expect(commands[0].workingDirectory.path).toBe(window.sourceRoot);expect(commands[0].executionCommand[0]).toBe('python3');}
+  const proof=inspectServicePackInputCustody(input);expect(proof.manifestReadCustodyVerified).toBe(true);expect(proof.resolutionProbeCustodyVerified).toBe(true);expect(proof.absences).toBeGreaterThan(0);expect(proof.installedInputs.length).toBeGreaterThan(0);expect(proof.packInputResolutionVerified).toBe(false);
+  const edit=(change:(collection:any)=>void)=>{const collection=structuredClone(actual.collection);change(collection);return ()=>inspectServicePackInputCustody({...input,collection});};
+  expect(edit(c=>{c.records.find((row:any)=>row.kind==='actual-manifest-read').inputCustody.sequence=99;})).toThrow('ordered');
+  expect(edit(c=>{const row=c.records.find((row:any)=>row.role==='actual-bundled-root-input-custody'&&row.observation.kind==='actual-pack-input-absence-v1');row.observation.errno='EACCES';})).toThrow('ENOENT');
+  expect(edit(c=>{c.records.find((row:any)=>row.kind==='actual-manifest-read').inputCustody.sha256='f'.repeat(64);})).toThrow('retained manifest');
+  expect(edit(c=>{c.records.reverse();})).toThrow();
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
+});

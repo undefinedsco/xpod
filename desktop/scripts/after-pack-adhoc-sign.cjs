@@ -14,8 +14,14 @@
 
 const { execFileSync } = require('node:child_process')
 const path = require('node:path')
+const preserveSeed = require('./after-pack-preserve-seed.cjs')
 
 async function afterPackAdhocSign(context) {
+  // ALWAYS first, on EVERY platform and BEFORE any signing: builder-util's copy
+  // walker drops `.DS_Store`/`.gitkeep` before its own filters, so the packed
+  // resources must be corrected from the staged seed with plain fs semantics.
+  // Signing must seal these corrected bytes, never the incomplete copy.
+  await preserveSeed(context)
   if (context.electronPlatformName !== 'darwin') return
   const appPath = path.join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`)
   execFileSync('/usr/bin/codesign', ['--force', '--deep', '--sign', '-', appPath], { stdio: 'inherit' })

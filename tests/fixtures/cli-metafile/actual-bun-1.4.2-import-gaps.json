@@ -1,0 +1,210 @@
+{
+  "inputs": {
+    "../../node_modules/yargs-parser/build/lib/index.js": {
+      "bytes": 2508,
+      "imports": [
+        {
+          "path": "util",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "path",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../../node_modules/yargs-parser/build/lib/string-utils.js",
+          "kind": "import-statement",
+          "original": "./string-utils.js"
+        },
+        {
+          "path": "../../node_modules/yargs-parser/build/lib/yargs-parser.js",
+          "kind": "import-statement",
+          "original": "./yargs-parser.js"
+        },
+        {
+          "path": "fs",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "bun:wrap",
+          "kind": "import-statement"
+        }
+      ],
+      "format": "esm"
+    },
+    "../../node_modules/jose/dist/node/esm/key/export.js": {
+      "bytes": 386,
+      "imports": [
+        {
+          "path": "../../node_modules/jose/dist/node/esm/runtime/asn1.js",
+          "kind": "import-statement",
+          "original": "../runtime/asn1.js"
+        },
+        {
+          "path": "../../node_modules/jose/dist/node/esm/runtime/asn1.js",
+          "kind": "import-statement",
+          "original": "../runtime/asn1.js"
+        },
+        {
+          "path": "../../node_modules/jose/dist/node/esm/runtime/key_to_jwk.js",
+          "kind": "import-statement",
+          "original": "../runtime/key_to_jwk.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../../node_modules/jose/dist/node/esm/key/import.js": {
+      "bytes": 1874,
+      "imports": [
+        {
+          "path": "../../node_modules/jose/dist/node/esm/runtime/base64url.js",
+          "kind": "import-statement",
+          "original": "../runtime/base64url.js"
+        },
+        {
+          "path": "../../node_modules/jose/dist/node/esm/runtime/asn1.js",
+          "kind": "import-statement",
+          "original": "../runtime/asn1.js"
+        },
+        {
+          "path": "../../node_modules/jose/dist/node/esm/runtime/jwk_to_key.js",
+          "kind": "import-statement",
+          "original": "../runtime/jwk_to_key.js"
+        },
+        {
+          "path": "../../node_modules/jose/dist/node/esm/util/errors.js",
+          "kind": "import-statement",
+          "original": "../util/errors.js"
+        },
+        {
+          "path": "../../node_modules/jose/dist/node/esm/lib/is_object.js",
+          "kind": "import-statement",
+          "original": "../lib/is_object.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../../node_modules/uuid/dist/esm/stringify.js": {
+      "bytes": 1093,
+      "imports": [
+        {
+          "path": "../../node_modules/uuid/dist/esm/validate.js",
+          "kind": "import-statement",
+          "original": "./validate.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../../node_modules/yargs/build/lib/utils/apply-extends.js": {
+      "bytes": 2049,
+      "imports": [
+        {
+          "path": "../../node_modules/yargs/build/lib/yerror.js",
+          "kind": "import-statement",
+          "original": "../yerror.js"
+        },
+        {
+          "path": "bun:wrap",
+          "kind": "import-statement"
+        }
+      ],
+      "format": "esm"
+    },
+    "../../node_modules/jose/dist/node/esm/runtime/generate.js": {
+      "bytes": 3565,
+      "imports": [
+        {
+          "path": "node:crypto",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "node:util",
+          "kind": "import-statement",
+          "external": true
+        },
+        {
+          "path": "../../node_modules/jose/dist/node/esm/runtime/random.js",
+          "kind": "import-statement",
+          "original": "./random.js"
+        },
+        {
+          "path": "../../node_modules/jose/dist/node/esm/util/errors.js",
+          "kind": "import-statement",
+          "original": "../util/errors.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../../node_modules/yargs/build/lib/utils/which-module.js": {
+      "bytes": 321,
+      "imports": [
+        {
+          "path": "bun:wrap",
+          "kind": "import-statement"
+        }
+      ],
+      "format": "esm"
+    },
+    "../../node_modules/jose/dist/node/esm/lib/buffer_utils.js": {
+      "bytes": 1742,
+      "imports": [
+        {
+          "path": "../../node_modules/jose/dist/node/esm/runtime/digest.js",
+          "kind": "import-statement",
+          "original": "../runtime/digest.js"
+        }
+      ],
+      "format": "esm"
+    },
+    "../../node_modules/yargs-parser/build/lib/string-utils.js": {
+      "bytes": 2084,
+      "imports": [],
+      "format": "esm"
+    },
+    "../../node_modules/yargs-parser/build/lib/yargs-parser.js": {
+      "bytes": 46827,
+      "imports": [],
+      "format": "esm"
+    },
+    "../../node_modules/jose/dist/node/esm/runtime/key_to_jwk.js": {
+      "bytes": 1154,
+      "imports": [],
+      "format": "esm"
+    },
+    "../../node_modules/jose/dist/node/esm/runtime/base64url.js": {
+      "bytes": 596,
+      "imports": [],
+      "format": "esm"
+    },
+    "../../node_modules/jose/dist/node/esm/runtime/jwk_to_key.js": {
+      "bytes": 247,
+      "imports": [],
+      "format": "esm"
+    },
+    "../../node_modules/jose/dist/node/esm/util/errors.js": {
+      "bytes": 3286,
+      "imports": [],
+      "format": "esm"
+    },
+    "../../node_modules/jose/dist/node/esm/lib/is_object.js": {
+      "bytes": 510,
+      "imports": [],
+      "format": "esm"
+    },
+    "../../node_modules/yargs/build/lib/yerror.js": {
+      "bytes": 234,
+      "imports": [],
+      "format": "esm"
+    }
+  },
+  "outputs": {},
+  "fixtureProvenance": {
+    "originalSha256": "57ba0a46edd7f8f5ffaa94d19164ee9cdff780476a410a7f876c1873911e9a82",
+    "originalInputCount": 413,
+    "scope": "Exact offending importer rows and keys; direct-target imports elided; not a build or closure proof."
+  }
+}

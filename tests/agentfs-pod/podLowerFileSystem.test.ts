@@ -3,11 +3,11 @@ import {
   PodHttpLowerFileSystem,
   PodLowerConflictError,
   PodLowerHttpError,
-} from '../../src/cli/agent-fs/pod-lower';
+} from '../../packages/xpod-afs/src/agent-fs/pod-lower';
 import {
   AgentDirectoryClient,
   type AgentDirectoryRequest,
-} from '../../src/agent-directory/client/AgentDirectoryClient';
+} from '../../packages/xpod-afs/src/directory/client';
 import { startPodContractServer, type PodContractServer } from './support/podContractServer';
 
 const ALPHA = 'ALPHA_BODY_0123456789\n';

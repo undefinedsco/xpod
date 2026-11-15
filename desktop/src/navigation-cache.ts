@@ -44,7 +44,12 @@ export async function loadDesktopUrlWithoutStaleCache(
   window: DesktopNavigationWindow,
   url: string,
   reportWarning?: DesktopNavigationCacheWarning,
+  /** Re-checked after the cache clear and immediately before loadURL. */
+  stillNeeded?: () => boolean,
 ): Promise<void> {
   await clearDesktopNavigationCache(window.webContents.session, url, reportWarning)
+  // The cache clear is the last await before navigation: a page that finished
+  // loading during it has already superseded the failure this load was for.
+  if (stillNeeded && !stillNeeded()) return
   await window.loadURL(url)
 }

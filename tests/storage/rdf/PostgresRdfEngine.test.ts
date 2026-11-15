@@ -2,6 +2,12 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import {
+  BaseLogger,
+  resetInternalLoggerFactory,
+  setGlobalLoggerFactory,
+  type LogLevel,
+} from 'global-logger-factory';
 import { DataFactory } from 'n3';
 import type { Literal, NamedNode, Term } from '@rdfjs/types';
 import { PGlite } from '@electric-sql/pglite';
@@ -6667,6 +6673,7 @@ class XpodRdfExtensionPgPool {
   public readonly nativeSparqlCalls: Array<{ sql: string; params: unknown[] }> = [];
   public nativeSparqlError?: Error;
   public nativeSparqlCapabilitiesError?: Error;
+  public nativeSparqlResult?: Record<string, unknown>;
 
   public constructor(
     dataDir: string,
@@ -6703,7 +6710,7 @@ class XpodRdfExtensionPgPool {
       return {
         rows: [
           {
-            result: {
+            result: this.nativeSparqlResult ?? {
               status: 'ok',
               mediaType: 'application/sparql-results+json',
               body: '{"head":{},"boolean":true}',
@@ -7991,3 +7998,127 @@ function isPgIntegerResultKey(key: string): boolean {
     || key === 'graph_count'
     || /^(?:v|a)\d+$/.test(key);
 }
+
+describe('nativeSparqlUnsupportedDiagnostic', () => {
+  it('reports typed option metadata and an allow-listed reason only', async () => {
+    const { nativeSparqlUnsupportedDiagnostic } = await import('../../../src/storage/rdf/PostgresRdfEngine');
+    const line = nativeSparqlUnsupportedDiagnostic(
+      {
+        basePath: 'https://pod.example/alice/?access_token=sentinel-query-token',
+        sourceUri: 'https://pod.example/alice/x.ttl?Authorization=sentinel-uri-token',
+        defaultDataset: 'scopedUnion',
+        operation: 'queryBindings',
+        timeoutMs: 2500,
+        acceptMediaType: 'application/sparql-results+json',
+        loadDocument: {
+          sourceUri: 'https://pod.example/alice/input.nt?X-Amz-Signature=sentinel-load-uri',
+          body: 'SENTINEL-LOAD-BODY',
+          mediaType: 'application/n-triples',
+        },
+        accessScope: {
+          basePath: '/alice/',
+          mode: 'read',
+          resolved: true,
+          principal: 'https://id.example/alice/profile/card#me?secret=sentinel-principal',
+          allowedGraphUrls: ['https://pod.example/alice/a.ttl?token=sentinel-graph'],
+          deniedGraphUrls: ['https://pod.example/alice/b.ttl'],
+          deniedGraphPrefixes: [],
+          allowedSourceUrls: undefined,
+          deniedSourceUrls: ['https://pod.example/alice/c.ttl'],
+          deniedSourcePrefixes: ['https://pod.example/alice/private/'],
+          version: 'acl-sentinel-version',
+        },
+        vectorQuery: { embedding: [0.1, 0.2], metric: 'cosine', limit: 5 },
+      },
+      { error: 'query-options-failed: token=sentinel-error-token', body: 'SENTINEL-ERROR-BODY' },
+    );
+    expect(line).toContain('reason=query-options-failed');
+    expect(line).toContain('operation=queryBindings');
+    expect(line).toContain('defaultDataset=scopedUnion');
+    expect(line).toContain('timeoutMs=1001-30000');
+    expect(line).toContain('allowedGraphUrls:1:valid');
+    expect(line).toContain('allowedSourceUrls:absent');
+    expect(line).toContain('hasPrincipal:true');
+    expect(line).toContain('hasVersion:true');
+    expect(line).toContain('bodyLength:18');
+    expect(line).toContain('embedding:valid:2');
+    for (const sentinel of [
+      'SENTINEL',
+      'sentinel-',
+      'query-options-failed:',
+      'access_token',
+      'X-Amz-Signature',
+      'id.example/alice',
+      'pod.example',
+      '/alice/',
+    ]) {
+      expect(line).not.toContain(sentinel);
+    }
+  });
+
+  it('collapses arbitrary upstream text to a generic reason and tolerates malformed options', async () => {
+    const { nativeSparqlUnsupportedDiagnostic } = await import('../../../src/storage/rdf/PostgresRdfEngine');
+    const line = nativeSparqlUnsupportedDiagnostic(
+      {
+        basePath: 'https://key:SENTINEL-PASSWORD@pod.example/alice/',
+        accessScope: 'SENTINEL-SCOPE',
+        loadDocument: { body: 'SENTINEL-BODY' },
+        operation: 'SENTINEL-OPERATION',
+        defaultDataset: 'SENTINEL-DATASET',
+        timeoutMs: -1,
+      },
+      { error: 'Authorization Bearer sk-SENTINEL-KEY', body: '{"error":"sk-SENTINEL-KEY"}' },
+    );
+    expect(line).toContain('reason=unknown-native-error');
+    expect(line).toContain('accessScope=invalid');
+    expect(line).toContain('loadDocument=present(sourceUri:absent,mediaType:absent,bodyLength:13)');
+    expect(line).toContain('operation=invalid');
+    expect(line).toContain('defaultDataset=invalid');
+    expect(line).toContain('timeoutMs=zero-or-negative');
+    expect(line).not.toContain('SENTINEL');
+    expect(line).not.toContain('sk-');
+    expect(line).not.toContain('pod.example');
+  });
+
+  it('logs the typed diagnostic for an unsupported native call without leaking wire options or upstream text', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'xpod-postgres-native-sparql-unsupported-log-'));
+    const pool = new XpodRdfExtensionPgPool(dataDir);
+    const engine = new PostgresRdfEngine({ pool, nativeSparqlEnabled: true });
+    const entries: Array<{ level: string; message: string }> = [];
+    setGlobalLoggerFactory({ createLogger: () => new (class extends BaseLogger {
+      public log(level: LogLevel, message: string) { entries.push({ level, message }); return this; }
+    })() });
+    pool.nativeSparqlResult = {
+      status: 'unsupported',
+      mediaType: 'text/plain',
+      body: 'request Authorization: Bearer SENTINEL-KEY https://pod.example/alice/?token=SENTINEL-QUERY-TOKEN',
+      error: 'query-options-failed: credential SENTINEL-CREDENTIAL at https://id.example/alice#me',
+    };
+    try {
+      await engine.open();
+      const result = await engine.sparqlQuery?.('SELECT * WHERE { ?s ?p ?o }', {
+        basePath: 'https://pod.example/alice/?token=SENTINEL-BASE-TOKEN',
+        accessScope: {
+          basePath: 'https://pod.example/alice/',
+          mode: 'read',
+          principal: 'https://id.example/alice#me',
+          version: 'acl-SENTINEL-VERSION',
+        },
+      });
+      expect(result?.status).toBe('unsupported');
+    } finally {
+      await engine.close();
+      await rm(dataDir, { recursive: true, force: true });
+      resetInternalLoggerFactory();
+    }
+    const diagnostic = entries.find((entry) => entry.message.startsWith('Native SPARQL unsupported: '));
+    expect(diagnostic?.level).toBe('warn');
+    expect(diagnostic?.message).toContain('reason=query-options-failed');
+    expect(diagnostic?.message).toContain('basePath=present');
+    expect(diagnostic?.message).toContain('hasPrincipal:true');
+    expect(diagnostic?.message).toContain('hasVersion:true');
+    for (const sentinel of ['SENTINEL', 'pod.example', 'id.example', 'Bearer']) {
+      expect(diagnostic?.message).not.toContain(sentinel);
+    }
+  });
+});

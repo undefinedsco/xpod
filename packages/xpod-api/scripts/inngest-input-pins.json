@@ -1,0 +1,36 @@
+{
+  "repository": "inngest/inngest",
+  "version": "1.40.0",
+  "releaseID": 362726265,
+  "sourceCommit": "0d75b0b305010b5e90a627703e9d1df4464b1e39",
+  "sourceArchive": {
+    "bytes": 78012509,
+    "sha256": "dd6c84ec9e2660ae5fb0ee0ff3d16d9dcce9ca96d93c8e886b2adcd401541906"
+  },
+  "assets": {
+    "darwin-arm64": {
+      "id": 495870678,
+      "name": "inngest_1.40.0_darwin_arm64.tar.gz",
+      "size": 30662499,
+      "digest": "sha256:9ec289abc64729b1684c01304016661eeadcc34911e673e5d1954c2e23cdb546"
+    },
+    "darwin-x64": {
+      "id": 495870679,
+      "name": "inngest_1.40.0_darwin_amd64.tar.gz",
+      "size": 33716025,
+      "digest": "sha256:c9f03af418521a70dc9276c5b75a548c82c293edccb22b0672332c9cff0f7163"
+    },
+    "linux-arm64": {
+      "id": 495870716,
+      "name": "inngest_1.40.0_linux_arm64.tar.gz",
+      "size": 29188177,
+      "digest": "sha256:6c7543690c7b201c79596b1c2eafa7e1270b3d8c8391086f7d5a791555b0a02e"
+    },
+    "linux-x64": {
+      "id": 495870682,
+      "name": "inngest_1.40.0_linux_amd64.tar.gz",
+      "size": 32177803,
+      "digest": "sha256:05fab4697c7a0b938b9ae69715a5c74292f94105c39d31def5a51e3bce537db1"
+    }
+  }
+}

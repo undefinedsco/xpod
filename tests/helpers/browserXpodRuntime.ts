@@ -92,6 +92,21 @@ async function inspectBrowserHost<T>(page: Page, operation: HostOperation): Prom
 
 /** Serialized into the page; all discoveries use the same committed root traversal. */
 function inspectCommittedHost(operation: HostOperation): unknown {
+    /**
+     * Pod-root identity: trailing-slash insensitive, but the FULL path is compared.
+     * Origin alone is not identity — two Pods of one owner share it.
+     *
+     * Declared INSIDE the callback on purpose: Playwright serializes this
+     * function with fn.toString() and runs it in the page, where Node module
+     * bindings do not exist. A nested declaration is part of the serialized
+     * source, so the comparison survives that boundary.
+     */
+    function samePodRoot(left: string | undefined, right: string | undefined): boolean {
+      if (typeof left !== 'string' || typeof right !== 'string') return false;
+      const root = (value: string): string => value.endsWith('/') ? value : `${value}/`;
+      return root(left) === root(right);
+    }
+
     type HostValue = {
       state?: { status: string };
       session?: { getSnapshot(): { status: string; webId?: string; issuer?: string } };
@@ -142,9 +157,15 @@ function inspectCommittedHost(operation: HostOperation): unknown {
         if (host && controller) {
           const snapshot = host.solid.session.getSnapshot();
           const pod = host.solid.pod;
+          // A client built for another Pod of the SAME owner on the SAME Gateway
+          // has the same webId and the same apiBase (origin only), so identity
+          // must be proved by the client's own immutable Pod binding. A client
+          // without that binding can never satisfy this check.
           if (snapshot.status === 'authenticated' && snapshot.webId === operation.webId
-            && pod?.status === 'ready' && pod.current.webId === operation.webId && pod.current.podUrl === operation.podUrl
+            && pod?.status === 'ready' && pod.current.webId === operation.webId
+            && samePodRoot(pod.current.podUrl, operation.podUrl)
             && controller.client?.webId === operation.webId
+            && samePodRoot(controller.client?.podBaseUrl, pod.current.podUrl)
             && (!operation.requireAccountActor || host.capabilities.aiClientCredentials)) return { host, controller };
         }
       } else

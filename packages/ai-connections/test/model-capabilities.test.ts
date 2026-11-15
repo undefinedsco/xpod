@@ -3,7 +3,7 @@ import { modelIconTokens, catalogModelClass, MODEL_CLASS_LABELS } from '../src/A
 // `parseGatewayModel` is an internal payload parser on purpose - the published
 // `/client` barrel lists its surface explicitly - so this test reads the core's
 // source directly rather than widening the contract for a test.
-import { parseGatewayModel } from '../src/contract/client/normalize'
+import { parseGatewayModel } from '../../ai-connections-runtime/src/contract/client/normalize'
 
 describe('model capability surfacing', () => {
   it('preserves a declared embedding dimension and does not invent one', () => {

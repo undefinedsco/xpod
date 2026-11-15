@@ -11,6 +11,8 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 import { ChatKitService, type AiProvider } from '../../src/api/chatkit/service';
 import { PodChatKitStore } from '../../src/api/chatkit/pod-store';
@@ -414,8 +416,54 @@ suite('ChatKit PodStore Integration', () => {
     }, 15000);
   });
 
+  // Keep failure evidence available in formal runs without logging request or SSE payloads.
+  const createPhaseEvidence = (test: 'initial-message-create' | 'delete-thread') => {
+    const startedAt = performance.now();
+    let phase = 'start';
+    let lastEvent: string | null = null;
+    let eventCount = 0;
+    const eventTypes = new Set([
+      'thread.created', 'thread.updated', 'thread.item.added',
+      'thread.item.updated', 'thread.item.done', 'error',
+    ]);
+    const snapshot = (outcome: string): string => JSON.stringify({
+      test, phase, lastEvent, eventCount, elapsedMs: performance.now() - startedAt, outcome,
+    }) + '\n';
+    const write = (outcome: string): void => {
+      const directory = process.env.XPOD_CHATKIT_PHASE_DIR;
+      if (directory) {
+        try {
+          appendFileSync(join(directory, `${test}.jsonl`), snapshot(outcome), { mode: 0o600 });
+        } catch {
+          console.warn('ChatKit phase evidence could not be saved.');
+        }
+      }
+    };
+    return {
+      phase(value: string): void { phase = value; write('phase'); },
+      event(type: unknown): void {
+        lastEvent = typeof type === 'string' && eventTypes.has(type) ? type : 'unknown';
+        eventCount++; write('event');
+      },
+      failed(): void {
+        // Capture before I/O; later timed-out work cannot change this immutable record.
+        const record = snapshot('failed');
+        try {
+          const parent = join(process.cwd(), '.test-data', 'chatkit-phase-failures');
+          mkdirSync(parent, { recursive: true, mode: 0o700 });
+          const directory = mkdtempSync(join(parent, `${test}-`));
+          writeFileSync(join(directory, 'snapshot.json'), record, { mode: 0o600, flag: 'wx' });
+        } catch {
+          console.warn('ChatKit failure evidence could not be saved.');
+        }
+      },
+    };
+  };
+
   describe('Thread with Initial Message', () => {
-    it('should create thread with initial message and get AI response', async () => {
+    it('should create thread with initial message and get AI response', async ({ onTestFailed }) => {
+      const evidence = createPhaseEvidence('initial-message-create');
+      onTestFailed(() => evidence.failed());
       const request = JSON.stringify({
         type: 'threads.create',
         params: {
@@ -425,24 +473,29 @@ suite('ChatKit PodStore Integration', () => {
         },
       });
 
+      evidence.phase('create.process.before');
       const result = await service.process(request, testContext);
+      evidence.phase('create.process.after');
       expect(result.type).toBe('streaming');
 
       if (result.type === 'streaming') {
         const events: any[] = [];
         const decoder = new TextDecoder();
 
+        evidence.phase('create.stream.before');
         for await (const chunk of result.stream()) {
           const text = decoder.decode(chunk);
           const lines = text.split('\n\n').filter(Boolean);
           for (const line of lines) {
             if (line.startsWith('data: ')) {
               const data = JSON.parse(line.slice(6));
+              evidence.event(data.type);
               events.push(data);
             }
           }
         }
 
+        evidence.phase('create.stream.after');
         // Should have all events in order
         expect(events.some((e) => e.type === 'thread.created')).toBe(true);
         expect(
@@ -463,7 +516,9 @@ suite('ChatKit PodStore Integration', () => {
             params: threadParams(threadId),
           });
 
+          evidence.phase('get.process.before');
           const getResult = await service.process(getRequest, testContext);
+          evidence.phase('get.process.after');
           if (getResult.type === 'non_streaming') {
             const data = JSON.parse(getResult.json);
             expect(data.id).toBe(threadId);
@@ -472,7 +527,9 @@ suite('ChatKit PodStore Integration', () => {
             expect(data.items.data).toBeInstanceOf(Array);
 
             if (data.items.data.length < 2) {
+              evidence.phase('items.poll.before');
               const items = await waitForThreadItemsCount(threadId, 2);
+              evidence.phase('items.poll.after');
               expect(items.length).toBeGreaterThanOrEqual(2);
             } else {
               expect(data.items.data.length).toBeGreaterThanOrEqual(2);
@@ -627,7 +684,9 @@ suite('ChatKit PodStore Integration', () => {
   });
 
   describe('Thread Deletion', () => {
-    it('should delete thread and all messages from Pod', async () => {
+    it('should delete thread and all messages from Pod', async ({ onTestFailed }) => {
+      const evidence = createPhaseEvidence('delete-thread');
+      onTestFailed(() => evidence.failed());
       // Create a thread
       const createRequest = JSON.stringify({
         type: 'threads.create',
@@ -638,17 +697,21 @@ suite('ChatKit PodStore Integration', () => {
         },
       });
 
+      evidence.phase('create.process.before');
       const createResult = await service.process(createRequest, testContext);
+      evidence.phase('create.process.after');
       let threadId: string = '';
       if (createResult.type === 'streaming') {
         const decoder = new TextDecoder();
         // Must consume the entire stream to ensure all operations complete
+        evidence.phase('create.stream.before');
         for await (const chunk of createResult.stream()) {
           const text = decoder.decode(chunk);
           const lines = text.split('\n\n').filter(Boolean);
           for (const line of lines) {
             if (!line.startsWith('data: ')) continue;
             const data = JSON.parse(line.slice(6));
+            evidence.event(data.type);
             if (data.type === 'thread.created' && !threadId) {
               threadId = data.thread.id;
             }
@@ -656,6 +719,7 @@ suite('ChatKit PodStore Integration', () => {
         }
       }
 
+      evidence.phase('create.stream.after');
       expect(threadId).toBeTruthy();
       // Delete the thread
       const deleteRequest = JSON.stringify({
@@ -663,7 +727,9 @@ suite('ChatKit PodStore Integration', () => {
         params: threadParams(threadId),
       });
 
+      evidence.phase('delete.process.before');
       const deleteResult = await service.process(deleteRequest, testContext);
+      evidence.phase('delete.process.after');
       expect(deleteResult.type).toBe('non_streaming');
 
       if (deleteResult.type === 'non_streaming') {
@@ -679,7 +745,9 @@ suite('ChatKit PodStore Integration', () => {
 
       // The query might throw "Thread not found" or a 404 error if the container was cleaned up
       try {
+        evidence.phase('get.process.before');
         await service.process(getRequest, testContext);
+        evidence.phase('get.process.after');
         // If we get here without error, the test should fail
         expect.fail('Expected service.process to throw an error for deleted thread');
       } catch (error: any) {

@@ -95,7 +95,13 @@ async function mockAccount(page: Page, options: LayoutFixtureOptions = {}) {
     if (url.pathname === password.reset && method === 'POST') return route.fulfill({ json: {} });
     if (url.pathname === '/.account/oidc/consent/') {
       if (!options.consent) return route.fulfill({ status: 404, json: {} });
-      return route.fulfill({ json: { client: { client_id: 'layout-fixture', client_name: 'Example App', client_uri: 'https://app.example/' } } });
+      // Layout-only fixture: CSS already holds the session identity. Without it
+      // the sole exact binding is pre-bound once and the consent surface
+      // navigates away before any window/typography measurement.
+      return route.fulfill({ json: {
+        client: { client_id: 'layout-fixture', client_name: 'Example App', client_uri: 'https://app.example/' },
+        webId: options.longBinding ? LONG_WEBID : 'https://id.example/alice/profile/card#me',
+      } });
     }
     if (url.pathname === '/.account/oidc/pick-webid/') {
       return route.fulfill({ json: { entries: [{

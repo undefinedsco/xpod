@@ -507,6 +507,9 @@ export async function* parseOpenAiResponsesSse(events: AsyncIterable<ProviderSse
         yield { type: 'usage', usage };
       }
       yield { type: 'response.completed', finishReason: stringField(response, 'finish_reason') ?? stringField(response, 'status') ?? 'stop' };
+    } else if (type === 'response.failed' || type === 'response.error') {
+      const error = objectField(objectField(payload, 'response'), 'error');
+      throw providerStreamError(Object.keys(error).length > 0 ? { error } : payload, 502, secret);
     } else if (type === 'error') {
       throw providerStreamError(payload, 502, secret);
     }

@@ -1,0 +1,4 @@
+{
+  "kinds": ["test", "spec"],
+  "extensions": ["js", "jsx", "ts", "tsx", "cjs", "cjsx", "cts", "ctsx", "mjs", "mjsx", "mts", "mtsx"]
+}

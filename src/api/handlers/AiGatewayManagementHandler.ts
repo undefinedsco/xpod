@@ -19,6 +19,9 @@ import type { ProviderModelSelectionService } from '../ai-gateway/models/Provide
 import type { ProviderQuotaService } from '../ai-gateway/quota';
 import { ProviderModelsFetchError, ProviderModelsResponseError, type ProviderCustomModelsService, type ProviderModelsService } from '../ai-gateway/models';
 import { createAiConnectionsServiceAccess } from '../ai-gateway/service-access/AiConnectionsServiceAccess';
+import type { DeploymentBuiltinConnection } from '../ai-gateway/builtin/DeploymentBuiltinConnection';
+import { DEPLOYMENT_BUILTIN_CONNECTION_ID } from '../ai-gateway/builtin/DeploymentBuiltinConnection';
+import { isPodAccessFailure } from '../ai-gateway/pod/OwnerPodAccess';
 import { sendPodAccessFailure } from './PodAccessFailureResponse';
 import type { AiConnectionsInvocationKeyIssuer } from '../ai-gateway/auth/AiConnectionsInvocationKeyIssuer';
 import {
@@ -51,6 +54,8 @@ export interface AiGatewayManagementHandlerOptions {
   aiClientConfiguration?: AiClientConfigurationCapabilityDescriptor;
   aiConnectionInvocationKeyIssuer?: Pick<AiConnectionsInvocationKeyIssuer, 'issue' | 'issueClientConfiguration'>;
   jsonBodyLimitBytes?: number;
+  /** Cloud only: the deployment-owned built-in connection, listed read-only at the top of providers. */
+  deploymentBuiltin?: Pick<DeploymentBuiltinConnection, 'id' | 'label' | 'modelIds'>;
 }
 
 export function registerAiGatewayManagementRoutes(
@@ -142,6 +147,12 @@ export function registerAiGatewayManagementRoutes(
     if (!authorizeProviderConnect(request, response)) {
       return;
     }
+    const builtin = options.deploymentBuiltin ? [builtinProviderPool(options.deploymentBuiltin)] : [];
+    setBuiltinReadOnlyHeader(response, builtin.length > 0);
+    if (builtin.length > 0 && !options.connectService) {
+      sendJson(response, 200, { data: builtin });
+      return;
+    }
     const poolService = requireCredentialPoolManagementService(options, response);
     if (!poolService) {
       return;
@@ -153,9 +164,17 @@ export function registerAiGatewayManagementRoutes(
         auth: request.auth,
       });
       sendJson(response, 200, {
-        data: pools.map(publicProviderPool),
+        data: [...builtin, ...pools.map(publicProviderPool)],
       });
     } catch (error) {
+      // Pod-backed connections are additive: without usable Pod access (browser DPoP session) or
+      // with an unreachable Pod, the deployment built-in is still the answer. Only this optional
+      // read falls back; mutations and every Pod-backed operation keep their normal failures.
+      if (builtin.length > 0) {
+        logger.warn(`Pod-backed provider list unavailable; serving deployment built-in only: ${safePodListFailureCode(error)}`);
+        sendJson(response, 200, { data: builtin });
+        return;
+      }
       sendCredentialPoolError(response, error);
     }
   });
@@ -1533,6 +1552,52 @@ function publicCredentialRecord(record: {
     version: record.version,
     reauthRequired: record.reauthRequired,
   };
+}
+
+function builtinProviderPool(builtin: Pick<DeploymentBuiltinConnection, 'id' | 'label' | 'modelIds'>): Record<string, unknown> {
+  return {
+    id: builtin.id,
+    name: builtin.label,
+    status: 'available',
+    builtin: true,
+    readOnly: true,
+    offerings: [],
+    credentials: [],
+    selectedModels: builtin.modelIds.map((id) => ({
+      id,
+      provider: builtin.id,
+      displayName: id,
+      protocols: ['chatCompletions', 'responses'],
+    })),
+  };
+}
+
+/**
+ * Machine marker on the list response: clients that only understand the Pod provider vocabulary
+ * still see every Pod-backed row, while the deployment-owned row is announced separately instead
+ * of being dropped by provider-id validation in a client.
+ */
+/** Log-safe Pod list failure classification: never a free-form message that can carry a URL/key. */
+function safePodListFailureCode(error: unknown): string {
+  if (error instanceof Error && isPodAccessFailure(error.message)) {
+    return 'pod_access_unavailable';
+  }
+  const code = (error as { code?: unknown } | undefined)?.code;
+  return typeof code === 'string' && /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/u.test(code)
+    ? `pod_read_failed:${code}`
+    : 'pod_read_failed';
+}
+
+function setBuiltinReadOnlyHeader(response: ServerResponse, present: boolean): void {
+  if (present) {
+    response.setHeader('X-Xpod-Builtin-Providers', DEPLOYMENT_BUILTIN_CONNECTION_ID);
+    const exposed = String(response.getHeader('Access-Control-Expose-Headers') ?? '')
+      .split(',').map((name) => name.trim()).filter(Boolean);
+    if (!exposed.some((name) => name.toLowerCase() === 'x-xpod-builtin-providers')) {
+      exposed.push('X-Xpod-Builtin-Providers');
+    }
+    response.setHeader('Access-Control-Expose-Headers', exposed.join(', '));
+  }
 }
 
 function publicProviderPool(value: unknown): Record<string, unknown> {

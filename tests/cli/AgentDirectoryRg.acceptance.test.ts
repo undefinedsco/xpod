@@ -16,21 +16,21 @@ import {
   AgentDirectoryClient,
   type ListParams,
   type SearchParams,
-} from '../../src/agent-directory/client/AgentDirectoryClient';
+} from '../../packages/xpod-afs/src/directory/client';
 import type {
   AgentDirectoryListResponse,
   AgentDirectorySearchMatch,
   AgentDirectorySearchResponse,
-} from '../../src/agent-directory/protocol';
-import { parseRgArgs } from '../../src/cli/agent-fs/args';
-import { runManagedInvocation, type ManagedRunResult } from '../../src/cli/agent-fs/runner';
+} from '../../packages/xpod-afs/src/directory/protocol';
+import { parseRgArgs } from '../../packages/xpod-afs/src/agent-fs/args';
+import { runManagedInvocation, type ManagedRunResult } from '../../packages/xpod-afs/src/agent-fs/runner';
 import {
   parseManagedRoots,
   resolveManagedTarget,
   type ManagedRoot,
-} from '../../src/cli/agent-fs/roots';
-import { execNativeBinary, resolveNativeBinary } from '../../src/cli/agent-fs/native';
-import { installRgWrapper, renderEnvExports, shellQuote } from '../../src/cli/agent-fs/install';
+} from '../../packages/xpod-afs/src/agent-fs/roots';
+import { execNativeBinary, resolveNativeBinary } from '../../packages/xpod-afs/src/agent-fs/native';
+import { installRgWrapper, renderEnvExports, shellQuote } from '../../packages/xpod-afs/src/agent-fs/install';
 
 const REPO_ROOT = process.cwd();
 const RG = process.env.XPOD_TEST_RG ?? 'rg';

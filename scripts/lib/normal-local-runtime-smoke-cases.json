@@ -1,0 +1,109 @@
+[
+  {
+    "request": {
+      "id": "fts",
+      "type": "query",
+      "sparql": "SELECT ?text WHERE { ?text ql:contains-word \"alpha\" }"
+    },
+    "bindings": [
+      {
+        "text": {
+          "type": "literal",
+          "value": "alpha card"
+        }
+      }
+    ]
+  },
+  {
+    "request": {
+      "id": "vector",
+      "type": "query",
+      "sparql": "SELECT ?retrieval WHERE { }",
+      "options": {
+        "vectorQuery": {
+          "embedding": [
+            1.0,
+            0.0
+          ],
+          "provider": "xpod",
+          "model": "smoke-model",
+          "modelVersion": "2026-08-12",
+          "inputKind": "entity-card",
+          "projectionPolicyVersion": "policy-v1",
+          "metric": "cosine",
+          "limit": 1,
+          "retrievalPointVariable": "?retrieval"
+        }
+      }
+    },
+    "bindings": [
+      {
+        "retrieval": {
+          "type": "literal",
+          "value": "alpha card"
+        }
+      }
+    ]
+  },
+  {
+    "request": {
+      "id": "default-named-graph",
+      "type": "query",
+      "sparql": "SELECT ?s ?o ?g WHERE { { ?s <urn:xpod:smoke:p:value> ?o BIND(<urn:xpod:smoke:g:default> AS ?g) } UNION { GRAPH ?g { ?s <urn:xpod:smoke:p:value> ?o } } } ORDER BY ?g ?s",
+      "options": {
+        "basePath": "urn:xpod:smoke:",
+        "accessScope": {
+          "basePath": "urn:xpod:smoke:",
+          "mode": "read",
+          "resolved": true,
+          "principal": "urn:xpod:smoke:reader",
+          "version": "smoke-default-named-v1"
+        }
+      }
+    },
+    "bindings": [
+      {
+        "s": {
+          "type": "uri",
+          "value": "urn:xpod:smoke:s:document"
+        },
+        "o": {
+          "type": "literal",
+          "value": "document"
+        },
+        "g": {
+          "type": "uri",
+          "value": "urn:xpod:smoke:document"
+        }
+      },
+      {
+        "s": {
+          "type": "uri",
+          "value": "urn:xpod:smoke:s:named"
+        },
+        "o": {
+          "type": "literal",
+          "value": "named"
+        },
+        "g": {
+          "type": "uri",
+          "value": "urn:xpod:smoke:g:allowed"
+        }
+      },
+      {
+        "s": {
+          "type": "uri",
+          "value": "urn:xpod:smoke:s:default"
+        },
+        "o": {
+          "type": "literal",
+          "value": "default"
+        },
+        "g": {
+          "type": "uri",
+          "value": "urn:xpod:smoke:g:default"
+        }
+      }
+    ]
+  }
+]

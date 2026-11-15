@@ -53,12 +53,16 @@ export function assertMountedModelBinding(input: { provider: string; credentialI
   models: Array<{ id: string; provider: string; credentialId?: string; availability?: string }>;
 }): void {
   const { credential, discovery, models } = result;
+  // The Gateway projection may also carry built-in rows beside the selected Pod
+  // model, so exactly one row must match the selection rather than requiring the
+  // whole projection to have one row.
+  const selected = models.filter(model => model.id === input.model);
   if (result.credentialCount !== 1 || credential?.id !== input.credentialId || result.providerId !== input.provider
     || (credential.provider !== undefined && credential.provider !== input.provider)
     || result.webId !== input.webId || discovery.provider !== input.provider || discovery.credential !== input.credentialId
-    || !discovery.models.some(model => model.id === input.model) || models.length !== 1
-    || models[0].id !== input.model || models[0].provider !== input.provider || models[0].availability === 'unavailable'
-    || (models[0].credentialId !== undefined && models[0].credentialId !== input.credentialId)) {
+    || !discovery.models.some(model => model.id === input.model) || selected.length !== 1
+    || selected[0].provider !== input.provider || selected[0].availability === 'unavailable'
+    || (selected[0].credentialId !== undefined && selected[0].credentialId !== input.credentialId)) {
     throw new Error('Actual credential/discovery/publication binding differs from the selection');
   }
 }
@@ -96,7 +100,8 @@ async function mountedCredentialConfirmed(phase: MountedPodPermissionPhase, reso
  */
 export async function createConfirmedMountedProvider(phase: MountedPodPermissionPhase, input: {
   provider: AiConnectionsProvider; credential: CreateApiKeyCredentialInput; model?: string; expectedModels?: string[];
-}): Promise<{ credentialId: string; model: string; quotaObserved: true; remove(): Promise<true> }> {
+}): Promise<{ credentialId: string; model: string; quotaObserved: boolean;
+  quotaStatus: 'available' | 'unsupported'; remove(): Promise<true> }> {
   const { handle } = phase;
   const boundWebId = await attributePackagedOperation('provider-identity', () => handle.evaluate(({ host, controller }) => {
     const session = host.solid.session.getSnapshot();
@@ -140,14 +145,24 @@ export async function createConfirmedMountedProvider(phase: MountedPodPermission
       if (!client.saveModelSelection || !client.listGatewayModels) throw new Error('Missing declared model publication capability');
       await client.saveModelSelection(input.provider, [{ id: selectedModel }], input.id);
       const models = await client.listGatewayModels();
-      if (models.length !== 1 || !models[0].id || models[0].availability === 'unavailable') throw new Error('Fresh Gateway model projection is inconsistent');
+      if (!Array.isArray(models) || models.some(row => !row.id)) {
+        throw new Error('Fresh Gateway model projection is inconsistent');
+      }
       const quota = await client.quota(input.provider, true, { credentialId: input.id });
-      if (quota.status !== 'available') throw new Error('Provider quota was not actually available');
-      return { credential, credentialCount: provider!.credentials.length, providerId: provider!.id, discovery, models, selectedModel, webId: client.webId };
+      // A provider that declares no quota capability is an accepted capability
+      // outcome, not quota capacity. Any real error or failure still rejects.
+      if (quota.status !== 'available' && quota.status !== 'unsupported') {
+        throw new Error('Provider quota failed');
+      }
+      return { credential, credentialCount: provider!.credentials.length, providerId: provider!.id, discovery, models,
+        selectedModel, quotaStatus: quota.status, webId: client.webId };
     }, { provider: input.provider, id: created.id, model: input.model, expectedModels: input.expectedModels }));
     await attributePackagedOperation('provider-publication', async () =>
       assertMountedModelBinding({ provider: input.provider, credentialId: created.id, model: result.selectedModel, webId: boundWebId }, result));
-    return { credentialId: created.id, model: result.models[0].id, quotaObserved: true, remove };
+    // `quotaObserved` is true only when the provider actually reported quota
+    // capacity; an unsupported capability is recorded as its real status.
+    return { credentialId: created.id, model: result.selectedModel, quotaObserved: result.quotaStatus === 'available',
+      quotaStatus: result.quotaStatus === 'unsupported' ? 'unsupported' : 'available', remove };
   } catch (error) {
     try { await remove(); } catch (cleanup) { throw new AggregateError([error, cleanup], 'Provider phase and cleanup failed'); }
     throw error;
@@ -338,11 +353,11 @@ export async function acceptHeldSolidCredential(page: Page, input: {
         headers: { Authorization: `Bearer ${input.key}`, 'X-Xpod-Pod-Url': input.podUrl } });
       const value = await response.json() as { data?: Array<{ id?: string }> };
       observed.push({ status: response.status, modelCount: Array.isArray(value.data) ? value.data.length : -1,
-        modelMatches: value.data?.length === 1 && value.data[0].id === input.model });
+        modelMatches: Array.isArray(value.data) && value.data.some(row => row.id === input.model) });
     }
     return observed;
   }, input);
-  if (statuses.length !== 2 || statuses.some(value => value.status !== 200 || value.modelCount !== 1 || !value.modelMatches)) {
+  if (statuses.length !== 2 || statuses.some(value => value.status !== 200 || !value.modelMatches)) {
     throw new Error('Same-Pod held Solid credential reuse failed: ' + JSON.stringify(statuses));
   }
   return true;

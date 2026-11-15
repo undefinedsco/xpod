@@ -325,6 +325,40 @@ must choose a model in that use before it can run. Display the effective model
 and its source so the user can distinguish a personal assignment from a deployment
 default.
 
+## Deployment Built-in Connection (`linx`, `linx-lite`)
+
+Product decision: Cloud xpod provides built-in models `linx` and `linx-lite`, so LinX can talk to
+the user from the first moment, including the flow where the user enters their own provider keys.
+
+- It is a first-class **deployment-owned AI Connection** (provider id `xpod-builtin`), not a Pod
+  credential and not a hidden env fallback inside agent runtimes. The "no `DEFAULT_*` fallback in
+  agent runtimes" rule is unchanged: agent runtimes still only receive invocation-scoped AI
+  Connection config; the built-in is reached through the same gateway surface as any connection.
+- Enabled only on `edition=cloud` when both `DEFAULT_API_BASE` (the ai-gateway OpenAI-compatible
+  base, e.g. `http://ai-gateway/v1`) and `DEFAULT_API_KEY` are set. Optional
+  `DEFAULT_API_MODEL_MAP` (JSON, e.g. `{"linx":"<upstream id>"}`) remaps public ids to upstream
+  ids; the default is identity.
+- Authentication is the caller's verified Solid identity (WebID). A normal browser DPoP session
+  can list and chat immediately: no Pod access, Pod interface key or setup. xpod calls the upstream
+  with its own `DEFAULT_API_KEY` and passes the WebID as the OpenAI `user` field for attribution.
+  The caller token and `DEFAULT_API_KEY` are never exchanged: the key is never returned or logged.
+- `GET /v1/models` always lists the built-ins for any authenticated Solid caller; Pod-backed
+  models are additive and merged after them when Pod access works. A Pod access failure
+  (`service_access_missing` family) is not an error for this route while a built-in exists.
+- `POST /v1/chat/completions` and `/v1/responses` with model `linx` / `linx-lite` route to the
+  ai-gateway without touching the Pod router. An explicit credential id still goes to the Pod path.
+- `GET /api/ai/providers` lists `xpod-builtin` first with `builtin: true, readOnly: true`; it cannot
+  be edited or deleted, and DPoP sessions get it instead of `403 service_access_missing`. Its
+  selected models carry the same public projection as `/v1/models` (`provider`, display name,
+  protocols), because client-side provider validation only knows Pod provider ids. The response
+  also carries `X-Xpod-Builtin-Providers: xpod-builtin` so a client can announce the
+  deployment-owned row without teaching every parser a new provider id. A Pod that is unreachable
+  (not merely unreadable) also leaves the built-ins listed instead of failing the route.
+- Deployment-owned upstream failures are deliberately opaque: the caller sees a status-derived
+  message and a whitelisted machine code, never the ai-gateway/LiteLLM error text (which can quote
+  the submitted `DEFAULT_API_KEY`), and the client never follows a redirect while that key is on
+  the request.
+
 ## Login And Session Model
 
 AI Connections has one login entry: the host-owned WebID login through the

@@ -1,0 +1,12 @@
+import {test,expect} from 'bun:test';
+import {createHash} from 'node:crypto';
+import {inspectSourceOriginalTar} from '../../scripts/lib/independent-admission/source-original-tar';
+import {tar} from './candidate-service-image-output.fixture';
+const sha=(raw:Buffer)=>createHash('sha256').update(raw).digest('hex'),name='0001-'+'a'.repeat(64)+'.original';
+function inspect(raw:Buffer,body:Buffer,strict=true){const path='actual-copy.raw';return inspectSourceOriginalTar({archive:{path,bytes:raw.length,sha256:sha(raw)},rows:new Map([[name,{path:name,archive:path,kind:'file',bytes:body.length,sha256:sha(body),mode:0o644}]]),readRange:(_name,offset,length)=>raw.subarray(offset,offset+length),check:()=>{},...(strict?{ordinarySingleFile:true as const}:{})});}
+function header(raw:Buffer,edit:(header:Buffer)=>void){raw=Buffer.from(raw);edit(raw.subarray(0,512));raw.fill(32,148,156);const sum=[...raw.subarray(0,512)].reduce((a,b)=>a+b,0);raw.write(sum.toString(8).padStart(6,'0')+'\0 ',148);return raw;}
+test('same sequential tar parser binds complete raw and single regular body',()=>{const body=Buffer.alloc(65537,88),raw=tar(name,body);const result=inspect(raw,body);expect([...result.seen]).toEqual([name]);expect(result.locations.get(name)?.bytes).toBe(body.length);expect(inspect(raw,body,false).seen.size).toBe(1);});
+test('strict opt-in rejects GNU/PAX/link/directory/prefix and extra members',()=>{const body=Buffer.from('body'),raw=tar(name,body);for(const type of ['L','K','x','g','2','5'])expect(()=>inspect(header(raw,h=>h.write(type,156)),body)).toThrow();expect(()=>inspect(header(raw,h=>h.write('unclaimed-prefix',345)),body)).toThrow();expect(()=>inspect(header(raw,h=>h.write('unclaimed-link',157)),body)).toThrow();expect(()=>inspect(Buffer.concat([raw.subarray(0,1024),tar('extra',body)]),body)).toThrow();});
+test('complete digest, closed member name, mode and bytes remain strict',()=>{const body=Buffer.from('body'),raw=tar(name,body);expect(()=>inspect(raw,Buffer.from('xxxx'))).toThrow();expect(()=>inspect(header(raw,h=>h.write('0000600\0',100)),body)).toThrow();expect(()=>inspect(header(raw,h=>h.write('other\0',0)),body)).toThrow();expect(()=>inspect(Buffer.concat([raw,Buffer.from('trailing')]),body)).toThrow();});
+
+test('strict single file rejects correctly hashed empty archive while default behavior stays unchanged',()=>{const body=Buffer.from('body'),empty=Buffer.alloc(1024);expect(()=>inspect(empty,body)).toThrow('single ordinary file closure');expect(inspect(empty,body,false).seen.size).toBe(0);});

@@ -21,7 +21,7 @@ describe('single-binary logger sharing', () => {
       const declarations = parsed.statements.filter((statement) =>
         ts.isFunctionDeclaration(statement) && statement.name && names.has(statement.name.text)
         || ts.isVariableStatement(statement) && statement.declarationList.declarations.some((declaration) =>
-          ts.isIdentifier(declaration.name) && declaration.name.text === 'COMMON_BUNDLE_EXTERNALS'));
+          ts.isIdentifier(declaration.name) && ['CANONICAL_RUNTIME_PACKAGES', 'COMMON_BUNDLE_EXTERNALS'].includes(declaration.name.text)));
       const inertPlugin = { name: 'fixture-unused-plugin', setup() {} };
       const loadBuild = new Function('fs', 'path', 'esbuild', 'stageRoot', 'rootPackage',
         'createPackagePatchPlugin', 'extractedComponentsPlugin', 'kyUniversalBrowserPlugin',

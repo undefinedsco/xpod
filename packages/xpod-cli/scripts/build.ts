@@ -16,7 +16,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, cpSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,10 +34,12 @@ import { assertNativeTarget, bunBundleArguments, bunBundleEnvironment, bunCompil
 import { copyNativeNotices } from '../src/native-notices';
 import { copyNativeDeclarations } from '../src/native-declarations';
 import { collectJavascriptNotices } from '../src/javascript-notices';
+import { stagePreviewClients } from './stage-preview-clients';
 import { exportApplicationSources } from '../src/application-sources';
 import { validateNativeBuildReceipt, verifyNativeSources } from '../src/native-sources';
 import { verifySourceFiles } from '../src/source-materials';
 import { externalRuntimeLauncher } from '../src/launcher';
+import { CLIUI_MODIFICATION_NOTICE, SOURCE_KIT_GOOGLE_NOTICE } from '../src/promotion';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.resolve(here, '..');
@@ -49,6 +51,7 @@ interface Args {
   helper?: string;
   nativeSources?: string;
   nativeReceipt?: string;
+  nativeNotices?: string;
   outDir: string;
 }
 
@@ -70,6 +73,8 @@ function parseArgs(argv: string[]): Args {
       args.nativeSources = path.resolve(argv[++i]);
     } else if (arg === '--native-receipt') {
       args.nativeReceipt = path.resolve(argv[++i]);
+    } else if (arg === '--native-notices') {
+      args.nativeNotices = path.resolve(argv[++i]);
     } else if (arg === '--out') {
       args.outDir = path.resolve(argv[++i]);
     } else {
@@ -79,6 +84,7 @@ function parseArgs(argv: string[]): Args {
   if (Boolean(args.nativeSources) !== Boolean(args.nativeReceipt) || (args.cliOnly && args.nativeSources)) {
     throw new Error('Native sources/receipt must be provided together for a helper build');
   }
+  if (args.nativeNotices && (args.cliOnly || !args.nativeReceipt)) throw new Error('Generated native notices require the actual native sources/receipt');
   return args;
 }
 
@@ -207,7 +213,7 @@ function artifact(name: string, kind: ManifestArtifact['kind'], included: boolea
   };
 }
 
-function writeNotices(dir: string, target: string, includeNative: boolean, pin: SelectedEnginePin, compiler?: { toolchain: string; commit: string }): ManifestArtifact[] {
+function writeNotices(dir: string, target: string, includeNative: boolean, pin: SelectedEnginePin, compiler?: { toolchain: string; commit: string }, generatedCollection?: string): ManifestArtifact[] {
   const projectLicense = path.join(dir, 'licenses/xpod/LICENSE');
   mkdirSync(path.dirname(projectLicense), { recursive: true });
   cpSync(path.join(repoRoot, 'LICENSE'), projectLicense);
@@ -265,6 +271,8 @@ License terms: https://www.mozilla.org/en-US/MPL/2.0/
 This notice concerns that covered source; it does not assign MPL to the whole CLI.
 ` : ''}
 
+${includeNative ? SOURCE_KIT_GOOGLE_NOTICE : ''}
+${CLIUI_MODIFICATION_NOTICE}
 ## Not included
 - rclone (MIT): research backend only, not part of this artifact.
 `;
@@ -287,7 +295,7 @@ This notice concerns that covered source; it does not assign MPL to the whole CL
       license: { spdx, status: 'verified', source: `${origin}; unmodified` },
     });
   });
-  const collection = path.join(packageRoot, 'licenses/native/collection');
+  const collection = generatedCollection ?? path.join(packageRoot, 'licenses/native/collection');
   const declarationsOutput = path.join(dir, 'licenses/native/declarations');
   const inventory = includeNative ? JSON.parse(readFileSync(path.join(collection, `${target}.json`), 'utf8')) : undefined;
   const declarations = copyNativeDeclarations(path.join(packageRoot, 'licenses/native/declarations'), declarationsOutput, pin, inventory)
@@ -303,7 +311,12 @@ This notice concerns that covered source; it does not assign MPL to the whole CL
   pin.cliLicenseStatus = 'verified';
   if (!includeNative) { return [projectNotice, ...supplements, ...declarations]; }
   const collectionOutput = path.join(dir, 'licenses/native/collection');
-  const collected = copyNativeNotices(collection, collectionOutput, target, compiler).map((name) => {
+  const collectedNames = copyNativeNotices(collection, collectionOutput, target, compiler);
+  if (generatedCollection) {
+    cpSync(path.join(collection, 'provenance.json'), path.join(collectionOutput, 'provenance.json'));
+    collectedNames.push('provenance.json');
+  }
+  const collected = collectedNames.map((name) => {
     const file = path.join(collectionOutput, name);
     return artifact(`native-notice:${name}`, 'notice', true, {
       relPath: `licenses/native/collection/${name}`, sha: sha256File(file), size: statSync(file).size,
@@ -349,8 +362,21 @@ function main(): void {
     const commit = typeof receipt.compiler.rustcVersion === 'string' ? receipt.compiler.rustcVersion.match(/^commit-hash: ([a-f0-9]{40})$/m)?.[1] : undefined;
     if (!commit) { throw new Error('Native receipt lacks the actual Rust compiler commit'); }
     nativeCompiler = { toolchain: nativeKit.toolchain, commit };
+    if (args.nativeNotices) {
+      const provenancePath = path.join(args.nativeNotices, 'provenance.json');
+      const provenance = JSON.parse(readFileSync(provenancePath, 'utf8'));
+      if (provenance.schemaVersion !== 1 || provenance.target !== args.target || provenance.sourceKitSHA256 !== receipt.sourceKitSha256 ||
+        provenance.compilerCommit !== commit || provenance.toolchain !== nativeKit.toolchain ||
+        provenance.cargoSHA256 !== receipt.compiler.cargoSha256 || provenance.rustcSHA256 !== receipt.compiler.rustcSha256 ||
+        provenance.indexSHA256 !== sha256File(path.join(args.nativeNotices, `${args.target}.json`)) ||
+        provenance.indexSHA256 !== receipt.nativeNotices?.indexSHA256 || sha256File(provenancePath) !== receipt.nativeNotices?.provenanceSHA256) {
+        throw new Error('Generated native notice collection differs from actual producer receipt');
+      }
+    } else if (args.target.endsWith('-x64')) {
+      throw new Error('x64 packaging requires actual producer --native-notices; no ARM fallback');
+    }
   }
-  const vendoredNotices = writeNotices(installDir, args.target, !args.cliOnly, pin, nativeCompiler);
+  const vendoredNotices = writeNotices(installDir, args.target, !args.cliOnly, pin, nativeCompiler, args.nativeNotices);
 
   // Bundle the CLI from a hermetic staging tree. Bun resolves original module
   // `__dirname` values during bundling; building directly from the checkout
@@ -368,6 +394,7 @@ function main(): void {
     mkdirSync(path.join(stageDir, 'packages/xpod-cli'), { recursive: true });
     cpSync(path.join(repoRoot, 'src'), path.join(stageDir, 'src'), { recursive: true });
     cpSync(path.join(packageRoot, 'src'), path.join(stageDir, 'packages/xpod-cli/src'), { recursive: true });
+    stagePreviewClients(repoRoot, stageDir);
     cpSync(path.join(repoRoot, 'package.json'), path.join(stageDir, 'package.json'));
     symlinkSync(path.join(repoRoot, 'node_modules'), path.join(stageDir, 'node_modules'));
 
@@ -381,6 +408,7 @@ function main(): void {
       target: args.target, cli: cliOut, bunVersion: process.versions.bun ?? 'unknown',
       supplements: path.join(packageRoot, 'licenses/javascript'),
       generated: path.join(packageRoot, 'licenses/javascript/generated', process.versions.bun ?? 'unknown'),
+      generatedProfile: 'preview',
     })) {
       const file = path.join(collectionOutput, name);
       javascriptNotices.push(artifact(`javascript-notice:${name}`, 'notice', true, {

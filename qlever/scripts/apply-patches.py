@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import argparse
+import importlib.util
+import os
 import subprocess
 from pathlib import Path
 
@@ -35,10 +37,24 @@ def main() -> None:
 
     patches = QLEVER_ROOT / "patches"
     names = [line.strip() for line in (patches / "series").read_text().splitlines() if line.strip()]
-    for name in names:
+    collector = None
+    original_directory = os.environ.get('XPOD_QLEVER_UPSTREAM_MATERIALS_DIR')
+    if original_directory:
+        spec = importlib.util.spec_from_file_location('sdk_upstream', QLEVER_ROOT / 'scripts/sdk-upstream-source-materials.py')
+        upstream = importlib.util.module_from_spec(spec); spec.loader.exec_module(upstream)
+        collector = upstream.Collector(source, QLEVER_ROOT, original_directory,
+            upstream.budgets.ExecutionBudget(os.environ['XPOD_QLEVER_SDK_DEADLINE_UNIX']))
+        collector.before()
+    for index, name in enumerate(names):
         patch = patches / name
-        run(["git", "apply", "--check", str(patch)], source)
-        run(["git", "apply", str(patch)], source)
+        if collector:
+            collector.patch(index, ['git', 'apply', '--check', str(patch)])
+            collector.patch(index, ['git', 'apply', str(patch)])
+        else:
+            run(['git', 'apply', '--check', str(patch)], source)
+            run(['git', 'apply', str(patch)], source)
+    if collector:
+        collector.after()
     print(f"Applied {len(names)} locked QLever patches to {source}")
 
 

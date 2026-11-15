@@ -7,6 +7,18 @@ export interface MatrixStoreContext {
   /** Storage Pod selected by the current SP/gateway, not necessarily the WebID issuer origin. */
   podUrl?: string;
   auth?: AuthContext;
+  /**
+   * Canonical storage root of a remote room resolved from the persisted
+   * directory. Internal routing hint only: it never replaces the caller, and
+   * the Solid ACL and membership checks still run against that Pod.
+   */
+  roomStorage?: string;
+  /**
+   * Verified room container on `roomStorage`. When present, collection SELECTs
+   * are bound to that room's own endpoint and broad Pod/parent reads are not
+   * attempted. Exact document reads and writes keep their canonical paths.
+   */
+  roomContainer?: string;
 }
 
 export interface MatrixRoomRecord {
@@ -97,7 +109,12 @@ export interface MatrixStore {
   getAccount(context: MatrixStoreContext): Promise<MatrixAccountInfo>;
   createRoom(input: MatrixCreateRoomRequest, context: MatrixStoreContext): Promise<MatrixRoomRecord>;
   joinRoom(roomIdOrAlias: string, context: MatrixStoreContext): Promise<{ roomId: string }>;
-  inviteUser(roomId: string, userId: string, context: MatrixStoreContext): Promise<void>;
+  /**
+   * Invite by MXID. `targetWebID` is optional so legacy clients keep working;
+   * when present it must be the full WebID whose canonical MXID equals userId,
+   * and only then can a cross-Pod room reference be registered.
+   */
+  inviteUser(roomId: string, userId: string, context: MatrixStoreContext, targetWebID?: string): Promise<void>;
   leaveRoom(roomId: string, context: MatrixStoreContext): Promise<void>;
   sendEvent(
     roomId: string,

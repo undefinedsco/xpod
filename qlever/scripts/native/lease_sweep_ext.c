@@ -1,0 +1,1003 @@
+/* Bulk held-read-lease sweep as a REAL CPython extension.
+ *
+ * Contract mirrored from the shipped LeaseSet.check (R qlever/scripts/
+ * sdk-tool-lifetime-leases.py): one fcntl(F_GETLEASE) then one fstat per held
+ * row; the same six fields in the same order (st_dev, st_ino, st_mode,
+ * st_size, st_mtime_ns, st_ctime_ns); first failing row wins; no cache, no
+ * skipped row, no second authority.
+ *
+ * TWO CORRECTIONS vs the frozen 5f202e22 draft (both real defects):
+ *
+ *  1. Py_BuildValue format. Py_BuildValue is VARIADIC and reads each value at
+ *     the width named by its format character. The draft used "(nin)" while
+ *     passing (int verdict, Py_ssize_t index, int errno). "n" reads a
+ *     Py_ssize_t (8 bytes on LP64) from an int (4 bytes) and "i" reads an int
+ *     from a Py_ssize_t. That is an ABI mismatch -- it silently truncates the
+ *     index on large registries. Correct types are i/n/i -> "(ini)".
+ *
+ *  2. eq_unsigned on an exact int outside signed 64-bit. The draft returned 0
+ *     ("not equal") whenever PyLong_AsLongLongAndOverflow reported overflow.
+ *     A legitimate st_ino/st_dev/st_mode value in the unsigned high half
+ *     (2^63 .. 2^64-1) is representable and may be exactly equal, so returning
+ *     0 wrongly REJECTED a valid lease row. Now an overflowing exact int is
+ *     compared with exact Python integer equality instead of being narrowed.
+ *
+ * Ownership rules kept from the draft (this is the part v5 got wrong):
+ *   - every value the loop reads is an OWNED reference taken BEFORE any call
+ *     that can run Python code (PyErr_CheckSignals, rich compare);
+ *   - so a handler that mutates or pops the caller's containers cannot cause
+ *     a use-after-free;
+ *   - a raising handler's exception object propagates unchanged (status -1),
+ *     so CPython never substitutes SystemError;
+ *   - the helper never calls F_SETLEASE, so it can never unlock another fd.
+ */
+#define PY_SSIZE_T_CLEAN
+#include <Python.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <string.h>
+#include <limits.h>
+#include <pthread.h>
+
+#define NS_PER_SEC 1000000000LL
+#define NS_FAST_MAX_SEC 9223372035LL
+
+typedef struct Plan Plan;
+
+enum { V_OK = 0, V_LEASE = 1, V_IDENTITY = 2, V_ERRNO = 3, V_NEEDPY = 4, V_EINTR = 5 };
+
+/* Exact-int equality WITHOUT narrowing: used whenever a fast path would be
+ * unsafe or would need an out-of-range cast. */
+static int eq_exact_via_python(PyObject *expected, long long actual)
+{
+    PyObject *built = PyLong_FromLongLong(actual);
+    if (built == NULL) return -1;
+    int equal = PyObject_RichCompareBool(built, expected, Py_EQ);
+    Py_DECREF(built);
+    return equal;
+}
+
+static int eq_exact_unsigned_via_python(PyObject *expected, unsigned long long actual)
+{
+    PyObject *built = PyLong_FromUnsignedLongLong(actual);
+    if (built == NULL) return -1;
+    int equal = PyObject_RichCompareBool(built, expected, Py_EQ);
+    Py_DECREF(built);
+    return equal;
+}
+
+/* Signed compare (st_size). Exact ints use an int64 fast path; an exact int
+ * that does not fit int64 keeps exact Python equality (it can still be equal
+ * only if it fits, but we let Python decide rather than assuming). */
+static int eq_signed(PyObject *expected, long long actual)
+{
+    if (!PyLong_CheckExact(expected)) return eq_exact_via_python(expected, actual);
+    int overflow = 0;
+    long long value = PyLong_AsLongLongAndOverflow(expected, &overflow);
+    if (value == -1 && PyErr_Occurred()) return -1;
+    if (overflow == 0) return value == actual;
+    return eq_exact_via_python(expected, actual);   /* exact, never narrowed */
+}
+
+/* Unsigned compare (st_dev/st_ino/st_mode).
+ *
+ * FIX 2: an exact int in the unsigned high half must be compared exactly, not
+ * rejected. We therefore try unsigned parsing first and fall back to exact
+ * Python equality for anything that does not fit. */
+static int eq_unsigned(PyObject *expected, unsigned long long actual)
+{
+    if (!PyLong_CheckExact(expected)) return eq_exact_unsigned_via_python(expected, actual);
+    unsigned long long value = PyLong_AsUnsignedLongLong(expected);
+    if (value == (unsigned long long)-1 && PyErr_Occurred()) {
+        PyErr_Clear();                                  /* not representable */
+        return eq_exact_unsigned_via_python(expected, actual);
+    }
+    return value == actual;
+}
+
+/* Times: int64 fast path only when provably in range, else exact PyLong math. */
+static int eq_timespec(PyObject *expected, const struct timespec *ts)
+{
+    if (ts->tv_nsec >= 0 && ts->tv_nsec < NS_PER_SEC
+        && ts->tv_sec >= -NS_FAST_MAX_SEC && ts->tv_sec <= NS_FAST_MAX_SEC) {
+        long long total = (long long)ts->tv_sec * NS_PER_SEC + (long long)ts->tv_nsec;
+        return eq_signed(expected, total);
+    }
+    PyObject *seconds = PyLong_FromLongLong((long long)ts->tv_sec);
+    PyObject *scale = seconds ? PyLong_FromLongLong(NS_PER_SEC) : NULL;
+    PyObject *scaled = scale ? PyNumber_Multiply(seconds, scale) : NULL;
+    PyObject *nanos = scaled ? PyLong_FromLong((long)ts->tv_nsec) : NULL;
+    PyObject *total = nanos ? PyNumber_Add(scaled, nanos) : NULL;
+    int equal = total ? PyObject_RichCompareBool(total, expected, Py_EQ) : -1;
+    Py_XDECREF(total); Py_XDECREF(nanos); Py_XDECREF(scaled);
+    Py_XDECREF(scale); Py_XDECREF(seconds);
+    return equal;
+}
+
+/* B4 FIX: the SINGLE place that builds the public verdict tuple.
+ *
+ * Both lease_sweep() and the synthetic width seam call this, so the variadic
+ * format and the argument widths live in exactly one function. Previously the
+ * seam repeated the format string itself, which meant a future product-format
+ * regression could leave the seam passing.
+ *
+ * The explicit casts are the bug fix: Py_BuildValue is variadic and reads each
+ * value at the width named by its format character, so "(ini)" REQUIRES
+ * (int, Py_ssize_t, int). Passing a Py_ssize_t where "i" is expected (or the
+ * reverse) is an ABI mismatch that truncates the index.
+ */
+static PyObject *verdict_tuple(int verdict, Py_ssize_t index, int errno_value)
+{
+    return Py_BuildValue("(ini)", (int)verdict, (Py_ssize_t)index, (int)errno_value);
+}
+
+/* ---------------------------------------------------------------------------
+ * IMMUTABLE REGISTRATION-INPUT PLAN (not an observation cache)
+ *
+ * The Python LeaseSet already freezes, per held row, the (fd, expected identity)
+ * pair recorded at `acquire`. Those expected values never change while the owned
+ * set is unchanged, so the PyLong->C decode of the six expected fields can be
+ * done ONCE per membership change instead of on every sweep.
+ *
+ * What this does NOT change, by construction:
+ *   * every sweep still issues the SAME live fcntl(F_GETLEASE) then fstat(fd);
+ *   * all six live fields are still compared, in the same order;
+ *   * the same signal checks, EINTR retry, errno and first-error reporting;
+ *   * every call site still performs its own sweep at its own boundary.
+ * Only the decode of the EXPECTED side is reused. No observation, verdict or
+ * syscall result is ever stored.
+ *
+ * A row whose expected values are not all small exact ints keeps the generic
+ * object path (unsigned high half, huge timespec, non-int comparisons), so
+ * Python semantics are preserved exactly. The plan therefore stores the original
+ * row object too and falls back per row.
+ * ------------------------------------------------------------------------- */
+
+typedef struct {
+    PyObject *row;              /* OWNED: fallback + keeps fd alive */
+    PyObject *fd_object;        /* OWNED */
+    int fd;
+    int fd_fast_ok;             /* 1 => original int is a valid non-negative int fd */
+    int decoded;                /* 1 => all six expected values are exact ints */
+    unsigned long long dev, ino, mode;
+    long long size, mtime_ns, ctime_ns;
+} PlanRow;
+
+struct Plan {
+    Py_ssize_t count;
+    PlanRow *rows;
+    PyObject *source;      /* OWNED immutable registration graph; LeaseSet selects the plan. */
+};
+
+#define PLAN_NS_FAST_MAX_SEC 9223372035LL
+
+/* Decode one exact-int expected value to a C integer. Returns 1 on success, 0 if
+ * the value is not a small exact int (caller must use the generic path). */
+static int decode_unsigned_exact(PyObject *value, unsigned long long *out)
+{
+    if (!PyLong_CheckExact(value)) return 0;
+    unsigned long long parsed = PyLong_AsUnsignedLongLong(value);
+    if (parsed == (unsigned long long)-1 && PyErr_Occurred()) { PyErr_Clear(); return 0; }
+    *out = parsed;
+    return 1;
+}
+
+static int decode_signed_exact(PyObject *value, long long *out)
+{
+    if (!PyLong_CheckExact(value)) return 0;
+    int overflow = 0;
+    long long parsed = PyLong_AsLongLongAndOverflow(value, &overflow);
+    if (parsed == -1 && PyErr_Occurred()) return 0;
+    if (overflow != 0) return 0;
+    *out = parsed;
+    return 1;
+}
+
+/* Decode a pre-scaled nanoseconds int (the Python side already stores ns). */
+static int decode_ns_exact(PyObject *value, long long *out)
+{
+    return decode_signed_exact(value, out);
+}
+
+static void plan_row_clear(PlanRow *row)
+{
+    Py_XDECREF(row->row);
+    Py_XDECREF(row->fd_object);
+    row->row = NULL;
+    row->fd_object = NULL;
+    row->fd_fast_ok = 0;
+}
+
+static void plan_clear(Plan *plan)
+{
+    if (plan == NULL) return;
+    for (Py_ssize_t i = 0; i < plan->count; i++) plan_row_clear(&plan->rows[i]);
+    Py_XDECREF(plan->source);
+    PyMem_Free(plan->rows);
+    PyMem_Free(plan);
+}
+
+/* Build a plan from the caller's sequence of (fd, expected) pairs.
+ *
+ * Every row takes its OWN references before any Python code may run, so a signal
+ * handler that mutates the registry (or drops the plan) cannot free them from
+ * under a later sweep. Rows that are not exactly decodable are stored with
+ * decoded=0 and keep the generic comparison path.
+ */
+static void lease_plan_capsule_free(PyObject *capsule);
+
+/* Strict immutable-input contract for a plan.
+ *
+ * A plan captures EXPECTED values once, so its input must be provably immutable:
+ *   * the outer container is an EXACT tuple,
+ *   * every row is an EXACT 2-tuple `(fd, expected)`,
+ *   * every `fd` is an EXACT int,
+ *   * every `expected` is an EXACT 6-tuple.
+ * Anything else is rejected with TypeError BEFORE any user-defined code runs.
+ *
+ * This is what makes "predecoded once" sound: a list (or any mutable/custom
+ * container) can be mutated after plan creation, which would leave the plan
+ * comparing against STALE expectations. Generic sweep(rows) stays fully
+ * permissive; only the plan path requires the strict shape.
+ *
+ * Individual identity VALUES may still be non-exact (float, huge int): such rows
+ * set decoded=0 and fall back to the original generic comparisons, so precision
+ * semantics are unchanged.
+ *
+ * Using an exact tuple also removes the borrowed-iterator hazard: with a real
+ * tuple, no user code can run between `PySequence_Fast_ITEMS` and our reads, so a
+ * custom `fileno`/iterator cannot clear the container underneath us.
+ */
+static void plan_require_immutable(PyObject *value, const char *what)
+{
+    if (!PyTuple_CheckExact(value)) {
+        PyErr_Format(PyExc_TypeError,
+                     "%s must be an exact tuple (immutable plan input)", what);
+    }
+}
+
+static Plan *plan_build(PyObject *rows)
+{
+    plan_require_immutable(rows, "plan rows");
+    if (PyErr_Occurred()) return NULL;
+
+    Py_ssize_t count = PyTuple_GET_SIZE(rows);
+    Plan *plan = PyMem_New(Plan, 1);
+    if (plan == NULL) { PyErr_NoMemory(); return NULL; }
+    plan->count = 0;
+    plan->rows = NULL;
+    /* Own the caller's tuple BEFORE any allocation that can fail, so every early
+     * return unwinds through plan_clear() (which DECREFs `source`) instead of
+     * leaking it. */
+    plan->source = rows;
+    Py_INCREF(plan->source);
+    plan->rows = count > 0 ? PyMem_New(PlanRow, (size_t)count) : NULL;
+    if (count > 0 && plan->rows == NULL) { plan_clear(plan); PyErr_NoMemory(); return NULL; }
+    /* An EMPTY registration has no row storage, so plan->rows is NULL. C requires a
+     * valid pointer argument even for a zero length: memset(NULL, 0, 0) is undefined
+     * behaviour (UBSAN "null pointer argument declared never null"). */
+    if (count > 0) memset(plan->rows, 0, sizeof(PlanRow) * (size_t)count);
+
+    /* `rows` was already proven to be an EXACT tuple, and it stays alive for the
+     * whole call through the caller's arguments plus plan->source. Iterating it
+     * directly therefore needs NO borrowed-sequence wrapper: PySequence_Fast would
+     * take an extra owning reference on that outer tuple, which every structural
+     * early return would then have to give back. One fewer owner, no cleanup path
+     * to forget. `PyTuple_GET_ITEM` returns a borrowed reference and never runs
+     * user code, so the reads below cannot be invalidated mid-traversal. */
+    for (Py_ssize_t i = 0; i < count; i++) {
+        PlanRow *row = &plan->rows[i];
+        PyObject *pair = PyTuple_GET_ITEM(rows, i);
+        plan_require_immutable(pair, "plan row");
+        if (PyErr_Occurred()) { plan_clear(plan); return NULL; }
+        if (PyTuple_GET_SIZE(pair) != 2) {
+            plan_clear(plan);
+            PyErr_SetString(PyExc_TypeError, "plan row must be an exact 2-tuple (fd, expected)");
+            return NULL;
+        }
+        PyObject *fd_object = PyTuple_GET_ITEM(pair, 0);
+        PyObject *expected_object = PyTuple_GET_ITEM(pair, 1);
+        if (!PyLong_CheckExact(fd_object)) {
+            plan_clear(plan);
+            PyErr_SetString(PyExc_TypeError, "plan fd must be an exact int (no custom fileno)");
+            return NULL;
+        }
+        /* Keep the baseline's acceptance and error timing: plan_new accepts every
+         * exact int here, and the fd domain is decided later by the sweep, exactly
+         * as PyObject_AsFileDescriptor would. `fd_fast_ok` records whether the
+         * ORIGINAL integer is a valid non-negative C int (0..INT_MAX) so the decoded
+         * fast path can rely on row->fd without ever using a narrowed value. */
+        long fd_long = PyLong_AsLong(fd_object);
+        if (fd_long == -1 && PyErr_Occurred()) { plan_clear(plan); return NULL; }
+        int fd_fast_ok = (fd_long >= 0 && fd_long <= (long)INT_MAX) ? 1 : 0;
+        int fd = (int)fd_long;
+        plan_require_immutable(expected_object, "plan expected identity");
+        if (PyErr_Occurred()) { plan_clear(plan); return NULL; }
+        if (PyTuple_GET_SIZE(expected_object) != 6) {
+            plan_clear(plan);
+            PyErr_SetString(PyExc_TypeError,
+                            "plan expected identity must be an exact 6-tuple");
+            return NULL;
+        }
+
+        /* From here the row owns its references; plan_clear unwinds it. */
+        Py_INCREF(pair);
+        row->row = pair;
+        plan->count = i + 1;
+        row->fd_object = NULL;   /* the exact tuple keeps fd/expected alive */
+        row->fd = fd;
+        row->fd_fast_ok = fd_fast_ok;
+        row->decoded = 0;
+
+        /* Same argument: an exact 6-tuple, held alive by its parent row tuple. */
+        if (decode_unsigned_exact(PyTuple_GET_ITEM(expected_object, 0), &row->dev)
+            && decode_unsigned_exact(PyTuple_GET_ITEM(expected_object, 1), &row->ino)
+            && decode_unsigned_exact(PyTuple_GET_ITEM(expected_object, 2), &row->mode)
+            && decode_signed_exact(PyTuple_GET_ITEM(expected_object, 3), &row->size)
+            && decode_ns_exact(PyTuple_GET_ITEM(expected_object, 4), &row->mtime_ns)
+            && decode_ns_exact(PyTuple_GET_ITEM(expected_object, 5), &row->ctime_ns)) {
+            row->decoded = 1;
+        }
+        if (PyErr_Occurred()) { plan_clear(plan); return NULL; }
+    }
+    return plan;
+}
+
+/* Compare live stat data against the SIX expected objects, reusing a prededoded
+ * plan row when available. The fast path applies ONLY to a plan row whose six
+ * values were exact ints and where the live times are inside the int64 fast
+ * range; every other case runs the ORIGINAL object comparisons, so float, huge
+ * integer and unsigned-high-half semantics are preserved exactly.
+ * Returns 1 matched, 0 identity mismatch, -1 Python error. */
+static int compare_identity_from_want(PyObject **want, const PlanRow *plan_row,
+                                      const struct stat *st)
+{
+    if (plan_row != NULL && plan_row->decoded
+        && st->st_mtim.tv_nsec >= 0 && st->st_mtim.tv_nsec < NS_PER_SEC
+        && st->st_mtim.tv_sec >= -NS_FAST_MAX_SEC && st->st_mtim.tv_sec <= NS_FAST_MAX_SEC
+        && st->st_ctim.tv_nsec >= 0 && st->st_ctim.tv_nsec < NS_PER_SEC
+        && st->st_ctim.tv_sec >= -NS_FAST_MAX_SEC && st->st_ctim.tv_sec <= NS_FAST_MAX_SEC) {
+        if ((unsigned long long)st->st_dev != plan_row->dev) return 0;
+        if ((unsigned long long)st->st_ino != plan_row->ino) return 0;
+        if ((unsigned long long)st->st_mode != plan_row->mode) return 0;
+        if ((long long)st->st_size != plan_row->size) return 0;
+        if ((long long)st->st_mtim.tv_sec * NS_PER_SEC + (long long)st->st_mtim.tv_nsec != plan_row->mtime_ns) return 0;
+        if ((long long)st->st_ctim.tv_sec * NS_PER_SEC + (long long)st->st_ctim.tv_nsec != plan_row->ctime_ns) return 0;
+        return 1;
+    }
+    int equal = eq_unsigned(want[0], (unsigned long long)st->st_dev);
+    if (equal > 0) equal = eq_unsigned(want[1], (unsigned long long)st->st_ino);
+    if (equal > 0) equal = eq_unsigned(want[2], (unsigned long long)st->st_mode);
+    if (equal > 0) equal = eq_signed(want[3], (long long)st->st_size);
+    if (equal > 0) equal = eq_timespec(want[4], &st->st_mtim);
+    if (equal > 0) equal = eq_timespec(want[5], &st->st_ctim);
+    return equal;
+}
+
+/* One row: live F_GETLEASE then fstat, then the six-field identity comparison.
+ * `plan_row` is NULL for the generic path; a non-NULL prededoded row only changes
+ * how the EXPECTED side is decoded. Returns 1 matched, 0 verdict, -1 error. */
+/* Sample the LIVE state of one row: one PyErr_CheckSignals, then F_GETLEASE with
+ * the original EINTR retry and signal check, then fstat with the original EINTR
+ * retry and signal check, then the fourth signal check. This is the ONLY place
+ * the live syscalls happen, so the decoded fast path and the generic path cannot
+ * drift apart or double-sample a row.
+ *
+ * Returns 1 sampled (*st valid), 0 when a terminal verdict was reached (-1 on
+ * Python error). The four PyErr_CheckSignals boundaries and the EINTR failure
+ * precedence are exactly those of the original check_row. */
+static int sample_live(int fd, struct stat *st, int *verdict, int *errno_out,
+                       Py_ssize_t *index_out, Py_ssize_t row_index)
+{
+    *index_out = row_index;
+    *errno_out = 0;
+    *verdict = V_OK;
+    if (PyErr_CheckSignals() < 0) return -1;          /* check 1 */
+
+    {
+        int lease;
+        for (;;) {
+            errno = 0;
+            lease = fcntl(fd, F_GETLEASE);
+            int saved = errno;
+            if (PyErr_CheckSignals() < 0) return -1;  /* check 2 */
+            if (lease == -1 && saved == EINTR) continue;
+            if (lease == -1) { *verdict = V_ERRNO; *errno_out = saved; return 0; }
+            break;
+        }
+        if (lease != F_RDLCK) { *verdict = V_LEASE; return 0; }
+    }
+    {
+        int stat_result;
+        for (;;) {
+            errno = 0;
+            stat_result = fstat(fd, st);
+            int saved = errno;
+            if (PyErr_CheckSignals() < 0) return -1;  /* check 3 */
+            if (stat_result != 0 && saved == EINTR) continue;
+            if (stat_result != 0) { *verdict = V_ERRNO; *errno_out = saved; return 0; }
+            break;
+        }
+    }
+    if (PyErr_CheckSignals() < 0) return -1;          /* check 4 */
+    return 1;
+}
+
+static int check_row(PyObject *row, int *verdict, int *errno_out, Py_ssize_t *index_out,
+                     Py_ssize_t row_index, const PlanRow *plan_row)
+{
+    PyObject *pair = PySequence_Fast(row, "row must be (fd, expected)");
+    if (pair == NULL) return -1;
+    if (PySequence_Fast_GET_SIZE(pair) != 2) {
+        Py_DECREF(pair);
+        PyErr_SetString(PyExc_ValueError, "row must be (fd, expected)");
+        return -1;
+    }
+    PyObject **items = PySequence_Fast_ITEMS(pair);
+    PyObject *fd_object = items[0];
+    PyObject *expected_object = items[1];
+    Py_INCREF(fd_object);
+    Py_INCREF(expected_object);
+    Py_DECREF(pair);
+
+    int fd = PyObject_AsFileDescriptor(fd_object);
+    if (fd < 0 && PyErr_Occurred()) {
+        Py_DECREF(expected_object); Py_DECREF(fd_object);
+        return -1;
+    }
+
+    PyObject *expected_seq = PySequence_Fast(expected_object, "expected must be 6 values");
+    Py_DECREF(expected_object);
+    if (expected_seq == NULL) { Py_DECREF(fd_object); return -1; }
+    if (PySequence_Fast_GET_SIZE(expected_seq) != 6) {
+        Py_DECREF(expected_seq); Py_DECREF(fd_object);
+        PyErr_SetString(PyExc_ValueError, "expected identity must have 6 fields");
+        return -1;
+    }
+    PyObject *want[6];
+    {
+        PyObject **snapshot = PySequence_Fast_ITEMS(expected_seq);
+        for (int field = 0; field < 6; field++) { want[field] = snapshot[field]; Py_INCREF(want[field]); }
+    }
+    Py_DECREF(expected_seq);
+
+    struct stat st;
+    int status = sample_live(fd, &st, verdict, errno_out, index_out, row_index);
+    if (status == 1) {
+        int equal = compare_identity_from_want(want, plan_row, &st);
+        if (equal < 0) status = -1;
+        else if (!equal) { *verdict = V_IDENTITY; status = 0; }
+    }
+
+    for (int field = 0; field < 6; field++) Py_XDECREF(want[field]);
+    Py_DECREF(fd_object);
+    return status;
+}
+
+/* Fast path for a row that plan_build already proved to be an exact-int fd plus
+ * six exact-int expectations. It samples the LIVE state through the SAME
+ * sample_live() the generic path uses (so one fcntl+fstat per row per sweep and
+ * the same four signal boundaries), then compares against the stored numbers.
+ * No Python object is touched: nothing to snapshot, nothing to incref.
+ *
+ * If the live times leave the int64 window the generic comparison could still
+ * MATCH using exact PyLong math, so this row is decided by check_row() with the
+ * ALREADY SAMPLED stat reused via compare_identity_from_want -- not by rescanning.
+ * Returns 1 matched, 0 verdict, -1 error, and V_NEEDPY in *verdict for that row. */
+static int check_decoded_row(const PlanRow *row, struct stat *st_out, int *verdict,
+                             int *errno_out, Py_ssize_t *index_out, Py_ssize_t row_index)
+{
+    struct stat st;
+    int status = sample_live(row->fd, &st, verdict, errno_out, index_out, row_index);
+    if (status != 1) return status;
+
+    if (st.st_mtim.tv_nsec >= 0 && st.st_mtim.tv_nsec < NS_PER_SEC
+        && st.st_mtim.tv_sec >= -NS_FAST_MAX_SEC && st.st_mtim.tv_sec <= NS_FAST_MAX_SEC
+        && st.st_ctim.tv_nsec >= 0 && st.st_ctim.tv_nsec < NS_PER_SEC
+        && st.st_ctim.tv_sec >= -NS_FAST_MAX_SEC && st.st_ctim.tv_sec <= NS_FAST_MAX_SEC) {
+        if ((unsigned long long)st.st_dev != row->dev
+            || (unsigned long long)st.st_ino != row->ino
+            || (unsigned long long)st.st_mode != row->mode
+            || (long long)st.st_size != row->size
+            || (long long)st.st_mtim.tv_sec * NS_PER_SEC + (long long)st.st_mtim.tv_nsec != row->mtime_ns
+            || (long long)st.st_ctim.tv_sec * NS_PER_SEC + (long long)st.st_ctim.tv_nsec != row->ctime_ns) {
+            *verdict = V_IDENTITY;
+            return 0;
+        }
+        return 1;
+    }
+    /* Out of the fast window: hand THIS row to the exact comparison, reusing the
+     * stat already sampled above. */
+    *st_out = st;
+    *verdict = V_NEEDPY;
+    return 0;
+}
+
+static PyObject *lease_sweep(PyObject *module_self, PyObject *args)
+{
+    (void)module_self;                 /* unused by design, -Werror clean */
+    PyObject *rows;
+    if (!PyArg_ParseTuple(args, "O:sweep", &rows)) return NULL;
+    PyObject *fast = PySequence_Fast(rows, "rows must be a sequence");
+    if (fast == NULL) return NULL;
+
+    PyObject *result = NULL;
+    PyObject **items = PySequence_Fast_ITEMS(fast);
+    Py_ssize_t count = PySequence_Fast_GET_SIZE(fast);
+
+    /* OWNED outer snapshot: a handler mutating the caller's list cannot move it. */
+    PyObject **owned = NULL;
+    if (count > 0) {
+        owned = PyMem_New(PyObject *, (size_t)count);
+        if (owned == NULL) { Py_DECREF(fast); return PyErr_NoMemory(); }
+        for (Py_ssize_t i = 0; i < count; i++) { owned[i] = items[i]; Py_INCREF(owned[i]); }
+    }
+
+    for (Py_ssize_t i = 0; i < count; i++) {
+        int verdict = V_OK, errno_value = 0;
+        Py_ssize_t index = i;
+        /* NO module-global plan is ever consulted here: generic sweep(rows) is
+         * behaviour-identical regardless of which plan capsules exist. */
+        int status = check_row(owned[i], &verdict, &errno_value, &index, i, NULL);
+        if (status < 0) goto done;
+        if (status == 0) {
+            /* FIX 1: Py_BuildValue is variadic; the format MUST match the
+             * argument widths. verdict=int ('i'), index=Py_ssize_t ('n'),
+             * errno=int ('i') => "(ini)". */
+            result = verdict_tuple(verdict, index, errno_value);
+            goto done;
+        }
+    }
+    result = verdict_tuple(V_OK, (Py_ssize_t)-1, 0);
+
+done:
+    if (owned != NULL) {
+        for (Py_ssize_t i = 0; i < count; i++) Py_XDECREF(owned[i]);
+        PyMem_Free(owned);
+    }
+    Py_DECREF(fast);
+    return result;
+}
+
+/* SYNTHETIC marshalling seam, not a product API.
+ *
+ * There is no way to hold 2**31 live kernel leases, so the variadic width of
+ * the verdict tuple cannot be exercised with real rows. This entry point takes a
+ * Py_ssize_t and returns it through the SAME Py_BuildValue format the real
+ * sweep uses, so a test can prove the exact boundary value survives. It touches
+ * no fd and makes no lease claim.
+ */
+/* Decide ONE row whose live times fall outside the int64 fast window, using the
+ * stat ALREADY sampled for that row. Only the current row is examined: the exact
+ * PyLong comparison is the same one the generic path uses, and no other row is
+ * re-read or re-ordered. Returns 1 matched, 0 when a verdict was reached.
+ * -1 on Python error. */
+static int exact_compare_sampled_row(const PlanRow *row, const struct stat *st,
+                                     int *verdict, int *errno_out)
+{
+    PyObject *pair = PySequence_Fast(row->row, "row must be (fd, expected)");
+    if (pair == NULL) return -1;
+    if (PySequence_Fast_GET_SIZE(pair) != 2) {
+        Py_DECREF(pair);
+        PyErr_SetString(PyExc_ValueError, "row must be (fd, expected)");
+        return -1;
+    }
+    PyObject *expected = PySequence_Fast_ITEMS(pair)[1];
+    Py_INCREF(expected);
+    Py_DECREF(pair);
+
+    PyObject *seq = PySequence_Fast(expected, "expected must be 6 values");
+    Py_DECREF(expected);
+    if (seq == NULL) return -1;
+    if (PySequence_Fast_GET_SIZE(seq) != 6) {
+        Py_DECREF(seq);
+        PyErr_SetString(PyExc_ValueError, "expected identity must have 6 fields");
+        return -1;
+    }
+    PyObject *want[6];
+    PyObject **snap = PySequence_Fast_ITEMS(seq);
+    for (int field = 0; field < 6; field++) want[field] = snap[field];
+    int equal = compare_identity_from_want(want, row, st);
+    Py_DECREF(seq);
+    if (equal < 0) return -1;
+    if (!equal) {
+        *verdict = V_IDENTITY;
+        *errno_out = 0;
+        return 0;
+    }
+    return 1;
+}
+
+
+/* ---------------------------------------------------------------------------
+ * Bounded per-call parallel row sampling.
+ *
+ * The immutable Plan is produced under the GIL and is never mutated here. Up to
+ * three ephemeral pthreads plus main (four total) sample disjoint contiguous
+ * ranges. A worker performs ONLY fcntl(F_GETLEASE) + fstat + the exact six-field
+ * C comparison for decoded rows; it never calls any Python API and never releases
+ * the GIL. Rows that need exact Python comparison are marked V_NEEDPY, sampled
+ * exactly once by the worker, and compared by the main thread after join using
+ * the already-sampled struct stat. The main thread alone performs
+ * PyErr_CheckSignals and builds the verdict tuple.
+ *
+ * No row is skipped or sampled twice. The main thread scans results in ascending
+ * original index order, so the reported failure is the lowest original row.
+ * ------------------------------------------------------------------------- */
+#define SWEEP_MAX_WORKERS 4
+/* Below this many rows, pthread creation and the per-call sample storage cost
+ * more than the serial native loop. Compile-time implementation threshold, not
+ * product configuration. Four TOTAL workers execute: three pthreads plus main. */
+#define SWEEP_PARALLEL_MIN_ROWS 1024
+
+/* Plain-C deep copy of the immutable plan rows. Workers never touch a Plan,
+ * PyObject, or Python API; after a join failure this context remains valid even
+ * if the caller's Python plan is released. */
+typedef struct {
+    int fd;
+    unsigned long long dev, ino, mode;
+    long long size, mtime_ns, ctime_ns;
+} WorkerRow;
+
+typedef struct {
+    struct stat stat_value;
+    int verdict;                /* V_OK, V_LEASE, V_IDENTITY, V_ERRNO, V_NEEDPY, V_EINTR */
+    int errno_value;
+} SweepSample;
+
+typedef struct {
+    WorkerRow *rows;
+    SweepSample *samples;
+    Py_ssize_t begin;
+    Py_ssize_t end;
+} SweepWorker;
+
+typedef struct {
+    WorkerRow *rows;
+    SweepSample *samples;
+    SweepWorker *ranges;
+    pthread_t *threads;
+    int workers;
+} ParallelCall;
+
+static void parallel_call_free(ParallelCall *call)
+{
+    if (call == NULL) return;
+    PyMem_Free(call->rows);
+    PyMem_Free(call->samples);
+    PyMem_Free(call->ranges);
+    PyMem_Free(call->threads);
+    PyMem_Free(call);
+}
+
+static void sweep_worker_rows(const SweepWorker *work)
+{
+    for (Py_ssize_t i = work->begin; i < work->end; i++) {
+        const WorkerRow *row = &work->rows[i];
+        SweepSample *sample = &work->samples[i];
+        sample->verdict = V_OK;
+        sample->errno_value = 0;
+
+        int lease;
+        errno = 0;
+        lease = fcntl(row->fd, F_GETLEASE);
+        int lease_errno = errno;
+        if (lease == -1 && lease_errno == EINTR) {
+            /* No Python API and no unbounded retry in a worker. Main joins,
+             * processes Python signal/deadline authority, then falls back to
+             * the ORIGINAL serial full sweep for the whole plan. */
+            sample->verdict = V_EINTR;
+            return;
+        }
+        if (lease == -1) {
+            sample->verdict = V_ERRNO;
+            sample->errno_value = lease_errno;
+            return;
+        }
+        if (lease != F_RDLCK) {
+            sample->verdict = V_LEASE;
+            return;
+        }
+
+        struct stat st;
+        int stat_ret;
+        errno = 0;
+        stat_ret = fstat(row->fd, &st);
+        int stat_errno = errno;
+        if (stat_ret != 0 && stat_errno == EINTR) {
+            sample->verdict = V_EINTR;
+            return;
+        }
+        if (stat_ret != 0) {
+            sample->verdict = V_ERRNO;
+            sample->errno_value = stat_errno;
+            return;
+        }
+        /* Copy only a successfully returned stat. */
+        sample->stat_value = st;
+
+        if (!(st.st_mtim.tv_nsec >= 0 && st.st_mtim.tv_nsec < NS_PER_SEC
+              && st.st_mtim.tv_sec >= -NS_FAST_MAX_SEC && st.st_mtim.tv_sec <= NS_FAST_MAX_SEC
+              && st.st_ctim.tv_nsec >= 0 && st.st_ctim.tv_nsec < NS_PER_SEC
+              && st.st_ctim.tv_sec >= -NS_FAST_MAX_SEC && st.st_ctim.tv_sec <= NS_FAST_MAX_SEC)) {
+            /* Decoded exact-builtin expectations only; main exact-compares this
+             * already-sampled row with no user callback. Continue sampling the
+             * later rows in ascending order. */
+            sample->verdict = V_NEEDPY;
+            continue;
+        }
+        if ((unsigned long long)st.st_dev != row->dev
+            || (unsigned long long)st.st_ino != row->ino
+            || (unsigned long long)st.st_mode != row->mode
+            || (long long)st.st_size != row->size
+            || (long long)st.st_mtim.tv_sec * NS_PER_SEC + (long long)st.st_mtim.tv_nsec != row->mtime_ns
+            || (long long)st.st_ctim.tv_sec * NS_PER_SEC + (long long)st.st_ctim.tv_nsec != row->ctime_ns) {
+            sample->verdict = V_IDENTITY;
+            return;
+        }
+    }
+}
+
+static void *sweep_worker_main(void *argument)
+{
+    sweep_worker_rows((const SweepWorker *)argument);
+    return NULL;
+}
+
+/* Returns 1 with a verdict tuple, 0 when the caller must run the old serial
+ * path (any EINTR/deferred row, small set, or any non-decoded expected row), or
+ * -1 with a Python exception set. */
+static int parallel_plan_sweep(const Plan *plan, PyObject **result)
+{
+    Py_ssize_t count = plan->count;
+    if (count < SWEEP_PARALLEL_MIN_ROWS) return 0;
+    /* R3: any non-decoded expected row or non-fast fd makes the WHOLE plan use
+     * the original serial path. That preserves Python fallback ordering and any
+     * user __eq__ side effects before later FDs are sampled. */
+    for (Py_ssize_t i = 0; i < count; i++) {
+        if (!plan->rows[i].decoded || !plan->rows[i].fd_fast_ok) return 0;
+    }
+
+    ParallelCall *call = PyMem_New(ParallelCall, 1);
+    if (call == NULL) { PyErr_NoMemory(); return -1; }
+    memset(call, 0, sizeof(*call));
+    call->rows = PyMem_New(WorkerRow, (size_t)count);
+    call->samples = PyMem_New(SweepSample, (size_t)count);
+    call->ranges = PyMem_New(SweepWorker, SWEEP_MAX_WORKERS);
+    call->threads = PyMem_New(pthread_t, SWEEP_MAX_WORKERS);
+    if (call->rows == NULL || call->samples == NULL || call->ranges == NULL || call->threads == NULL) {
+        parallel_call_free(call);
+        PyErr_NoMemory();
+        return -1;
+    }
+    for (Py_ssize_t i = 0; i < count; i++) {
+        call->rows[i].fd = plan->rows[i].fd;
+        call->rows[i].dev = plan->rows[i].dev;
+        call->rows[i].ino = plan->rows[i].ino;
+        call->rows[i].mode = plan->rows[i].mode;
+        call->rows[i].size = plan->rows[i].size;
+        call->rows[i].mtime_ns = plan->rows[i].mtime_ns;
+        call->rows[i].ctime_ns = plan->rows[i].ctime_ns;
+        call->samples[i].verdict = V_OK;
+        call->samples[i].errno_value = 0;
+    }
+
+    int workers = SWEEP_MAX_WORKERS;
+    Py_ssize_t chunk = (count + workers - 1) / workers;
+    for (int w = 0; w < workers; w++) {
+        call->ranges[w].rows = call->rows;
+        call->ranges[w].samples = call->samples;
+        call->ranges[w].begin = chunk * (Py_ssize_t)w;
+        call->ranges[w].end = chunk * (Py_ssize_t)(w + 1);
+        if (call->ranges[w].end > count) call->ranges[w].end = count;
+        if (w == workers - 1) call->ranges[w].end = count;
+    }
+
+    int created = 0;
+    int create_error = 0;
+    int join_error = 0;
+    for (int w = 1; w < workers; w++) {
+        int rc = pthread_create(&call->threads[created], NULL, sweep_worker_main, &call->ranges[w]);
+        if (rc != 0) { create_error = rc; break; }
+        created++;
+    }
+    if (create_error == 0) sweep_worker_rows(&call->ranges[0]);
+
+    for (int w = 0; w < created; w++) {
+        /* Linux pthread_join does not return EINTR normally; one direct join.
+         * Any error retains the plain-C call for fail-closed lifetime safety. */
+        int rc = pthread_join(call->threads[w], NULL);
+        if (rc != 0) join_error = rc;
+    }
+
+    if (create_error != 0 || join_error != 0) {
+        int code = create_error != 0 ? create_error : join_error;
+        /* On a join error a worker may still be running. The entire plain-C
+         * call (deep-copied rows, samples, ranges, thread ids) is retained; no
+         * stack pointer and no Python reference is part of it. This is a small
+         * bounded fail-closed retention, not a success path leak. */
+        if (join_error == 0) parallel_call_free(call);
+        PyErr_Format(PyExc_RuntimeError, "native lease sweep pthread failure: %d", code);
+        return -1;
+    }
+
+    /* Main-thread Python signal/deadline authority; workers did no Python. */
+    if (PyErr_CheckSignals() < 0) { parallel_call_free(call); return -1; }
+
+    for (Py_ssize_t i = 0; i < count; i++) {
+        SweepSample *sample = &call->samples[i];
+        if (sample->verdict == V_EINTR) {
+            /* Discard all parallel results and run the original serial full
+             * sweep, which has the original per-syscall signal checks and
+             * fallback ordering. */
+            parallel_call_free(call);
+            return 0;
+        }
+        if (sample->verdict == V_NEEDPY) {
+            int verdict = V_OK, errno_value = 0;
+            int exact = exact_compare_sampled_row(&plan->rows[i], &sample->stat_value,
+                                                  &verdict, &errno_value);
+            if (exact < 0) { parallel_call_free(call); return -1; }
+            if (exact == 0) {
+                *result = verdict_tuple(verdict, i, errno_value);
+                parallel_call_free(call);
+                return 1;
+            }
+            continue;
+        }
+        if (sample->verdict != V_OK) {
+            *result = verdict_tuple(sample->verdict, i, sample->errno_value);
+            parallel_call_free(call);
+            return 1;
+        }
+    }
+    *result = verdict_tuple(V_OK, (Py_ssize_t)-1, 0);
+    parallel_call_free(call);
+    return 1;
+}
+
+static PyObject *lease_sweep_plan(PyObject *module_self, PyObject *args)
+{
+    (void)module_self;
+    PyObject *capsule;
+    if (!PyArg_ParseTuple(args, "O:sweep_plan", &capsule)) return NULL;
+    if (!PyCapsule_IsValid(capsule, "xpod.lease.plan")) {
+        PyErr_SetString(PyExc_TypeError, "sweep_plan requires a lease plan capsule");
+        return NULL;
+    }
+    Plan *plan = (Plan *)PyCapsule_GetPointer(capsule, "xpod.lease.plan");
+    if (plan == NULL) return NULL;
+
+    PyObject *parallel_result = NULL;
+    int parallel = parallel_plan_sweep(plan, &parallel_result);
+    if (parallel < 0) return NULL;
+    if (parallel > 0) return parallel_result;
+
+    Py_ssize_t count = plan->count;
+    if (count > 0) {
+        int all_decoded = 1;
+        for (Py_ssize_t i = 0; i < count; i++) {
+            if (!plan->rows[i].decoded || !plan->rows[i].fd_fast_ok) { all_decoded = 0; break; }
+        }
+        if (all_decoded) {
+            /* Fast path: the capsule argument keeps the plan (and every row it
+             * owns) alive for this synchronous call, and there is no GIL release,
+             * so nothing can drop it mid-sweep. Each row is sampled exactly once
+             * through sample_live(): one F_GETLEASE then one fstat, with the four
+             * original signal boundaries.
+             *
+             * Three ways out: a real verdict (return immediately), a clean full
+             * pass (return V_OK ONCE), or a row whose live times left the int64
+             * window. In the last case only THAT row goes to the exact Python
+             * comparison, reusing the stat already sampled, and the sweep then
+             * continues -- no second pass, no re-ordered sampling. */
+            /* ONE ascending pass. Each row is live-sampled exactly once, by
+             * check_decoded_row(), which performs the single F_GETLEASE then the
+             * single fstat with the four original signal boundaries. When a row's
+             * live times fall outside the int64 fast window, that SAME sampled
+             * stat is compared exactly against that row's expected objects and the
+             * sweep then continues with i+1. Nothing is re-sampled, re-ordered or
+             * restarted, so cadence and first-failure order stay the serial ones. */
+            for (Py_ssize_t i = 0; i < count; i++) {
+                int verdict = V_OK, errno_value = 0;
+                Py_ssize_t index = i;
+                struct stat sampled;
+                int status = check_decoded_row(&plan->rows[i], &sampled, &verdict,
+                                               &errno_value, &index, i);
+                if (status < 0) return NULL;
+                if (status == 0) {
+                    if (verdict != V_NEEDPY) return verdict_tuple(verdict, index, errno_value);
+                    int exact = exact_compare_sampled_row(&plan->rows[i], &sampled,
+                                                          &verdict, &errno_value);
+                    if (exact < 0) return NULL;
+                    if (exact == 0) return verdict_tuple(verdict, i, errno_value);
+                }
+            }
+            return verdict_tuple(V_OK, (Py_ssize_t)-1, 0);
+        }
+    }
+
+    PyObject **owned = NULL;
+    if (count > 0) {
+        owned = PyMem_New(PyObject *, (size_t)count);
+        if (owned == NULL) return PyErr_NoMemory();
+        for (Py_ssize_t i = 0; i < count; i++) { owned[i] = plan->rows[i].row; Py_INCREF(owned[i]); }
+    }
+    PyObject *result = NULL;
+    for (Py_ssize_t i = 0; i < count; i++) {
+        int verdict = V_OK, errno_value = 0;
+        Py_ssize_t index = i;
+        int status = check_row(owned[i], &verdict, &errno_value, &index, i, &plan->rows[i]);
+        if (status < 0) goto done;
+        if (status == 0) { result = verdict_tuple(verdict, index, errno_value); goto done; }
+    }
+    result = verdict_tuple(V_OK, (Py_ssize_t)-1, 0);
+
+done:
+    if (owned != NULL) {
+        for (Py_ssize_t i = 0; i < count; i++) Py_XDECREF(owned[i]);
+        PyMem_Free(owned);
+    }
+    return result;
+}
+
+/* Capsule destructor: releases the plan's owned row references exactly once. */
+static void lease_plan_capsule_free(PyObject *capsule)
+{
+    Plan *plan = (Plan *)PyCapsule_GetPointer(capsule, "xpod.lease.plan");
+    if (plan == NULL) { PyErr_Clear(); return; }
+    plan_clear(plan);
+}
+
+/* plan_new(rows) -> capsule owning an immutable decoded registration plan. */
+static PyObject *lease_plan_new(PyObject *module_self, PyObject *args)
+{
+    (void)module_self;
+    PyObject *rows;
+    if (!PyArg_ParseTuple(args, "O:plan_new", &rows)) return NULL;
+    Plan *plan = plan_build(rows);
+    if (plan == NULL) return NULL;
+    PyObject *capsule = PyCapsule_New(plan, "xpod.lease.plan", lease_plan_capsule_free);
+    if (capsule == NULL) { plan_clear(plan); return NULL; }
+    return capsule;
+}
+
+static PyObject *lease_index_roundtrip(PyObject *module_self, PyObject *args)
+{
+    (void)module_self;
+    Py_ssize_t index;
+    if (!PyArg_ParseTuple(args, "n:index_roundtrip", &index)) return NULL;
+    return verdict_tuple(V_OK, index, 0);
+}
+
+static PyMethodDef methods[] = {
+    {"sweep", lease_sweep, METH_VARARGS,
+     "sweep(rows) -> (verdict, index, errno); checks every (fd, expected) row"},
+    {"sweep_plan", lease_sweep_plan, METH_VARARGS,
+     "sweep_plan(capsule) -> (verdict, index, errno); live syscalls per row"},
+    {"plan_new", lease_plan_new, METH_VARARGS,
+     "plan_new(rows) -> capsule; decodes immutable expected identities once"},
+    {"index_roundtrip", lease_index_roundtrip, METH_VARARGS,
+     "index_roundtrip(n) -> (OK, n, 0); SYNTHETIC width seam for tests"},
+    {NULL, NULL, 0, NULL},
+};
+
+static struct PyModuleDef module = {
+    PyModuleDef_HEAD_INIT, "lease_sweep_ext",
+    "Held-read-lease bulk sweep (contract-exact, no state, no cache).",
+    -1, methods, NULL, NULL, NULL, NULL,
+};
+
+PyMODINIT_FUNC PyInit_lease_sweep_ext(void)
+{
+    PyObject *m = PyModule_Create(&module);
+    if (m == NULL) return NULL;
+    PyModule_AddIntConstant(m, "OK", V_OK);
+    PyModule_AddIntConstant(m, "LEASE", V_LEASE);
+    PyModule_AddIntConstant(m, "IDENTITY", V_IDENTITY);
+    PyModule_AddIntConstant(m, "ERRNO", V_ERRNO);
+    PyModule_AddIntConstant(m, "NEEDPY", V_NEEDPY);
+    return m;
+}

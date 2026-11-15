@@ -176,6 +176,64 @@ describe('SolidRdfEngine', () => {
     expect(nativeClient.close).toHaveBeenCalledOnce();
   });
 
+  it('serializes eager native initialization and concurrent close without closing borrowed indexes', async () => {
+    let finishStart!: () => void;
+    const starting = new Promise<void>(resolve => { finishStart = resolve; });
+    const order: string[] = [];
+    const indexClose = vi.spyOn(index, 'close');
+    const nativeClient = {
+      start: vi.fn(() => { order.push('start'); return starting; }),
+      query: vi.fn(),
+      close: vi.fn(async() => { order.push('close'); }),
+    };
+    const localEngine = new SolidRdfEngine({ index, nativeSparqlClient: nativeClient, autoOpen: true });
+    const opened = localEngine.open();
+    const closed = Promise.all([localEngine.close(), localEngine.close()]);
+    await Promise.resolve();
+    expect(order).toEqual(['start']);
+    finishStart(); await opened; await closed;
+    expect(order).toEqual(['start', 'close']);
+    expect(nativeClient.start).toHaveBeenCalledTimes(1);
+    expect(indexClose).not.toHaveBeenCalled();
+  });
+
+  it('keeps eager startup failure observable while still closing the native owner', async () => {
+    const failure = new Error('native ready failed');
+    const nativeClient = { start: vi.fn(async() => { throw failure; }), query: vi.fn(), close: vi.fn(async() => {}) };
+    const localEngine = new SolidRdfEngine({ index, nativeSparqlClient: nativeClient, autoOpen: true });
+    await expect(localEngine.open()).rejects.toBe(failure);
+    await localEngine.close();
+    expect(nativeClient.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('still closes owned indexes after native cleanup failure and blocks reopening until cleanup succeeds', async () => {
+    const nativeFailure = new Error('native child still alive');
+    const nativeClient = { start: vi.fn(async() => {}), query: vi.fn(), close: vi.fn().mockRejectedValueOnce(nativeFailure).mockResolvedValue(undefined) };
+    const localEngine = new SolidRdfEngine({ index: { path: ':memory:' }, nativeSparqlClient: nativeClient, autoOpen: true });
+    const indexClose = vi.spyOn(localEngine.index, 'close');
+    await expect(localEngine.close()).rejects.toBe(nativeFailure);
+    expect(indexClose).toHaveBeenCalledTimes(1);
+    await expect(localEngine.open()).rejects.toBe(nativeFailure);
+    expect(nativeClient.start).toHaveBeenCalledTimes(1);
+    await localEngine.close();
+    await localEngine.open();
+    expect(nativeClient.start).toHaveBeenCalledTimes(2);
+    await localEngine.close();
+  });
+
+  it('preserves both native and owned index cleanup failures', async () => {
+    const nativeFailure = new Error('native cleanup failed'), indexFailure = new Error('index cleanup failed');
+    const nativeClient = { start: vi.fn(async() => {}), query: vi.fn(), close: vi.fn(async() => { throw nativeFailure; }) };
+    const localEngine = new SolidRdfEngine({ index: { path: ':memory:' }, nativeSparqlClient: nativeClient, autoOpen: true });
+    const indexClose = vi.spyOn(localEngine.index, 'close').mockImplementationOnce(() => { throw indexFailure; });
+    let failure: unknown;
+    try { await localEngine.close(); } catch (error: unknown) { failure = error; }
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors).toEqual([nativeFailure, indexFailure]);
+    indexClose.mockRestore();
+    await localEngine.close().catch(() => {});
+  });
+
   it('fails closed when Local QLever is not configured', async () => {
     await expect(engine.sparqlQuery('ASK {}', {
       basePath: 'https://pod.example/',

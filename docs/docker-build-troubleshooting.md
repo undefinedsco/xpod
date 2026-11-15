@@ -1,5 +1,11 @@
 # Docker 构建问题排查
 
+## Workspace 构建或 pack 提示脚本不存在
+
+服务镜像使用 `.dockerignore` 白名单。新增构建助手或根包的 prepack/postpack 调用时，需核对实际执行链及其相对依赖，逐个加入白名单；不要只检查 Dockerfile 的直接命令。当前构建依赖 `workspace-runtime-materials.cjs`，打包还依赖 `prepare-package-manifest.cjs` 及其 `platform-binaries.cjs`。这些是构建输入，不应因此复制整个开发脚本目录到运行产物。
+
+镜像没有 `.git`，且 workspace 脚本在包目录执行。生成原件和通知目录须从实际解析到的 CLI 构建工具位置定位，不能用包目录拼仓库路径；目录定位成功不代表 Git 来源已验证。验证此类修复时应执行真实 Docker build 阶段，覆盖 workspace、UI 和最终 pack，而不是只验证文件能被 COPY。
+
 ## yarn install SSL 握手失败
 
 ### 症状

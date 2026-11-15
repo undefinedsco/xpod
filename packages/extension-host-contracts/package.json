@@ -1,0 +1,37 @@
+{
+  "name": "@undefineds.co/extension-host-contracts",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "sideEffects": false,
+  "license": "MIT",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./ai": {
+      "types": "./dist/ai.d.ts",
+      "import": "./dist/ai.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "ai": [
+        "dist/ai.d.ts"
+      ]
+    }
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json && bun ../../scripts/fix-dist-js-imports.mjs dist && bun ../../scripts/workspace-runtime-materials.cjs . '[]'"
+  },
+  "devDependencies": {
+    "typescript": "5.5"
+  }
+}

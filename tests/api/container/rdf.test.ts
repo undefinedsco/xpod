@@ -12,7 +12,6 @@ import { RdfSearchReconciliationWorker } from '../../../src/api/service/RdfSearc
 import { RdfSearchReconciliationRepository } from '../../../src/search/RdfSearchReconciliationRepository';
 import type { RunContextRetrievalInput } from '../../../src/api/runs/RunExecutionBackend';
 import {
-  LocalQleverNativeSparqlClient,
   PostgresRdfEngine,
   SolidRdfEngine,
   type RdfEngineLike,
@@ -112,7 +111,7 @@ describe('API RDF container services', () => {
     }
   });
 
-  it('configures local SQLite RDF facts, FTS, VEC, and QLever from the canonical RDF index path', () => {
+  it('configures local SQLite RDF facts, FTS, and VEC without owning QLever', () => {
     const engine = withoutLocalQleverRuntimeOverride(() => createApiRdfEngine(baseConfig({
       edition: 'local',
       rdfIndexPath: ':memory:',
@@ -125,25 +124,20 @@ describe('API RDF container services', () => {
     expect((engine as SolidRdfEngine).textIndex).toBeDefined();
     expect((engine as SolidRdfEngine).vectorIndex).toBeDefined();
 
-    const nativeClient = (engine as any).nativeSparqlClient;
-    expect(nativeClient).toBeInstanceOf(LocalQleverNativeSparqlClient);
-    expect((nativeClient as any).options).toEqual({
-      command: '/opt/xpod/qlever/bin/xpod_qlever_local_runtime',
-      args: [
-        '--sqlite-path',
-        ':memory:',
-      ],
-    });
+    expect((engine as any).nativeSparqlClient).toBeUndefined();
   });
 
-  it('does not expose the platform local QLever runtime command through API config', async () => {
-    const engine = withoutLocalQleverRuntimeOverride(() => createApiRdfEngine(baseConfig({
-      edition: 'local',
-      rdfIndexPath: ':memory:',
-    }))) as SolidRdfEngine;
+  it('opens and queries local facts and text without a QLever process', async () => {
+    const engine = createApiRdfEngine(baseConfig({ edition: 'local', rdfIndexPath: ':memory:' })) as SolidRdfEngine;
+    const source = 'https://pod.example/alice/notes.md';
     try {
-      expect(((engine as any).nativeSparqlClient as any).options.command)
-        .toBe('/opt/xpod/qlever/bin/xpod_qlever_local_runtime');
+      await engine.open();
+      engine.put(DataFactory.quad(namedNode(source), namedNode('urn:title'), literal('runtime approvals')));
+      const result = engine.query({ patterns: [{ subject: { variable: 'source' }, predicate: namedNode('urn:title'), object: literal('runtime approvals') }], select: ['source'] });
+      expect(result.bindings).toHaveLength(1);
+      engine.indexTextSource({ source, workspace: 'https://pod.example/alice/', localPath: 'notes.md', contentType: 'text/markdown' }, 'runtime approvals');
+      expect(engine.searchText({ query: 'runtime approvals' })).toMatchObject([{ source }]);
+      expect(engine.listTextSourceChunks(source).length).toBeGreaterThan(0);
     } finally {
       await engine.close();
     }

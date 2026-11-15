@@ -1,0 +1,248 @@
+import {createHash} from 'node:crypto';
+import {createRequire} from 'node:module';
+import {isDeepStrictEqual} from 'node:util';
+import type {CollectedNativeOriginalsView} from './native-originals';
+import {nativeOriginalsView,assertCollectedNativeOriginalCustody} from './native-original-collector';
+import {isCandidateServiceImageGitHubOrigin} from './github-origin';
+import {candidateServiceCheckoutStageNames,inspectCandidateServiceAbiSourceStages,candidateServiceAbiSeedStreams} from './candidate-service-abi-source-stages';
+export interface CandidateServiceRelationshipContract {
+ readonly schemaVersion:1;
+ readonly workflowPath:'.github/workflows/candidate.yml';
+ readonly workflowSha256:string;
+ readonly serviceJob:'build_image';
+ readonly localRuntimeJob:'publish_qlever_local_runtime / publish';
+ readonly sdkJob:string;
+ readonly sdkBuildExecutionModel?:'controller-readonly-v1'|'normal-build-v1';
+ readonly sdkRequiredStep?:string;
+ readonly sdkRequiredSteps?:readonly string[];
+}
+function need(value:unknown,why:string):asserts value {if(!value)throw Error('Service SDK relationship: '+why);}
+const digest=(raw:Buffer)=>createHash('sha256').update(raw).digest('hex');
+// The pack observation set is not one metadata original; the producer owns this
+// closed bound and exports it, so the reader imports the same number instead of
+// restating it.
+const PACK_OBSERVATION_METADATA_BYTES:number=createRequire(import.meta.url)('../../service-pack-originals.cjs').OBSERVATION_BOUNDS.metadataBytes;
+/** Byte custody only. Typed pack paths select a streaming read bound; they do
+ * not establish pack input resolution, transformation, source or legal facts. */
+export function inspectCandidateServiceOriginalUniverse(view:CollectedNativeOriginalsView,master:any):void {
+ const metadataLimit=4*1024**2,rangeLimit=65536;
+ // The retained transport bound is the PRODUCER'S OWN reviewed artifact contract, not a
+ // number derived from the single control-metadata ceiling. Two different metadata
+ // bounds already exist and neither is a total:
+ //   * a plain/control metadata original is bounded by `metadataLimit` (4 MiB),
+ //   * the pack observation archive is bounded by `OBSERVATION_BOUNDS.metadataBytes`
+ //     (8 MiB), imported below as PACK_OBSERVATION_METADATA_BYTES.
+ // The artifact's TOTAL encoded bytes are bounded by
+ // `module-artifact-limits.json.packedBytes`, which the producer already enforces while
+ // capturing (sdk-service-image-originals.py: RUNTIME_ENCODED_LIMIT). Deriving a total as
+ // N x metadataLimit conflated metadata with real runtime/TAR/body streams and rejected a
+ // legitimate artifact (264,470,174 uncompressed bytes across 814 original members).
+ const moduleLimits:any=createRequire(import.meta.url)('../module-artifact-limits.json');
+ const totalLimit:number=moduleLimits.packedBytes;
+ // Per-stream caps, each imported from (or the exact formula of) the producer that
+ // CREATES that stream. `permit` never falls back to the aggregate bound: a total bound
+ // is not a per-stream licence, and widening one must never widen the others.
+ const META=4*1024**2;                                   // one control metadata original
+ // Producer `META` IS module-artifact-limits.metadataBytes (4 MiB). The pack phase copy
+ // bound is `4*META` = 16 MiB (sdk-service-pack-bindings.py phases list), NOT one META.
+ const packPhaseLimit:number=4*META;
+ // An ORIGINAL body is <= 32*META (128 MiB). Its raw TAR stdout is FRAMED, so the producer
+ // bound is body_copy_bound(ref) = ceil(bytes/512)*512 + 10240 + 512; capping the raw TAR
+ // at the unframed 128 MiB would reject a valid near-bound body. Mirrored exactly below.
+ const packBodyLimit:number=32*META;
+ const rawPackTarLimit=(bodyBytes:number):number=>Math.ceil(bodyBytes/512)*512+10240+512;
+ const registryArchiveLimit:number=moduleLimits.shardBytes; // legal-registry-originals.ts retained-build packed
+ const runtimeArchiveLimit:number=moduleLimits.packedBytes; // sdk-service-image-originals.py RUNTIME_ENCODED_LIMIT
+ const runtimeIndexLimit:number=moduleLimits.shardBytes;    // candidate-service-runtime-artifact.ts RUNTIME_INDEX_MAXIMUM
+ const members=new Map(view.members.map(row=>[row.path,row]));
+ need(members.size===view.members.length&&Array.isArray(master.originals)&&master.originals.length===members.size-1,'complete closed service original universe');
+ const refs=new Map<string,any>();
+ // Every member must still be a well-formed bounded original. The TOTAL retained bytes
+ // are checked once, after each member is classified as metadata vs a typed stream, so a
+ // legitimate large runtime/TAR/body stream is not mistaken for oversized metadata.
+ for(const row of view.members)need(Number.isSafeInteger(row.bytes)&&row.bytes>=0&&row.bytes<=totalLimit&&/^[a-f0-9]{64}$/u.test(row.sha256),'actual bounded service member');
+ for(const row of master.originals){need(row&&Object.keys(row).sort().join(',')==='bytes,path,sha256'&&typeof row.path==='string'&&!refs.has(row.path),'unique plain service original');const actual=members.get(row.path);need(actual&&actual.bytes===row.bytes&&actual.sha256===row.sha256&&row.path!=='service-image-materials.json','exact service original reference');refs.set(row.path,row);}
+ const streamed=new Map<string,number>();
+ const permit=(ref:any,pattern:RegExp,maximum:number)=>{need(ref&&pattern.test(ref.path)&&refs.has(ref.path)&&isDeepStrictEqual(ref,refs.get(ref.path))&&!streamed.has(ref.path)&&ref.bytes<=maximum,'exact typed service stream reference');streamed.set(ref.path,maximum);};
+ const build=master.buildInputObservation;
+ if(build!==undefined){
+  need(build?.schemaVersion===1&&build.kind==='retained-official-registry-build-inputs'&&Array.isArray(build.packages)&&build.packages.length<=512,'typed retained build input layout');
+  const coordinates=new Set<string>();
+  for(const row of build.packages){
+   need(typeof row.name==='string'&&typeof row.version==='string'&&typeof row.integrity==='string'&&/^sha512-[A-Za-z0-9+/]{86}==$/u.test(row.integrity),'complete build input coordinate');
+   const hash=Buffer.from(row.integrity.slice(7),'base64');need(hash.length===64&&hash.toString('base64')===row.integrity.slice(7),'canonical build input SRI');
+   const coordinate=row.name+'@'+row.version;need(!coordinates.has(coordinate),'unique retained build coordinate');coordinates.add(coordinate);
+   const prefix='build-inputs/registry/'+hash.toString('hex')+'/';
+   need(row.archive?.path===prefix+'archive.tgz'&&row.metadata?.path===prefix+'metadata.json'&&row.transport?.path===prefix+'transport.json','canonical typed build original paths');
+   permit(row.archive,/^build-inputs\/registry\/[a-f0-9]{128}\/archive\.tgz$/u,registryArchiveLimit);
+   for(const ref of [row.metadata,row.transport])need(ref&&refs.has(ref.path)&&isDeepStrictEqual(ref,refs.get(ref.path))&&ref.bytes<=metadataLimit,'exact bounded build metadata original');
+  }
+ }
+ const pack=master.packInputObservation;
+ if(pack!==undefined){
+  need(pack?.schemaVersion===1&&pack.kind==='actual-stopped-service-image-pack-inputs'&&Array.isArray(pack.bodies)&&pack.bodies.length<=512,'typed pack stream layout');
+  // The pack metadata archive is one typed TAR stream: the index plus every
+  // object original, framed, bounded by the producer's own observation bound.
+  // It legitimately exceeds one metadata original; per-member bounds are still
+  // enforced by service_pack_sidecar_tar when the archive is parsed.
+  permit(pack.stage?.stdout,/^stages\/service-output-copy-pack-inputs\/stdout\.raw$/u,PACK_OBSERVATION_METADATA_BYTES);
+  permit(pack.phase?.stage?.stdout,/^stages\/service-output-copy-pack-phase\/stdout\.raw$/u,packPhaseLimit);
+  for(const row of pack.bodies){permit(row.original,/^output\/service-pack-bodies\/objects\/[0-9]{4}-[a-f0-9]{64}\.original$/u,packBodyLimit);permit(row.rawTarOriginal,/^stages\/service-output-copy-pack-body-[0-9]{4}\/stdout\.raw$/u,rawPackTarLimit(row.original.bytes));need(isDeepStrictEqual(row.rawTarOriginal,row.stage?.stdout),'same actual body stage stdout');}
+ }
+ const runtime=master.runtimeMemberObservation;
+ if(runtime!==undefined){
+  need(runtime?.schemaVersion===1&&runtime.kind==='actual-stopped-service-image-runtime-roots'&&Array.isArray(runtime.roots)&&runtime.roots.length===2,'typed complete runtime stream layout');
+  const output=master.outputImageObservation;
+  need(runtime.imageReferenceByDigest===output?.imageReferenceByDigest&&runtime.configDigest===output?.configDigest&&runtime.containerId===output?.containerId,'same actual runtime/output image context');
+  for(const [index,[root,role]] of [['/app','copy-runtime-app'],['/opt/xpod/qlever','copy-runtime-sdk']].entries()){
+   const row=runtime.roots[index];need(row?.targetRoot===root&&row.imageReferenceByDigest===runtime.imageReferenceByDigest&&row.configDigest===runtime.configDigest&&row.containerId===runtime.containerId,'fixed runtime root identity');
+   need(row.archive?.path==='stages/service-output-'+role+'/stdout.raw','fixed runtime raw stdout');
+   permit(row.archive,/^stages\/service-output-copy-runtime-(?:app|sdk)\/stdout\.raw$/u,runtimeArchiveLimit);
+   // The runtime INVENTORY index is a typed stream of its own: the producer writes it to
+   // output/service-runtime-members/<role>.original.json under RUNTIME_INDEX_LIMIT, and
+   // candidate-service-runtime-artifact.ts already owns that same reviewed bound
+   // (limits.shardBytes) plus the ranged reader. A whole /app inventory is necessarily
+   // far larger than one control-metadata original, so it must be admitted here with the
+   // SAME contract rather than re-capped.
+   need(row.index?.path==='output/service-runtime-members/'+role+'.original.json','fixed runtime index original');
+   permit(row.index,/^output\/service-runtime-members\/(?:copy-runtime-app|copy-runtime-sdk)\.original\.json$/u,
+     runtimeIndexLimit);
+  }
+ }
+ for(const row of candidateServiceAbiSeedStreams(master)){
+  permit(row.reference,/^(?:abi-seed|xpod-service-output-[a-f0-9]{32}-scratch)\/abi\.sqlite$/u,row.maximumBytes);
+ }
+ // Total retained bytes, now that every member is classified: metadata stays under the
+ // single-metadata ceiling, and typed streams were each admitted by `permit` above with
+ // their own reviewed maximum. One aggregate ceiling over the producer's transport bound
+ // still refuses a genuinely oversized artifact.
+ // The aggregate must cover EVERY retained member, including the master relationship
+ // original itself, which is deliberately not a `refs` entry (`refs` holds the originals
+ // the master declares; the master is the document that declares them).
+ let total=0;
+ for(const row of view.members){total+=row.bytes;need(total<=totalLimit,'actual service retained byte ceiling');}
+ for(const row of refs.values()){
+  need(row.bytes<=metadataLimit||streamed.has(row.path),'large service original requires exact typed pack stream');
+  const hash=createHash('sha256');for(let offset=0;offset<row.bytes;offset+=rangeLimit){const length=Math.min(rangeLimit,row.bytes-offset),raw=view.readOriginalRange(row.path,offset,length);need(raw.length===length,'complete actual service original range');hash.update(raw);}
+  need(hash.digest('hex')===row.sha256,'actual streamed service original SHA differs');
+ }
+}
+/** Exact job-row mechanics. Inputs here must be the existing private GitHub
+ * acquisition originals, never a producer-provided job summary. */
+export function inspectCandidateServiceJobChain(input:{jobs:readonly any[];contract:CandidateServiceRelationshipContract;sourceSha:string;runId:number;runAttempt:number;producerJobId:number;normalCache?:boolean}):Readonly<{sdkJobId:number;localRuntimeJobId:number;serviceJobId:number}> {
+ const {contract}=input;
+ function exact(name:string):any {
+  const rows=input.jobs.filter(row=>row.name===name);need(rows.length===1,'unique exact same-run ancestor job');const row=rows[0];
+  need(Number.isSafeInteger(row.id)&&row.id>0&&row.run_id===input.runId&&row.run_attempt===input.runAttempt&&row.head_sha===input.sourceSha&&row.status==='completed'&&row.conclusion==='success','actual job closed exact run/head/attempt');
+  const start=Date.parse(row.started_at),end=Date.parse(row.completed_at);need(Number.isFinite(start)&&Number.isFinite(end)&&end>=start,'actual bounded job window');return {...row,start,end};
+ }
+ const sdk=exact(contract.sdkJob),local=exact(contract.localRuntimeJob),service=exact(contract.serviceJob);
+ if(input.normalCache){
+  need(Array.isArray(sdk.steps),'normal cache SDK job steps unavailable');
+  for(const name of ['Find the retained normal SDK build proof candidate','Select and authenticate the retained normal SDK proof']){
+   const rows=sdk.steps.filter((step:any)=>step?.name===name);
+   need(rows.length===1&&rows[0].status==='completed'&&rows[0].conclusion==='success','normal cache SDK selection step did not succeed: '+name);
+  }
+ }
+ need(service.id===input.producerJobId&&new Set([sdk.id,local.id,service.id]).size===3&&sdk.end<=local.start&&local.end<=service.start,'actual SDK/local-runtime/service ancestor order');
+ return Object.freeze({sdkJobId:sdk.id,localRuntimeJobId:local.id,serviceJobId:service.id});
+}
+/** Pure original-byte and metadata mechanics only. The caller must first obtain
+ * a genuine service-role capability from the existing GitHub/native issuer. */
+export function inspectCandidateServiceRelationship(view:CollectedNativeOriginalsView):Readonly<{sdkArtifact:any;sourceSha:string;runId:number;runAttempt:number;target:'linux-x64';sdkImage:string;master:any}> {
+ const members=new Map(view.members.map(row=>[row.path,row]));
+ const bytes=(ref:any):Buffer=>{
+  const actual=members.get(ref?.path);need(actual&&actual.bytes===ref.bytes&&actual.sha256===ref.sha256&&Number.isSafeInteger(ref.bytes)&&ref.bytes>=0&&ref.bytes<=4*1024**2,'exact bounded service original reference');
+  const value=view.readOriginal(ref.path,4*1024**2);need(value.length===ref.bytes&&digest(value)===ref.sha256,'actual service original SHA differs');return value;
+ };
+ const masterMember=members.get('service-image-materials.json');need(masterMember&&masterMember.bytes<=4*1024**2,'actual service relationship master');
+ const master=JSON.parse(bytes(masterMember).toString());const origin=view.originFacts;
+ need(master.schemaVersion===1&&master.kind==='xpod-candidate-service-image-originals'&&master.releaseAccepted===false&&master.sourceSha===origin.sourceSha&&master.runHeadSha===origin.runHeadSha&&master.runId===origin.runId&&master.runAttempt===origin.runAttempt&&master.target==='linux-x64'&&master.sdkProfile==='service-trixie','same exact service source/job/profile tuple');
+ inspectCandidateServiceOriginalUniverse(view,master);
+ function image(role:'service'|'localRuntime'|'sdk',repository:string,expected:string):any {
+  const record=master.images?.[role];need(record?.referenceByDigest===expected&&new RegExp('^ghcr\\.io/undefinedsco/'+repository+'@sha256:[a-f0-9]{64}$','u').test(expected),'exact fixed image repository/digest');
+  let manifest=JSON.parse(bytes(record.manifestOriginal).toString());need('sha256:'+record.manifestOriginal.sha256===expected.split('@')[1],'actual OCI root manifest digest');
+  if(Array.isArray(manifest.manifests)){
+   const selected=manifest.manifests.filter((row:any)=>row.platform?.os==='linux'&&row.platform?.architecture==='amd64');need(selected.length===1&&'sha256:'+record.platformManifestOriginal?.sha256===selected[0].digest,'unique actual image platform manifest');manifest=JSON.parse(bytes(record.platformManifestOriginal).toString());
+  }
+  need(manifest.config?.digest===record.configDigest&&'sha256:'+record.configOriginal?.sha256===record.configDigest,'actual image config digest');const config=JSON.parse(bytes(record.configOriginal).toString());need(config.os==='linux'&&config.architecture==='amd64','actual native service image platform');return config;
+ }
+ const service=image('service','xpod',master.serviceImageReferenceByDigest),local=image('localRuntime','xpod-qlever-local-runtime',master.localRuntimeImageReferenceByDigest);image('sdk','xpod-qlever-sdk',master.sdkArtifact?.sdkImageReferenceByDigest);
+ const roots=local.rootfs?.diff_ids;need(Array.isArray(roots)&&roots.length>0&&Array.isArray(service.rootfs?.diff_ids)&&isDeepStrictEqual(service.rootfs.diff_ids.slice(0,roots.length),roots)&&service.rootfs.diff_ids.every((value:any)=>/^sha256:[a-f0-9]{64}$/u.test(value)),'actual service/local runtime rootfs ancestry');
+ need(service.config?.Labels?.['org.opencontainers.image.revision']===origin.sourceSha&&service.config?.Labels?.['org.opencontainers.image.source']==='https://github.com/undefinedsco/xpod','actual service revision labels');
+ // Buildx only reports containerimage.config.digest for a single-image result.
+ // A multi-platform push reports an index descriptor and omits it; the producer
+ // then relies on the platform manifest -> config chain that `image()` above
+ // already re-derives from bytes. Both OCI and Docker media types are legal
+ // buildx output (Docker types appear when OCI output is disabled), so this
+ // consumer must accept exactly the pairs the producer declares. These four
+ // literals mirror qlever/scripts/sdk-service-image-originals.py
+ // IMAGE_MANIFEST_MEDIA_TYPES / IMAGE_INDEX_MEDIA_TYPES, which is a .py file and
+ // therefore not importable here.
+ const BUILD_MANIFEST_MEDIA_TYPES=['application/vnd.oci.image.manifest.v1+json','application/vnd.docker.distribution.manifest.v2+json'];
+ const BUILD_INDEX_MEDIA_TYPES=['application/vnd.oci.image.index.v1+json','application/vnd.docker.distribution.manifest.list.v2+json'];
+ const metadata=JSON.parse(bytes(master.sourceOriginals?.buildMetadata).toString());need(metadata['containerimage.digest']===master.serviceImageReferenceByDigest.split('@')[1],'actual build action metadata/image digest');
+ const buildDescriptor=metadata['containerimage.descriptor'];
+ if(metadata['containerimage.config.digest']!==undefined)need(metadata['containerimage.config.digest']===master.images.service.configDigest&&BUILD_MANIFEST_MEDIA_TYPES.includes(buildDescriptor?.mediaType)&&buildDescriptor?.digest===metadata['containerimage.digest'],'actual build action/registry config cross-seal');
+ else need(BUILD_INDEX_MEDIA_TYPES.includes(buildDescriptor?.mediaType)&&buildDescriptor?.digest===metadata['containerimage.digest']&&master.images.service.platformManifestOriginal!==undefined,'actual build action index/platform cross-seal');
+ const before=bytes(master.sourceOriginals?.rootManifestBefore),after=bytes(master.sourceOriginals?.rootManifestAfter);
+ const expectedStages=candidateServiceCheckoutStageNames(master);need(Array.isArray(master.stages)&&isDeepStrictEqual(master.stages.map((row:any)=>row.name),expectedStages),'complete ordered checkout command universe');
+ need(typeof master.sourcePath==='string'&&master.sourcePath.startsWith('/')&&!master.sourcePath.split('/').some((part:string)=>part==='.'||part==='..')&&master.controllerPath===master.sourcePath+'/qlever/scripts/sdk-service-image-originals.py','actual fixed checkout/controller command path');
+ const jobRows=view.metadataOriginals.filter(row=>/^jobs(?:-page-\d+)?\.original\.json$/u.test(row.name)).flatMap(row=>JSON.parse(row.data.toString()).jobs??[]);const producerJobs=jobRows.filter((row:any)=>row.id===origin.producerJobId);need(producerJobs.length===1,'actual unique service job raw');const producerJob=producerJobs[0];const jobStart=Date.parse(producerJob.started_at)*1e6,jobEnd=Date.parse(producerJob.completed_at)*1e6;need(Number.isFinite(jobStart)&&Number.isFinite(jobEnd)&&jobStart<=jobEnd,'actual service job window');let completed=jobStart;
+ const named=(name:string)=>{const rows=master.stages?.filter((row:any)=>row.name===name);need(rows?.length===1,'unique actual checkout stage');const stage=rows[0],receipt=JSON.parse(bytes(stage.receipt).toString()),supervision=JSON.parse(bytes(stage.supervisionReceipt).toString());const supervisorRaw=bytes(stage.supervisionRaw);bytes(stage.stderr);
+  const mode=name.slice('service-source-'.length),command=['/usr/bin/python3','-I','-S','-B',master.controllerPath,'--worker',mode,'--source',master.sourcePath,'--source-sha',origin.sourceSha];
+  need(isDeepStrictEqual(receipt.command,command),'actual fixed checkout observation command');
+  const parent=stage.receipt.path.slice(0,stage.receipt.path.lastIndexOf('/')+1);
+  for(const role of ['stdout','stderr'])need(receipt[role]?.path===role+'.raw'&&stage[role]?.path===parent+receipt[role].path&&receipt[role].bytes===stage[role].bytes&&receipt[role].sha256===stage[role].sha256,'same actual closed command raw references');
+  need(Number.isSafeInteger(receipt.pgid)&&receipt.pgid>0&&Number.isInteger(receipt.startedUnixNs)&&Number.isInteger(receipt.completedUnixNs)&&completed<=receipt.startedUnixNs&&receipt.completedUnixNs>=receipt.startedUnixNs&&receipt.completedUnixNs<=jobEnd,'actual command PID group and window');
+  need(receipt.exit===0&&receipt.signal===null&&receipt.actualWait===true&&receipt.rawClosedBeforeHash===true&&supervision.exit===0&&supervision.signal===null&&supervision.actualWait===true&&supervision.rawClosedBeforeHash===true&&supervision.ownedGroupAbsentAfterWait===true&&receipt.pgid===supervision.pgid&&supervision.resourceStop===null&&supervision.supervisorError===null&&Array.isArray(supervision.cleanupErrors)&&supervision.cleanupErrors.length===0&&supervision.rawSHA256===digest(supervisorRaw),'closed actual checkout supervision');completed=receipt.completedUnixNs;return bytes(stage.stdout);};
+ need(named('service-source-head').toString().trim()===origin.sourceSha&&named('service-source-manifest').equals(before),'actual Git HEAD and before manifest');named('service-source-status');
+ inspectCandidateServiceAbiSourceStages(master,named);
+ need(JSON.parse(before.toString()).name==='@undefineds.co/xpod'&&JSON.parse(after.toString()).name==='@undefineds.co/xpod','actual root manifest identity');
+ return Object.freeze({sdkArtifact:master.sdkArtifact,sourceSha:origin.sourceSha,runId:origin.runId,runAttempt:origin.runAttempt,target:'linux-x64',sdkImage:master.sdkArtifact.sdkImageReferenceByDigest,master});
+}
+
+
+// Only a real issued view can key this cache. Ordinary mechanics remain uncached.
+type ServiceRelationship = ReturnType<typeof inspectCandidateServiceRelationship>;
+export type CandidateServiceRelationshipBudget=Readonly<{check():void;chargeReadBytes(bytes:number):void}>;
+const relationshipCache = new WeakMap<CollectedNativeOriginalsView, {seal:string;relationship:ServiceRelationship;budget?:CandidateServiceRelationshipBudget}>();
+function freezeRelationship(value:ServiceRelationship):ServiceRelationship {
+ const pending:object[]=[value],seen=new WeakSet<object>();
+ while(pending.length){const item=pending.pop()!;if(seen.has(item))continue;seen.add(item);for(const child of Object.values(item))if(child!==null&&typeof child==='object')pending.push(child);Object.freeze(item);}
+ return value;
+}
+/** Reuse a validated relationship across observers without re-reading the
+ * entire retained universe. Every call checks live private custody, the exact
+ * master identity and current API originals; compacted readers remain unusable. */
+export function readCandidateServiceRelationship(originals:unknown,budget?:CandidateServiceRelationshipBudget):ServiceRelationship {
+ const view=nativeOriginalsView(originals);
+ need(view&&isCandidateServiceImageGitHubOrigin(view.origin),'issued candidate service originals required');
+ const cached=relationshipCache.get(view!);
+ need(!budget||typeof budget.check==='function'&&typeof budget.chargeReadBytes==='function','complete shared relationship budget');
+ need(!budget||!cached?.budget||cached.budget===budget,'same shared relationship budget required');
+ const parent=budget??cached?.budget;
+ if(cached&&parent)cached.budget=parent;
+ const charge=(bytes:number)=>{if(parent){parent.check();parent.chargeReadBytes(bytes);}};
+ const observed:CollectedNativeOriginalsView=parent?{...view!,
+  readOriginal(name,maximum){parent.check();const row=view!.members.find(row=>row.path===name);if(row)charge(row.bytes);const bytes=view!.readOriginal(name,maximum);parent.check();return bytes;},
+  readOriginalRange(name,offset,length){charge(length);const bytes=view!.readOriginalRange(name,offset,length);parent.check();return bytes;},
+ }:view!;
+ function currentSeal():string {
+  assertCollectedNativeOriginalCustody(originals);
+  const member=view!.members.find(row=>row.path==='service-image-materials.json');
+  need(member&&member.bytes<=4*1024**2,'bounded service relationship master');
+  // This checks the private lifetime as well as the held projection identity.
+  observed.readOriginalRange(member.path,0,0);
+  // First pure inspection fully hashes this same held projection. The zero
+  // range above rechecks all held/named identity fields without charging the
+  // unchanged body again on every nested getter.
+  const metadata=view!.metadataOriginals.map(row=>{charge(row.data.length);return {name:row.name,endpoint:row.endpoint,bytes:row.data.length,sha256:digest(row.data)};});
+  return JSON.stringify({origin:view!.originFacts,archive:view!.archive,metadata,master:{bytes:member.bytes,sha256:member.sha256}});
+ }
+ const seal=currentSeal();
+ if(cached){need(cached.seal===seal,'current relationship origin or API originals differ');return cached.relationship;}
+ const relationship=freezeRelationship(inspectCandidateServiceRelationship(observed));
+ need(currentSeal()===seal,'relationship changed during initial validation');
+ relationshipCache.set(view!,{seal,relationship,...(parent?{budget:parent}:{})});return relationship;
+}

@@ -1,0 +1,26 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 5c985d6..bb233a2 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -616,11 +616,18 @@ if (USE_PRECOMPILED_HEADERS)
+     target_precompile_headers(rdfEscaping PRIVATE ${PRECOMPILED_HEADER_FILES_EXTERNAL})
+ endif ()
+ 
+-add_subdirectory(benchmark)
++option(XPOD_SDK_BUILD_BENCHMARKS "Build the upstream benchmark subdirectory" ON)
++option(XPOD_SDK_BUILD_TESTS "Build the upstream test subdirectory" ON)
++if (XPOD_SDK_BUILD_BENCHMARKS)
++    add_subdirectory(benchmark)
++endif ()
+ 
+-enable_testing()
++if (XPOD_SDK_BUILD_TESTS)
++    enable_testing()
+ option(SINGLE_TEST_BINARY "Link all unit tests into a single binary. This is useful e.g. for code coverage tools and greatly reduces the total disk space required when building all unit tests with debug symbols" OFF)
+-add_subdirectory(test)
++    add_subdirectory(test)
++endif ()
++
+ 
+ # Add the library with the constants declared in `CompilationInfo.h` and defined
+ # in `CompilationInfo.cpp` created by `CompilationInfo.cmake`.

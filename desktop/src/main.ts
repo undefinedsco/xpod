@@ -14,7 +14,7 @@ import {
 import { trayIconAssetName, XPOD_TRAY_GUID } from './tray-icon.js'
 import { isTrustedDesktopShellSender } from './ipc-policy.js'
 import { DesktopApprovalDelivery } from './approval-delivery.js'
-import { RuntimeManager } from './runtime-manager.js'
+import { RuntimeManager, createStartupDiagnosticSink } from './runtime-manager.js'
 import { RuntimePreferences, readRuntimeDataEnvironment } from './runtime-preferences.js'
 import { resolveDesktopTargetUrl } from './target-url.js'
 import { installDockIcon, resolveDockIconPath } from './dock-icon.js'
@@ -24,7 +24,7 @@ import {
   installDesktopNativeTheme,
 } from './native-theme.js'
 import { WindowLifecycle } from './window-lifecycle.js'
-import { DesktopWindowRecovery } from './window-recovery.js'
+import { DesktopWindowRecovery, runFailedLoadRecovery } from './window-recovery.js'
 import { DesktopWindowModeController, WORKSPACE_WINDOW_MODE_SIZE, bindDesktopWindowModeNavigation } from './window-mode.js'
 import {
   DesktopUpdateManager,
@@ -33,10 +33,11 @@ import {
 } from './update-manager.js'
 import { DesktopSelfUpdater, UPDATE_RELAUNCH_ENV } from './self-updater.js'
 import { loadDesktopUrlWithoutStaleCache } from './navigation-cache.js'
+import { runStartupSequence } from './startup-sequence.js'
 import { canCancelDesktopLogin, cancelDesktopLogin, shouldCancelDesktopLoginOnClose } from './login-recovery.js'
 import { navigateDesktopProduct } from './product-navigation.js'
 import { desktopProtocolRoute, desktopProtocolRouteFromArgv, resumeDesktopProtocolNavigation, XPOD_DESKTOP_PROTOCOL } from './product-protocol.js'
-import { ensureDesktopEnvFile, loadDesktopEnvFile } from './user-env.js'
+import { desktopDataDirectory, ensureDesktopEnvFile, loadDesktopEnvFile } from './user-env.js'
 import { isTrustedOidcNavigation, resolveDesktopOidcIssuer, isOidcAuthorizationRequest, isSameOriginProductUrl } from './navigation-policy.js'
 import {
   installCompactWindowDevToolsGuard,
@@ -81,7 +82,7 @@ process.env.XPOD_AI_CLIENT_CONFIGURATION_ENABLED ??= 'true'
 process.env.CSS_IDENTITY_DB_URL ??= `sqlite:${path.join(desktopDataRoot, 'identity.sqlite')}`
 process.env.CSS_SPARQL_ENDPOINT ??= `sqlite:${path.join(desktopDataRoot, 'quadstore.sqlite')}`
 process.env.CSS_RDF_INDEX_PATH ??= path.join(desktopDataRoot, 'rdf-index.sqlite')
-process.env.CSS_ROOT_FILE_PATH ??= path.join(desktopDataRoot, 'data')
+process.env.CSS_ROOT_FILE_PATH ??= desktopDataDirectory(desktopDataRoot)
 
 const targetUrl = resolveDesktopTargetUrl()
 const targetOrigin = new URL(targetUrl).origin
@@ -131,7 +132,31 @@ let quitConfirmationPending = false
 type DesktopQuitReason = 'explicit' | 'update-install'
 let quitReason: DesktopQuitReason = 'explicit'
 const runtimePreferences = new RuntimePreferences(desktopDataRoot)
-const runtimeManager = new RuntimeManager({ targetOrigin, autoRestart: runtimePreferences.read().autoRestart, resolveEnvironment: () => readRuntimeDataEnvironment(process.env.XPOD_ENV_FILE) })
+/**
+ * Acceptance-only startup observation.
+ *
+ * The managed child's state and stream classes are written under the OWNED
+ * userData root so the external acceptance can read them WITHOUT the product
+ * IPC bridge (that bridge needs a trusted product page, which is exactly what a
+ * failed gateway cannot provide). Gated by the EXISTING acceptance flag; the
+ * sink helper in runtime-manager owns the hardened owned-file write. Nothing is
+ * exported to the renderer, and normal launches stay identical: no sink, no
+ * pipe, no file.
+ */
+const startupDiagnosticSink = acceptanceMode
+  ? createStartupDiagnosticSink({ userDataRoot: desktopDataRoot })
+  : undefined
+// Reuse the app's userData authority for the CLI's writable module store; the
+// installed resources remain the read-only source of packaged capabilities.
+const runtimeManager = new RuntimeManager({
+  targetOrigin,
+  packaged: app.isPackaged,
+  autoRestart: runtimePreferences.read().autoRestart,
+  resolveEnvironment: () => readRuntimeDataEnvironment(process.env.XPOD_ENV_FILE),
+  ownedDataRoot: desktopDataRoot,
+  ...(app.isPackaged ? { resourcesPath: process.resourcesPath } : {}),
+  ...(startupDiagnosticSink ? { startupDiagnostics: startupDiagnosticSink } : {}),
+})
 // Squirrel pins an ad-hoc build's cdhash and cannot accept the next release.
 // Our detached installer verifies and swaps the bundle while retaining user data.
 const selfUpdater = new DesktopSelfUpdater({
@@ -438,21 +463,23 @@ const WINDOW_RECOVERY_TIMEOUT_MS = 10 * 60_000
  */
 async function recoverWindowAfterFailedLoad(window: BrowserWindow): Promise<void> {
   const recovery = windowRecoveries.get(window)
-  if (!recovery || window.isDestroyed() || recovery.isRecovering()) return
-  recovery.beginRecovery()
-  try {
-    if (!await runtimeManager.waitUntilReachable(WINDOW_RECOVERY_TIMEOUT_MS)) return
-    if (window.isDestroyed()) return
-    const cooldown = recovery.reloadCooldownRemainingMs()
-    if (cooldown > 0) await delay(cooldown)
-    if (window.isDestroyed()) return
-    desktopConsole.info(`[desktop] reloading ${safeNavigationTarget(targetUrl)} after a failed load`)
-    recovery.markReloaded()
-    await discoverDesktopIssuer()
-    await loadDesktopUrlWithoutStaleCache(window, targetUrl)
-  } finally {
-    recovery.endRecovery()
-  }
+  if (!recovery) return
+  // Readiness, cooldown, discovery and the final cache await are all owned by
+  // runFailedLoadRecovery, which also re-checks that this window still needs a
+  // failed-page reload before navigating.
+  await runFailedLoadRecovery({
+    recovery,
+    isDestroyed: () => window.isDestroyed(),
+    waitUntilReachable: () => runtimeManager.waitUntilReachable(WINDOW_RECOVERY_TIMEOUT_MS),
+    delay,
+    discoverIssuer: () => discoverDesktopIssuer(),
+    load: async (stillNeeded) => await loadDesktopUrlWithoutStaleCache(
+      window, targetUrl, undefined, () => {
+        if (!stillNeeded()) return false
+        desktopConsole.info(`[desktop] reloading ${safeNavigationTarget(targetUrl)} after a failed load`)
+        return true
+      }),
+  })
 }
 
 function delay(milliseconds: number): Promise<void> {
@@ -819,11 +846,20 @@ if (!hasSingleInstanceLock) {
     app.setAboutPanelOptions({ applicationName: 'Xpod', applicationVersion: app.getVersion(), version: `Electron ${process.versions.electron}`, copyright: `© ${new Date().getFullYear()} Xpod` })
     tray = createTray()
     updateManager.start()
-    await runtimeManager.ensureRunning().catch(() => undefined)
-    await refreshTrayStatus(tray)
-    if (acceptanceMode) app.emit('xpod:acceptance:tray-ready')
-    ensureWindow()
-    if (pendingProtocolRoute) presentProtocolReturn()
+    // Create the BrowserWindow without waiting for runtime readiness, so the
+    // window exists while the runtime is still starting. Existing navigation
+    // recovery and readiness guards remain responsible for loading and showing.
+    runStartupSequence({
+      createWindow: () => {
+        ensureWindow()
+        if (pendingProtocolRoute) presentProtocolReturn()
+      },
+      startRuntime: () => runtimeManager.ensureRunning(),
+      refreshTray: () => refreshTrayStatus(tray as Tray),
+      onSettled: () => {
+        if (acceptanceMode) app.emit('xpod:acceptance:tray-ready')
+      },
+    })
 
     app.on('activate', () => {
       ensureWindow()

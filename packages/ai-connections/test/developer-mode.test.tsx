@@ -24,6 +24,7 @@ function client(): AiConnectionsClient {
   return {
     webId: 'https://pod.example/alice/profile/card#me',
     apiBase: 'https://pod.example',
+    podBaseUrl: 'https://pod.example/',
     getServiceAccess: vi.fn(async () => ({ status: 'granted' })),
     listProviders: vi.fn(async () => []),
     listModels: vi.fn(async () => []),

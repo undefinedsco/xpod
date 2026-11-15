@@ -57,6 +57,15 @@ describe('SolidRdfDataAccessor', () => {
     await rm(workDir, { recursive: true, force: true }).catch(() => {});
   });
 
+  it('finalizes its configured eager engine before the accessor has initialized', async () => {
+    const native = { start: vi.fn(async() => {}), query: vi.fn(), close: vi.fn(async() => {}) };
+    const eager = new SolidRdfEngine({ index: { path: path.join(workDir, 'eager.sqlite') }, nativeSparqlClient: native, autoOpen: true });
+    const unstartedAccessor = new SolidRdfDataAccessor(eager, new SimpleIdentifierStrategy(baseUrl));
+    await unstartedAccessor.finalize();
+    expect(native.start).toHaveBeenCalledTimes(1);
+    expect(native.close).toHaveBeenCalledTimes(1);
+  });
+
   it('writes container metadata and parent containment without Comunica', async () => {
     const engineQuerySpy = vi.spyOn(engine, 'query');
     const root = { path: baseUrl };

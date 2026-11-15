@@ -1,9 +1,9 @@
 import { resolvePodBaseUrl } from '@undefineds.co/drizzle-solid';
-import { AI_CONNECTIONS_PROVIDER_DOCUMENT_IDS } from '@undefineds.co/ai-connections/provider-catalog';
+import { AI_CONNECTIONS_PROVIDER_DOCUMENT_IDS } from '@undefineds.co/ai-connections-runtime/provider-catalog';
 import {
   AI_CONNECTIONS_SERVICE_RESOURCE_IDS,
   resolveAiConnectionsServiceResource,
-} from '@undefineds.co/ai-connections/service-access-resources';
+} from '@undefineds.co/ai-connections-runtime/service-access-resources';
 
 export const AI_CONNECTIONS_APPLET_ID = 'co.undefineds.ai-connections';
 

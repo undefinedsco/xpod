@@ -1,0 +1,5 @@
+# Declared test scratch: `bun pm pack` honours this file, so the published
+# tarball (and the public-selected-input source body captured from it) never
+# contains build/probe diagnostics written under `.test-data`. Raw diagnostics
+# stay in the working tree for forensics; they are not runtime payload.
+.test-data/

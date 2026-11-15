@@ -26,11 +26,15 @@
 | 实际读写路径 | Cloud Gateway | SDK 选择 Local Gateway，规范地址不变 | Standalone Gateway |
 | CSS / API 运行时 | 验证实际子进程 | 验证实际子进程 | 验证实际子进程 |
 | 认证负例 | 未认证拒绝 | 未认证拒绝 | 未认证拒绝 |
-| API Key 生命周期 | 创建、列表、恢复明文、停用/启用、删除 | 同左 | 同左 |
+| API Key 生命周期 | 当前 Account client credential：创建时显示一次 wrapper、列表仅 metadata、实际认证、精确撤销并拒绝后续认证 | 同左 | 同左 |
 | AI 配置 | Provider 凭据和模型写入 Pod 后重新读取 | 同左 | 同左 |
 | Models | 已选模型非空且与 Pod 一致 | 同左 | 同左 |
 | Chat | 实际请求并校验响应，不只检查 HTTP 200 | 同左 | 同左 |
 | 会话恢复 | 单独验证 OIDC/refresh | 单独验证 OIDC/refresh | 单独验证 OIDC/refresh |
+
+当前密钥口径以 [AI Connections 产品规范](../ai-connections-product-spec.md#web-management-contract) 和共享 `AiClientCredentialsCapability` 为准：没有 reveal、可恢复明文或 enable/disable。
+下文 2026-08-28 执行表保留当时接口事实，不能转作当前 API 或当前镜像验收。
+新 CI 同镜像矩阵的 owned 输入、短 TTL 会话专项及门禁契约见 [service-image-mode-contract](service-image-mode-contract.md)。该新增实现尚未运行，必须新普通合并 SHA 与全新 RC 执行，不授予旧候选资格。
 
 ## 证据规则
 

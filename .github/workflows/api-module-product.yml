@@ -1,0 +1,99 @@
+name: API module preview products
+
+on:
+  push:
+    branches: [staging]
+  pull_request:
+    branches: [staging, main]
+    # No path filter: API source and static closures include evolving shared
+    # inputs. Their authoritative producers must not acquire a second allowlist.
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.targets.outputs.matrix }}
+      pending: ${{ steps.targets.outputs.pending }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun test tests/bun/api-module-producer.test.ts tests/bun/module-product-targets.test.ts
+      - id: targets
+        name: Project canonical targets and actual native-source coverage
+        run: |
+          bun scripts/module-product-targets.ts api > targets.json
+          bun -e 'const p=await Bun.file("targets.json").json();for(const [key,available] of [["matrix",true],["pending",false]])console.log(key+"="+JSON.stringify({include:p.include.filter(x=>x.nativeSourceAvailable===available)}));' >> "$GITHUB_OUTPUT"
+
+  products:
+    name: products (${{ matrix.target }})
+    # Expensive independent producer: explicit workflow_dispatch only.
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    needs: contract
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.contract.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.21.1
+      - name: Produce the actual API preview once
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p "$GITHUB_WORKSPACE/.test-data"
+          root="$GITHUB_WORKSPACE/.test-data/api-product-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ matrix.target }}"
+          echo "API_PRODUCT_ROOT=$root" >> "$GITHUB_ENV"
+          producer_args=(--target "${{ matrix.target }}" --out "$root")
+          producer_args+=(--native-source-kind xpod-controlled-inngest-build-v1)
+          producer_args+=(--workspace-recipe api-ui-root-minimal-v2)
+          python3 scripts/api-module-producer.py "${producer_args[@]}"
+      - name: Upload preview product and its original evidence
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-module-products-${{ matrix.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.API_PRODUCT_ROOT }}/product.tgz
+            ${{ env.API_PRODUCT_ROOT }}/source-materials/
+            ${{ env.API_PRODUCT_ROOT }}/producer.receipt.json
+            ${{ env.API_PRODUCT_ROOT }}/evidence/
+            ${{ env.API_PRODUCT_ROOT }}/originals/prepare-inputs.receipt.safe.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload failed production diagnostics separately
+        if: failure() && env.API_PRODUCT_ROOT != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-module-diagnostics-${{ matrix.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.API_PRODUCT_ROOT }}/producer.receipt.json
+            ${{ env.API_PRODUCT_ROOT }}/evidence/
+            ${{ env.API_PRODUCT_ROOT }}/originals/prepare-inputs.receipt.safe.json
+          if-no-files-found: warn
+          retention-days: 30

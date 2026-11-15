@@ -1,0 +1,124 @@
+name: Independent publication prerequisite wave
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        type: string
+        required: true
+      producer_selectors:
+        type: string
+        required: true
+      wave:
+        type: string
+        required: true
+    secrets:
+      NPM_TOKEN:
+        required: true
+    outputs:
+      complete:
+        value: ${{ jobs.plan.outputs.complete }}
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    outputs:
+      has_work: ${{ steps.plan.outputs.has_work }}
+      complete: ${{ steps.plan.outputs.complete }}
+      stages: ${{ steps.plan.outputs.stages }}
+      consumers: ${{ steps.plan.outputs.consumers }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.21.1
+      - name: Install reviewed publication toolchain
+        timeout-minutes: 10
+        run: bun install --frozen-lockfile
+      - id: plan
+        name: Reobserve complete cohort and derive next prerequisite frontier
+        timeout-minutes: 29
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INDEPENDENT_PUBLICATION_PHASE: wave-plan
+          INDEPENDENT_PUBLICATION_INPUT: ${{ inputs.producer_selectors }}
+        run: bun scripts/run-independent-publication.ts
+      - name: Upload wave plan originals
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: publication-wave-plan-${{ inputs.wave }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .test-data/publication-wave/plan.json
+          if-no-files-found: warn
+
+  stage:
+    name: stage-${{ matrix.family }}
+    needs: plan
+    if: ${{ needs.plan.outputs.has_work == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.plan.outputs.stages) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.21.1
+      - name: Install reviewed publication toolchain
+        timeout-minutes: 10
+        run: bun install --frozen-lockfile
+      - name: Stage admitted family candidates without promotion
+        timeout-minutes: 100
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          INDEPENDENT_PUBLICATION_PHASE: family-stage
+          INDEPENDENT_PUBLICATION_INPUT: ${{ inputs.producer_selectors }}
+          PUBLICATION_FAMILY: ${{ matrix.family }}
+        run: bun scripts/run-independent-publication.ts
+      - name: Upload family stage originals
+        timeout-minutes: 5
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: publication-stage-${{ inputs.wave }}-${{ matrix.family }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .test-data/publication-wave/
+          if-no-files-found: warn
+
+  registry:
+    name: registry-${{ matrix.module }}-${{ matrix.target }}
+    needs: [plan, stage]
+    if: ${{ needs.plan.outputs.has_work == 'true' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.plan.outputs.consumers) }}
+    uses: ./.github/workflows/independent-registry-consumer.yml
+    with:
+      source_sha: ${{ inputs.source_sha }}
+      producer_selectors: ${{ inputs.producer_selectors }}
+      module: ${{ matrix.module }}
+      target: ${{ matrix.target }}
+      mode: publish

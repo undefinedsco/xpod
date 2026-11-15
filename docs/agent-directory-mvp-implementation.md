@@ -1,8 +1,10 @@
 # Agent 目录 MVP：开发与验收任务书
 
-状态：2026-10-01，用户最新授权主负责人直接实现与收尾。此前 DeepSeek worker 已结束，现有改动保留；主负责人接手产品修改、回归与验收。AgentFS 是唯一产品主线，依据见 [选型决定](xpod-cli-engine-selection.md)。当前不是最终发布完成记录。
+当前执行约定（2026-10-05）：AgentFS 是产品主线，依据见 [选型决定](xpod-cli-engine-selection.md)。用户已指定账号 B 的 `opencode-go/deepseek-v4.1-flash` 负责开发、修复、自测和发布；主负责人负责设计及独立验收。只有确认该 provider 返回 HTTP 429，才切换 GPT-6.1 Sol。代理自然退出、磁盘不足或工具拒绝不构成切换条件。本页不是最终发布完成记录。
 
-## 工作区与职责
+当前服务发行开发在 `codex/agentfs-current-release`；挂载验收在 `/Users/ganlu/.codex/worktrees/agentfs-native-acceptance/xpod` 的 `codex/agentfs-mounted-platform-acceptance`，消费冻结产品 `c7e9aadbf87302908e766411f4ea1fea6d0a54bf`，产品与测试源码分别绑定。私有诊断使用 `codex/private17-rc024-admission`。主 checkout 不参与开发。最新验收范围见 [目录验收记录](agent-directory-mvp-acceptance.md)；下面的工作区与职责段保留为 2026-10-01 的历史安排，不作为当前执行约定。
+
+## 历史工作区与职责（2026-10-01）
 
 - 唯一开发工作区：`/Users/ganlu/develop/.worktrees/xpod-virtual-folder-design`。
 - 唯一开发分支：`codex/virtual-folder-design`；基线 `9c88a0ac2003998f15b7ad466328759dd9a35d64`。

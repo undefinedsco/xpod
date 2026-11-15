@@ -1,10 +1,28 @@
 import {
-  LockingResourceStore,
+  InternalServerError, LockingResourceStore,
   type AuxiliaryIdentifierStrategy, type ChangeMap, type Conditions, type ExpiringReadWriteLocker,
   type IdentifierStrategy, type Patch, type Representation, type ResourceIdentifier, type ResourceStore,
 } from '@solid/community-server';
 import { metadataRequestContext } from './MetadataRequestContext';
 import { LegacyStorageVersionError, storageVersionReadContext } from './StorageVersion';
+
+/**
+ * How often a held ancestor lock is renewed while downstream lock acquisition or
+ * representation creation is still pending. The production lease is 6s, so a 1s
+ * cadence keeps every acquired layer alive without touching the lease budget.
+ */
+const PENDING_LOCK_RENEWAL_MS = 1000;
+
+/**
+ * Operation-local state for one root-first read acquisition. `pending` holds the
+ * clear callbacks of every renewal interval currently running in the operation
+ * so a single lost layer can stop all of them at once.
+ */
+interface ReadOperation {
+  active: boolean;
+  readonly pending: Set<() => void>;
+  abort: () => void;
+}
 
 /** Root-first ancestor locks protect parent membership and empty-container deletion. */
 export class HierarchyLockingResourceStore extends LockingResourceStore {
@@ -36,58 +54,105 @@ export class HierarchyLockingResourceStore extends LockingResourceStore {
   protected override async lockedRepresentationRun(id: ResourceIdentifier, action: () => Promise<Representation>): Promise<Representation> {
     const identifiers = [...this.ancestors(id), id];
     for (;;) {
-      const state = { active: true };
-      const renewals = new Set<() => void>();
-      // Preparing a response can wait on an inner lock or a bounded backend
-      // query. Once delivered, CSS's stream-read renewal and idle expiry apply.
-      const timer = setInterval(() => { for (const renew of renewals) renew(); }, 1000);
-      const acquire = async (index: number): Promise<Representation> => {
-        if (!state.active) throw new Error('Resource read lock expired');
+      // Operation-local coordination for one acquisition attempt. The wrapped
+      // lease race does not cancel the callback, so when any layer loses its
+      // lease every still-pending renewal interval in this attempt must stop at
+      // once, and any late lock callback must refuse to start a timer or run the
+      // source action. A fresh operation is created inside the legacy retry loop
+      // so an aborted attempt cannot poison the retry; it never crosses
+      // operations or instances.
+      const operation: ReadOperation = {
+        active: true,
+        pending: new Set(),
+        abort(): void {
+          if (!operation.active) return;
+          operation.active = false;
+          for (const stop of operation.pending) stop();
+          operation.pending.clear();
+        },
+      };
+      const acquire = (index: number): Promise<Representation> => {
+        if (!operation.active) return Promise.reject(new InternalServerError('Resource read lock expired'));
         return index === identifiers.length
           ? this.withFreshMetadata(() => storageVersionReadContext.run(true, action))
-          : this.withPreparingReadLock(identifiers[index], () => acquire(index + 1), state, renewals);
+          : this.readLockWithPendingRenewal(identifiers[index], operation, () => acquire(index + 1));
       };
       try {
         return await acquire(0);
       } catch (error) {
-        state.active = false;
         if (!(error instanceof LegacyStorageVersionError)) throw error;
         // acquire() has rejected only after every read lock was released. Never upgrade a held lock.
         await this.withMutationLocks(error.identifier, error.initialize);
-      } finally {
-        clearInterval(timer);
       }
     }
   }
 
-  private withPreparingReadLock(
+  /**
+   * Acquire a single layer's read lock and keep it alive while the downstream
+   * acquisition and representation creation are still pending.
+   *
+   * The wrapped locker's lease race does not cancel the callback, so a slow
+   * descendant can otherwise let an already-held ancestor lease expire before
+   * the representation exists. Renewal starts only after this layer owns the
+   * lock and stops as soon as a representation is produced, at which point the
+   * original CSS stream-read renewal takes over. If any layer loses its lease
+   * the whole operation aborts immediately: every pending interval is cleared
+   * (even those whose callback is still blocked on a descendant), a late child
+   * acquisition refuses to start a timer or the source, and any late
+   * representation is destroyed so the physical lock releases. The original
+   * error identity and release order are preserved.
+   */
+  private async readLockWithPendingRenewal(
     identifier: ResourceIdentifier,
-    action: () => Promise<Representation>,
-    state: { active: boolean },
-    renewals: Set<() => void>,
+    operation: ReadOperation,
+    whileLocked: () => Promise<Representation>,
   ): Promise<Representation> {
-    // Preserve CSS's split lifetime: return the representation immediately,
-    // while its read lock remains held until the source stream ends or fails.
     return new Promise((resolve, reject) => {
       let representation: Representation | undefined;
-      this.hierarchyLocks.withReadLock(identifier, async (maintainLock) => {
-        if (!state.active) throw new Error('Resource read lock expired');
-        renewals.add(maintainLock);
+      let lost = false;
+      this.hierarchyLocks.withReadLock(identifier, async (maintainLock: () => void) => {
+        // A layer whose own or an ancestor's lease was already lost must not
+        // start renewing or run the source even though its lock was granted late.
+        if (!operation.active) throw new InternalServerError('Resource read lock expired');
+        const pending = setInterval(maintainLock, PENDING_LOCK_RENEWAL_MS);
+        const stopRenewal = (): void => { clearInterval(pending); operation.pending.delete(stopRenewal); };
+        operation.pending.add(stopRenewal);
         try {
-          representation = await action();
+          representation = await whileLocked();
+        } catch (error: unknown) {
+          // Our own lease already rejected; swallow the late failure instead of
+          // throwing a second rejection into the settled race.
+          if (lost) return;
+          throw error;
         } finally {
-          renewals.delete(maintainLock);
+          stopRenewal();
         }
-        if (!state.active) {
-          representation.data.destroy();
-          throw new Error('Resource read lock expired');
+        // Our own lease was lost while the child was still pending: the late
+        // representation must not be handed out, and must be destroyed so the
+        // held lock releases.
+        if (lost) {
+          representation?.data.destroy(new InternalServerError('Resource read lock expired'));
+          return;
         }
+        // An ancestor lost its lease while this layer's descendant was pending:
+        // destroy the late representation and settle this layer so nothing hangs.
+        if (!operation.active) {
+          representation.data.destroy(new InternalServerError('Resource read lock expired'));
+          reject(new InternalServerError('Resource read lock expired'));
+          return;
+        }
+        // A contract-violating source that resolves no representation must fail
+        // visible: createExpiringRepresentation rejects with the same TypeError
+        // the original CSS consumer produces, instead of leaving this pending.
         resolve(this.createExpiringRepresentation(representation, maintainLock));
+        // Release the lock when an error occurs or the data finished streaming.
         await this.waitForStreamToEnd(representation.data);
       }).catch((error: unknown) => {
-        state.active = false;
-        renewals.clear();
-        representation?.data.destroy(error instanceof Error ? error : new Error(String(error)));
+        // Stop every pending renewal interval in this operation on any loss.
+        operation.abort();
+        if (lost) return;
+        lost = true;
+        representation?.data.destroy(error instanceof Error ? error : new Error('Resource read lock lost'));
         reject(error);
       });
     });
@@ -106,7 +171,7 @@ export class HierarchyLockingResourceStore extends LockingResourceStore {
     const renewals = new Set<() => void>();
     let active = true;
     // Existing Local wrappers use leases of at least 6s; Cloud owner locks do not expire.
-    const timer = setInterval(() => { for (const renew of renewals) renew(); }, 1000);
+    const timer = setInterval(() => { for (const renew of renewals) renew(); }, PENDING_LOCK_RENEWAL_MS);
     const acquire = async (index: number): Promise<T> => {
       if (!active) throw new Error('Resource mutation lock expired');
       if (index === identifiers.length) return this.withFreshMetadata(() => storageVersionReadContext.run(false, action));

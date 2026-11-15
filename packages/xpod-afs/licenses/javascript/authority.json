@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "repository": "https://github.com/drizzle-team/drizzle-orm",
+  "tag": "0.45.2",
+  "commit": "273c78071d4841b497f5144734b38294df7ec64b",
+  "tagObjectType": "commit",
+  "packagePath": "drizzle-orm/package.json",
+  "packageGitBlobSHA": "11680f4cffef0828af10ea6a824c94d48571fd80",
+  "packageBytes": 4515,
+  "packageSHA256": "ac07c1fa8a76092eb7db755757b13cf4708878c12aea021154371cb4ee7eb771",
+  "licenseGitBlobSHA": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
+  "licenseBytes": 11357,
+  "licenseSHA256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+  "purpose": "Original upstream package version/source identity, not artifact review clearance"
+}

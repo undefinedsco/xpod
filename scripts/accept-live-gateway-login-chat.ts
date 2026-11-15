@@ -27,7 +27,7 @@ import { createSolidLocalRouteFetch, discoverSolidLocalRoute } from '../packages
 import { createXpodAiConnectionsClient } from '../ui/src/api/ai-connections';
 import { createXpodAiConnectionsPodStore } from '../ui/src/extensions/XpodAiConnectionsPodStore';
 import { withRequestPodAuthorization } from '../ui/src/auth/session-request-credential';
-import { checkServer } from '../src/cli/lib/css-account';
+import { DEPLOYMENT_BUILTIN_CONNECTION_ID, DEPLOYMENT_BUILTIN_MODEL_IDS } from '../src/api/ai-gateway/builtin/DeploymentBuiltinConnection';
 import { ProvisionCodeCodec } from '../src/provision/ProvisionCodeCodec';
 import {
   discoverOidcIssuerFromWebId,
@@ -36,8 +36,8 @@ import {
   type AccountSetup,
 } from '../tests/integration/helpers/solidAccount';
 
-const GATEWAY = ensureTrailingSlash(
-  process.env.XPOD_LIVE_GATEWAY_URL?.trim() || 'http://127.0.0.1:3000/',
+const BASE_URL = ensureTrailingSlash(
+  process.env.XPOD_BASE_URL?.trim() || 'http://127.0.0.1:3000/',
 );
 const MODE = process.env.XPOD_LIVE_MODE?.trim() || 'local';
 if (!['cloud', 'local', 'standalone'].includes(MODE)) {
@@ -53,11 +53,43 @@ const SECRET_PATTERN = /(sk-[A-Za-z0-9+/=_-]{8,}|Bearer\s+\S+|apiKey|client_secr
 
 type Layer = 'runtime' | 'identity' | 'podReadWrite' | 'gatewayAuth' | 'aiConnections' | 'models' | 'chat' | 'taskApproval';
 
+/** Fixed enumeration of the phases the canary actually enters. Recorded BEFORE
+ * the work happens so a throw anywhere inside a phase still names that phase.
+ * `preflight` covers work done before the first layer, `after-layers` covers
+ * cleanup/session steps after every layer already passed. */
+type LiveStage = 'preflight' | 'runtime' | 'identity' | 'podReadWrite' | 'gatewayAuth' | 'aiConnections' | 'models' | 'chat' | 'after-layers';
+
+/** Local identity substeps, set immediately before the real operation is entered
+ * so a throw names the operation that was actually running. */
+type IdentitySubstage = 'route-discovery' | 'managed-pod-claim' | 'account-create' | 'client-credential' | 'session-login';
+
+/** Fixed reason codes for the runtime phase only. They name WHICH check failed so
+ * the next run needs no guesswork, and carry no URL/message/body. */
+type RuntimeFailureReason = 'discovery-unreachable' | 'discovery-http' | 'service-status-http' | 'service-status-invalid' | 'css-api-not-running';
+
+/** Fixed reasons for the Pod read/write layer only. They name WHICH probe step
+ * failed and never carry a message, body, URL or credential. */
+type PodFailureReason = 'put-http' | 'get-http' | 'content-mismatch' | 'route-target-mismatch';
+
 const report: {
   mode: string;
   startedAt: string;
-  gateway: string;
+  baseUrl: string;
   layers: Record<Layer, { ok: boolean; detail: string }>;
+  /** Explicitly the phase that was entered last; never inferred from layers. */
+  stage: LiveStage;
+  /** The fixed phase in which the run actually failed, set only on a real throw. */
+  failedStage?: LiveStage;
+  /** Which fixed runtime check failed, and the numeric HTTP status if one was observed. */
+  runtimeReason?: RuntimeFailureReason;
+  runtimeHttpStatus?: number;
+  /** Which fixed Pod probe step failed, with the integer HTTP status if observed. */
+  podReason?: PodFailureReason;
+  podHttpStatus?: number;
+  /** Fixed substep of the Pod layer that was actually entered. */
+  podPhase?: 'put-probe' | 'get-probe' | 'route-observation';
+  /** Fixed Local-identity substep actually entered, or the failing one. */
+  substage?: IdentitySubstage;
   webId?: string;
   podUrl?: string;
   probeUrl?: string;
@@ -67,12 +99,14 @@ const report: {
   modelIds?: string[];
   chatModel?: string;
   chatStatus?: number;
+  chatReason?: 'upstream-error' | 'http-error' | 'completion-mismatch';
   taskApproval?: LiveTaskEvidence;
   keyCleanup?: { ok: boolean; detail: string };
 } = {
   mode: MODE,
   startedAt: new Date().toISOString(),
-  gateway: GATEWAY,
+  baseUrl: BASE_URL,
+  stage: 'preflight',
   layers: {
     runtime: { ok: false, detail: 'not run' },
     identity: { ok: false, detail: 'not run' },
@@ -100,6 +134,8 @@ function layer(name: Layer, ok: boolean, detail: string): void {
 
 function fail(name: Layer, detail: string): never {
   layer(name, false, detail);
+  // The failing phase is exactly the one the caller reported, not a positional guess.
+  if (name !== 'taskApproval') report.failedStage = name;
   writeEvidence();
   throw new Error(detail);
 }
@@ -123,6 +159,8 @@ type ProviderChoice = {
   offeringId: string;
   apiKey: string;
   expected: string[];
+  /** Explicitly declared expected models are a requirement, not a hint. */
+  expectedSource?: 'default' | 'declared';
   baseUrl?: string;
   source: 'file' | 'env';
 };
@@ -146,6 +184,7 @@ function providerSpec(id: string, apiKey: string, source: ProviderChoice['source
         apiKey: key,
         expected: ['deepseek-v4-flash', 'deepseek-chat', 'deepseek-v4-pro'],
         source,
+        expectedSource: 'default',
       };
     case 'kimi':
     case 'moonshot':
@@ -155,6 +194,7 @@ function providerSpec(id: string, apiKey: string, source: ProviderChoice['source
         apiKey: key,
         expected: ['kimi-for-coding', 'kimi-k2.5', 'kimi-for-coding-highspeed'],
         source,
+        expectedSource: 'default',
       };
     case 'openai':
       return {
@@ -163,6 +203,7 @@ function providerSpec(id: string, apiKey: string, source: ProviderChoice['source
         apiKey: key,
         expected: ['gpt-4.1-mini', 'gpt-4o-mini', 'gpt-4.1'],
         source,
+        expectedSource: 'default',
       };
     case 'google':
     case 'gemini':
@@ -174,6 +215,7 @@ function providerSpec(id: string, apiKey: string, source: ProviderChoice['source
         expected: ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-flash-latest'],
         baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/',
         source,
+        expectedSource: 'default',
       };
     default:
       return undefined;
@@ -213,7 +255,75 @@ export function parseKeyFile(contents: string): ProviderChoice | undefined {
     ...spec,
     ...(configuredBaseUrl?.trim() ? { baseUrl: configuredBaseUrl.trim() } : {}),
     ...(configuredModels?.length ? { expected: configuredModels } : {}),
+    expectedSource: configuredModels?.length ? 'declared' : 'default',
   };
+}
+
+/** Select only the discovered models the caller declared. Legacy named-key defaults keep the
+ * existing first-three fallback; an explicit `expectedModels=` declaration never silently falls
+ * back, because that would turn "linx-lite is required" into an unrelated model passing. */
+export function selectDiscoveredModels<T extends { id: string }>(
+  provider: Pick<ProviderChoice, 'id' | 'expected' | 'expectedSource'>,
+  discovered: readonly T[],
+): T[] {
+  const selected = discovered.filter((model) => provider.expected.includes(model.id));
+  if (provider.expectedSource === 'declared') {
+    const missing = provider.expected.filter((id) => !selected.some((model) => model.id === id));
+    if (missing.length > 0) {
+      throw new Error(`${provider.id} discovery is missing declared model(s): ${missing.join(', ')}`);
+    }
+    return selected;
+  }
+  return selected.length > 0 ? selected : discovered.slice(0, 3);
+}
+
+/** The platform-builtin flag is a cloud-only test-harness input. Any other mode or a non-`1`
+ * value fails closed, so an inherited/local environment can never claim the builtin lane. */
+export function requirePlatformBuiltinMode(flag: string | undefined, mode: string): boolean {
+  if (flag === undefined || flag.trim() === '') return false;
+  if (flag !== '1') throw new Error('XPOD_LIVE_PLATFORM_BUILTIN must be exactly 1 when set');
+  if (mode !== 'cloud') throw new Error('XPOD_LIVE_PLATFORM_BUILTIN is only supported for cloud mode');
+  return true;
+}
+
+/**
+ * Verify the actual authenticated `/api/ai/providers` projection of the deployment-owned
+ * connection. The builtin row is read-only and serves the two static deployment models; no
+ * user-owned provider credential exists in cloud mode and none is asserted.
+ */
+export function requireReadOnlyPlatformBuiltin(payload: unknown): { id: string; models: string[] } {
+  const wrapped = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? (payload as { data?: unknown; providers?: unknown })
+    : undefined;
+  const rows = Array.isArray(payload)
+    ? payload
+    : Array.isArray(wrapped?.data)
+      ? wrapped.data
+      : Array.isArray(wrapped?.providers)
+        ? wrapped.providers
+        : undefined;
+  if (!rows) throw new Error('Builtin provider listing is not a provider array');
+  const builtins = rows.filter((row) => row !== null && typeof row === 'object'
+    && (row as { builtin?: unknown }).builtin === true);
+  if (builtins.length !== 1) throw new Error('Expected exactly one deployment-owned builtin provider');
+  const row = builtins[0] as Record<string, unknown>;
+  if (row.id !== DEPLOYMENT_BUILTIN_CONNECTION_ID || row.readOnly !== true || row.status !== 'available') {
+    throw new Error('Deployment-owned builtin provider is not the expected read-only available connection');
+  }
+  const selected = Array.isArray(row.selectedModels) ? row.selectedModels : [];
+  if (selected.length !== DEPLOYMENT_BUILTIN_MODEL_IDS.length) {
+    throw new Error('Deployment-owned builtin provider does not serve exactly the static model list');
+  }
+  for (const id of DEPLOYMENT_BUILTIN_MODEL_IDS) {
+    const matches = selected.filter((model) => model !== null && typeof model === 'object'
+      && (model as { id?: unknown }).id === id);
+    if (matches.length !== 1) throw new Error(`Deployment-owned builtin model ${id} is missing or duplicated`);
+    const model = matches[0] as Record<string, unknown>;
+    if (model.provider !== DEPLOYMENT_BUILTIN_CONNECTION_ID || model.availability === 'unavailable') {
+      throw new Error(`Deployment-owned builtin model ${id} has a different provider or unavailable status`);
+    }
+  }
+  return { id: DEPLOYMENT_BUILTIN_CONNECTION_ID, models: [...DEPLOYMENT_BUILTIN_MODEL_IDS] };
 }
 
 function providerFromFile(): { spec?: ProviderChoice; present: boolean; empty: boolean } {
@@ -300,7 +410,7 @@ async function deleteAcceptanceGatewayKey(): Promise<void> {
     }
     // Revoking the Account client credential invalidates authentication; the
     // Account is the only key index, so there is no Pod-side registration left.
-    const response = await fetch(new URL('v1/models', GATEWAY), {
+    const response = await fetch(new URL('v1/models', BASE_URL), {
       headers: { Authorization: `Bearer ${plaintext}` },
     });
     await response.arrayBuffer();
@@ -345,7 +455,7 @@ function normalizeAcceptanceName(prefix: string): string {
 
 async function readLocalProvisionCode(): Promise<string> {
   const status = await readJson(
-    await fetch(new URL('provision/status', GATEWAY)),
+    await fetch(new URL('provision/status', BASE_URL)),
     'GET /provision/status',
   ) as { registered?: boolean; provisionCode?: unknown };
   if (status.registered !== true || typeof status.provisionCode !== 'string' || status.provisionCode.trim() === '') {
@@ -681,13 +791,16 @@ export async function createCloudClientCredentials(options: {
   controls: AccountControls;
   webId: string;
   name: string;
+  /** Injected transport for prep/acceptance harnesses; defaults to global fetch. */
+  fetchImpl?: typeof fetch;
 }): Promise<{ id: string; secret: string; resource: string }> {
   const clientCredentialsUrl = requiredAccountControl(
     options.controls.account?.clientCredentials,
     options.baseUrl,
     'controls.account.clientCredentials',
   );
-  const response = await fetch(clientCredentialsUrl, {
+  const request = options.fetchImpl ?? fetch;
+  const response = await request(clientCredentialsUrl, {
     method: 'POST',
     headers: {
       ...accountTokenHeaders(options.authorization),
@@ -712,47 +825,182 @@ export async function createCloudClientCredentials(options: {
   return { id: body.id, secret: body.secret, resource: resource.href };
 }
 
-async function main(): Promise<void> {
-  if (!(await checkServer(GATEWAY))) {
-    fail('runtime', `Gateway unreachable at ${GATEWAY}`);
+/** Record a fixed runtime reason (and an observed numeric status) then fail. */
+function failRuntime(reason: RuntimeFailureReason, httpStatus: number | undefined, detail: string): never {
+  report.runtimeReason = reason;
+  if (Number.isInteger(httpStatus)) report.runtimeHttpStatus = httpStatus;
+  return fail('runtime', detail);
+}
+
+/** Which origin is authoritative for OIDC discovery in this mode.
+ * Managed Local is NOT its own IdP: Local stores/provisions only and its
+ * configured issuer is the Cloud. Cloud and Standalone are their own issuer. */
+export function preflightIdentityOrigin(mode: string, baseUrl: string, cloudIdp: string): string {
+  return mode === 'local' ? cloudIdp : baseUrl;
+}
+
+/** One bounded discovery probe against the authoritative origin.
+ * Returns the observed status (or undefined when transport failed) and whether it
+ * was OK. Same Accept header and 5s bound as the original checkServer parity. */
+export async function probeIdentityDiscovery(origin: string, fetchImpl: typeof fetch = fetch): Promise<{ status?: number; ok: boolean }> {
+  try {
+    const probe = await fetchImpl(new URL('.well-known/openid-configuration', origin), {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(5_000),
+    });
+    return { status: probe.status, ok: probe.ok };
+  } catch { return { ok: false }; }
+}
+
+/** Which transport carries the Pod LDP probe, extracted so the regression test drives
+ * the real production choice. The Pod uses the client-credentials session's exchanged
+ * DPoP transport; `main` calls this, so changing it changes what the test exercises. */
+export function podProbeTransport<T>(session: { fetch: T }): T {
+  return session.fetch;
+}
+
+/** The Pod LDP read/write the acceptance performs, as ONE production helper.
+ *
+ * `main` calls this with the exchanged DPoP session transport, so a regression test
+ * can drive the same code path instead of re-implementing it. The result is a fixed
+ * classification plus an integer status: no body, URL, credential or header value is
+ * ever returned, so a failure can be projected without leaking private material. */
+export interface PodProbeResult {
+  readonly ok: boolean;
+  readonly reason?: PodFailureReason;
+  readonly status?: number;
+  readonly detail: string;
+}
+
+export async function probePodReadWrite(input: {
+  fetch: typeof fetch;
+  probeUrl: string;
+  probeBody: string;
+  acceptId: string;
+  onPhase?: (phase: 'put-probe' | 'get-probe', canonical?: string) => void;
+}): Promise<PodProbeResult> {
+  input.onPhase?.('put-probe', input.probeUrl);
+  let put: Response;
+  try {
+    put = await input.fetch(input.probeUrl, {
+      method: 'PUT',
+      headers: { 'content-type': 'text/turtle' },
+      body: input.probeBody,
+    });
+  } catch {
+    return { ok: false, reason: 'put-http', detail: 'Pod PUT transport failed' };
   }
-  const statusResponse = await fetch(new URL('service/status', GATEWAY));
-  const statusPayload = await readJson(statusResponse, 'GET /service/status') as Array<{ name?: string; status?: string; pid?: number }>;
+  if (!put.ok) {
+    // The fixed reason and the integer status ARE the evidence. No response body,
+    // header, challenge or URL is read here: any of them can echo private material
+    // into a report, and `redact` is not a closed whitelist.
+    return { ok: false, reason: 'put-http', status: put.status, detail: `Pod PUT HTTP ${put.status}` };
+  }
+  input.onPhase?.('get-probe', input.probeUrl);
+  let got: Response;
+  try {
+    got = await input.fetch(input.probeUrl, { headers: { accept: 'text/turtle' } });
+  } catch {
+    return { ok: false, reason: 'get-http', detail: 'Pod GET transport failed' };
+  }
+  // A broken response stream must be classified, not thrown: otherwise the failure
+  // escapes with an arbitrary implementation message instead of fixed facts.
+  let gotBody: string;
+  try {
+    gotBody = await got.text();
+  } catch {
+    return { ok: false, reason: 'get-http', status: got.status, detail: `Pod GET body read failed (HTTP ${got.status})` };
+  }
+  if (!got.ok) {
+    return { ok: false, reason: 'get-http', status: got.status, detail: `Pod GET HTTP ${got.status}` };
+  }
+  if (!gotBody.includes(input.acceptId)) {
+    return { ok: false, reason: 'content-mismatch', status: got.status, detail: 'Pod GET content mismatch' };
+  }
+  return { ok: true, status: got.status, detail: 'pod probe ok' };
+}
+
+async function main(): Promise<void> {
+  const platformBuiltin = (() => {
+    try {
+      return requirePlatformBuiltinMode(process.env.XPOD_LIVE_PLATFORM_BUILTIN, MODE);
+    } catch (error) {
+      return fail('aiConnections', error instanceof Error ? error.message : 'Invalid platform builtin flag');
+    }
+  })();
+  report.stage = 'runtime';
+  // checkServer() probes this origin's discovery endpoint and swallows transport
+  // errors, returning false. A false here means either transport failure or a
+  // non-2xx discovery response; record the observable status separately.
+  // One probe supplies BOTH the boolean checkServer would compute and the status
+  // we want to report, so the success path makes no extra request.
+  // The preflight verifies the AUTHORITATIVE identity origin, which is not the
+  // canary's own BASE_URL for managed Local: Local is the storage/provision target
+  // and its configured SOLID_OIDC_ISSUER is the Cloud issuer. Probing Local's own
+  // well-known is therefore wrong by contract (it answers 404 on purpose). Cloud
+  // and Standalone are their own issuer, so their BASE_URL stays authoritative.
+  // No new configuration: these are the existing XPOD_BASE_URL / XPOD_LIVE_CLOUD_IDP
+  // inputs the harness already supplies.
+  const identityOrigin = preflightIdentityOrigin(MODE, BASE_URL, CLOUD_IDP);
+  const preflight = await probeIdentityDiscovery(identityOrigin);
+  const discoveryStatus = preflight.status;
+  if (!preflight.ok) {
+    // Attribute to the origin actually probed: a Cloud discovery failure must not
+    // be reported as a Local gateway failure.
+    failRuntime(discoveryStatus === undefined ? 'discovery-unreachable' : 'discovery-http', discoveryStatus,
+      MODE === 'local' ? `Identity issuer unreachable at ${identityOrigin}` : `Gateway unreachable at ${BASE_URL}`);
+  }
+  const statusResponse = await fetch(new URL('service/status', BASE_URL));
+  if (!statusResponse.ok) {
+    failRuntime('service-status-http', statusResponse.status, `service/status HTTP ${statusResponse.status}`);
+  }
+  // An OK-but-malformed payload is its own honest reason, distinct from transport
+  // failure and from CSS/API reporting a non-running status.
+  let statusPayload: Array<{ name?: string; status?: string; pid?: number }>;
+  try {
+    const parsed = JSON.parse(await statusResponse.text()) as unknown;
+    if (!Array.isArray(parsed)) throw new Error('not an array');
+    statusPayload = parsed as Array<{ name?: string; status?: string; pid?: number }>;
+  } catch {
+    failRuntime('service-status-invalid', statusResponse.status, 'service/status returned malformed JSON');
+  }
   const css = statusPayload.find((item) => item.name === 'css');
   const api = statusPayload.find((item) => item.name === 'api');
   if (css?.status !== 'running' || api?.status !== 'running') {
-    fail('runtime', `CSS/API not running: css=${css?.status ?? 'missing'} api=${api?.status ?? 'missing'}`);
+    failRuntime('css-api-not-running', statusResponse.status, `CSS/API not running: css=${css?.status ?? 'missing'} api=${api?.status ?? 'missing'}`);
   }
   layer('runtime', true, `css pid ${css.pid} api pid ${api.pid}`);
+  report.stage = 'identity';
   const localSolidTargets: Array<{ url: string; method: string }> = [];
   const observedTransportFetch: typeof fetch = async(input, init) => {
     localSolidTargets.push({ url: inputUrl(input), method: init?.method ?? (input instanceof Request ? input.method : 'GET') });
     return fetch(input, init);
   };
   let localSolidTransport = observedTransportFetch;
-  let identityBaseUrl = GATEWAY;
+  let identityBaseUrl = BASE_URL;
   let account: AccountSetup;
   let cloudAccount: CloudAccountPassword;
   let session: Awaited<ReturnType<typeof loginWithClientCredentials>>;
   try {
     let localRoute: Awaited<ReturnType<typeof discoverSolidLocalRoute>>;
     if (MODE === 'local') {
+      report.substage = 'route-discovery';
       localRoute = await discoverSolidLocalRoute({
         fetch,
-        localBaseUrl: GATEWAY,
-        statusUrl: new URL('provision/status', GATEWAY).toString(),
+        localBaseUrl: BASE_URL,
+        statusUrl: new URL('provision/status', BASE_URL).toString(),
       });
       if (!localRoute) {
         throw new Error('Gateway did not expose a canonical-to-local Solid route');
       }
-      if (new URL(localRoute.localBaseUrl).origin !== new URL(GATEWAY).origin) {
-        throw new Error(`Local route points at ${localRoute.localBaseUrl}, expected ${GATEWAY}`);
+      if (new URL(localRoute.localBaseUrl).origin !== new URL(BASE_URL).origin) {
+        throw new Error(`Local route points at ${localRoute.localBaseUrl}, expected ${BASE_URL}`);
       }
       const canonicalPodUrl = new URL(localRoute.canonicalBaseUrl);
       if (canonicalPodUrl.protocol !== 'https:') {
         throw new Error(`Canonical Pod route must use HTTPS, got ${canonicalPodUrl.protocol}`);
       }
-      if (canonicalPodUrl.origin === new URL(GATEWAY).origin
+      if (canonicalPodUrl.origin === new URL(BASE_URL).origin
         || [ 'localhost', '127.0.0.1', '::1' ].includes(canonicalPodUrl.hostname)) {
         throw new Error(`Canonical Pod route is not a Cloud-assigned protocol address: ${canonicalPodUrl.origin}`);
       }
@@ -768,14 +1016,15 @@ async function main(): Promise<void> {
       identityBaseUrl = CLOUD_IDP;
     } else {
       const discovery = await readJson(
-        await fetch(new URL('.well-known/openid-configuration', GATEWAY)),
+        await fetch(new URL('.well-known/openid-configuration', BASE_URL)),
         'GET hosted OIDC discovery',
       ) as { issuer?: string };
-      if (!discovery.issuer || new URL(discovery.issuer).origin !== new URL(GATEWAY).origin) {
+      if (!discovery.issuer || new URL(discovery.issuer).origin !== new URL(BASE_URL).origin) {
         throw new Error(`${MODE} must use its own IdP, got ${discovery.issuer ?? 'no issuer'}`);
       }
       identityBaseUrl = discovery.issuer;
     }
+    report.substage = 'account-create';
     cloudAccount = await createCloudAccountPassword(identityBaseUrl, `accept-${MODE}`);
     const username = normalizeAcceptanceName(`a-${MODE}-${randomUUID().slice(0, 8)}`);
     const podOptions = {
@@ -784,6 +1033,7 @@ async function main(): Promise<void> {
       controls: cloudAccount.controls,
       username,
     };
+    if (MODE === 'local' && localRoute) report.substage = 'managed-pod-claim';
     const binding = MODE === 'local' && localRoute
       ? await prepareManagedLocalAcceptancePod({
         ...podOptions,
@@ -792,6 +1042,7 @@ async function main(): Promise<void> {
         provisionCode: await readLocalProvisionCode(),
       })
       : await createHostedPod(podOptions);
+    report.substage = 'client-credential';
     const credentials = await createCloudClientCredentials({
       baseUrl: identityBaseUrl,
       authorization: cloudAccount.authorization,
@@ -814,6 +1065,7 @@ async function main(): Promise<void> {
     report.webId = account.webId;
     report.podUrl = account.podUrl;
     log('auth', { phase: 'client-credentials-login', issuer: account.issuer, webId: account.webId });
+    report.substage = 'session-login';
     session = await loginWithClientCredentials(account, localSolidTransport);
     log('auth', { phase: 'client-credentials-login-complete', isLoggedIn: session.info.isLoggedIn });
   } catch (error) {
@@ -821,12 +1073,15 @@ async function main(): Promise<void> {
     fail('identity', redact(message));
   }
   layer('identity', true, `mode=${MODE} issuer=${account.issuer} webId=${account.webId} pod=${account.podUrl}`);
+  delete report.substage;
+  report.stage = 'podReadWrite';
   // The Gateway refuses a DPoP-bound session for Pod-backed work
-  // (`caller_dpop_replay_unsupported`): the proof belongs to the caller and cannot be replayed.
-  // The applet answers that refusal with the caller's own Pod credential and retries once; the
-  // acceptance does the same with the credential this session already logged in with. It does not
-  // go through the page's on-demand capability: those helpers resolve controls against
-  // `window`, which a server-side acceptance does not have.
+  // (`caller_dpop_replay_unsupported`) for API calls that act on the caller's behalf. That is an
+  // API-layer refusal and does not change how this session authenticates directly to the Pod.
+  // The canary therefore probes the Pod with the DPoP session it already exchanged above.
+  // It does not go through the page's on-demand
+  // capability: those helpers resolve controls against `window`, which a server-side acceptance
+  // does not have.
   const sessionCredential = `sk-${Buffer.from(
     `${account.clientId}:${account.clientSecret}`,
     'utf8',
@@ -843,11 +1098,18 @@ async function main(): Promise<void> {
       return await localSolidTransport(input, init);
     }
   };
+  // Gateway API calls keep the session transport: a 403 `service_access_missing` is
+  // retried once with the session credential, which is what that wrapper is for.
   const authenticatedFetch = withRequestPodAuthorization(
     session.fetch,
     async () => `Bearer ${sessionCredential}`,
     credentialTransport,
   );
+  // The Pod probe reuses the client-credentials session and its route-aware
+  // transport. The `sk-` interface key is for Gateway API calls: the server decodes
+  // it, sends Basic credentials to the token endpoint and gets back an access token
+  // bound to a DPoP key, which is what authorizes Pod traffic here.
+  const podCredentialFetch = podProbeTransport(session);
 
   const probePath = `acceptance/${ACCEPT_ID}.ttl`;
   const probeUrl = new URL(probePath, account.podUrl).toString();
@@ -857,34 +1119,39 @@ async function main(): Promise<void> {
     `  xpod:id "${ACCEPT_ID}" .`,
     '',
   ].join('\n');
-  log('podReadWrite', { phase: 'put-probe', canonical: probeUrl });
-  const put = await authenticatedFetch(probeUrl, {
-    method: 'PUT',
-    headers: { 'content-type': 'text/turtle' },
-    body: probeBody,
+  // One production helper owns the Pod LDP exchange so the test exercises the same
+  // code `main` runs, rather than a parallel copy.
+  const probe = await probePodReadWrite({
+    fetch: podCredentialFetch,
+    probeUrl,
+    probeBody,
+    acceptId: ACCEPT_ID,
+    onPhase: (phase, canonical) => {
+      report.podPhase = phase;
+      log('podReadWrite', { phase, ...(canonical ? { canonical } : {}) });
+    },
   });
-  if (!put.ok) {
-    const challenge = put.headers.get('www-authenticate');
-    const body = await put.text().catch(() => '');
-    fail('podReadWrite', `PUT ${probePath} HTTP ${put.status}${challenge ? ` challenge=${redact(challenge)}` : ''}${body ? ` body=${redact(body)}` : ''}`);
-  }
-  log('podReadWrite', { phase: 'get-probe', canonical: probeUrl });
-  const got = await authenticatedFetch(probeUrl, { headers: { accept: 'text/turtle' } });
-  const gotBody = await got.text();
-  if (!got.ok || !gotBody.includes(ACCEPT_ID)) {
-    fail('podReadWrite', `GET ${probePath} HTTP ${got.status} mismatch`);
+  if (!probe.ok) {
+    report.podReason = probe.reason;
+    if (probe.status !== undefined) report.podHttpStatus = probe.status;
+    fail('podReadWrite', probe.detail);
   }
   const expectedProbeTarget = report.localRoute
     ? new URL(probeUrl.slice(report.localRoute.canonicalBaseUrl.length), report.localRoute.localBaseUrl).toString()
     : probeUrl;
   for (const method of ['PUT', 'GET']) {
     if (!localSolidTargets.some((target) => target.url === expectedProbeTarget && target.method === method)) {
-      fail('podReadWrite', `${method} canonical Pod request was not observed at ${expectedProbeTarget}`);
+      // Fixed classification: the canonical->local route was not preserved for this
+      // method. No URL is projected.
+      report.podPhase = 'route-observation';
+      report.podReason = 'route-target-mismatch';
+      fail('podReadWrite', `${method} canonical Pod request was not observed at the expected local target`);
     }
   }
   report.probeUrl = probeUrl;
   if (report.localRoute) report.localRoute.verifiedTarget = expectedProbeTarget;
   layer('podReadWrite', true, `canonical=${probeUrl} networkTarget=${expectedProbeTarget}`);
+  report.stage = 'aiConnections';
 
   const authSession: SolidAuthSession = {
     info: session.info,
@@ -929,7 +1196,7 @@ async function main(): Promise<void> {
   const verifyTaskApproval = async (ownerInterfaceKey: string): Promise<void> => {
     if (!TASK_APPROVAL_ENABLED) return;
     const result = await acceptLiveTaskApproval({
-      gateway: GATEWAY, podUrl: account.podUrl, webId: account.webId,
+      gateway: BASE_URL, podUrl: account.podUrl, webId: account.webId,
       ownerInterfaceKey, ownerFetch: ownerCredentialFetch, session: authSession,
       onEvidence: (evidence) => { report.taskApproval = evidence; writeEvidence(); },
     });
@@ -943,6 +1210,49 @@ async function main(): Promise<void> {
     controls: cloudAccount.controls,
     webId: account.webId,
   });
+  report.stage = 'aiConnections';
+
+  if (platformBuiltin) {
+    // The owned Cloud container serves its deployment builtin; the actual inference path is
+    // Cloud container -> real public RC builtin -> platform upstream. No Pod provider CRUD is
+    // performed or claimed in this mode.
+    const response = await fetch(new URL('/api/ai/providers', BASE_URL), {
+      headers: {
+        accept: 'application/json',
+        authorization: `Bearer ${gatewayKey}`,
+        'X-Xpod-Pod-Url': account.podUrl,
+      },
+      redirect: 'error',
+      signal: AbortSignal.timeout(20_000),
+    });
+    const listing = await response.text();
+    if (response.status !== 200) {
+      fail('aiConnections', `Authenticated builtin provider listing expected HTTP 200, got ${response.status}`);
+    }
+    let payload: unknown;
+    try {
+      payload = JSON.parse(listing) as unknown;
+    } catch {
+      fail('aiConnections', 'Authenticated builtin provider listing returned non-JSON');
+    }
+    let builtin: { id: string; models: string[] };
+    try {
+      builtin = requireReadOnlyPlatformBuiltin(payload);
+    } catch (error) {
+      fail('aiConnections', error instanceof Error ? error.message : 'Builtin provider projection failed');
+    }
+    report.provider = builtin.id;
+    report.offeringId = 'deployment-builtin';
+    report.modelIds = [...builtin.models];
+    layer('aiConnections', true,
+      `deployment-owned read-only builtin provider ${builtin.id} serves selected models ${builtin.models.join(', ')}; user provider CRUD is not exercised in cloud mode`);
+    if (TASK_APPROVAL_ENABLED) {
+      fail('taskApproval', 'Task approval requires a Pod-owned credential and is not supported for the deployment builtin');
+    }
+    await projectModelsAndChat(gatewayKey, ['linx-lite'], 'linx-lite');
+    writeEvidence();
+    return;
+  }
 
   const fileState = providerFromFile();
   if (fileState.present && !fileState.spec) {
@@ -987,6 +1297,7 @@ async function main(): Promise<void> {
         ? 'data: [] — auth/route only, Chat not proven'
         : `${initialModelIds.length} existing model(s) — Provider persistence not verified`);
       layer('chat', false, 'Skipped: no verified provider credential');
+      report.failedStage ??= report.stage;
       writeEvidence();
       process.exitCode = 2;
       return;
@@ -1014,8 +1325,12 @@ async function main(): Promise<void> {
     ...(proxy ? { proxyUrl: proxy } : {}),
   });
   const discoveredIds = discovery.models.map((model: { id: string }) => model.id);
-  const selected = discovery.models.filter((model: { id: string }) => provider.expected.includes(model.id));
-  const toSave = selected.length > 0 ? selected : discovery.models.slice(0, 3);
+  let toSave: typeof discovery.models;
+  try {
+    toSave = selectDiscoveredModels(provider, discovery.models);
+  } catch (error) {
+    fail('aiConnections', error instanceof Error ? error.message : 'Declared model selection failed');
+  }
   if (toSave.length === 0) {
     fail('aiConnections', `${provider.id} discovery returned no models`);
   }
@@ -1074,6 +1389,9 @@ export function createOwnerCredentialFetch(
     headers.set('authorization', `Bearer ${wrapper}`);
     // A Request body's encoded length can change when it is replayed with a new init object.
     headers.delete('content-length');
+    // A stale DPoP proof/header belongs to the session token being replaced here; sending it
+    // alongside the `sk-` wrapper would make the Pod evaluate a proof for a different token.
+    headers.delete('dpop');
     // The transport keeps canonical Pod/API URLs routed to this runtime; a bare `fetch` would
     // send them to the node's public entry, which a managed local node need not serve.
     return transport(input, { ...init, headers });
@@ -1122,9 +1440,10 @@ async function verifyGatewayKeyLifecycle(
   gatewayKey: string;
   initialModelIds: string[];
 }> {
+  report.stage = 'gatewayAuth';
   let phase = 'unauthenticated rejection';
   try {
-    const unauthenticated = await fetch(new URL('v1/models', GATEWAY));
+    const unauthenticated = await fetch(new URL('v1/models', BASE_URL));
     await unauthenticated.arrayBuffer();
     if (unauthenticated.status !== 401) {
       throw new Error(`Unauthenticated /v1/models expected 401, got ${unauthenticated.status}`);
@@ -1181,7 +1500,7 @@ async function verifyGatewayKeyLifecycle(
       throw new Error('Account client-credential metadata exposes credential secret material');
     }
     const headers = { Authorization: `Bearer ${gatewayKey}`, Accept: 'application/json' };
-    const modelUrl = new URL('v1/models', GATEWAY);
+    const modelUrl = new URL('v1/models', BASE_URL);
     phase = 'active client-credential wrapper authentication';
     await readJson(await fetch(modelUrl, { headers }), 'GET /v1/models with active client-credential wrapper');
     phase = 'active client-credential wrapper model access';
@@ -1196,8 +1515,9 @@ async function verifyGatewayKeyLifecycle(
   }
 }
 
-async function projectModelsAndChat(gatewayKey: string, selectedIds: string[]): Promise<void> {
-  const modelsAfter = await fetch(new URL('v1/models', GATEWAY), {
+async function projectModelsAndChat(gatewayKey: string, selectedIds: string[], requiredModel?: string): Promise<void> {
+  report.stage = 'models';
+  const modelsAfter = await fetch(new URL('v1/models', BASE_URL), {
     headers: { Authorization: `Bearer ${gatewayKey}`, Accept: 'application/json' },
   });
   const modelsAfterPayload = await readJson(modelsAfter, 'GET /v1/models after key') as { data?: Array<{ id?: string }> };
@@ -1206,8 +1526,12 @@ async function projectModelsAndChat(gatewayKey: string, selectedIds: string[]): 
     fail('models', 'data: [] after writing provider credential — Chat not proven');
   }
   layer('models', true, `HTTP ${modelsAfter.status}; ${projected.length} model(s): ${projected.join(', ')}`);
+  if (requiredModel && !projected.includes(requiredModel)) {
+    fail('models', `Required model ${requiredModel} is absent from the actual /v1/models projection`);
+  }
 
-  const chatModel = selectedIds.find((id) => projected.includes(id)) ?? projected[0];
+  const chatModel = requiredModel ?? selectedIds.find((id) => projected.includes(id)) ?? projected[0];
+  report.stage = 'chat';
   await chatOnce(gatewayKey, chatModel);
 }
 
@@ -1215,7 +1539,7 @@ async function chatOnce(gatewayKey: string, chatModel: string): Promise<void> {
   report.chatModel = chatModel;
   const conversationId = randomUUID();
   const { version } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string };
-  const chatResponse = await fetch(new URL('v1/chat/completions', GATEWAY), {
+  const chatResponse = await fetch(new URL('v1/chat/completions', BASE_URL), {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${gatewayKey}`,
@@ -1232,11 +1556,16 @@ async function chatOnce(gatewayKey: string, chatModel: string): Promise<void> {
     }),
   });
   report.chatStatus = chatResponse.status;
+  // A non-200 is already a fixed fact here. Record the fixed reason BEFORE reading
+  // the body because readJson throws on a non-2xx response; the reason is a closed
+  // enum literal, never parsed text.
+  if (chatResponse.status !== 200) report.chatReason = 'http-error';
   const chatPayload = await readJson(chatResponse, 'POST /v1/chat/completions') as {
     choices?: Array<{ message?: { content?: unknown } }>;
     error?: { message?: string; code?: string };
   };
   if (chatPayload.error) {
+    report.chatReason = 'upstream-error';
     fail('chat', `Chat error ${chatPayload.error.code ?? ''}: ${redact(chatPayload.error.message ?? 'unknown')}`);
   }
   const content = chatPayload.choices?.[0]?.message?.content;
@@ -1246,11 +1575,15 @@ async function chatOnce(gatewayKey: string, chatModel: string): Promise<void> {
       ? content.map((part) => (typeof part === 'object' && part && 'text' in part ? String(part.text) : '')).join('')
       : '';
   if (chatResponse.status !== 200 || !chatCompletionBodyMatches(chatPayload, 'XPOD_OK')) {
+    // Only a genuine 200 whose body lacks the exact marker is a completion
+    // mismatch; a non-200 already carries the fixed http-error reason.
+    if (chatResponse.status === 200) report.chatReason = 'completion-mismatch';
     const observed = text.trim().slice(0, 160);
     const payloadShape = redact(JSON.stringify(chatPayload).slice(0, 500));
     fail('chat', `Chat HTTP ${chatResponse.status} did not return the exact acceptance marker${observed ? `; observed=${redact(observed)}` : '; observed=<empty>'}; payload=${payloadShape}`);
   }
   layer('chat', true, `HTTP ${chatResponse.status} model=${chatModel} contentChars=${text.trim().length}`);
+  report.stage = 'after-layers';
 }
 
 // Imports expose protocol probes without executing the live canary.
@@ -1259,6 +1592,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
     .catch((error) => {
       const message = error instanceof Error ? redact(error.message) : 'unknown error';
       log('fatal', { message });
+      // A throw that bypassed `fail()` still happened inside the phase recorded
+      // in `report.stage`; serialize that explicit phase. Successful layers keep
+      // their own ok:true and are never rewritten, and no completion is invented.
+      report.failedStage ??= report.stage;
       writeEvidence();
       process.exitCode = 1;
     })

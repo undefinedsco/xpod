@@ -1,8 +1,34 @@
 import { expect, test } from 'bun:test';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { bunCompileTarget } from '../src/native-target';
 import { collectJavascriptNotices } from '../src/javascript-notices';
 import { sha256File } from '../src/manifest';
+import { CLIUI_MODIFICATION_NOTICE, renderCliuiModificationNotice } from '../src/promotion';
+
+test('canonical source admission permits exact regular files and rejects symlink substitution', () => {
+  const parent = path.resolve('.test-data/xpod-cli/canonical-notices'); mkdirSync(parent, { recursive: true });
+  const work = mkdtempSync(path.join(parent, 'case-'));
+  try {
+    const stage = path.join(work, 'stage'); const repo = path.join(work, 'repo');
+    mkdirSync(stage); mkdirSync(path.join(repo, 'node_modules'), { recursive: true });
+    mkdirSync(path.join(repo, 'src')); const source = path.join(repo, 'src/host.ts'); writeFileSync(source, 'export const value = 1;');
+    const metadata = path.join(work, 'metadata.json'); const cli = path.join(work, 'cli'); writeFileSync(cli, 'compiled');
+    const raw = path.relative(stage, source);
+    writeFileSync(metadata, JSON.stringify({ inputs: { [raw]: { bytes: 23, imports: [] } }, outputs: { 'main.js': { inputs: {} } } }));
+    const options = { metafile: metadata, stageRoot: stage, repoRoot: repo, destination: path.join(work, 'out'),
+      target: 'darwin-arm64', cli, bunVersion: '1.4.2' };
+    expect(() => collectJavascriptNotices(options)).toThrow('outside staging');
+    const canonicalSources = { root: path.join(repo, 'src'), files: [{ path: source, sha256: sha256File(source) }] };
+    collectJavascriptNotices({ ...options, canonicalSources });
+    const index = JSON.parse(readFileSync(path.join(options.destination, 'index.json'), 'utf8'));
+    expect(index.inputs[0].sha256).toBe(sha256File(source));
+    const other = path.join(repo, 'other.ts'); writeFileSync(other, 'substituted');
+    rmSync(source); symlinkSync(other, source);
+    expect(() => collectJavascriptNotices({ ...options, canonicalSources })).toThrow('outside staging');
+  } finally { rmSync(work, { recursive: true, force: true }); }
+});
 
 test('binds generated source notices to the compiler and exact emitted prefix before writing', () => {
   const parent = path.resolve('.test-data/xpod-cli/generated-notices');
@@ -130,5 +156,214 @@ test('inventories scoped/nested versions, skips type-only manifests and preserve
     const refused = path.join(work, 'refused');
     expect(() => collectJavascriptNotices({ ...options, destination: refused })).toThrow('outside staging/dependencies');
     expect(existsSync(refused)).toBe(false);
+  } finally { rmSync(work, { recursive: true, force: true }); }
+});
+
+test('collects actual portable JS metafile on Windows metadata without admitting Windows native', () => {
+  const parent = path.resolve('.test-data/xpod-cli/portable-notices');
+  mkdirSync(parent, { recursive: true });
+  const work = mkdtempSync(path.join(parent, 'case-'));
+  try {
+    const stage = path.join(work, 'stage'); const repo = path.join(work, 'repo');
+    mkdirSync(stage); mkdirSync(path.join(repo, 'node_modules'), { recursive: true });
+    const entry = path.join(stage, 'main.ts'); const cli = path.join(work, 'main.mjs'); const metafile = path.join(work, 'metafile.json');
+    writeFileSync(entry, 'export const portable = 42;');
+    const built = spawnSync(process.execPath, ['build', '--target=node', '--format=esm', '--outfile', cli, '--metafile=' + metafile, entry], { cwd: stage });
+    expect(built.status).toBe(0); expect(built.error).toBeUndefined();
+    const options = { metafile, stageRoot: stage, repoRoot: repo, destination: path.join(work, 'notices'), target: 'win32-x64', cli, bunVersion: process.versions.bun! };
+    collectJavascriptNotices(options);
+    const index = JSON.parse(readFileSync(path.join(options.destination, 'index.json'), 'utf8'));
+    expect(index.target).toBe('win32-x64'); expect(index.cliSha256).toBe(sha256File(cli)); expect(index.inputs.length).toBe(1);
+    expect(index.inputs[0].sha256).toBe(sha256File(entry));
+    expect(() => collectJavascriptNotices({ ...options, target: '../win32-x64', destination: path.join(work, 'unsafe') })).toThrow('Invalid JavaScript build target metadata');
+    expect(existsSync(path.join(work, 'unsafe'))).toBe(false);
+    expect(() => bunCompileTarget('win32-x64')).toThrow('Unsupported build target');
+    for (const target of ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64']) { expect(bunCompileTarget(target)).toBe('bun-' + target); }
+  } finally { rmSync(work, { recursive: true, force: true }); }
+});
+
+
+test('requires original notices for explicitly shipped packages outside the import graph', () => {
+  const parent = path.resolve('.test-data/xpod-cli/vendored-notices');
+  mkdirSync(parent, { recursive: true });
+  const work = mkdtempSync(path.join(parent, 'case-'));
+  try {
+    const stage = path.join(work, 'stage'); const repo = path.join(work, 'repo');
+    const vendor = path.join(work, 'vendor');
+    mkdirSync(stage); mkdirSync(vendor); mkdirSync(path.join(repo, 'node_modules'), { recursive: true });
+    writeFileSync(path.join(stage, 'main.ts'), 'export const value = 1;');
+    writeFileSync(path.join(vendor, 'package.json'), JSON.stringify({ name: '@fixture/shipped', version: '1', license: 'MIT' }));
+    const cli = path.join(work, 'bundle'); writeFileSync(cli, 'fixture');
+    const metafile = path.join(work, 'inputs.json');
+    writeFileSync(metafile, JSON.stringify({ inputs: { 'main.ts': { bytes: 1, imports: [] } }, outputs: { bundle: { inputs: {} } } }));
+    const options = { stageRoot: stage, repoRoot: repo, cli, metafile, target: 'linux-x64', bunVersion: 'fixture',
+      destination: path.join(work, 'notices'), vendoredRoots: [vendor], requireVendoredOriginals: true };
+    expect(() => collectJavascriptNotices(options)).toThrow('Vendored JavaScript original notice missing');
+    expect(existsSync(options.destination)).toBe(false);
+    const supplement = path.join(work, 'supplement'); mkdirSync(path.join(supplement, 'objects'), { recursive: true });
+    const original = path.join(vendor, 'LICENSE'); writeFileSync(original, 'Original terms\r\n');
+    const sha = sha256File(original); const object = `objects/${sha}.txt`;
+    cpSync(original, path.join(supplement, object)); rmSync(original);
+    writeFileSync(path.join(supplement, 'index.json'), JSON.stringify({ schemaVersion: 1,
+      entries: [{ name: '@fixture/shipped', version: '1', provenance: { source: 'fixture' }, files: [{ sourcePath: 'LICENSE', object, sha256: sha }] }] }));
+    collectJavascriptNotices({ ...options, supplements: [supplement] });
+    const index = JSON.parse(readFileSync(path.join(options.destination, 'index.json'), 'utf8'));
+    expect(index.packages[0].vendored).toBe(true);
+    expect(index.packages[0].inputCount).toBe(0);
+    expect(readFileSync(path.join(options.destination, object), 'utf8')).toBe('Original terms\r\n');
+    expect(index.status).toBe('partial-collection');
+    expect(() => collectJavascriptNotices({ ...options, supplements: [supplement, supplement], destination: path.join(work, 'duplicate') })).toThrow('duplicate');
+  } finally { rmSync(work, { recursive: true, force: true }); }
+});
+
+
+test('binds actual public build-tools prefixes including the explicit zero-prefix ESM profile', () => {
+  const packageRoot = path.resolve(import.meta.dir, '..');
+  const repoRoot = path.resolve(packageRoot, '../..');
+  const parent = path.join(repoRoot, '.test-data/xpod-cli/build-tools-generated'); mkdirSync(parent, { recursive: true });
+  const work = mkdtempSync(path.join(parent, 'case-'));
+  try {
+    for (const [format, extension] of [['esm', 'mjs'], ['cjs', 'cjs']] as const) {
+      const cli = path.join(work, format + '.js');
+      const metafile = path.join(work, format + '-inputs.json');
+      const compiled = spawnSync(process.execPath, ['build', '--target=node', '--format=' + format, '--metafile=' + metafile, '--outfile', cli, path.join(packageRoot, 'src/build-tools.ts')], { cwd: packageRoot, encoding: 'utf8' });
+      expect(compiled.error).toBeUndefined(); expect(compiled.status).toBe(0); expect(compiled.signal).toBeNull();
+      const options = { metafile, stageRoot: packageRoot, repoRoot, destination: path.join(work, format), target: process.platform + '-' + process.arch, cli, bunVersion: '1.4.2', supplements: path.join(packageRoot, 'licenses/javascript'), generated: path.join(packageRoot, 'licenses/javascript/generated/1.4.2'), generatedProfile: ('build-tools-' + format) as 'build-tools-esm' | 'build-tools-cjs' };
+      collectJavascriptNotices(options);
+      const index = JSON.parse(readFileSync(path.join(options.destination, 'index.json'), 'utf8'));
+      const shared = path.join(packageRoot, '.test-data', path.basename(work), 'objects');
+      const sharedDestination = path.join(packageRoot, '.test-data', path.basename(work), format);
+      try {
+        collectJavascriptNotices({ ...options, destination: sharedDestination, sharedObjectRoot: shared });
+        const sharedIndex = JSON.parse(readFileSync(path.join(sharedDestination, 'index.json'), 'utf8'));
+        for (const file of sharedIndex.generated.files) expect(sha256File(path.resolve(sharedDestination, file.object))).toBe(file.sha256);
+        expect(sharedIndex.generated.prefixSha256).toBe(index.generated.prefixSha256);
+        const object = path.resolve(sharedDestination, sharedIndex.generated.files[0].object);
+        const original = readFileSync(object); writeFileSync(object, 'tampered');
+        expect(() => collectJavascriptNotices({ ...options, destination: sharedDestination, sharedObjectRoot: shared })).toThrow('hash mismatch');
+        expect(readFileSync(object, 'utf8')).toBe('tampered');
+        writeFileSync(object, original); rmSync(object); symlinkSync(cli, object);
+        expect(() => collectJavascriptNotices({ ...options, destination: sharedDestination, sharedObjectRoot: shared })).toThrow('Unsafe shared');
+        expect(readFileSync(cli)).toEqual(readFileSync(object));
+        rmSync(object); const missingTarget = path.join(work, 'missing-outside'); symlinkSync(missingTarget, object);
+        expect(() => collectJavascriptNotices({ ...options, destination: sharedDestination, sharedObjectRoot: shared })).toThrow('Unsafe shared');
+        expect(existsSync(missingTarget)).toBe(false);
+        rmSync(object); writeFileSync(object, original);
+        const escape = path.join(packageRoot, '.test-data', path.basename(work), 'escape'); symlinkSync(work, escape);
+        expect(() => collectJavascriptNotices({ ...options, destination: sharedDestination, sharedObjectRoot: path.join(escape, 'not-created') })).toThrow('outside stage');
+        expect(existsSync(path.join(work, 'not-created'))).toBe(false);
+
+        expect(() => collectJavascriptNotices({ ...options, sharedObjectRoot: path.join(work, 'escaped'), destination: sharedDestination })).toThrow('outside stage');
+      } finally { rmSync(path.dirname(shared), { recursive: true, force: true }); }
+
+      expect(index.generated.prefixBytes).toBe(format === 'esm' ? 0 : 2129);
+      if (format === 'esm') {
+        const ordinary = path.join(work, 'ordinary-empty'); cpSync(options.generated, ordinary, { recursive: true });
+        writeFileSync(path.join(ordinary, 'index.json'), JSON.stringify(index.generated));
+        expect(() => collectJavascriptNotices({ ...options, generated: ordinary, generatedProfile: undefined, destination: path.join(work, 'ordinary-refused') })).toThrow('Unsupported generated');
+      }
+      expect(index.generated.files.some((row: {sourcePath:string}) => row.sourcePath === 'src/runtime.js')).toBe(true);
+      expect(() => collectJavascriptNotices({ ...options, generated: undefined, destination: path.join(work, format + '-missing') })).toThrow('requires source provenance');
+      writeFileSync(cli, 'var __unreviewed = 1;\n' + readFileSync(cli, 'utf8'));
+      expect(() => collectJavascriptNotices({ ...options, destination: path.join(work, format + '-drift') })).toThrow('prefix differs');
+    }
+  } finally { rmSync(work, { recursive: true, force: true }); }
+});
+
+test('normal CLI emits a readable cliui modification member bound to actual payload and original terms', () => {
+  const parent = path.resolve('.test-data/xpod-cli/cliui-modifications');
+  mkdirSync(parent, { recursive: true });
+  const work = mkdtempSync(path.join(parent, 'case-'));
+  try {
+    const stage = path.join(work, 'stage'); const repo = path.join(work, 'repo');
+    const dependency = path.join(repo, 'node_modules/cliui');
+    mkdirSync(path.join(dependency, 'build/lib'), { recursive: true });
+    mkdirSync(stage); symlinkSync(path.join(repo, 'node_modules'), path.join(stage, 'node_modules'), 'dir');
+    const supplements = path.resolve(import.meta.dir, '../licenses/javascript');
+    const originalIndex = JSON.parse(readFileSync(path.join(supplements, 'index.json'), 'utf8'));
+    const supplement = originalIndex.entries.find((entry: { name: string }) => entry.name === 'cliui');
+    const source = supplement.files.find((file: { sourcePath: string }) => file.sourcePath.includes('original file-level notice'));
+    const terms = supplement.files.find((file: { sourcePath: string }) => file.sourcePath === 'npm fixed upstream LICENSE');
+    const input = 'node_modules/cliui/build/lib/string-utils.js';
+    cpSync(path.join(supplements, source.object), path.join(dependency, 'build/lib/string-utils.js'));
+    writeFileSync(path.join(dependency, 'package.json'), JSON.stringify({ name: 'cliui', version: '8.0.1', license: 'ISC' }));
+    const cli = path.join(stage, 'dist/xpod.mjs'); mkdirSync(path.dirname(cli), { recursive: true }); writeFileSync(cli, 'actual CLI fixture');
+    const metafile = path.join(work, 'metafile.json');
+    writeFileSync(metafile, JSON.stringify({ inputs: { [input]: { bytes: 1011, imports: [] } },
+      outputs: { 'dist/xpod.mjs': { inputs: { [input]: { bytesInOutput: 534 } } } } }));
+    const destination = path.join(stage, 'dist/licenses/core');
+    const options = { metafile, stageRoot: stage, repoRoot: repo, destination, cli, supplements, target: 'linux-x64', bunVersion: '1.4.2' };
+    const members = collectJavascriptNotices(options);
+    expect(members).toContain('MODIFICATIONS.md');
+    const index = JSON.parse(readFileSync(path.join(destination, 'index.json'), 'utf8'));
+    const [notice] = index.modifications;
+    expect(index.status).toBe('partial-collection');
+    expect(notice.path).toBe('MODIFICATIONS.md');
+    expect(notice.sha256).toBe(sha256File(path.join(destination, notice.path)));
+    expect(notice.cliSha256).toBe(sha256File(cli));
+    expect(notice.coveredSourcePath).toBe(input);
+    expect(notice.coveredSourceSha256).toBe(source.sha256);
+    expect(notice.sourceNotice.sha256).toBe(source.sha256);
+    expect(notice.termsNotice.sha256).toBe(terms.sha256);
+    const text = readFileSync(path.join(destination, notice.path), 'utf8');
+    expect(text).toContain('as ../../xpod.mjs.');
+    expect(text).toContain(`${source.object};`);
+    expect(text).toContain(`${terms.object}.`);
+    expect(text).not.toContain('lib/xpodcli.mjs');
+    expect(text).not.toContain('licenses/javascript/');
+    for (const original of [notice.sourceNotice, notice.termsNotice]) {
+      expect(sha256File(path.resolve(destination, original.object))).toBe(original.sha256);
+    }
+    // Shared object output must retain resolvable links from the readable member.
+    const sharedDestination = path.join(stage, 'dist/licenses/shared');
+    collectJavascriptNotices({ ...options, destination: sharedDestination, sharedObjectRoot: path.join(destination, 'objects') });
+    const shared = readFileSync(path.join(sharedDestination, 'MODIFICATIONS.md'), 'utf8');
+    expect(shared).toContain(`../core/${source.object};`);
+    expect(shared).toContain(`../core/${terms.object}.`);
+    writeFileSync(path.join(dependency, 'build/lib/string-utils.js'), 'changed source');
+    const refused = path.join(stage, 'refused');
+    expect(() => collectJavascriptNotices({ ...options, destination: refused })).toThrow('exact source and original terms');
+    expect(existsSync(refused)).toBe(false);
+    // A bundle without that input does not receive a cliui notice.
+    writeFileSync(path.join(stage, 'main.ts'), 'export {};');
+    writeFileSync(metafile, JSON.stringify({ inputs: { 'main.ts': { bytes: 10, imports: [] } }, outputs: { 'main.js': { inputs: {} } } }));
+    const other = path.join(stage, 'other-notices');
+    expect(collectJavascriptNotices({ ...options, destination: other })).not.toContain('MODIFICATIONS.md');
+    expect(JSON.parse(readFileSync(path.join(other, 'index.json'), 'utf8')).modifications).toBeUndefined();
+  } finally { rmSync(work, { recursive: true, force: true }); }
+});
+
+
+test('source-kit cliui notice retains its default paths through the same template', () => {
+  expect(CLIUI_MODIFICATION_NOTICE).toContain('as lib/xpodcli.mjs.');
+  expect(CLIUI_MODIFICATION_NOTICE).toContain('licenses/javascript/objects/b3eb9d2');
+  expect(CLIUI_MODIFICATION_NOTICE).toContain('licenses/javascript/objects/7610d223');
+  expect(renderCliuiModificationNotice({ payload: 'dist/cli.mjs', sourceNotice: 'source.txt', termsNotice: 'terms.txt' }))
+    .toContain('as dist/cli.mjs.');
+});
+
+
+test('explicit producer input paths bind bytes and reject aliases, unused paths and substitution', () => {
+  const parent = path.resolve('.test-data/xpod-cli/projected-notices'); mkdirSync(parent, { recursive: true });
+  const work = mkdtempSync(path.join(parent, 'case-'));
+  try {
+    const repo = path.join(work, 'repo'); mkdirSync(path.join(repo, 'node_modules'), { recursive: true });
+    const source = path.join(repo, 'random-build.ts'); writeFileSync(source, 'export const value = 1;');
+    const other = path.join(repo, 'other.ts'); writeFileSync(other, 'export const value = 2;');
+    const metafile = path.join(work, 'meta.json');
+    writeFileSync(metafile, JSON.stringify({ inputs: { [source]: { bytes: 23, imports: [] }, [other]: { bytes: 23, imports: [] } }, outputs: { 'main.js': { inputs: {} } } }));
+    const cli = path.join(work, 'cli'); writeFileSync(cli, 'compiled');
+    const options = { metafile, stageRoot: repo, repoRoot: repo, destination: path.join(work, 'out'), target: 'darwin-arm64', cli, bunVersion: '1.4.2' };
+    const binding = { physicalPath: source, logicalPath: 'packages/tool/output.ts', sha256: sha256File(source) };
+    collectJavascriptNotices({ ...options, inputPaths: [binding] });
+    const index = JSON.parse(readFileSync(path.join(options.destination, 'index.json'), 'utf8'));
+    expect(index.inputs.find((row: {path:string}) => row.path === binding.logicalPath).sha256).toBe(binding.sha256);
+    expect(() => collectJavascriptNotices({ ...options, inputPaths: [{ ...binding, sha256: '0'.repeat(64) }] })).toThrow('bytes changed');
+    expect(() => collectJavascriptNotices({ ...options, inputPaths: [{ ...binding, logicalPath: 'other.ts' }] })).toThrow('collision');
+    expect(() => collectJavascriptNotices({ ...options, inputPaths: [binding, binding] })).toThrow('binding');
+    expect(() => collectJavascriptNotices({ ...options, inputPaths: [{ ...binding, physicalPath: path.join(repo, 'unused.ts') }] })).toThrow('Unused');
+    for (const logicalPath of ['../escape', '/absolute', 'a//b', 'a\\b']) expect(() => collectJavascriptNotices({ ...options, inputPaths: [{ ...binding, logicalPath }] })).toThrow('binding');
+    writeFileSync(source, 'different');
+    expect(() => collectJavascriptNotices({ ...options, inputPaths: [binding] })).toThrow('bytes changed');
   } finally { rmSync(work, { recursive: true, force: true }); }
 });

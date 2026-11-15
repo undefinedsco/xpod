@@ -1,0 +1,23 @@
+import {buildStaticProducts} from './static-material';
+import { mkdirSync, readFileSync, writeFileSync, realpathSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import { classifyInputs } from './closure';
+import { buildApiBundleProducts } from './bundle-products';
+const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const repoRoot = realpathSync(path.resolve(packageRoot, '../..'));
+const out = path.join(packageRoot, 'dist');
+mkdirSync(out, { recursive: true });
+const manifest = JSON.parse(readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
+await buildApiBundleProducts(repoRoot, out, Object.keys(manifest.dependencies));
+const combinedInputs = JSON.parse(readFileSync(path.join(out, 'inputs.json'), 'utf8')).inputs as Record<string, { bytes: number }>;
+const inputs = Object.entries(combinedInputs).map(([file, item]) => ({ path: file, bytes: item.bytes }));
+const closure = classifyInputs(inputs, repoRoot);
+const git = (args: string[]) => { const r = spawnSync('git', args, { cwd: repoRoot, encoding: 'utf8' }); if (r.status !== 0) throw new Error('Git authority unavailable'); return r.stdout.trim(); };
+const payload = readFileSync(path.join(out, 'runtime.mjs'));
+writeFileSync(path.join(out, 'closure.safe.json'), JSON.stringify({ schemaVersion: 1, entry: 'src/api/main.ts', sourceCommit: git(['rev-parse','HEAD']), dirty: git(['status','--porcelain']).length>0, platform: process.platform, arch: process.arch, payloadSHA256: createHash('sha256').update(payload).digest('hex'), ...closure, installable: false, pending: ['ModuleStore executes process.execPath; Node and Bun compatibility must be proven', 'Embedded Inngest executable requires exact platform authority and preserved originals', 'Complete physical-input source and third-party NOTICE inventory required before package emission'] }, null, 2)+'\n');
+if (closure.blockers.length) throw new Error('API runtime closure is not isolated; see dist/closure.safe.json');
+
+buildStaticProducts(repoRoot,out);

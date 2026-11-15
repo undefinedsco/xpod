@@ -121,6 +121,12 @@ curl -i https://你的域名/service/status
 | `xpod-redis.yaml` / `-service.yaml` | 共享 Redis（cn=db0、co=db1、rc=db2） | 本目录 |
 | `overlays/cn/`、`overlays/co/` | 各环境自己的 Deployment / Service / kustomization（**线上导出**，记录该环境实际在跑什么） | 各环境 |
 
+> **PostgreSQL 镜像变更**：`xpod-rdf-postgres.yaml` 里的镜像 digest 属于**独立基础设施**，
+> 与 app 稳定版推进解耦；candidate / cleanup 流程不会升级共享生产 PG。
+> 变更流程、恢复语义与回滚边界见
+> [`docs/operations/postgresql-image-maintenance.md`](../../../docs/operations/postgresql-image-maintenance.md)。
+> 该流程是 image-only，**不构成** full RC 接受。
+
 ## 其它组件的清单在各自的仓库里
 
 | 组件 | 仓库 |

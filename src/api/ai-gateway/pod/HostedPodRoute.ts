@@ -1,4 +1,4 @@
-import { localServiceUrl } from '../../../runtime/bootstrap';
+import { localServiceUrl } from '../../../runtime/service-url';
 
 export interface HostedPodRoute {
   /** Canonical Pod/container URL used for RDF identity and public access. */

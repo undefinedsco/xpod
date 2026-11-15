@@ -61,37 +61,28 @@ export const stopCommand: CommandModule<object, StopArgs> = {
       }
 
       const statuses = (await res.json()) as Array<{ name: string; status: string; pid?: number }>;
-      const running = statuses.filter((s) => s.status === 'running');
-
-      if (running.length === 0) {
-        if (argv.json) {
-          writeJsonResult({ running: false, stopped: false, services: statuses }, 'not_running');
-          return;
-        }
-        console.log('No running services found.');
-        return;
-      }
+      const running = statuses.some((s) => s.status === 'running');
 
       // Send SIGTERM to the gateway process via the internal stop endpoint
       const stopRes = await fetch(`${baseUrl}/service/stop`, { method: 'POST' });
       if (stopRes.ok) {
         if (argv.json) {
-          writeJsonResult({ running: true, stopped: true, services: running });
+          writeJsonResult({ running, accepted: true, stopped: false, state: 'closing', services: statuses });
           return;
         }
         console.log('Stop signal sent.');
       } else {
         if (argv.json) {
           writeJson(fail('stop_signal_failed', 'Could not send stop signal via API.', [], {
-            running: true,
+            running,
             stopped: false,
-            services: running,
+            services: statuses,
           }));
           return;
         }
         // Fallback: print PIDs for manual kill
         console.log('Could not send stop signal via API. Running services:');
-        for (const s of running) {
+        for (const s of statuses) {
           console.log(`  ${s.name} (pid: ${s.pid ?? 'unknown'})`);
         }
         console.log('\nTo stop manually, kill the gateway process.');

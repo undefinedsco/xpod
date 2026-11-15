@@ -1,0 +1,12 @@
+{
+  "scope": "Fixed public upstream bytes only; auth field is literal template, never environment expanded",
+  "sourceCommit": "0d75b0b305010b5e90a627703e9d1df4464b1e39",
+  "files": {
+    "docs/api-docs/.npmrc": "ZW5hYmxlLXByZS1wb3N0LXNjcmlwdHM9ZmFsc2UKbWluaW11bS1yZWxlYXNlLWFnZT0xNDQwCnVwZGF0ZS1ub3RpZmllcj1mYWxzZQo=",
+    "npm/.npmrc": "Ly9yZWdpc3RyeS5ucG1qcy5vcmcvOl9hdXRoVG9rZW49JHtOT0RFX0FVVEhfVE9LRU59CnJlZ2lzdHJ5PWh0dHBzOi8vcmVnaXN0cnkubnBtanMub3JnLwphbHdheXMtYXV0aD10cnVlCg==",
+    "tests/js/.npmrc": "ZW5hYmxlLXByZS1wb3N0LXNjcmlwdHM9ZmFsc2UKbWluaW11bS1yZWxlYXNlLWFnZT0xNDQwCg==",
+    "ui/.npmrc": "ZW5hYmxlLXByZS1wb3N0LXNjcmlwdHM9ZmFsc2UKbWluaW11bS1yZWxlYXNlLWFnZT0xNDQwCnVwZGF0ZS1ub3RpZmllcj1mYWxzZQo=",
+    "ui/apps/dev-server-ui/.npmrc": "dXBkYXRlLW5vdGlmaWVyPWZhbHNlCg==",
+    "vendor/github.com/subosito/gotenv/.env": "SEVMTE89d29ybGQK"
+  }
+}

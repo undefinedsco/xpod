@@ -70,7 +70,16 @@ function posts(fetchMock: ReturnType<typeof mockPicker>, url: string) {
 
 describe('ConsentPage remembered identity recovery', () => {
   it('navigates the native resume after manual WebID selection without fetching its code callback', async () => {
-    const fetchMock = mockPicker({ entries: [binding] });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === consentUrl && !init?.method) return json({
+        client: { client_id: 'desktop', client_name: 'Xpod Desktop' },
+        webId: 'https://pod.example/other/profile/card#me',
+      });
+      if (String(input) === pickUrl && !init?.method) return json({ entries: [binding] });
+      if (String(input) === pickUrl && init?.method === 'POST') return json({ location: resumeLocation });
+      throw new Error('Unexpected request');
+    });
+    vi.stubGlobal('fetch', fetchMock);
     renderConsent();
     fireEvent.click(await screen.findByRole('button', { name: '允许' }));
     await waitFor(() => expect(assign).toHaveBeenCalledWith(resumeLocation));
@@ -83,7 +92,15 @@ describe('ConsentPage remembered identity recovery', () => {
   });
 
   it.each([undefined, '', '   ', 42])('rejects manual pick without a valid resume location: %s', async (location) => {
-    const fetchMock = mockPicker({ entries: [binding] }, async () => json({ location }));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === consentUrl && !init?.method) return json({
+        client: { client_id: 'desktop' }, webId: 'https://pod.example/other/profile/card#me',
+      });
+      if (String(input) === pickUrl && !init?.method) return json({ entries: [binding] });
+      if (String(input) === pickUrl && init?.method === 'POST') return json({ location });
+      throw new Error('Unexpected request');
+    });
+    vi.stubGlobal('fetch', fetchMock);
     renderConsent();
     fireEvent.click(await screen.findByRole('button', { name: '允许' }));
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(xpodConsentErrors.missingRedirect));
@@ -125,6 +142,78 @@ describe('ConsentPage remembered identity recovery', () => {
     expect(screen.queryByRole('button', { name: '允许' })).toBeNull();
   });
 
+  it('pre-binds the only owned binding once before approval when the interaction has no session WebID', async () => {
+    const fetchMock = mockPicker({ entries: [binding] });
+    const first = renderConsent();
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(resumeLocation));
+    expect(posts(fetchMock, pickUrl)).toHaveLength(1);
+    expect(posts(fetchMock, pickUrl)[0][1]).toMatchObject({
+      credentials: 'include', redirect: 'manual',
+      body: JSON.stringify({ webId: binding.webId, remember: false }),
+    });
+    expect(posts(fetchMock, consentUrl)).toHaveLength(0);
+    expect(screen.queryByRole('button', { name: '允许' })).toBeNull();
+    first.unmount();
+
+    // The resulting real interaction now carries the bound session WebID and
+    // still must be approved by the user: exactly one consent POST on click.
+    const consentFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === pickUrl) return json({ entries: [binding] });
+      if (String(input) === consentUrl && !init?.method) return json({
+        client: { client_id: 'desktop' }, webId: binding.webId,
+      });
+      if (String(input) === consentUrl && init?.method === 'POST') return json({ location: resumeLocation });
+      throw new Error('Unexpected request');
+    });
+    vi.stubGlobal('fetch', consentFetch);
+    renderConsent();
+    await screen.findByRole('button', { name: '允许' });
+    expect(posts(consentFetch, pickUrl)).toHaveLength(0);
+    expect(posts(consentFetch, consentUrl)).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: '允许' }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(resumeLocation));
+    expect(posts(consentFetch, consentUrl)).toHaveLength(1);
+  });
+
+  it.each([
+    ['explicit true', true],
+    ['explicit false', false],
+    ['absent', undefined],
+  ])('pre-bind carries the issuer-scoped Account remember choice %s', async (_label, choice) => {
+    if (choice !== undefined) {
+      window.localStorage.setItem('xpod.account-remember-choice.v1', JSON.stringify({
+        [window.location.origin]: choice,
+      }));
+    }
+    const fetchMock = mockPicker({ entries: [binding] });
+    renderConsent();
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(resumeLocation));
+    expect(posts(fetchMock, pickUrl)).toHaveLength(1);
+    expect(JSON.parse(String(posts(fetchMock, pickUrl)[0][1]?.body))).toEqual({
+      webId: binding.webId,
+      remember: choice === true,
+    });
+    expect(posts(fetchMock, consentUrl)).toHaveLength(0);
+  });
+
+  it('pre-binds only once even when StrictMode replays effects and the read is retried', async () => {
+    let posts = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === consentUrl && !init?.method) return json({ client: { client_id: 'desktop' } });
+      if (String(input) === pickUrl && !init?.method) return json({ entries: [binding] });
+      if (String(input) === pickUrl && init?.method === 'POST') {
+        posts += 1;
+        return json({ location: resumeLocation });
+      }
+      throw new Error('Unexpected request');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderConsent();
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(resumeLocation));
+    expect(posts).toBe(1);
+    expect(fetchMock.mock.calls.filter(([input, init]) => String(input) === consentUrl && init?.method === 'POST')).toHaveLength(0);
+  });
+
   it.each(['additional scope', 'explicit consent'])('shows real consent after identity recovery redirects for %s', async () => {
     const fetchMock = mockPicker({ entries: [binding], resumeWebId: binding.webId });
     const first = renderConsent();
@@ -133,7 +222,14 @@ describe('ConsentPage remembered identity recovery', () => {
     expect(posts(fetchMock, consentUrl)).toHaveLength(0);
     // The real resumed IdP interaction now needs consent and withdraws its
     // login-only resume hint. A new page load must wait for user approval.
-    const consentFetch = mockPicker({ entries: [binding] });
+    const consentFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === consentUrl && !init?.method) return json({
+        client: { client_id: 'desktop' }, webId: binding.webId,
+      });
+      if (String(input) === pickUrl) return json({ entries: [binding] });
+      throw new Error('Unexpected request');
+    });
+    vi.stubGlobal('fetch', consentFetch);
     renderConsent();
     expect(await screen.findByRole('button', { name: '允许' })).toBeTruthy();
     expect(posts(consentFetch, pickUrl)).toHaveLength(0);
@@ -148,7 +244,14 @@ describe('ConsentPage remembered identity recovery', () => {
         id: 'visible-consent-transaction', route: createXpodLoginRoute(window.location),
         authorizationSurface: 'redirect', discovery: 'strict', selectedStorage: localBinding,
       });
-      const fetchMock = mockPicker({ entries: [localBinding] });
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input) === consentUrl && !init?.method) return json({
+          client: { client_id: 'desktop' }, webId: localBinding.webId,
+        });
+        if (String(input) === pickUrl) return json({ entries: [localBinding] });
+        throw new Error('Unexpected request');
+      });
+      vi.stubGlobal('fetch', fetchMock);
       renderConsent();
       expect(await screen.findByRole('button', { name: '允许' })).toBeTruthy();
       expect(posts(fetchMock, pickUrl)).toHaveLength(0);
@@ -156,6 +259,44 @@ describe('ConsentPage remembered identity recovery', () => {
       expect(assign).not.toHaveBeenCalled();
     },
   );
+
+  it('does not pre-bind when the interaction already has a different selected WebID', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === pickUrl) return json({ entries: [binding] });
+      if (String(input) === consentUrl && !init?.method) return json({
+        client: { client_id: 'desktop' }, webId: 'https://pod.example/other/profile/card#me',
+      });
+      if (String(input) === consentUrl && init?.method === 'POST') return json({ location: resumeLocation });
+      throw new Error('Unexpected request');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderConsent();
+    await screen.findByRole('button', { name: '允许' });
+    expect(posts(fetchMock, pickUrl)).toHaveLength(0);
+    expect(posts(fetchMock, consentUrl)).toHaveLength(0);
+    expect(assign).not.toHaveBeenCalled();
+  });
+
+  it('shows a safe manual failure without re-posting when the unambiguous pre-bind fails', async () => {
+    let attempts = 0;
+    const fetchMock = mockPicker({ entries: [binding] }, async () => {
+      attempts += 1;
+      return json({ message: 'unavailable' }, 503);
+    });
+    renderConsent();
+    expect(await screen.findByRole('button', { name: '重试' })).toBeTruthy();
+    expect(screen.getByRole('alert').textContent).toContain('未能完成唯一身份绑定');
+    expect(screen.queryByRole('button', { name: '允许' })).toBeNull();
+    expect(posts(fetchMock, pickUrl)).toHaveLength(1);
+    expect(posts(fetchMock, consentUrl)).toHaveLength(0);
+    expect(assign).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '重试' }));
+    await screen.findByRole('button', { name: '允许' });
+    // Retry only re-reads; it never repeats the automatic pick.
+    expect(attempts).toBe(1);
+    expect(posts(fetchMock, pickUrl)).toHaveLength(1);
+    expect(posts(fetchMock, consentUrl)).toHaveLength(0);
+  });
 
   it.each([
     ['unowned WebID', { entries: [binding], resumeWebId: 'https://attacker.example/me' }],
@@ -170,6 +311,27 @@ describe('ConsentPage remembered identity recovery', () => {
     expect(posts(fetchMock, pickUrl)).toHaveLength(0);
     expect(posts(fetchMock, consentUrl)).toHaveLength(0);
     expect(assign).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['two owned WebIDs', { entries: [binding, { webId: 'https://pod.example/bob/profile/card#me', storageUrl: 'https://pod.example/bob/' }] }],
+    ['one WebID with two storage bindings', { entries: [binding, { ...binding, storageUrl: 'https://other-pod.example/alice/' }] }],
+    ['legacy ids without owned bindings', { entries: [], webIds: [binding.webId] }],
+    ['malformed entry', { entries: [{ webId: binding.webId }] }],
+  ])('keeps multi-identity and ambiguous cases explicit without auto-binding: %s', async (_label, data) => {
+    const fetchMock = mockPicker(data);
+    renderConsent();
+    await waitFor(() => expect(screen.queryByText('正在恢复授权…')).toBeNull());
+    expect(posts(fetchMock, pickUrl)).toHaveLength(0);
+    expect(posts(fetchMock, consentUrl)).toHaveLength(0);
+    expect(assign).not.toHaveBeenCalled();
+    const approval = screen.queryByRole('button', { name: '允许' });
+    if (_label === 'legacy ids without owned bindings') {
+      // No owned binding exists, so the page shows the explicit no-Pod view.
+      expect(approval).toBeNull();
+    } else {
+      expect(approval).toBeTruthy();
+    }
   });
 
   it.each(['HTTP failure', 'missing location', 'network failure'])(
@@ -343,7 +505,7 @@ it('preserves the original pending return target until the cancellation callback
   Object.defineProperty(window.location, 'href', { configurable: true, set: redirect });
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     if (String(input) === '/.account/oidc/cancel' && init?.method === 'POST') return json({ location: callback });
-    if (String(input) === consentUrl) return json({ client: { client_id: 'desktop' } });
+    if (String(input) === consentUrl) return json({ client: { client_id: 'desktop' }, webId: `${window.location.origin}/alice#me` });
     if (String(input) === pickUrl) return json({ entries: [{ webId: `${window.location.origin}/alice#me`, storageUrl: `${window.location.origin}/alice/` }] });
     throw new Error('Unexpected request');
   });
@@ -388,7 +550,14 @@ it('keeps the current Account and reports an incomplete sign-out when switching 
   // is actually anonymous before it leaves for the login form.
   const localBinding = beginVisibleConsentTransaction('switch-account-failed');
   const logout = vi.fn(async () => undefined);
-  const fetchMock = mockPicker({ entries: [localBinding] });
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === consentUrl && !init?.method) return json({
+      client: { client_id: 'desktop' }, webId: localBinding.webId,
+    });
+    if (String(input) === pickUrl) return json({ entries: [localBinding] });
+    throw new Error('Unexpected request');
+  });
+  vi.stubGlobal('fetch', fetchMock);
   renderConsentForSwitch({ logout, isAnonymous: () => false });
   fireEvent.click(await screen.findByRole('button', { name: '换一个账号' }));
   await waitFor(() => expect(screen.getByRole('alert').textContent).toContain(xpodConsentErrors.signOutIncomplete));
@@ -401,7 +570,13 @@ it('keeps the current Account and reports an incomplete sign-out when switching 
 it('leaves for the login form once the Account session is confirmed anonymous', async () => {
   const localBinding = beginVisibleConsentTransaction('switch-account-confirmed');
   const logout = vi.fn(async () => undefined);
-  mockPicker({ entries: [localBinding] });
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === consentUrl && !init?.method) return json({
+      client: { client_id: 'desktop' }, webId: localBinding.webId,
+    });
+    if (String(input) === pickUrl) return json({ entries: [localBinding] });
+    throw new Error('Unexpected request');
+  }));
   renderConsentForSwitch({ logout, isAnonymous: () => true });
   fireEvent.click(await screen.findByRole('button', { name: '换一个账号' }));
   await waitFor(() => expect(screen.getByTestId('switch-route').textContent).toBe('/.account/login/password/'));

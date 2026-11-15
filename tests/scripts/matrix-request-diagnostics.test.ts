@@ -33,6 +33,8 @@ async function failure(options: { diag?: boolean; abort?: boolean; unknown?: boo
     DIAG: options.diag !== false, REQUEST_BUDGET_MS: 300_000, diagSeq: 0,
     base: 'https://gateway.example', headers: {}, inflight: new Map(), URL, Error,
     AcceptanceError: Error,
+    tracker: { start: () => 1, finished: () => {} },
+    persistDiagnostics: undefined,
     Date: { now: () => wall },
     performance: { now: () => { performanceReads += 1; return monotonic; } },
     AbortSignal: { timeout: (budget: number) => { order.push('signal'); timeoutBudget = budget; return controller.signal; } },

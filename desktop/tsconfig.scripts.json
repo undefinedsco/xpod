@@ -1,0 +1,20 @@
+{
+  "//": "Typechecks the desktop capability packaging entry points and their shared archive reader; Bun resolves their extensionless imports.",
+  "compilerOptions": {
+    "target": "ES2021",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "types": [
+      "node",
+      "electron"
+    ]
+  },
+  "include": [
+    "scripts/stage-runtime.ts",
+    "scripts/api-capability-producer.ts",
+    "../scripts/lib/desktop-archive-runtime.ts"
+  ]
+}

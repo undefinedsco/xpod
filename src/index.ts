@@ -50,6 +50,7 @@ import { HierarchyLockingResourceStore } from './storage/HierarchyLockingResourc
 import { StorageETagHandler } from './storage/conditions/StorageETagHandler';
 import { StoragePutOperationHandler } from './http/StoragePutOperationHandler';
 import { HeadSafeResponseWriter } from './http/HeadSafeResponseWriter';
+import { FinalizingWebSocketServerConfigurator } from './http/FinalizingWebSocketServerConfigurator';
 import { ClusterIngressRouter } from './http/ClusterIngressRouter';
 import { ClusterWebSocketConfigurator } from './http/ClusterWebSocketConfigurator';
 import { EdgeNodeDirectDebugHttpHandler } from './http/EdgeNodeDirectDebugHttpHandler';
@@ -208,6 +209,7 @@ export {
   StorageETagHandler,
   StoragePutOperationHandler,
   HeadSafeResponseWriter,
+  FinalizingWebSocketServerConfigurator,
   SubgraphQueryEngine,
   SubgraphSparqlHttpHandler,
   AgentDirectoryHttpHandler,

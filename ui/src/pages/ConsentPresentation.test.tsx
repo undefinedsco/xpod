@@ -39,9 +39,14 @@ function authValue(overrides: Partial<AuthContextType> = {}): AuthContextType {
 }
 
 function stubConsent(entries: unknown[], client: Record<string, unknown> = { client_id: 'https://app.example/id', client_name: 'Northstar', client_uri: 'https://app.example/' }) {
+  // These presentation cases describe an interaction whose session identity is
+  // already bound; the unambiguous pre-bind path is covered in ConsentResume.
+  const webId = Array.isArray(entries) && entries.length > 0
+    ? (entries[0] as { webId?: unknown }).webId
+    : undefined;
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const path = new URL(String(input), window.location.origin).pathname;
-    if (path === '/.account/oidc/consent/') return new Response(JSON.stringify({ client }), { status: 200 });
+    if (path === '/.account/oidc/consent/') return new Response(JSON.stringify({ client, ...(webId ? { webId } : {}) }), { status: 200 });
     if (path === '/.account/oidc/pick-webid/') return new Response(JSON.stringify({ entries }), { status: 200 });
     return new Response('{}', { status: 404 });
   });

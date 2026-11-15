@@ -55,6 +55,32 @@ export function resolveDefaultRdfIndexPath(options: {
   return platform.resolvePath(platform.joinPath(options.fallbackRoot, 'rdf-index.sqlite'));
 }
 
+/** One database layout for runtime hosts; explicit deployment URLs stay authoritative. */
+export function resolveRuntimeDatabasePaths(options: {
+  runtimeRoot: string;
+  sparqlEndpoint?: string;
+  identityDbUrl?: string;
+  usageDbUrl?: string;
+  rdfIndexPath?: string;
+  sqliteRelativeRoot?: string;
+  /** Working directory of the process which opens an explicit relative index. */
+  rdfIndexRelativeRoot?: string;
+  platform?: Pick<RuntimePlatform, 'dirname' | 'joinPath' | 'resolvePath'>;
+}): { sparqlEndpoint: string; identityDbUrl: string; usageDbUrl: string; rdfIndexPath: string } {
+  const platform = options.platform ?? nodeRuntimePlatform;
+  const sparqlEndpoint = normalizeDatabaseUrl(options.sparqlEndpoint ?? platform.joinPath(options.runtimeRoot, 'quadstore.sqlite'), platform);
+  return {
+    sparqlEndpoint,
+    identityDbUrl: normalizeDatabaseUrl(options.identityDbUrl ?? platform.joinPath(options.runtimeRoot, 'identity.sqlite'), platform),
+    usageDbUrl: normalizeDatabaseUrl(options.usageDbUrl ?? platform.joinPath(options.runtimeRoot, 'usage.sqlite'), platform),
+    rdfIndexPath: options.rdfIndexPath?.trim()
+      ? platform.resolvePath(options.rdfIndexRelativeRoot && !isAbsoluteDatabasePath(options.rdfIndexPath)
+        ? platform.joinPath(options.rdfIndexRelativeRoot, options.rdfIndexPath)
+        : options.rdfIndexPath)
+      : resolveDefaultRdfIndexPath({ sparqlEndpoint, fallbackRoot: options.runtimeRoot, sqliteRelativeRoot: options.sqliteRelativeRoot, platform }),
+  };
+}
+
 export function sqliteDatabaseFilePath(
   databaseUrl: string,
   platform: Pick<RuntimePlatform, 'joinPath' | 'resolvePath'> = nodeRuntimePlatform,

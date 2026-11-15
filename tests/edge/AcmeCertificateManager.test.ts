@@ -1,8 +1,12 @@
 import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AcmeCertificateManager } from '../../src/edge/acme/AcmeCertificateManager';
+import { useCertificateTestClock } from '../helpers/certificateTestClock';
+
+afterEach(() => { vi.useRealTimers(); });
+
 
 const SAMPLE_CERT = `-----BEGIN CERTIFICATE-----
 MIICvjCCAaYCCQCzYZphWIDKfjANBgkqhkiG9w0BAQsFADAhMR8wHQYDVQQDDBZu
@@ -24,6 +28,7 @@ rfWd+Y8jP9+2OHWWDZb4Y/28T35JgI9qQ18eS3HoX1l0wQ==
 
 describe('AcmeCertificateManager', () => {
   it('exposes runtime TLS status from the configured certificate file without issuing', async () => {
+    useCertificateTestClock();
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'acme-cert-status-'));
     const certPath = path.join(tmpDir, 'tls.crt');
     await fs.writeFile(certPath, SAMPLE_CERT, 'utf8');
@@ -294,4 +299,33 @@ describe('AcmeCertificateManager auto renewal (N15)', () => {
     manager.stopAutoRenewal();
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
+});
+
+
+it('keeps the exact renewal threshold at the sample certificate boundary', async () => {
+  const base = path.join(process.cwd(), '.test-data');
+  await fs.mkdir(base, { recursive: true });
+  const tmpDir = await fs.mkdtemp(path.join(base, 'cert-clock-boundary-'));
+  const restoreClock = useCertificateTestClock('2026-11-01T07:26:00.999Z');
+  try {
+    const certPath = path.join(tmpDir, 'tls.crt');
+    await fs.writeFile(certPath, SAMPLE_CERT, 'utf8');
+    const manager = new AcmeCertificateManager({
+      dnsChallengeHandler: { setChallenge: vi.fn(), removeChallenge: vi.fn() },
+      email: 'ops@example.com',
+      domains: [ 'node-1.cluster.example' ],
+      accountKeyPath: path.join(tmpDir, 'account.key'),
+      certificateKeyPath: path.join(tmpDir, 'tls.key'),
+      certificatePath: certPath,
+      renewBeforeDays: 10,
+    });
+    await expect(manager.readCertificateStatus()).resolves.toMatchObject({ status: 'valid' });
+    vi.setSystemTime(new Date('2026-11-01T07:26:01.000Z'));
+    await expect(manager.readCertificateStatus()).resolves.toMatchObject({ status: 'renewal_due' });
+    vi.setSystemTime(new Date('2026-11-02T00:00:00.000Z'));
+    await expect(manager.readCertificateStatus()).resolves.toMatchObject({ status: 'renewal_due' });
+  } finally {
+    restoreClock();
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
 });

@@ -1,4 +1,21 @@
-# @undefineds.co/xpod-cli (preview packaging)
+# @undefineds.co/xpod-cli
+
+默认 npm 产物安装 `xpod`：认证、原始 Pod HTTP 客户端及模块管理独立构建，CSS/API/AFS 按需下载。规范与当前模块发布边界见 [模块分发规范](../../docs/module-distribution.md)。
+
+```sh
+bun run typecheck
+bun run test
+bun run build
+bun pm pack
+./dist/bin/xpod --help
+./dist/bin/xpod module list
+```
+
+默认包不带服务、UI 或 native helper。`xpod afs` 首次使用下载匹配的平台模块，`xpod module install afs --version <version>` 显式更新；平台模块尚未发布时返回 unavailable。单独发布 CLI 不会自动发布服务或修改服务版本。
+
+## 旧预览产物（迁移期）
+
+默认 `test` 和 `verify` 只检查独立 CLI；`test:preview` 与 `verify:preview` 保留旧预览兼容门禁。下文只描述显式 `build:preview` 的旧客户端/helper 预览。新 npm 入口为 `src/npm-entry.ts`；旧 `src/entry.ts` 不在默认发行构建中。
 
 Client-only build profile of Xpod. Xpod is the overall product; CLI and App are
 its user surfaces, with CSS, API and AFS as optional capability modules. This
@@ -9,7 +26,7 @@ implemented feature. Command display name **Xpod CLI**, binary
 `0.1.0-preview.1`.
 
 Current delivery uses an external runtime: installed **Bun >=1.3.8**, or
-**Node.js >=22** when Bun is absent. It bundles Node-compatible ESM and the
+**Node.js >=22.13** when Bun is absent. It bundles Node-compatible ESM and the
 native AgentFS helper, with no Bun/Node executable or JavaScriptCore libraries.
 The launcher selects once; a failing command is never retried under another
 runtime. Older embedded-runtime previews are historical artifacts.
@@ -250,3 +267,34 @@ CLI/source identity binding, `--version`, `--help`,
 `agent-fs status`, placeholder/check-masquerade and (optionally) the public
 gate. A bundled helper must actually run `--version` and `--help`; file presence
 alone is insufficient. Source-TS resolution is not accepted as install proof.
+
+### Public producer tooling
+
+Capability package build scripts import `collectJavascriptNotices` from
+`@undefineds.co/xpod-cli/build-tools` as a build-time dependency. This public
+subpath ships portable ESM/CJS bundles and TypeScript declarations, bundles its declared tar parser without consumer install dependencies, and shares the collector implementation used by the CLI producer.
+It is not imported by the CLI runtime and adds no consumer install dependencies.
+Do not import sibling package source files.
+
+Producer materials are exposed at `@undefineds.co/xpod-cli/producer-materials`.
+Resolve that JSON subpath with `createRequire(import.meta.url).resolve(...)`,
+read its schema-versioned index, and resolve listed paths relative to the index.
+The index inventories every material with byte size and SHA256: `supplements`,
+`generatedRoot` (select the exact Bun version), `clientMetafile`, and the
+`clientSource` archive with `sourceInventory` and `sourceDirectory`.
+These are build inputs and source provenance; their presence does not establish
+native admission, license clearance, release eligibility, or a clean commit.
+
+`verifyProducerSourceArchive({ archive, inventory })` validates the actual shipped
+source tar against its inventory, including member types, duplicates, paths,
+complete file membership, sizes and SHA256. Call it after checking material
+hashes; an outer tar hash alone does not prove the source inventory relation.
+
+Public `@undefineds.co/xpod-cli/output` exposes the CLI JSON/error presentation adapter as ESM and declarations. It shares the runtime client's error identity and embeds no commands or launchers. Authentication and Pod HTTP runtime APIs are canonical in `@undefineds.co/xpod-client`; the legacy `/client` export forwards them for compatibility. Build tools and producer materials remain CLI build inputs.
+
+The legacy `/client` interface retains its real SDK `Session` value and therefore requires the optional SDK peer when imported in full. Default CLI help/module operations use the safe runtime root without loading that SDK; explicit SDK consumers can import `@undefineds.co/xpod-client/session`.
+# 服务模块组合启动
+
+`xpod start` 按需安装 CSS/API，并通过 Gateway 组合启动。使用 `xpod start --modules css` 可只启动 CSS；API 单独启动须提供独立的 `--oidcIssuer`。`--mode local|cloud` 同时控制两个子服务的运行模式，已有安装版本保持固定。
+
+启动只使用经安装清单校验的模块入口；模块锁持续到 Gateway 和所有子进程关闭。`/service/stop` 的 202 表示已接受停止请求，实际关闭完成后 CLI 才退出。关闭失败保留模块锁，可再次发送停止信号重试。

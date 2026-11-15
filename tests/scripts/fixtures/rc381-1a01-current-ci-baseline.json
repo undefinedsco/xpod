@@ -1,0 +1,17 @@
+{
+ "schemaVersion": 1,
+ "kind": "rc381-1a01-current-ci-baseline",
+ "provenance": {
+  "commit": "1a01a187c2091df6ae761bdbe795ceb1ff15b05a",
+  "policyBlob": "22c9639ea85964e97f30e223aa336792aa1e707989ec7ca089be6e1e143beb32",
+  "canonicalBlob": "5c6b5cec930b2eb19a42a09dc338d5b46b9bd326684cf0069046f743e0b388c3",
+  "copySelfHashNormalizedAway": "f8f887359bcb05878407ba403a9fef303c57cde6e80dfb1c7626b4cb487576a6"
+ },
+ "note": "CI197/CI198 aggregates of the untouched 1a01 tree, captured from the TRUE 1a01 policy blob with only the materialized-copy self hash normalized to the live 1a01 self bytes 22c9639e. Cross-checked against the independent final30 snapshot (7ff917b1 / 2d7a4f30).",
+ "ci197": "7ff917b182e8025ec91abe2781e5d45e2093cd007a03e3392bdb3fc79a38008c",
+ "ci198": "2d7a4f3001bfe2869401748166444d6be149b398617a7a6a20855786206b7dcc",
+ "publishedCiTail": {
+  "ci195": "1edccf4c2c97c88a66a042985f9a42b08abfe086b65fae8ed0b9c813ff4f3968",
+  "ci196": "1f4a0d3bf1000ed897cea3740d7504599836bdbe270b57a5c120c2f0262b5271"
+ }
+}

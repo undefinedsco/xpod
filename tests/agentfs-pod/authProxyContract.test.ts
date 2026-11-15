@@ -17,7 +17,7 @@ const state = vi.hoisted(() => ({
   handler: undefined as undefined | ((url: string, init: CapturedCall['init']) => Promise<Response>),
 }));
 
-vi.mock('../../src/cli/lib/auth-context', () => ({
+vi.mock('@undefineds.co/xpod-client', () => ({
   authFetch: async (_context: unknown, url: string, init: CapturedCall['init']) => {
     state.calls.push({ url, init });
     if (!state.handler) {
@@ -31,7 +31,7 @@ vi.mock('../../src/cli/lib/auth-context', () => ({
   },
 }));
 
-const { startAuthProxy } = await import('../../src/cli/agent-fs/auth-proxy');
+const { startAuthProxy } = await import('../../packages/xpod-afs/src/agent-fs/auth-proxy');
 
 const POD_ROOT = 'https://pod.example/alice/';
 const CAP = 'test-capability';
@@ -39,7 +39,7 @@ const CAP_HEADER = 'x-xpod-agentfs-capability';
 const native = discoverAgentFsHelper().helperPath;
 const nativeExec = promisify(execFile);
 
-describe('auth-proxy loopback bridge contract (mocked CLI auth, no real credentials)', () => {
+describe('auth-proxy loopback bridge contract (mocked canonical client auth, no real credentials)', () => {
   let proxy: Awaited<ReturnType<typeof startAuthProxy>>;
 
   beforeEach(async () => {

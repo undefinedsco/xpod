@@ -1,10 +1,10 @@
-import {
-  PostgresRdfEngine,
-  type RdfEngineLike,
-  type RdfEngineStorageStats,
-  type RdfPgAccelerationProfile,
-  type RdfStorageStatsOptions,
-} from '../../storage/rdf';
+import { PostgresRdfEngine } from '../../storage/rdf/PostgresRdfEngine';
+import type {
+  RdfEngineLike,
+  RdfEngineStorageStats,
+  RdfPgAccelerationProfile,
+  RdfStorageStatsOptions,
+} from '../../storage/rdf/types';
 import {
   RdfBenchmarkReportCatalog,
   type RdfBenchmarkReportCatalogSnapshot,

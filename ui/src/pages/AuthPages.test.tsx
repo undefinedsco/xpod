@@ -544,7 +544,9 @@ describe('CSS identity page controllers', () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === '/.account/oidc/consent/') {
-        return new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' } }), { status: 200 });
+        // CSS already has a session WebID here; otherwise the sole exact
+        // binding is pre-bound once and the page navigates instead of asking.
+        return new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' }, webId: 'https://id.example/alice/profile/card#me' }), { status: 200 });
       }
       if (url === '/.account/oidc/pick-webid/') {
         return new Response(JSON.stringify({ entries: [{ webId: 'https://id.example/alice/profile/card#me', storageUrl: 'https://pod.example/alice/' }] }), { status: 200 });
@@ -1126,7 +1128,7 @@ describe('CSS identity page controllers', () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === '/.account/oidc/consent/') {
-        return new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' } }), { status: 200 });
+        return new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' }, webId: 'https://id.example/alice/profile/card#me' }), { status: 200 });
       }
       if (url === '/.account/oidc/pick-webid/') {
         return new Response(JSON.stringify({ entries: [{ webId: 'https://id.example/alice/profile/card#me', storageUrl: 'https://pod.example/alice/' }] }), { status: 200 });
@@ -1268,7 +1270,9 @@ describe('CSS identity page controllers', () => {
       const url = String(input);
       if (url === '/provision/status') return new Response(JSON.stringify({ registered: false }), { status: 200 });
       if (url === '/.account/oidc/consent/' && !init?.method) {
-        return new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' } }), { status: 200 });
+        // An existing session identity makes approval a user-initiated pick;
+        // the sole-binding pre-bind only runs before CSS has a session WebID.
+        return new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' }, webId: 'https://id.example/previous/profile/card#me' }), { status: 200 });
       }
       if (url === '/.account/oidc/pick-webid/' && !init?.method) {
         return new Response(JSON.stringify({ entries: [binding] }), { status: 200 });
@@ -1442,7 +1446,7 @@ it('navigates native resume without fetching a new Account scope or posting cons
     const url = String(input);
     if (url === '/provision/status') return new Response(JSON.stringify({ registered: false }));
     if (url === '/.account/oidc/consent/' && !init?.method) {
-      return new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' } }));
+      return new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' }, webId: 'https://id.example/previous/profile/card#me' }));
     }
     if (url === '/.account/oidc/pick-webid/' && !init?.method) return new Response(JSON.stringify({ entries: [binding] }));
     if (url === '/.account/oidc/pick-webid/' && init?.method === 'POST') return new Response(JSON.stringify({ location: '/.oidc/auth/resume' }));

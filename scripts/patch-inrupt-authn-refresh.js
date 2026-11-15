@@ -203,7 +203,7 @@ function patchBundle(content) {
   return patchRequestRenewal(content, false);
 }
 
-function patchInstalledPackage(repositoryRoot = path.join(__dirname, '..')) {
+function patchInstalledPackage(repositoryRoot = path.join(__dirname, '..'), { runtimeOnly = false } = {}) {
   const packageRoot = path.join(
     repositoryRoot,
     'node_modules',
@@ -227,7 +227,7 @@ function patchInstalledPackage(repositoryRoot = path.join(__dirname, '..')) {
     ['src/authenticatedFetch/fetchFactory.ts', patchSource],
     ['dist/index.js', patchBundle],
     ['dist/index.mjs', patchBundle],
-  ].map(([relativePath, patcher]) => {
+  ].filter(([relativePath]) => !runtimeOnly || relativePath.startsWith('dist/')).map(([relativePath, patcher]) => {
     const targetPath = path.join(packageRoot, relativePath);
     const original = fs.readFileSync(targetPath, 'utf8');
     return { targetPath, original, updated: patcher(original) };

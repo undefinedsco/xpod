@@ -2,24 +2,35 @@
 
 本文回答一个问题：**哪些包是可直接复用的共享核，哪些是 Xpod/LinX 这个产品自己的？**判据来自 [`catalog-ownership.md`](catalog-ownership.md)（`schema 进 models，内容进能力模块，行为留 applet`）与 `AGENTS.md` 的扩展抽象原则，本文把它落到**包级**并给出可执行守卫。
 
-## 结论（一句话）
+## 当前结论
 
-**`@undefineds.co/ai-connections` 是一个包、两层。**它整体是 ai-connections 这个能力自己的模块（applet + 它自己的互操作契约），契约层放在 `src/contract`，通过子路径导出给服务端与脚本。
+AI connections 能力由两个安装包交付：`@undefineds.co/ai-connections-runtime` 持有纯运行契约与目录内容的唯一实现，`@undefineds.co/ai-connections` 持有 applet 行为与 UI。runtime 仍属于该能力模块，不是 models schema 或泛化共享 core。schema 继续归 models。
 
+服务直接安装 runtime，不因读取公开子路径而安装 applet 的 React、lucide、shared-ui。旧 ai-connections 公开契约子路径保留薄转发，不复制 catalog、类或适配器实现；根入口和 manifest 的 applet API 保持。
+
+```text
+models + extension-host-contracts/ai → ai-connections-runtime → 服务
+                                      ↑
+                                  ai-connections applet
+                                      ↑
+                  extension-sdk / pod-collections / shared-ui / React
 ```
-models → pod-collections → extension-sdk → ai-connections
-                                     solid-sdk / shared-ui 旁挂
-```
 
-曾经把它拆成 `@undefineds.co/ai-connections-core` + `@undefineds.co/ai-connections` 两个包，**已合回一个**：那份契约除了 ai-connections 自己（applet 与其服务端消费方）没有外部消费者，按 `AGENTS.md` 的口径它属于"内容进能力模块"，不该再占一个已发布包；两包并存还会让同一份互操作面被两个包各自发布。
-
-| 包 | 角色 | 判定依据 |
+| 包 | 当前角色 | 权威源码与消费边界 |
 |---|---|---|
-| `@undefineds.co/ai-connections` | **能力模块**：`src/contract`（客户端协议、provider 目录、client-config 适配器、端点规则、凭据存储形状）+ applet（定义、controller、`Ai*.tsx`、品牌图标、展示措辞） | 服务端只读子路径（`./client`、`./provider-catalog`、`./client-config`、`./endpoint-urls`），UI 走 `.`/`./manifest`；契约层纯 TypeScript，无 React/组件/商标/UI 文案 |
-| `@undefineds.co/pod-collections` | 共享核（机制） | 0 文案 0 商标，已有 `test/guards.test.ts` |
-| `@undefineds.co/solid-sdk` | 共享核 | 0 文案 0 商标 |
-| `@undefineds.co/extension-sdk` | 共享核（宿主/applet 契约） | 2 个字面量：面板展开/折叠的 aria-label |
-| `@undefineds.co/shared-ui` | ⚠️ **定位未澄清（见下）** | 既含原语，也含产品登录面与错误文案 |
+| `@undefineds.co/ai-connections-runtime` | AI connections 能力的纯运行部分 | `packages/ai-connections-runtime/src/contract` 与 `src/service-access-resources.ts` 唯一实现；客户端协议、provider/offering catalog、client-config、端点和凭据形状；无 UI runtime 依赖 |
+| `@undefineds.co/ai-connections` | 能力 applet 与兼容出口 | controller、`Ai*.tsx`、品牌图与展示文案；旧 `./client`、`./provider-catalog`、`./client-config`、`./endpoint-urls`、`./service-access-resources` 转发 runtime，UI 使用 `.`/`./manifest` |
+| `@undefineds.co/extension-host-contracts` | 无 UI 的宿主能力类型契约 | `./ai` 提供 canonical AI 宿主类型；runtime 不反向依赖 extension-sdk/web 的 UI 安装闭包 |
+| `@undefineds.co/pod-collections` | 共享机制 | 不拥有 provider/offering 内容 |
+| `@undefineds.co/solid-sdk` | 共享协议与存储能力 | 不拥有 applet 行为 |
+| `@undefineds.co/extension-sdk` | applet 宿主 SDK | 原 web 类型 API 薄转发 host contracts，保留 UI 集成能力 |
+| `@undefineds.co/shared-ui` | 公共 UI 组件 | 不进入纯 AI runtime 的安装依赖 |
+
+## 历史决定与本次修正
+
+此前 `ai-connections-core` 曾合回 ai-connections，采用“一个包、两层”。该决定试图保证目录内容仍归能力模块并消除两份互操作实现；这些归属原则继续成立，但不再规定必须一个安装包。公开子路径只能划分 API，不能隔离 package dependencies，导致服务读取纯契约仍安装 applet UI 闭包。
+
+2026-10-11 用户明确要求真实拆模块，因此改为上述 runtime/app 模块安装边界。实现迁移且旧 API 薄转发，既保持能力归属与单副本，也使服务可以独立安装。新包名明确所属能力；不得把目录移到 models、复制目录或删除旧公开 API。干净安装、公开类型与 CJS/ESM consumer 仍需实际门禁证明，不能以 workspace 源码通过代替。
 
 ## 判据
 
@@ -34,19 +45,21 @@ models → pod-collections → extension-sdk → ai-connections
 
 ## 守卫（可执行）
 
-`packages/ai-connections/test/contract-boundary.test.ts` 把上述判据变成 7 条断言，**扫描契约层目录全体**（不靠闭包推导，避免"推导对了但漏了文件"）：
+`packages/ai-connections/test/contract-boundary.test.ts` 把上述判据变成边界断言，**扫描 `packages/ai-connections-runtime/src/contract` 目录全体**（不靠闭包推导，避免"推导对了但漏了文件"）：
 
 1. 目录里确实有东西（防止 walking 失效后其余断言空过）；
-2. 无 `react`/`react-dom` 导入、无 `.tsx`、不导入 `Ai*` 组件，且相对导入**不得离开 `src/contract`**（回到 applet 层就等于把 applet 变成契约的一部分）；
+2. 无 `react`/`react-dom` 导入、无 `.tsx`、不导入 `Ai*` 组件，且相对导入**不得离开 runtime 的 `src/contract`**（回到 applet 层就等于把 applet 变成契约的一部分）；
 3. 无 `data:image`；
 4. 中文字面量只允许冻结清单（见下）；
-5. 一个包的 `exports` 必须同时含契约子路径（`./client`、`./provider-catalog`、`./client-config`、`./endpoint-urls`）与 applet 入口（`.`、`./manifest`），互操作面只发布一次；
+5. 原 applet 的公开契约子路径保持薄转发；runtime 只拥有一份实体实现且其安装依赖不含 React、lucide 或 shared-ui。两包不各自打包一份契约；
 6. 措辞表（`display-wording.ts`）必须留在 applet 层（并含预期文案），把"文案归产品"写成可失败的断言；
 7. applet 层专有的文件（`*.tsx`、`provider-visuals.ts`）不得出现在 `src/contract` 目录里。
 
 > 守卫曾经只遍历 `import`，而产品 `/client` barrel 是通过 `export … from` 取到 `client/normalize.ts` 的——**17 条用户可见错误文案因此对守卫不可见**。现已遍历 `export … from`；新守卫直接扫目录，此类"再导出藏文件"不再可能。
 
-## 实测（`packages/<pkg>/src`，非测试的 `.ts`/`.tsx`）
+## 迁移前统计（保留历史记录）
+
+以下统计来自拆分前的 `packages/<pkg>/src`，不代表当前两包安装体积或新源码计数。
 
 | 包 | 行数 | 中文字面量（字符 / 唯一） | 内嵌品牌图 |
 |---|---|---|---|

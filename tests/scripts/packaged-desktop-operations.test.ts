@@ -6,6 +6,7 @@ import { credentialResource } from '@undefineds.co/models';
 import { PiConfigAdapter } from '@undefineds.co/ai-connections/client-config';
 import type { MountedPodPermissionPhase } from '../../scripts/helpers/packaged-desktop-permissions';
 import { accountCreationResponseSucceeded, assertAccountCredentialsRestored, assertNewAccountCredential, assertMountedModelBinding, createConfirmedMountedProvider, createMountedKeyInUi, readOwnedPiConfiguration } from '../../scripts/helpers/packaged-desktop-operations';
+import { createAiConnectionsClient } from '../../packages/ai-connections-runtime/src/contract/client/request';
 
 it('confirms collection row keys against credential resource ids through the shared model', async () => {
   const rowKey = 'deepseek-fixture';
@@ -76,6 +77,55 @@ it('matches the actual discovery credential, selected model and published provid
     { ...result, webId: input.webId.replace('#me', '#other') }]) {
     expect(() => assertMountedModelBinding(input, changed)).toThrow('binding');
   }
+});
+
+/**
+ * Contract-level regression for the real `/v1/models` wire shape.
+ *
+ * The Gateway projection emits a BARE model id with `owned_by` = the provider id
+ * (src/api/ai-gateway/routing/ModelRouter.ts modelProjection), and the deployment
+ * builtin emits `owned_by: 'xpod-builtin'` (DeploymentBuiltinConnection.ts). The
+ * SHIPPED client parses that payload and the REAL binding assertion consumes it.
+ * This is a unit contract over a Response wire seam, not a live Xpod.
+ */
+it('keeps a Pod-owned bare platform-named model while dropping genuine builtin rows', async () => {
+  const podBaseUrl = 'https://pod.example/owner/';
+  const selected = { id: 'linx-lite', object: 'model', owned_by: 'custom' };
+  const other = { id: 'deepseek-flash', object: 'model', owned_by: 'deepseek' };
+  const builtin = { id: 'linx', object: 'model', owned_by: 'xpod-builtin' };
+  const barePlatform = { id: 'undefineds/linx-lite', object: 'model' };
+  const calls: string[] = [];
+  const client = createAiConnectionsClient({
+    webId: 'https://id.example/card#me',
+    podBaseUrl,
+    authenticatedFetch: async (url) => {
+      calls.push(String(url));
+      return new Response(JSON.stringify({ object: 'list', data: [builtin, barePlatform, selected, other] }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+  const models = await client.listGatewayModels!();
+  // The genuine builtin row and the ownerless platform alias stay filtered.
+  expect(models.map((model) => model.id)).toEqual(['linx-lite', 'deepseek-flash']);
+  // `provider` is a closed provider union, so the builtin marker cannot appear
+  // at all: assert the parsed provider set instead of comparing to that literal.
+  expect([...new Set(models.map((model) => model.provider))].sort()).toEqual(['custom', 'deepseek']);
+  // The real binding assertion must PASS for the selected Pod model, which the
+  // previous injected-models test could not demonstrate.
+  assertMountedModelBinding(
+    { provider: 'custom', credentialId: 'cred-1', model: 'linx-lite', webId: 'https://id.example/card#me' },
+    {
+      credential: { id: 'cred-1', provider: 'custom' }, credentialCount: 1, providerId: 'custom',
+      webId: 'https://id.example/card#me',
+      discovery: { provider: 'custom', credential: 'cred-1', models: [{ id: 'linx-lite' }] },
+      models: models.map((model) => ({
+        id: model.id, provider: model.provider ?? '', availability: 'available',
+      })),
+    },
+  );
+  expect(calls).toHaveLength(1);
+  expect(calls[0]).toContain('/v1/models');
 });
 
 it('requires actual Pi files in the owned home and refuses foreign paths or gateway configuration', async () => {
@@ -360,4 +410,103 @@ it('restores the fixture Pi projection before revoking its key so another WebID 
     expect(JSON.parse(await readFile(path.join(directory, 'settings.json'), 'utf8'))).toEqual(original);
     expect(present).toBe(false);
   } finally { await rm(home, { recursive: true, force: true }); }
+});
+
+function mountedProviderPhase(options: {
+  quotaStatus?: 'available' | 'unsupported' | 'error';
+  models?: Array<{ id: string; provider: string; credentialId?: string; availability?: string }>;
+  model?: string;
+}) {
+  const webId = 'https://id.example/card#me';
+  const id = credentialResource.buildId({ id: 'owned' });
+  const credential = { id, provider: 'custom' };
+  const model = options.model ?? 'linx-lite';
+  let present = false;
+  const client = {
+    webId,
+    createApiKeyCredential: vi.fn(async () => { present = true; return credential; }),
+    deleteProviderCredential: vi.fn(async () => { present = false; }),
+    listProviders: vi.fn(async () => [{ id: 'custom', credentials: present ? [credential] : [] }]),
+    discoverModels: vi.fn(async () => ({ provider: 'custom', credential: id,
+      models: [{ id: model }, { id: 'linx' }] })),
+    saveModelSelection: vi.fn(async () => undefined),
+    listGatewayModels: vi.fn(async () => options.models
+      ?? [{ id: model, provider: 'custom', credentialId: id, availability: 'available' }]),
+    quota: vi.fn(async () => {
+      if (options.quotaStatus === 'error') throw new Error('quota transport failed');
+      return { status: options.quotaStatus ?? 'available' };
+    }),
+  };
+  const mounted = { host: { solid: { session: { getSnapshot: () => ({ status: 'authenticated', webId }) },
+    pod: { status: 'ready', current: { webId } } } },
+  controller: { client, credentialsCollection: { isReady: () => true, pendingKeys: new Set(), conflicts: [] },
+    get credentialRows() { return present ? [{ id: 'owned' }] : []; } } };
+  const phase = { handle: { evaluate: async (fn: (v: typeof mounted, arg: unknown) => unknown, arg: unknown) => fn(mounted, arg) } } as unknown as MountedPodPermissionPhase;
+  return { phase, client, model, id };
+}
+
+it.each(['available', 'unsupported'] as const)('records quota capability %s without claiming capacity for unsupported', async quotaStatus => {
+  const { phase, model, id } = mountedProviderPhase({ quotaStatus });
+  const result = await createConfirmedMountedProvider(phase, {
+    provider: 'custom', credential: { apiKey: 'private-fixture', offeringId: 'openai-compatible' },
+    expectedModels: [model],
+  });
+  try {
+    expect(result).toMatchObject({ credentialId: id, model, quotaStatus, quotaObserved: quotaStatus === 'available' });
+  } finally { await result.remove(); }
+});
+
+it('keeps a real quota error a hard failure even though unsupported is accepted', async () => {
+  const { phase } = mountedProviderPhase({ quotaStatus: 'error' });
+  const failure = await createConfirmedMountedProvider(phase, {
+    provider: 'custom', credential: { apiKey: 'private-fixture' }, expectedModels: ['linx-lite'],
+  }).catch(error => error);
+  expect(failure).toBeInstanceOf(Error);
+  expect(String((failure as { cause?: { cause?: { message?: string } } }).cause?.cause?.message
+    ?? (failure as { cause?: { message?: string } }).cause?.message)).toContain('quota');
+});
+
+it('publishes the selected model among built-in Gateway rows', async () => {
+  const { phase, model, id } = mountedProviderPhase({ models: [
+    { id: 'linx-lite', provider: 'custom', credentialId: credentialResource.buildId({ id: 'owned' }), availability: 'available' },
+    { id: 'builtin-model', provider: 'openai', availability: 'available' },
+  ] });
+  const result = await createConfirmedMountedProvider(phase, { provider: 'custom',
+    credential: { apiKey: 'private-fixture' }, expectedModels: ['linx-lite'] });
+  try { expect(result.model).toBe(model); } finally { await result.remove(); }
+});
+
+it.each([
+  ['wrong binding', { id: 'linx-lite', provider: 'custom', credentialId: 'foreign', availability: 'available' }],
+  ['unavailable', { id: 'linx-lite', provider: 'custom', availability: 'unavailable' }],
+  ['wrong model', { id: 'someone-else', provider: 'custom', availability: 'available' }],
+])('rejects a selected Gateway row with %s', (_label, row) => {
+  const input = { provider: 'custom', credentialId: 'new', model: 'linx-lite', webId: 'https://id.example/card#me' };
+  const result = { credential: { id: 'new', provider: 'custom' }, credentialCount: 1, providerId: 'custom', webId: input.webId,
+    discovery: { provider: 'custom', credential: 'new', models: [{ id: 'linx-lite' }] },
+    models: [row] };
+  expect(() => assertMountedModelBinding(input, result)).toThrow('binding');
+});
+
+it('accepts an extra built-in row when the exact selected binding is present', () => {
+  const input = { provider: 'custom', credentialId: 'new', model: 'linx-lite', webId: 'https://id.example/card#me' };
+  assertMountedModelBinding(input, { credential: { id: 'new', provider: 'custom' }, credentialCount: 1,
+    providerId: 'custom', webId: input.webId, discovery: { provider: 'custom', credential: 'new', models: [{ id: 'linx-lite' }] },
+    models: [{ id: 'linx-lite', provider: 'custom', credentialId: 'new', availability: 'available' },
+      { id: 'builtin', provider: 'openai', availability: 'available' }] });
+});
+
+it('accepts held Solid model reuse when the selected model is present among other rows', async () => {
+  const { acceptHeldSolidCredential } = await import('../../scripts/helpers/packaged-desktop-operations');
+  const fetch = vi.fn(async () => new Response(JSON.stringify({ data: [
+    { id: 'selected' }, { id: 'other' },
+  ] })));
+  vi.stubGlobal('window', { location: { origin: 'http://127.0.0.1:41234' } });
+  vi.stubGlobal('fetch', fetch);
+  const page = { evaluate: async (fn: Function, input: unknown) => fn(input) } as unknown as Page;
+  try {
+    await expect(acceptHeldSolidCredential(page, { gateway: 'http://127.0.0.1:41234/',
+      podUrl: 'https://pod.example/a/', key: 'sk-owned-held', model: 'selected' })).resolves.toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  } finally { vi.unstubAllGlobals(); }
 });

@@ -1,0 +1,57 @@
+{
+  "note": "Sanitized ACTUAL RC381 run payload captured at failure (2026-11-07T01:53:46Z); only fields read by github-origin.ts are retained. Producer/ancestor IDs and timestamps match the retained run job metadata. Artifact identity/digest are real; artifactCreatedAt and requiredSteps provide minimal test fixtures, not an exact original artifact/job payload. Actor/head_commit/node_id/URLs are omitted.",
+  "run": {
+    "id": 42324769461,
+    "run_attempt": 1,
+    "run_number": 381,
+    "name": "Release Candidate",
+    "head_sha": "1a01a187c2091df6ae761bdbe795ceb1ff15b05a",
+    "status": "queued",
+    "conclusion": null,
+    "event": "push",
+    "head_branch": "staging",
+    "workflow_id": 326443657,
+    "path": ".github/workflows/candidate.yml",
+    "repository": {
+      "full_name": "undefinedsco/xpod"
+    },
+    "head_repository": {
+      "full_name": "undefinedsco/xpod"
+    }
+  },
+  "producer": {
+    "id": 128260735129,
+    "name": "build_image",
+    "status": "completed",
+    "conclusion": "success",
+    "started_at": "2026-11-07T01:46:17Z",
+    "completed_at": "2026-11-07T01:53:24Z"
+  },
+  "ancestors": [
+    {
+      "id": 128259305491,
+      "name": "publish_qlever_runtime_sdk / publish",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-07T01:41:03Z",
+      "completed_at": "2026-11-07T01:42:34Z"
+    },
+    {
+      "id": 128259778151,
+      "name": "publish_qlever_local_runtime / publish",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-07T01:42:45Z",
+      "completed_at": "2026-11-07T01:46:15Z"
+    }
+  ],
+  "artifactId": 13555850545,
+  "artifactSha256": "e64fb8b07340e4c964d91047dcce03280034a9a741c65f2b3ec1b01dbc04525d",
+  "artifactCreatedAt": "2026-11-07T01:53:20Z",
+  "requiredSteps": [
+    "Apply candidate root version",
+    "Build and push RC image",
+    "Retain candidate service image/SDK originals",
+    "Upload candidate service image originals"
+  ]
+}

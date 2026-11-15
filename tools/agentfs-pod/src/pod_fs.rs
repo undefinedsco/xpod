@@ -10,6 +10,7 @@
 //!   so external modifications are observed (the mount is also mounted with
 //!   `noac,actimeo=0` to defeat the kernel NFS client cache).
 
+use crate::clean_cache::{is_strong_etag, CleanBodyCache};
 use crate::session::SessionOverlay;
 use agentfs_sdk::error::{Error as SdkError, Result as SdkResult};
 use agentfs_sdk::{
@@ -28,6 +29,23 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use url::Url;
+
+enum CopyUpError<'a> {
+    Http(&'a reqwest::Error),
+    Io(&'a std::io::Error),
+}
+
+// A failure-only scalar record. Never format the error, URL, path, headers or
+// body here; the unchanged SDK error is still returned to the caller.
+fn observe_copy_up_failure(stage: &str, started: &std::time::Instant, received: u64, fully_written: u64, error: CopyUpError<'_>) {
+    let cause = match error {
+        CopyUpError::Http(error) => serde_json::json!({ "kind": "http", "timeout": error.is_timeout(), "body": error.is_body(), "connect": error.is_connect() }),
+        CopyUpError::Io(error) => serde_json::json!({ "kind": "io", "errno": error.raw_os_error(), "ioKind": format!("{:?}", error.kind()) }),
+    };
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr().lock(), "agentfs-pod-copy-up: {}", serde_json::json!({ "stage": stage, "elapsedMs": started.elapsed().as_millis(),
+        "bodyBytesReceived": received, "fullyWrittenChunkBytes": fully_written, "cause": cause }));
+}
 
 pub const ROOT_INO: i64 = 1;
 
@@ -49,6 +67,21 @@ pub struct HeadInfo {
     pub size: u64,
     pub version: Option<String>,
     pub is_dir: bool,
+}
+
+/// One bounded `GET Range` attempt. `ranged` is true only for a real
+/// `206`/`Content-Range` response whose offset and length were verified; a
+/// `200` (range ignored) attempt must never be cached. `range_ignored` is true
+/// only when the server answered `200` and the slice was produced locally, so
+/// callers that report `rangeIgnored` keep their exact semantics. A
+/// `precondition_failed` marks an `If-Match` mismatch for a single reacquire.
+#[derive(Debug)]
+pub struct RangeFetch {
+    pub bytes: Vec<u8>,
+    pub etag: Option<String>,
+    pub ranged: bool,
+    pub range_ignored: bool,
+    pub precondition_failed: bool,
 }
 
 // Only an unanchored Link with rel=type describes this resource's LDP kind.
@@ -77,6 +110,20 @@ fn split_link_parts(value: &str, delimiter: char) -> SdkResult<Vec<&str>> {
     if quoted || escaped || uri { return Err(SdkError::Internal("unterminated Link value".into())); }
     parts.push(value[start..].trim());
     Ok(parts)
+}
+
+/// Parses a concrete `Content-Range: bytes <start>-<end>/<total>` value. A `*`
+/// length or any malformed field is not proof and yields `None`. `end >= start`
+/// is required here; the caller separately checks offset, total legality, and
+/// that the claimed span equals the fully received body.
+fn parse_content_range(value: &str) -> Option<(u64, u64, u64)> {
+    let rest = value.trim().strip_prefix("bytes ")?;
+    let (range, total) = rest.split_once('/')?;
+    let total: u64 = total.trim().parse().ok()?;
+    let (start, end) = range.split_once('-')?;
+    let start: u64 = start.trim().parse().ok()?;
+    let end: u64 = end.trim().parse().ok()?;
+    (end >= start).then_some((start, end, total))
 }
 
 fn ldp_container_type(headers: &HeaderMap) -> SdkResult<bool> {
@@ -164,7 +211,7 @@ mod nfs_pagination_tests {
             ("a.txt".into(), "a".into()), ("b.txt".into(), "b".into()), ("c.txt".into(), "c".into()),
         ]).unwrap();
         let filesystem: Arc<tokio::sync::Mutex<dyn FileSystem>> = Arc::new(tokio::sync::Mutex::new(
-            PodHttpFileSystem::new(&pod.pod_root, None, 0, 0, None).unwrap(),
+            PodHttpFileSystem::new(&pod.pod_root, None, 0, 0, None, None).unwrap(),
         ));
         let nfs = AgentNFS::new(filesystem.clone());
         let mut cookie = 0;
@@ -203,6 +250,14 @@ pub struct PodClient {
     base: Url,
     token: Option<String>,
     capability: Option<String>,
+}
+
+/// A bounded throughput allowance for whole-file streaming only. Metadata
+/// keeps the client's 60-second deadline and 10-second connection deadline.
+fn file_transfer_budget(size: u64) -> std::time::Duration {
+    const MIB: u64 = 1024 * 1024;
+    let seconds = 60u64.saturating_add(size / MIB + u64::from(size % MIB != 0));
+    std::time::Duration::from_secs(seconds.min(1800))
 }
 
 impl PodClient {
@@ -274,18 +329,59 @@ impl PodClient {
         request
     }
 
-    pub async fn copy_to(&self, path: &str, baseline: &str, output: &mut std::fs::File) -> SdkResult<()> {
-        use std::io::Write;
+    fn file_request(&self, method: Method, url: Url, extra: HeaderMap, size: u64) -> reqwest::RequestBuilder {
+        self.request(method, url, extra).timeout(file_transfer_budget(size))
+    }
+
+    /// Size authority for copy-up: a fresh conditional HEAD for the ORIGINAL
+    /// observed baseline. Missing/invalid lengths never silently become zero.
+    async fn copy_up_size(&self, path: &str, baseline: &str) -> SdkResult<u64> {
         let mut headers = HeaderMap::new();
         headers.insert(IF_MATCH, HeaderValue::from_str(baseline).map_err(|error| SdkError::Internal(error.to_string()))?);
-        let mut response = self.send(Method::GET, self.resource_url(path)?, headers, None).await?;
+        let response = self.send(Method::HEAD, self.resource_url(path)?, headers, None).await?;
+        if response.status() != StatusCode::OK || response.headers().get(ETAG).and_then(|v| v.to_str().ok()) != Some(baseline) {
+            return Err(SdkError::Internal("lower content changed before copy-up".into()));
+        }
+        response.headers().get(CONTENT_LENGTH).and_then(|value| value.to_str().ok())
+            .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+            .and_then(|value| value.parse::<u64>().ok())
+            .ok_or_else(|| SdkError::Internal("copy-up HEAD requires a valid content length".into()))
+    }
+
+    pub async fn copy_to(&self, path: &str, baseline: &str, size: u64, output: &mut std::fs::File) -> SdkResult<()> {
+        use std::io::Write;
+        let started = std::time::Instant::now();
+        let mut received = 0u64; let mut fully_written = 0u64;
+        let mut headers = HeaderMap::new();
+        headers.insert(IF_MATCH, HeaderValue::from_str(baseline).map_err(|error| SdkError::Internal(error.to_string()))?);
+        let mut response = self.file_request(Method::GET, self.resource_url(path)?, headers, size).send().await.map_err(|error| {
+            observe_copy_up_failure("send", &started, received, fully_written, CopyUpError::Http(&error));
+            SdkError::Internal(format!("Pod HTTP request failed: {error}"))
+        })?;
         if response.status() != StatusCode::OK || response.headers().get(ETAG).and_then(|v| v.to_str().ok()) != Some(baseline) {
             return Err(SdkError::Internal("lower content changed during copy-up".into()));
         }
-        while let Some(chunk) = response.chunk().await.map_err(|error| SdkError::Internal(error.to_string()))? {
-            output.write_all(&chunk).map_err(|error| SdkError::Internal(error.to_string()))?;
+        while let Some(chunk) = response.chunk().await.map_err(|error| {
+            observe_copy_up_failure("chunk", &started, received, fully_written, CopyUpError::Http(&error));
+            SdkError::Internal(error.to_string())
+        })? {
+            received += chunk.len() as u64;
+            if received > size {
+                return Err(SdkError::Internal("lower body exceeds the conditional HEAD length".into()));
+            }
+            output.write_all(&chunk).map_err(|error| {
+                observe_copy_up_failure("write_all", &started, received, fully_written, CopyUpError::Io(&error));
+                SdkError::Internal(error.to_string())
+            })?;
+            fully_written += chunk.len() as u64;
         }
-        output.sync_all().map_err(|error| SdkError::Internal(error.to_string()))
+        if received != size {
+            return Err(SdkError::Internal("lower body differs from the conditional HEAD length".into()));
+        }
+        output.sync_all().map_err(|error| {
+            observe_copy_up_failure("sync_all", &started, received, fully_written, CopyUpError::Io(&error));
+            SdkError::Internal(error.to_string())
+        })
     }
 
     pub async fn put_file(&self, path: &str, file_path: &std::path::Path, baseline: Option<&str>, content_type: &str, is_dir: bool) -> Result<Option<String>, CommitFailure> {
@@ -309,7 +405,7 @@ impl PodClient {
         if is_dir { headers.insert(LINK, HeaderValue::from_static("<http://www.w3.org/ns/ldp#BasicContainer>; rel=\"type\"")); }
         let remote_path = if is_dir { format!("{path}/") } else { path.into() };
         let url = self.resource_url(&remote_path).map_err(|error| CommitFailure::Rejected(error.to_string()))?;
-        let response = self.request(Method::PUT, url, headers)
+        let response = self.file_request(Method::PUT, url, headers, size)
             .body(reqwest::Body::wrap_stream(stream)).send().await
             .map_err(|error| CommitFailure::OutcomeUnknown(format!("Pod HTTP request failed: {error}")))?;
         Self::check_commit_response(&response, "PUT", path)?;
@@ -338,10 +434,13 @@ impl PodClient {
     /// Read-only recovery proof: compare bytes under the exact observed ETag.
     /// A newer HEAD alone never proves that our earlier mutation was applied.
     pub async fn matches_file(&self, path: &str, version: &str, local: &std::path::Path, content_type: &str) -> SdkResult<bool> {
+        let mut local = std::fs::File::open(local).map_err(|error| SdkError::Internal(error.to_string()))?;
+        let size = local.metadata().map_err(|error| SdkError::Internal(error.to_string()))?.len();
         let mut headers = HeaderMap::new();
         headers.insert(IF_MATCH, HeaderValue::from_str(version).map_err(|error| SdkError::Internal(error.to_string()))?);
         headers.insert(ACCEPT, HeaderValue::from_str(content_type).map_err(|error| SdkError::Internal(error.to_string()))?);
-        let mut response = self.send(Method::GET, self.resource_url(path)?, headers, None).await?;
+        let mut response = self.file_request(Method::GET, self.resource_url(path)?, headers, size).send().await
+            .map_err(|error| SdkError::Internal(format!("Pod HTTP request failed: {error}")))?;
         if response.status() != StatusCode::OK || response.headers().get(ETAG).and_then(|value| value.to_str().ok()) != Some(version) {
             return Err(SdkError::Internal("remote version changed during recovery read".into()));
         }
@@ -349,7 +448,6 @@ impl PodClient {
             .ok_or_else(|| SdkError::Internal("recovery read has no media type".into()))?;
         if remote_type != content_type { return Ok(false); }
         if ldp_container_type(response.headers())? { return Ok(false); }
-        let mut local = std::fs::File::open(local).map_err(|error| SdkError::Internal(error.to_string()))?;
         let mut buffer = vec![0; 64 * 1024];
         while let Some(chunk) = response.chunk().await.map_err(|error| SdkError::Internal(error.to_string()))? {
             for bytes in chunk.chunks(buffer.len()) {
@@ -462,19 +560,43 @@ impl PodClient {
     /// Returns `(bytes, rangeIgnored)`. `rangeIgnored` is true when the server
     /// answered 200 and the slice was produced locally.
     pub async fn get_range(&self, path: &str, offset: u64, size: u64) -> SdkResult<(Vec<u8>, bool)> {
+        let fetch = self.get_range_conditional(path, offset, size, None).await?;
+        Ok((fetch.bytes, fetch.range_ignored))
+    }
+
+    /// One bounded `GET Range` attempt, optionally guarded by `If-Match`. The
+    /// response is streamed and validated (offset, length, complete body); the
+    /// caller caches only a `ranged` result whose ETag equals `if_match`.
+    pub async fn get_range_conditional(
+        &self,
+        path: &str,
+        offset: u64,
+        size: u64,
+        if_match: Option<&str>,
+    ) -> SdkResult<RangeFetch> {
         let url = self.resource_url(path)?;
-        let request_range = |end: u64| {
-            let mut headers = HeaderMap::new();
+        let mut base = HeaderMap::new();
+        base.insert(ACCEPT, HeaderValue::from_static("application/octet-stream"));
+        if let Some(value) = if_match {
+            base.insert(
+                IF_MATCH,
+                HeaderValue::from_str(value).map_err(|error| SdkError::Internal(error.to_string()))?,
+            );
+        }
+        let request_range = |base: &HeaderMap, end: u64| {
+            let mut headers = base.clone();
             headers.insert(RANGE, HeaderValue::from_str(&format!("bytes={offset}-{end}")).unwrap());
-            headers.insert(ACCEPT, HeaderValue::from_static("application/octet-stream"));
             headers
         };
         let response = self
-            .send(Method::GET, url.clone(), request_range(offset + size.saturating_sub(1)), None)
+            .send(Method::GET, url.clone(), request_range(&base, offset.saturating_add(size.saturating_sub(1))), None)
             .await?;
+        if response.status() == StatusCode::PRECONDITION_FAILED {
+            return Ok(RangeFetch { bytes: Vec::new(), etag: None, ranged: false, range_ignored: false, precondition_failed: true });
+        }
         // A strict server answers 416 when the requested end crosses EOF. Only
         // an offset at/after the resource total is a normal EOF; otherwise clamp
-        // to the real size and retry.
+        // to the real size and retry under the same precondition.
         let response = if response.status() == StatusCode::RANGE_NOT_SATISFIABLE {
             let total_from_header = response
                 .headers()
@@ -490,50 +612,87 @@ impl PodClient {
                 return Err(SdkError::Internal(format!("416 for {path} without a usable total size")));
             };
             if offset >= total {
-                return Ok((Vec::new(), false));
+                return Ok(RangeFetch { bytes: Vec::new(), etag: None, ranged: false, range_ignored: false, precondition_failed: false });
             }
-            self.send(Method::GET, url, request_range(total.saturating_sub(1)), None).await?
+            self.send(Method::GET, url, request_range(&base, total.saturating_sub(1)), None).await?
         } else {
             response
         };
+        // The clamped retry can itself lose the version race: surface it as a
+        // precondition failure so the caller performs one bounded reacquire
+        // instead of a generic error.
+        if response.status() == StatusCode::PRECONDITION_FAILED {
+            return Ok(RangeFetch { bytes: Vec::new(), etag: None, ranged: false, range_ignored: false, precondition_failed: true });
+        }
         if response.status() == StatusCode::NOT_FOUND {
             return Err(SdkError::Fs(FsError::NotFound));
         }
         if response.status() == StatusCode::RANGE_NOT_SATISFIABLE {
             // A read entirely past EOF is a normal short read, not an error.
-            return Ok((Vec::new(), false));
+            return Ok(RangeFetch { bytes: Vec::new(), etag: None, ranged: false, range_ignored: false, precondition_failed: false });
         }
         if !response.status().is_success() {
             return Err(SdkError::Internal(format!("range GET {path} failed: {}", response.status())));
         }
         let partial = response.status() == StatusCode::PARTIAL_CONTENT;
+        let etag = response.headers().get(ETAG).and_then(|value| value.to_str().ok()).map(str::to_string);
         let content_range = response
             .headers()
             .get(CONTENT_RANGE)
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|error| SdkError::Internal(format!("reading range of {path} failed: {error}")))?;
-        if partial || content_range.is_some() {
-            if let Some(content_range) = &content_range {
-                let start = content_range
-                    .strip_prefix("bytes ")
-                    .and_then(|value| value.split('-').next())
-                    .and_then(|value| value.parse::<u64>().ok());
-                if start != Some(offset) {
+        // Original `rangeIgnored` semantics: any 206 or any declared
+        // Content-Range means the slice was NOT produced locally.
+        let range_form = partial || content_range.is_some();
+        let parsed_range = content_range.as_deref().and_then(parse_content_range);
+        let mut response = response;
+        let mut bytes = Vec::new();
+        let mut prefix_remaining = offset;
+        while let Some(chunk) = response.chunk().await
+            .map_err(|error| SdkError::Internal(format!("reading range of {path} failed: {error}")))? {
+            let remaining = size.saturating_sub(bytes.len() as u64);
+            if range_form {
+                if chunk.len() as u64 > remaining {
+                    return Err(SdkError::Internal(format!("range response for {path} exceeded requested size {size}")));
+                }
+                bytes.extend_from_slice(&chunk);
+            } else {
+                // Discard the prefix and tail without storing the whole body.
+                // Continue to EOF even after the requested window is full so
+                // transport truncation remains an error.
+                let skip = prefix_remaining.min(chunk.len() as u64);
+                prefix_remaining -= skip;
+                let available = &chunk[skip as usize..];
+                let take = remaining.min(available.len() as u64) as usize;
+                bytes.extend_from_slice(&available[..take]);
+            }
+        }
+        if range_form {
+            // A declared start that is not the requested offset is a wrong
+            // proof, never a silent success.
+            if let Some((start, _, _)) = parsed_range {
+                if start != offset {
                     return Err(SdkError::Internal(format!(
-                        "range response for {path} started at {start:?}, expected {offset}"
+                        "range response for {path} started at {start}, expected {offset}"
                     )));
                 }
             }
-            return Ok((bytes.to_vec(), false));
+            // Cacheable ONLY for a real 206 whose complete Content-Range proves
+            // offset, legality (end<total, total>0), and that the claimed span
+            // equals the fully received body. 200 (even with a fake
+            // Content-Range) and a 206 without a valid Content-Range preserve
+            // `rangeIgnored` semantics but are NEVER range-proven/cacheable.
+            let cr_valid = partial
+                && parsed_range.is_some_and(|(start, end, total)| {
+                    start == offset
+                        && end >= start
+                        && total > 0
+                        && end < total
+                        && end - start + 1 == bytes.len() as u64
+                });
+            return Ok(RangeFetch { bytes, etag, ranged: cr_valid, range_ignored: false, precondition_failed: false });
         }
-        let start = offset as usize;
-        let end = (offset + size) as usize;
-        let slice = bytes.get(start..end.min(bytes.len())).unwrap_or_default().to_vec();
-        Ok((slice, true))
+        Ok(RangeFetch { bytes, etag, ranged: false, range_ignored: true, precondition_failed: false })
     }
 
     pub async fn put(
@@ -615,6 +774,9 @@ pub struct PodHttpFileSystem {
     gid: u32,
     inner: Mutex<Inner>,
     overlay: Option<Arc<SessionOverlay>>,
+    /// Persistent clean-body cache for the canonical remote Pod. `None` for a
+    /// loopback-canonical (Local) authority or when no session directory is set.
+    clean: Option<Arc<CleanBodyCache>>,
 }
 
 impl PodHttpFileSystem {
@@ -624,6 +786,7 @@ impl PodHttpFileSystem {
         uid: u32,
         gid: u32,
         overlay: Option<Arc<SessionOverlay>>,
+        clean: Option<Arc<CleanBodyCache>>,
     ) -> anyhow::Result<Self> {
         let mut inner = Inner { next: 2, ..Default::default() };
         inner.by_ino.insert(ROOT_INO, String::new());
@@ -634,6 +797,7 @@ impl PodHttpFileSystem {
             gid,
             inner: Mutex::new(inner),
             overlay,
+            clean,
         })
     }
 
@@ -723,6 +887,26 @@ impl PodHttpFileSystem {
         let prefix = if path.is_empty() { String::new() } else { format!("{path}/") };
         let entries = self.shared.list_all(&prefix).await?;
         Ok((prefix, entries))
+    }
+
+    /// Drops cached clean-body windows for one path after a mutation. Only the
+    /// clean cache is touched; overlay dirty/baseline files are never involved.
+    fn invalidate_clean_path(&self, path: &str) {
+        if let Some(clean) = &self.clean {
+            if let Err(error) = clean.invalidate_path(path) {
+                eprintln!("clean cache invalidation retained for {path}: {error}");
+            }
+        }
+    }
+
+    /// Drops cached clean-body windows under a directory after a structural
+    /// change (rmdir). Overlay dirty/baseline files are never involved.
+    fn invalidate_clean_prefix(&self, prefix: &str) {
+        if let Some(clean) = &self.clean {
+            if let Err(error) = clean.invalidate_prefix(prefix) {
+                eprintln!("clean cache prefix invalidation retained for {prefix}: {error}");
+            }
+        }
     }
 }
 
@@ -867,6 +1051,7 @@ impl FileSystem for PodHttpFileSystem {
         Ok(Arc::new(PodFile::new(
             self.shared.clone(),
             self.overlay.clone(),
+            self.clean.clone(),
             path,
             version,
             writable,
@@ -877,6 +1062,7 @@ impl FileSystem for PodHttpFileSystem {
     async fn mkdir(&self, parent_ino: i64, name: &str, _mode: u32, _uid: u32, _gid: u32) -> SdkResult<Stats> {
         let parent = self.path_for(parent_ino).await?;
         let child = Self::child_path(&parent, name)?;
+        self.invalidate_clean_path(&child);
         if let Some(overlay) = &self.overlay {
             if self.lookup(parent_ino, name).await?.is_some() { return Err(SdkError::Fs(FsError::AlreadyExists)); }
             overlay.mkdir(&child).map_err(|error| SdkError::Internal(error.to_string()))?;
@@ -910,6 +1096,7 @@ impl FileSystem for PodHttpFileSystem {
     ) -> SdkResult<(Stats, BoxedFile)> {
         let parent = self.path_for(parent_ino).await?;
         let child = Self::child_path(&parent, name)?;
+        self.invalidate_clean_path(&child);
         let observed = self.shared.head(&child).await?;
         let base = if let Some(overlay) = &self.overlay {
             let deleted = overlay.is_deleted(&child).map_err(|error| SdkError::Internal(error.to_string()))?;
@@ -929,6 +1116,7 @@ impl FileSystem for PodHttpFileSystem {
         let file = Arc::new(PodFile::new(
             self.shared.clone(),
             self.overlay.clone(),
+            self.clean.clone(),
             child,
             base.clone(),
             true,
@@ -949,6 +1137,7 @@ impl FileSystem for PodHttpFileSystem {
     async fn unlink(&self, parent_ino: i64, name: &str) -> SdkResult<()> {
         let parent = self.path_for(parent_ino).await?;
         let child = Self::child_path(&parent, name)?;
+        self.invalidate_clean_path(&child);
         let version = self.shared.head(&child).await?.and_then(|info| info.version);
         if let Some(overlay) = &self.overlay {
             overlay.delete(&child, version).map_err(|error| SdkError::Internal(error.to_string()))?;
@@ -964,6 +1153,8 @@ impl FileSystem for PodHttpFileSystem {
         if !self.readdir(ino).await?.unwrap_or_default().is_empty() {
             return Err(SdkError::Fs(FsError::NotEmpty));
         }
+        self.invalidate_clean_path(&child);
+        self.invalidate_clean_prefix(&format!("{child}/"));
         let container = format!("{child}/");
         let version = self.shared.head(&container).await?.and_then(|info| info.version);
         if let Some(overlay) = &self.overlay {
@@ -988,6 +1179,8 @@ impl FileSystem for PodHttpFileSystem {
         let new_parent = self.path_for(newparent_ino).await?;
         let source = Self::child_path(&old_parent, oldname)?;
         let target = Self::child_path(&new_parent, newname)?;
+        self.invalidate_clean_path(&source);
+        self.invalidate_clean_path(&target);
         let from_info = self.shared.head(&source).await?;
         let to_info = self.shared.head(&target).await?;
         if from_info.as_ref().is_some_and(|info| info.is_dir) || to_info.as_ref().is_some_and(|info| info.is_dir) {
@@ -998,7 +1191,7 @@ impl FileSystem for PodHttpFileSystem {
         if let Some(overlay) = &self.overlay {
             // Ensure the source exists in the overlay view before renaming.
             if overlay.stat(&source).map_err(|error| SdkError::Internal(error.to_string()))?.is_none() {
-                let file = PodFile::new(self.shared.clone(), self.overlay.clone(), source.clone(), from_base.clone(), true, "application/octet-stream".into());
+                let file = PodFile::new(self.shared.clone(), self.overlay.clone(), self.clean.clone(), source.clone(), from_base.clone(), true, "application/octet-stream".into());
                 file.edit_overlay(None, &[], None).await?;
             }
             overlay.rename(&source, &target, from_base, to_base).map_err(|error| SdkError::Internal(error.to_string()))?;
@@ -1035,6 +1228,7 @@ impl FileSystem for PodHttpFileSystem {
 pub struct PodFile {
     shared: Arc<PodClient>,
     overlay: Option<Arc<SessionOverlay>>,
+    clean: Option<Arc<CleanBodyCache>>,
     path: String,
     content_type: String,
     writable: bool,
@@ -1045,12 +1239,78 @@ impl PodFile {
     fn new(
         shared: Arc<PodClient>,
         overlay: Option<Arc<SessionOverlay>>,
+        clean: Option<Arc<CleanBodyCache>>,
         path: String,
         version: Option<String>,
         writable: bool,
         content_type: String,
     ) -> Self {
-        Self { shared, overlay, path, content_type, writable, version: Mutex::new(version) }
+        Self { shared, overlay, clean, path, content_type, writable, version: Mutex::new(version) }
+    }
+
+    /// Cache-aware clean read. The overlay (dirty/baseline local state) always
+    /// wins and is never cached. Otherwise a LIVE `HEAD` revalidates permission
+    /// and the strong ETag before any cached window may be served; a denied or
+    /// failed HEAD invalidates the path and returns that live error. A changed
+    /// ETag (or `412`) drops the stale windows and reacquires the current
+    /// version exactly once. Weak/missing ETags bypass the cache entirely.
+    async fn cached_pread(&self, clean: &CleanBodyCache, offset: u64, size: u64) -> SdkResult<Vec<u8>> {
+        let info = match self.shared.head(&self.path).await {
+            Ok(Some(info)) => info,
+            Ok(None) => {
+                let _ = clean.invalidate_path(&self.path);
+                return Err(SdkError::Fs(FsError::NotFound));
+            }
+            Err(error) => {
+                let _ = clean.invalidate_path(&self.path);
+                return Err(error);
+            }
+        };
+        let Some(etag) = info.version.clone().filter(|value| is_strong_etag(value)) else {
+            let (data, _ignored) = self.shared.get_range(&self.path, offset, size).await?;
+            return Ok(data);
+        };
+        if let Some(data) = clean
+            .get(&self.path, &etag, offset, size)
+            .map_err(|error| SdkError::Internal(error.to_string()))?
+        {
+            return Ok(data);
+        }
+        // The window is absent for the live version. A live HEAD is the
+        // authority: drop any window still pinned to another version so a
+        // changed ETag can never serve an old range.
+        let _ = clean.retain_path_etag(&self.path, &etag);
+        let mut current = etag;
+        let mut fetch = self.shared.get_range_conditional(&self.path, offset, size, Some(current.as_str())).await?;
+        if fetch.precondition_failed {
+            clean
+                .invalidate_path(&self.path)
+                .map_err(|error| SdkError::Internal(error.to_string()))?;
+            let Some(info) = self.shared.head(&self.path).await? else {
+                return Err(SdkError::Fs(FsError::NotFound));
+            };
+            let Some(next) = info.version.clone().filter(|value| is_strong_etag(value)) else {
+                let (data, _ignored) = self.shared.get_range(&self.path, offset, size).await?;
+                return Ok(data);
+            };
+            current = next;
+            fetch = self.shared.get_range_conditional(&self.path, offset, size, Some(current.as_str())).await?;
+        }
+        if fetch.precondition_failed {
+            // A second concurrent change: serve the fresh bounded read and do
+            // not cache it, rather than retrying indefinitely.
+            let (data, _ignored) = self.shared.get_range(&self.path, offset, size).await?;
+            return Ok(data);
+        }
+        // Cache only a genuine range response that matches the live version and
+        // transferred exactly the requested window.
+        let validated = fetch.ranged
+            && fetch.bytes.len() as u64 == size
+            && fetch.etag.as_deref() == Some(current.as_str());
+        if validated {
+            let _ = clean.insert(&self.path, &current, offset, size, &fetch.bytes);
+        }
+        Ok(fetch.bytes)
     }
 
     async fn load_full(&self) -> SdkResult<Vec<u8>> {
@@ -1063,6 +1323,7 @@ impl PodFile {
     }
 
     async fn edit_overlay(&self, offset: Option<u64>, data: &[u8], truncate: Option<u64>) -> SdkResult<()> {
+        self.invalidate_clean();
         let overlay = self.overlay.as_ref().unwrap();
         let observed = overlay.first_baseline(&self.path).map_err(|error| SdkError::Internal(error.to_string()))?;
         let baseline = self.base_version().await?;
@@ -1070,19 +1331,33 @@ impl PodFile {
         if observed.is_none() {
             let version = baseline.as_ref().ok_or_else(|| SdkError::Internal("copy-up requires an observed ETag".into()))?;
             if truncate != Some(0) {
-                let suffix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-                let location = overlay.dir().join(format!("seed-{}-{suffix}", std::process::id()));
-                let mut file = std::fs::OpenOptions::new().create_new(true).write(true).open(&location)
-                    .map_err(|error| SdkError::Internal(error.to_string()))?;
-                let copied = self.shared.copy_to(&self.path, version, &mut file).await;
-                if let Err(error) = copied { let _ = std::fs::remove_file(&location); return Err(error); }
-                seed = Some(location);
+                let mut lease = overlay.create_seed().map_err(|error| SdkError::Internal(error.to_string()))?;
+                let size = self.shared.copy_up_size(&self.path, version).await?;
+                self.shared.copy_to(&self.path, version, size, lease.file_mut()).await?;
+                seed = Some(lease);
             }
         }
-        let result = overlay.edit(&self.path, seed.as_deref(), baseline, &self.content_type, offset, data, truncate)
+        let result = overlay.edit(&self.path, seed.as_ref().map(|lease| lease.file()), baseline, &self.content_type, offset, data, truncate)
             .map_err(|error| SdkError::Internal(error.to_string()));
-        if let Some(seed) = seed { let _ = std::fs::remove_file(seed); }
-        result
+        let cleanup = seed.map(|lease| lease.finish()).transpose()
+            .map_err(|error| SdkError::Internal(error.to_string()));
+        if result.is_err() {
+            if let Err(error) = &cleanup { eprintln!("seed cleanup retained after edit failure: {error}"); }
+        }
+        result?;
+        cleanup?;
+        Ok(())
+    }
+
+    /// Drops any clean-body windows for this path. Called on every mutation so a
+    /// stale remote window can never be served after the version moves; the
+    /// dirty/baseline overlay itself is never stored in the clean cache.
+    fn invalidate_clean(&self) {
+        if let Some(clean) = &self.clean {
+            if let Err(error) = clean.invalidate_path(&self.path) {
+                eprintln!("clean cache invalidation retained for {}: {error}", self.path);
+            }
+        }
     }
 
     async fn base_version(&self) -> SdkResult<Option<String>> {
@@ -1104,6 +1379,12 @@ impl File for PodFile {
                 return Ok(data);
             }
         }
+        if size == 0 {
+            return Ok(Vec::new());
+        }
+        if let Some(clean) = &self.clean {
+            return self.cached_pread(clean, offset, size).await;
+        }
         let (data, _ignored) = self.shared.get_range(&self.path, offset, size).await?;
         Ok(data)
     }
@@ -1113,6 +1394,7 @@ impl File for PodFile {
             return Err(SdkError::Fs(FsError::InvalidPath));
         }
         if self.overlay.is_some() { return self.edit_overlay(Some(offset), data, None).await; }
+        self.invalidate_clean();
         let mut buffer = self.load_full().await?;
         let required = offset as usize + data.len();
         if buffer.len() < required {
@@ -1130,6 +1412,7 @@ impl File for PodFile {
             return Err(SdkError::Fs(FsError::InvalidPath));
         }
         if self.overlay.is_some() { return self.edit_overlay(None, &[], Some(size)).await; }
+        self.invalidate_clean();
         let mut buffer = self.load_full().await?;
         buffer.resize(size as usize, 0);
         let version = self.version.lock().await.clone();
@@ -1185,3 +1468,666 @@ impl File for PodFile {
 }
 
 const _: u32 = S_IFREG | S_IFDIR;
+
+#[cfg(test)]
+mod range_stream_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    async fn range_response(headers: &str, body: &[u8], offset: u64, size: u64) -> SdkResult<(Vec<u8>, bool)> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let root = format!("http://{}/", listener.local_addr().unwrap());
+        let headers = headers.to_owned();
+        let body = body.to_vec();
+        let producer = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            stream.read(&mut request).unwrap();
+            stream.write_all(headers.as_bytes()).unwrap();
+            stream.write_all(&body).unwrap();
+        });
+        let result = PodClient::new(&root, None).unwrap().get_range("file", offset, size).await;
+        producer.join().unwrap();
+        result
+    }
+
+    #[tokio::test]
+    async fn active_http_copy_seed_survives_reopen_and_cancellation_cleans_it() {
+        struct SessionDir(std::path::PathBuf);
+        impl Drop for SessionDir {
+            fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+        }
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = SessionDir(std::path::PathBuf::from("../../.test-data/agentfs-http-seed")
+            .join(format!("{}-{nonce}", std::process::id())));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let root = format!("http://{}/", listener.local_addr().unwrap());
+        let overlay = Arc::new(SessionOverlay::open(&dir.0, &root, "alice").unwrap());
+        let manifest = std::fs::read(dir.0.join("session.json")).unwrap();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let producer = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            stream.read(&mut request).unwrap();
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 131072\r\nETag: \"baseline\"\r\nConnection: close\r\n\r\n").unwrap();
+            let block = [b'x'; 64 * 1024];
+            stream.write_all(&block).unwrap();
+            // A channel, rather than timing, holds the HTTP tail until the
+            // owner has been cancelled and joined. Cancellation may close TCP.
+            let _ = blocked.recv();
+            let _ = stream.write_all(&block);
+        });
+        let (created, seed_path) = tokio::sync::oneshot::channel();
+        let owner_overlay = overlay.clone();
+        let client = PodClient::new(&root, None).unwrap();
+        let owner = tokio::spawn(async move {
+            let mut lease = owner_overlay.create_seed().map_err(|error| SdkError::Internal(error.to_string()))?;
+            created.send(lease.path().to_owned()).unwrap();
+            client.copy_to("file", "\"baseline\"", 131072, lease.file_mut()).await
+        });
+        let seed = seed_path.await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if std::fs::metadata(&seed).unwrap().len() >= 64 * 1024 { break; }
+                tokio::task::yield_now().await;
+            }
+        }).await.expect("seed must contain the first actual HTTP body block");
+        SessionOverlay::open(&dir.0, &root, "alice").unwrap();
+        assert!(seed.exists(), "active HTTP owner must retain its seed");
+        assert_eq!(std::fs::read(dir.0.join("session.json")).unwrap(), manifest);
+        owner.abort();
+        assert!(owner.await.unwrap_err().is_cancelled());
+        release.send(()).unwrap();
+        producer.join().unwrap();
+        assert!(!seed.exists(), "cancelled future must finish RAII seed cleanup");
+        assert_eq!(std::fs::read(dir.0.join("session.json")).unwrap(), manifest);
+        assert!(overlay.pending_paths().unwrap().is_empty());
+        println!("actual HTTP seed first body=65536 bytes; future joined cancelled; producer joined closed");
+    }
+
+    #[tokio::test]
+    async fn oversized_partial_body_is_rejected() {
+        assert!(range_response("HTTP/1.1 206 Partial Content\r\nContent-Length: 5\r\nConnection: close\r\n\r\n", b"abcde", 0, 2).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn ignored_range_discards_prefix_and_drains_tail_across_chunks() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let root = format!("http://{}/", listener.local_addr().unwrap());
+        const TOTAL: usize = 5 * 1024 * 1024;
+        let producer = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            stream.read(&mut request).unwrap();
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {TOTAL}\r\nConnection: close\r\n\r\n").unwrap();
+            let mut block = [0; 64 * 1024];
+            for base in (0..TOTAL).step_by(block.len()) {
+                for (index, byte) in block.iter_mut().enumerate() { *byte = ((base + index) % 251) as u8; }
+                stream.write_all(&block).unwrap();
+            }
+            TOTAL
+        });
+        let offset = 1024 * 1024 + 3;
+        let result = PodClient::new(&root, None).unwrap().get_range("file", offset, 16).await;
+        assert_eq!(producer.join().unwrap(), TOTAL);
+        assert_eq!(result.unwrap(), ((offset..offset + 16).map(|index| (index % 251) as u8).collect(), true));
+    }
+
+    #[tokio::test]
+    async fn range_forms_keep_offset_and_actual_length_checks() {
+        for headers in [
+            "HTTP/1.1 206 Partial Content\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nContent-Range: bytes 0-4/5\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+        ] {
+            assert!(range_response(headers, b"5\r\nabcde\r\n0\r\n\r\n", 0, 2).await.is_err());
+        }
+        assert_eq!(range_response("HTTP/1.1 200 OK\r\nContent-Range: bytes 3-4/8\r\nContent-Length: 2\r\nConnection: close\r\n\r\n", b"de", 3, 2).await.unwrap(), (b"de".to_vec(), false));
+        assert!(range_response("HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 1-2/8\r\nContent-Length: 2\r\nConnection: close\r\n\r\n", b"bc", 3, 2).await.is_err());
+        for (offset, size, expected) in [(8, 2, b"".as_slice()), (u64::MAX, 0, b"".as_slice()), (0, 0, b"".as_slice()), (6, 9, b"gh".as_slice())] {
+            assert_eq!(range_response("HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\n", b"abcdefgh", offset, size).await.unwrap(), (expected.to_vec(), true));
+        }
+    }
+
+    #[tokio::test]
+    async fn ignored_range_drains_tail_and_reports_truncation() {
+        assert_eq!(range_response("HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\n", b"abcdefgh", 3, 2).await.unwrap(), (b"de".to_vec(), true));
+        assert!(range_response("HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\n", b"abcdefgh", 3, 2).await.is_err());
+    }
+
+    /// A bounded, task-owned scripted HTTP server. It accepts on a nonblocking
+    /// listener and serves one response per connection in order, so a missing
+    /// request can never block the thread forever; Drop (and the explicit
+    /// `join_owned`) stops and actually joins the owned thread.
+    struct ScriptedServer {
+        root: String,
+        stop: std::sync::Arc<AtomicBool>,
+        handle: Option<std::thread::JoinHandle<()>>,
+        requests: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+    impl ScriptedServer {
+        fn start(responses: Vec<(String, Vec<u8>)>) -> Self {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let root = format!("http://{}/", listener.local_addr().unwrap());
+            let stop = std::sync::Arc::new(AtomicBool::new(false));
+            let stop_thread = stop.clone();
+            let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let observed = requests.clone();
+            let handle = std::thread::spawn(move || {
+                let mut index = 0usize;
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                while index < responses.len() && !stop_thread.load(Ordering::SeqCst) {
+                    if std::time::Instant::now() > deadline { break; }
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            let (headers, body) = &responses[index];
+                            let _ = stream.set_nonblocking(false);
+                            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+                            let mut request = [0; 4096];
+                            let length = stream.read(&mut request).unwrap_or(0);
+                            observed.lock().unwrap().push(String::from_utf8_lossy(&request[..length]).into_owned());
+                            let _ = stream.write_all(headers.as_bytes());
+                            let _ = stream.write_all(body);
+                            let _ = stream.flush();
+                            index += 1;
+                        }
+                        Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            Self { root, stop, handle: Some(handle), requests }
+        }
+        fn root(&self) -> &str { &self.root }
+        fn join_owned(mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            if let Some(handle) = self.handle.take() {
+                handle.join().expect("scripted server thread must close");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn whole_file_deadlines_bind_verified_sizes_and_leave_metadata_unchanged() {
+        for (size, seconds) in [(0, 60), (1, 61), (1024 * 1024, 61),
+            (64 * 1024 * 1024, 124), (512 * 1024 * 1024, 572),
+            (1024 * 1024 * 1024, 1084), (u64::MAX, 1800)] {
+            assert_eq!(file_transfer_budget(size).as_secs(), seconds);
+        }
+        let client = PodClient::new("http://127.0.0.1/", None).unwrap();
+        assert!(client.request(Method::HEAD, client.resource_url("file").unwrap(), HeaderMap::new())
+            .build().unwrap().timeout().is_none(), "metadata retains the existing client deadline");
+        for method in [Method::GET, Method::PUT] {
+            let request = client.file_request(method, client.resource_url("file").unwrap(), HeaderMap::new(), 512 * 1024 * 1024).build().unwrap();
+            assert_eq!(request.timeout().unwrap().as_secs(), 572);
+        }
+        for (length, etag, status, expected) in [
+            (Some("0"), Some("\"baseline\""), 200, Some(0)),
+            (Some("536870912"), Some("\"baseline\""), 200, Some(536870912)),
+            (None, Some("\"baseline\""), 200, None),
+            (Some("bad"), Some("\"baseline\""), 200, None),
+            (Some("+5"), Some("\"baseline\""), 200, None),
+            (Some("18446744073709551616"), Some("\"baseline\""), 200, None),
+            (Some("5"), Some("\"changed\""), 200, None),
+            (Some("5"), None, 200, None),
+            (Some("5"), Some("\"baseline\""), 412, None),
+        ] {
+            let mut headers = format!("HTTP/1.1 {status} Test\r\nConnection: close\r\n");
+            if let Some(value) = length { headers.push_str(&format!("Content-Length: {value}\r\n")); }
+            if let Some(value) = etag { headers.push_str(&format!("ETag: {value}\r\n")); }
+            headers.push_str("\r\n");
+            let server = ScriptedServer::start(vec![(headers, Vec::new())]);
+            let observed = PodClient::new(server.root(), None).unwrap().copy_up_size("file", "\"baseline\"").await;
+            match expected { Some(size) => assert_eq!(observed.unwrap(), size), None => assert!(observed.is_err()) }
+            let requests = server.requests.lock().unwrap();
+            assert_eq!(requests.len(), 1);
+            assert!(requests[0].starts_with("HEAD /file HTTP/1.1\r\n"));
+            assert!(requests[0].to_ascii_lowercase().contains("if-match: \"baseline\""));
+            drop(requests); server.join_owned();
+        }
+    }
+    impl Drop for ScriptedServer {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            if let Some(handle) = self.handle.take() { let _ = handle.join(); }
+        }
+    }
+
+    #[tokio::test]
+    async fn copy_up_failure_diagnostics_preserve_errors_and_hide_secrets() {
+        const CHILD: &str = "XPOD_COPY_UP_DIAGNOSTIC_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            use std::process::{Command, Stdio};
+            fn run_child(stderr: Stdio) -> std::process::Output {
+                let mut child = Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", "pod_fs::range_stream_tests::copy_up_failure_diagnostics_preserve_errors_and_hide_secrets", "--nocapture"])
+                    .env(CHILD, "1").stdout(Stdio::piped()).stderr(stderr).spawn().unwrap();
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+                while child.try_wait().unwrap().is_none() {
+                    if std::time::Instant::now() >= deadline {
+                        child.kill().unwrap(); child.wait().unwrap();
+                        panic!("owned diagnostic child exceeded its observation deadline");
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                let output = child.wait_with_output().unwrap();
+                assert!(output.status.success(), "owned child failed: {}", String::from_utf8_lossy(&output.stdout));
+                output
+            }
+            let output = run_child(Stdio::piped());
+            let stderr = String::from_utf8(output.stderr).unwrap();
+            for secret in ["SECRET_PATH", "SECRET_BEARER", "SECRET_BODY", "SECRET_CAPABILITY", "PRIVATE_BODY_CONTENT"] {
+                assert!(!stderr.contains(secret), "diagnostic disclosed a sensitive test marker");
+            }
+            let records: Vec<serde_json::Value> = stderr.lines().filter_map(|line| line.strip_prefix("agentfs-pod-copy-up: "))
+                .map(|line| serde_json::from_str(line).unwrap()).collect();
+            assert_eq!(records.len(), 4, "each failed operation emits once");
+            assert_eq!(records.iter().map(|row| row["stage"].as_str().unwrap()).collect::<Vec<_>>(), ["send", "chunk", "write_all", "sync_all"]);
+            for row in &records {
+                assert!(row["elapsedMs"].is_number());
+                assert!(row["bodyBytesReceived"].as_u64().unwrap() >= row["fullyWrittenChunkBytes"].as_u64().unwrap());
+            }
+            assert_eq!(records[0]["bodyBytesReceived"], 0);
+            assert_eq!(records[1]["bodyBytesReceived"], records[1]["fullyWrittenChunkBytes"]);
+            assert!((1..=20).contains(&records[2]["bodyBytesReceived"].as_u64().unwrap())); assert_eq!(records[2]["fullyWrittenChunkBytes"], 0);
+            assert!(records[2]["cause"]["errno"].is_number());
+            assert_eq!(records[3]["bodyBytesReceived"], 20); assert_eq!(records[3]["fullyWrittenChunkBytes"], 20);
+            // A closed diagnostic sink must not panic or replace any SDK error.
+            let (reader, writer) = std::os::unix::net::UnixStream::pair().unwrap();
+            drop(reader);
+            let writer: std::os::fd::OwnedFd = writer.into();
+            run_child(Stdio::from(writer));
+            return;
+        }
+        use std::io::Write;
+        let directory = std::path::PathBuf::from("../../.test-data/agentfs-copy-up-diagnostics")
+            .join(format!("{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let target = directory.join("SECRET_PATH");
+        let mut output = std::fs::File::create(&target).unwrap();
+        let malformed = ("THIS_IS_NOT_HTTP\r\n\r\n".to_string(), Vec::new());
+        let server = ScriptedServer::start(vec![malformed.clone(), malformed]);
+        let mut client = PodClient::new(server.root(), Some("SECRET_BEARER".into())).unwrap();
+        client.capability = Some("SECRET_CAPABILITY".into());
+        let original = client.send(Method::GET, client.resource_url("SECRET_PATH").unwrap(), HeaderMap::new(), None).await.unwrap_err();
+        let observed = client.copy_to("SECRET_PATH", "\"v1\"", 0, &mut output).await.unwrap_err();
+        assert_eq!(format!("{observed:?}"), format!("{original:?}")); server.join_owned();
+
+        let truncated = ("HTTP/1.1 200 OK\r\nContent-Length: 4096\r\nETag: \"v1\"\r\nConnection: close\r\n\r\n".to_string(), b"SECRET_BODY".to_vec());
+        let server = ScriptedServer::start(vec![truncated.clone(), truncated]);
+        let client = PodClient::new(server.root(), None).unwrap();
+        let mut response = client.send(Method::GET, client.resource_url("SECRET_PATH").unwrap(), HeaderMap::new(), None).await.unwrap();
+        let original = loop { match response.chunk().await { Ok(Some(_)) => (), Ok(None) => panic!("truncated body unexpectedly closed cleanly"), Err(error) => break SdkError::Internal(error.to_string()) } };
+        let observed = client.copy_to("SECRET_PATH", "\"v1\"", 4096, &mut output).await.unwrap_err();
+        assert_eq!(format!("{observed:?}"), format!("{original:?}")); server.join_owned();
+
+        let complete = ("HTTP/1.1 200 OK\r\nContent-Length: 20\r\nETag: \"v1\"\r\nConnection: close\r\n\r\n".to_string(), b"PRIVATE_BODY_CONTENT".to_vec());
+        let server = ScriptedServer::start(vec![complete.clone(), complete]);
+        let client = PodClient::new(server.root(), None).unwrap();
+        let mut read_only = std::fs::File::open(&target).unwrap();
+        let original = SdkError::Internal(read_only.write_all(b"x").unwrap_err().to_string());
+        let observed = client.copy_to("SECRET_PATH", "\"v1\"", 20, &mut read_only).await.unwrap_err();
+        assert_eq!(format!("{observed:?}"), format!("{original:?}"));
+        let mut null = std::fs::OpenOptions::new().write(true).open("/dev/null").unwrap();
+        let original = SdkError::Internal(null.sync_all().unwrap_err().to_string());
+        let observed = client.copy_to("SECRET_PATH", "\"v1\"", 20, &mut null).await.unwrap_err();
+        assert_eq!(format!("{observed:?}"), format!("{original:?}")); server.join_owned();
+        drop(output); drop(read_only); drop(null); std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    async fn conditional_response(headers: &str, body: &[u8], offset: u64, size: u64) -> SdkResult<RangeFetch> {
+        let server = ScriptedServer::start(vec![(headers.to_string(), body.to_vec())]);
+        let result = PodClient::new(server.root(), None).unwrap().get_range_conditional("file", offset, size, None).await;
+        server.join_owned();
+        result
+    }
+
+    #[tokio::test]
+    async fn only_a_complete_206_content_range_is_range_proven() {
+        // Valid 206 with a complete, legal Content-Range.
+        let good = conditional_response(
+            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 3-4/8\r\nContent-Length: 2\r\nConnection: close\r\n\r\n",
+            b"de", 3, 2,
+        ).await.unwrap();
+        assert_eq!((good.ranged, good.range_ignored, good.bytes), (true, false, b"de".to_vec()));
+
+        // 206 without Content-Range: never range-proven.
+        let no_cr = conditional_response(
+            "HTTP/1.1 206 Partial Content\r\nContent-Length: 2\r\nConnection: close\r\n\r\n",
+            b"de", 3, 2,
+        ).await.unwrap();
+        assert_eq!((no_cr.ranged, no_cr.range_ignored), (false, false));
+
+        // 200 with a fake Content-Range: preserved rangeIgnored semantics, never proven.
+        let fake = conditional_response(
+            "HTTP/1.1 200 OK\r\nContent-Range: bytes 3-4/8\r\nContent-Length: 2\r\nConnection: close\r\n\r\n",
+            b"de", 3, 2,
+        ).await.unwrap();
+        assert_eq!((fake.ranged, fake.range_ignored, fake.bytes), (false, false, b"de".to_vec()));
+
+        // 206 whose claimed span (4) does not equal the received body (2).
+        let short = conditional_response(
+            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 3-6/8\r\nContent-Length: 2\r\nConnection: close\r\n\r\n",
+            b"de", 3, 2,
+        ).await.unwrap();
+        assert_eq!(short.ranged, false, "claimed span must equal received bytes");
+
+        // 206 declaring a start that is not the requested offset is an error.
+        assert!(conditional_response(
+            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 1-2/8\r\nContent-Length: 2\r\nConnection: close\r\n\r\n",
+            b"bc", 3, 2,
+        ).await.is_err());
+
+        // 206 with total 0 cannot prove range/total legality.
+        let zero = conditional_response(
+            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 3-4/0\r\nContent-Length: 2\r\nConnection: close\r\n\r\n",
+            b"de", 3, 2,
+        ).await.unwrap();
+        assert_eq!(zero.ranged, false);
+    }
+
+    #[tokio::test]
+    async fn clamped_416_retry_that_hits_412_reports_precondition_failed() {
+        // First request (bytes=2-101) gets 416 with the real total; the clamped
+        // retry (bytes=2-7) then loses the race and answers 412.
+        let server = ScriptedServer::start(vec![
+            ("HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */8\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(), Vec::new()),
+            ("HTTP/1.1 412 Precondition Failed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string(), Vec::new()),
+        ]);
+        let fetch = PodClient::new(server.root(), None).unwrap()
+            .get_range_conditional("file", 2, 100, Some("\"v1\"")).await.unwrap();
+        server.join_owned();
+        assert!(fetch.precondition_failed, "clamped 416 retry 412 must report a precondition failure");
+        assert!(!fetch.ranged);
+
+        // An offset at/after the real total is a normal EOF, not a retry.
+        let eof = conditional_response(
+            "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */8\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            b"", 8, 4,
+        ).await.unwrap();
+        assert_eq!((eof.precondition_failed, eof.ranged, eof.bytes), (false, false, Vec::new()));
+    }
+}
+
+#[cfg(test)]
+mod clean_cache_integration_tests {
+    use super::*;
+    use crate::clean_cache::CleanBodyCache;
+    use crate::fixture::FixturePod;
+    use std::fs;
+    use std::io::{BufRead, BufReader, Write};
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, AtomicU8, Ordering as AtomicOrdering};
+
+    // Canonical remote authority. The transport is still the loopback fixture,
+    // which models the real HTTPS-canonical-via-loopback-proxy deployment.
+    const REMOTE_ROOT: &str = "https://node.example/alice/";
+
+    struct CleanDir(PathBuf);
+    impl CleanDir {
+        fn new() -> Self {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = PathBuf::from("../../.test-data/agentfs-clean-cache")
+                .join(format!("{}-{nonce}", std::process::id()));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for CleanDir {
+        fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    }
+
+    async fn open_handle(fs: &PodHttpFileSystem, name: &str, flags: i32) -> agentfs_sdk::BoxedFile {
+        let stats = fs.lookup(ROOT_INO, name).await.unwrap().unwrap();
+        fs.open(stats.ino, flags).await.unwrap()
+    }
+
+    fn counted(pod: &FixturePod, method: &str) -> usize {
+        pod.log().iter().filter(|entry| entry.method == method).count()
+    }
+
+    #[tokio::test]
+    async fn second_remote_read_avoids_body_get_while_head_present() {
+        let pod = FixturePod::start(vec![("data.bin".into(), "ABCDEFGHIJKLMNOPQRSTUVWX".into())]).unwrap();
+        let dir = CleanDir::new();
+        let clean = Arc::new(CleanBodyCache::open(&dir.0, REMOTE_ROOT, "alice").unwrap().unwrap());
+        let fs = PodHttpFileSystem::new(&pod.pod_root, Some("t".into()), 0, 0, None, Some(clean.clone())).unwrap();
+        let handle = open_handle(&fs, "data.bin", libc::O_RDONLY).await;
+
+        pod.reset_log();
+        assert_eq!(handle.pread(0, 4).await.unwrap(), b"ABCD".to_vec());
+        assert_eq!(counted(&pod, "GET"), 1, "first clean read must fetch one bounded window");
+        assert_eq!(counted(&pod, "HEAD"), 1, "first clean read must revalidate with a live HEAD");
+
+        pod.reset_log();
+        assert_eq!(handle.pread(0, 4).await.unwrap(), b"ABCD".to_vec());
+        assert_eq!(counted(&pod, "GET"), 0, "cached read must not transfer a body");
+        assert_eq!(counted(&pod, "HEAD"), 1, "cached read must still revalidate with a live HEAD");
+        assert_eq!(clean.stats().unwrap().1, 1);
+    }
+
+    #[tokio::test]
+    async fn weak_etag_bypasses_and_is_never_cached() {
+        let pod = FixturePod::start(vec![("w.bin".into(), "WEAKBODY".into())]).unwrap();
+        pod.set_etag("w.bin", "W/\"v1\"");
+        let dir = CleanDir::new();
+        let clean = Arc::new(CleanBodyCache::open(&dir.0, REMOTE_ROOT, "alice").unwrap().unwrap());
+        let fs = PodHttpFileSystem::new(&pod.pod_root, Some("t".into()), 0, 0, None, Some(clean.clone())).unwrap();
+        let handle = open_handle(&fs, "w.bin", libc::O_RDONLY).await;
+
+        assert_eq!(handle.pread(0, 4).await.unwrap(), b"WEAK".to_vec());
+        pod.reset_log();
+        assert_eq!(handle.pread(0, 4).await.unwrap(), b"WEAK".to_vec());
+        assert_eq!(counted(&pod, "GET"), 1, "weak ETag must bypass the cache and refetch");
+        assert_eq!(clean.stats().unwrap().1, 0, "weak ETag must never be cached");
+    }
+
+    #[tokio::test]
+    async fn empty_etag_bypasses_and_is_never_cached() {
+        let pod = FixturePod::start(vec![("m.bin".into(), "MISSINGETAG".into())]).unwrap();
+        pod.set_etag("m.bin", "");
+        let dir = CleanDir::new();
+        let clean = Arc::new(CleanBodyCache::open(&dir.0, REMOTE_ROOT, "alice").unwrap().unwrap());
+        let fs = PodHttpFileSystem::new(&pod.pod_root, Some("t".into()), 0, 0, None, Some(clean.clone())).unwrap();
+        let handle = open_handle(&fs, "m.bin", libc::O_RDONLY).await;
+
+        assert_eq!(handle.pread(0, 4).await.unwrap(), b"MISS".to_vec());
+        pod.reset_log();
+        assert_eq!(handle.pread(0, 4).await.unwrap(), b"MISS".to_vec());
+        assert_eq!(counted(&pod, "GET"), 1, "missing/empty ETag must bypass the cache");
+        assert_eq!(clean.stats().unwrap().1, 0);
+    }
+
+    #[tokio::test]
+    async fn etag_race_412_reacquires_current_version_once() {
+        let pod = FixturePod::start(vec![("race.bin".into(), "OLDBODY0".into())]).unwrap();
+        let dir = CleanDir::new();
+        let clean = Arc::new(CleanBodyCache::open(&dir.0, REMOTE_ROOT, "alice").unwrap().unwrap());
+        let fs = PodHttpFileSystem::new(&pod.pod_root, Some("t".into()), 0, 0, None, Some(clean.clone())).unwrap();
+        let handle = open_handle(&fs, "race.bin", libc::O_RDONLY).await;
+
+        // The next GET mutates the resource before If-Match is evaluated, so the
+        // conditional fetch observed the old version and gets a strict 412.
+        pod.change_next_get("race.bin", "NEWBODY1");
+        pod.reset_log();
+        assert_eq!(handle.pread(0, 8).await.unwrap(), b"NEWBODY1".to_vec());
+        assert!(counted(&pod, "GET") <= 2, "at most one bounded fetch after reacquire");
+
+        // The current version is cached; the next read is a pure hit.
+        pod.reset_log();
+        assert_eq!(handle.pread(0, 8).await.unwrap(), b"NEWBODY1".to_vec());
+        assert_eq!(counted(&pod, "GET"), 0);
+        assert_eq!(counted(&pod, "HEAD"), 1);
+    }
+
+    #[tokio::test]
+    async fn truncated_range_response_is_not_cached() {
+        let pod = FixturePod::start(vec![("trunc.bin".into(), "TRUNCATED_BODY".into())]).unwrap();
+        let dir = CleanDir::new();
+        let clean = Arc::new(CleanBodyCache::open(&dir.0, REMOTE_ROOT, "alice").unwrap().unwrap());
+        let fs = PodHttpFileSystem::new(&pod.pod_root, Some("t".into()), 0, 0, None, Some(clean.clone())).unwrap();
+        let handle = open_handle(&fs, "trunc.bin", libc::O_RDONLY).await;
+
+        pod.drop_next_read_body();
+        assert!(handle.pread(0, 5).await.is_err(), "a truncated body must surface as an error");
+        assert_eq!(clean.stats().unwrap().1, 0, "a truncated response must never be cached");
+        assert_eq!(handle.pread(0, 5).await.unwrap(), b"TRUNC".to_vec());
+        assert_eq!(clean.stats().unwrap().1, 1);
+    }
+
+    #[tokio::test]
+    async fn restart_serves_persisted_hit_only_after_fresh_head() {
+        let pod = FixturePod::start(vec![("persist.bin".into(), "PERSISTED_BODY".into())]).unwrap();
+        let dir = CleanDir::new();
+        {
+            let clean = Arc::new(CleanBodyCache::open(&dir.0, REMOTE_ROOT, "alice").unwrap().unwrap());
+            let fs = PodHttpFileSystem::new(&pod.pod_root, Some("t".into()), 0, 0, None, Some(clean)).unwrap();
+            let handle = open_handle(&fs, "persist.bin", libc::O_RDONLY).await;
+            pod.reset_log();
+            assert_eq!(handle.pread(0, 4).await.unwrap(), b"PERS".to_vec());
+            assert_eq!(counted(&pod, "GET"), 1);
+        }
+        // Fresh open (process restart): the persisted window is reused, but only
+        // after a live HEAD revalidation.
+        let clean = Arc::new(CleanBodyCache::open(&dir.0, REMOTE_ROOT, "alice").unwrap().unwrap());
+        let fs = PodHttpFileSystem::new(&pod.pod_root, Some("t".into()), 0, 0, None, Some(clean)).unwrap();
+        let handle = open_handle(&fs, "persist.bin", libc::O_RDONLY).await;
+        pod.reset_log();
+        assert_eq!(handle.pread(0, 4).await.unwrap(), b"PERS".to_vec());
+        assert_eq!(counted(&pod, "GET"), 0, "persisted hit must not refetch a body");
+        assert_eq!(counted(&pod, "HEAD"), 1, "persisted hit must revalidate with a live HEAD");
+    }
+
+    #[tokio::test]
+    async fn dirty_overlay_edit_is_never_cached_and_remote_untouched() {
+        let pod = FixturePod::start(vec![("dirty.bin".into(), "REMOTE_BASE".into())]).unwrap();
+        let dir = CleanDir::new();
+        let overlay = Arc::new(SessionOverlay::open(&dir.0, REMOTE_ROOT, "alice").unwrap());
+        let clean = Arc::new(CleanBodyCache::open(&dir.0, REMOTE_ROOT, "alice").unwrap().unwrap());
+        let fs = PodHttpFileSystem::new(&pod.pod_root, Some("t".into()), 0, 0, Some(overlay.clone()), Some(clean.clone())).unwrap();
+        let handle = open_handle(&fs, "dirty.bin", libc::O_RDWR).await;
+
+        handle.pwrite(0, b"LOCAL_EDIT").await.unwrap();
+        assert_eq!(clean.stats().unwrap(), (0, 0), "a dirty edit must never populate the clean cache");
+        assert_eq!(handle.pread(0, 10).await.unwrap(), b"LOCAL_EDIT".to_vec());
+        assert_eq!(clean.stats().unwrap(), (0, 0), "dirty reads bypass the clean cache");
+        assert_eq!(overlay.first_baseline("dirty.bin").unwrap(), Some(Some("\"v1\"".to_string())));
+        assert_eq!(pod.body("dirty.bin").as_deref(), Some("REMOTE_BASE"), "remote stays untouched until commit");
+    }
+
+    #[tokio::test]
+    async fn identity_and_canonical_pod_are_isolated_and_loopback_has_no_directory() {
+        let dir = CleanDir::new();
+        CleanBodyCache::open(&dir.0, REMOTE_ROOT, "alice").unwrap().unwrap();
+        assert!(CleanBodyCache::open(&dir.0, REMOTE_ROOT, "bob").is_err(), "another identity is rejected");
+        assert!(CleanBodyCache::open(&dir.0, "https://node.example/bob/", "alice").is_err(), "another Pod is rejected");
+        let local = CleanDir::new();
+        assert!(CleanBodyCache::open(&local.0, "http://127.0.0.1:3000/alice/", "alice").unwrap().is_none());
+        assert!(!local.0.join("clean-v1").exists(), "loopback-canonical Local must create no cache directory");
+    }
+
+    /// Minimal stateful Pod surface for the denial path: mode 0 serves a strong
+    /// Owned, bounded stateful Pod surface: mode 0 serves a strong ETag and a
+    /// 4-byte range, mode 1 answers every request with 403. The nonblocking
+    /// listener plus `join_owned`/Drop guarantee the thread actually closes.
+    struct ScriptedModePod {
+        root: String,
+        mode: Arc<AtomicU8>,
+        stop: Arc<AtomicBool>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    }
+    impl ScriptedModePod {
+        fn start() -> Self {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let root = format!("http://127.0.0.1:{port}/pod/");
+            let mode = Arc::new(AtomicU8::new(0));
+            let stop = Arc::new(AtomicBool::new(false));
+            let mode_thread = mode.clone();
+            let stop_thread = stop.clone();
+            let handle = std::thread::spawn(move || {
+                while !stop_thread.load(AtomicOrdering::SeqCst) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            let current = mode_thread.load(AtomicOrdering::SeqCst);
+                            let _ = stream.set_nonblocking(false);
+                            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+                            let mut reader = BufReader::new(stream.try_clone().unwrap());
+                            let mut request_line = String::new();
+                            if reader.read_line(&mut request_line).unwrap_or(0) == 0 { continue; }
+                            let method = request_line.split_whitespace().next().unwrap_or("GET").to_string();
+                            loop {
+                                let mut header = String::new();
+                                if reader.read_line(&mut header).unwrap_or(0) == 0 { break; }
+                                if header.trim_end_matches(['\r', '\n']).is_empty() { break; }
+                            }
+                            if current == 1 {
+                                let _ = stream.write_all(b"HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+                                continue;
+                            }
+                            if method == "HEAD" {
+                                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 11\r\netag: \"v1\"\r\naccept-ranges: bytes\r\nconnection: close\r\n\r\n");
+                            } else if method == "GET" {
+                                let _ = stream.write_all(b"HTTP/1.1 206 Partial Content\r\ncontent-length: 4\r\netag: \"v1\"\r\ncontent-range: bytes 0-3/11\r\nconnection: close\r\n\r\n");
+                                let _ = stream.write_all(b"BODY");
+                            }
+                        }
+                        Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            Self { root, mode, stop, handle: Some(handle) }
+        }
+        fn root(&self) -> &str { &self.root }
+        fn set_mode(&self, value: u8) { self.mode.store(value, AtomicOrdering::SeqCst); }
+        fn join_owned(mut self) {
+            self.stop.store(true, AtomicOrdering::SeqCst);
+            if let Some(handle) = self.handle.take() {
+                handle.join().expect("scripted mode server thread must close");
+            }
+        }
+    }
+    impl Drop for ScriptedModePod {
+        fn drop(&mut self) {
+            self.stop.store(true, AtomicOrdering::SeqCst);
+            if let Some(handle) = self.handle.take() { let _ = handle.join(); }
+        }
+    }
+
+    #[tokio::test]
+    async fn denied_head_invalidates_and_never_serves_a_cached_body() {
+        let pod = ScriptedModePod::start();
+        let dir = CleanDir::new();
+        let clean = Arc::new(CleanBodyCache::open(&dir.0, REMOTE_ROOT, "alice").unwrap().unwrap());
+        let file = PodFile::new(
+            Arc::new(PodClient::new(pod.root(), None).unwrap()),
+            None,
+            Some(clean.clone()),
+            "x.bin".into(),
+            Some("\"v1\"".into()),
+            false,
+            "application/octet-stream".into(),
+        );
+
+        assert_eq!(file.pread(0, 4).await.unwrap(), b"BODY".to_vec());
+        assert_eq!(clean.stats().unwrap().1, 1, "the clean body is cached");
+
+        pod.set_mode(1);
+        assert!(file.pread(0, 4).await.is_err(), "a denied HEAD must surface the live error");
+        assert_eq!(clean.stats().unwrap().1, 0, "a denied HEAD must invalidate the cached window");
+
+        pod.set_mode(0);
+        assert_eq!(file.pread(0, 4).await.unwrap(), b"BODY".to_vec(), "the old body is gone; a fresh fetch is required");
+        pod.join_owned();
+    }
+}

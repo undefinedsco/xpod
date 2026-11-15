@@ -1,0 +1,33 @@
+{
+  "actualWait": true,
+  "command": [
+    "/usr/bin/gpgv",
+    "--homedir",
+    "/output/probe/gnupg",
+    "--keyring",
+    "/output/probe/reviewed-13-keys.gpg",
+    "--status-fd",
+    "1",
+    "--output",
+    "/output/probe/trixie.body.original",
+    "/output/probe/inputs/trixie.InRelease"
+  ],
+  "completedUnixNs": 1792314299086907463,
+  "exit": 2,
+  "pgid": 9,
+  "pid": 10,
+  "rawClosedBeforeHash": true,
+  "schemaVersion": 1,
+  "signal": null,
+  "startedUnixNs": 1792314299078384796,
+  "stderr": {
+    "bytes": 623,
+    "path": "stderr.raw",
+    "sha256": "4d57a42c44417ebb529aa673b8b4e36af35a3343e92b33667c7dacad6b94e40f"
+  },
+  "stdout": {
+    "bytes": 1086,
+    "path": "stdout.raw",
+    "sha256": "44aed6dc3af3e2a00e9633695b05221c4e8617722a7037b43ac1660fcf33310e"
+  }
+}

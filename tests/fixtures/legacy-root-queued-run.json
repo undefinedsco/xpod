@@ -1,0 +1,35 @@
+{
+  "scope": "Selected unchanged fields of actual GitHub queued attempt; no synthetic success or source admission",
+  "originalSHA256": "3c7e4847e637d08c4a4690ca95e76484828596a02db04396cc683b33568e6a70",
+  "run": {
+    "id": 38850607708,
+    "run_attempt": 1,
+    "head_sha": "2f45b7e2b00a83bf4b88864abb447fff69351f16",
+    "status": "queued",
+    "conclusion": null,
+    "event": "pull_request",
+    "path": ".github/workflows/legacy-root-compat.yml",
+    "workflow_id": 385610351,
+    "run_started_at": "2026-10-16T04:26:12Z",
+    "updated_at": "2026-10-16T04:27:18Z",
+    "repository": {
+      "full_name": "undefinedsco/xpod"
+    },
+    "head_repository": {
+      "full_name": "undefinedsco/xpod"
+    }
+  },
+  "actualSourceSha": "6d6d00b69e51f5d47bdacea069cde6ed3271a89f",
+  "jobsOriginalSHA256": "68d510128e9987dbaf849c0ca4e57da8bd87ffd5fec6f1ff4e4c4326db3464d3",
+  "producerJob": {
+    "id": 116810794492,
+    "name": "legacy-root-normal-afs",
+    "status": "completed",
+    "conclusion": "success",
+    "run_id": 38850607708,
+    "run_attempt": 1,
+    "head_sha": "2f45b7e2b00a83bf4b88864abb447fff69351f16",
+    "started_at": "2026-10-16T04:26:24Z",
+    "completed_at": "2026-10-16T04:27:18Z"
+  }
+}

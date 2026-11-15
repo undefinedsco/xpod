@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "model": "normal-build-v1",
+  "linkedChecks": [
+    {"name": "adapter-build", "path": "qlever/scripts/check-qlever-real-adapter-build.cjs"},
+    {"name": "runtime", "path": "qlever/scripts/check-qlever-real-runtime.cjs"}
+  ],
+  "smoke": {
+    "commandPrefixBeforeImage": ["docker", "run", "--rm", "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m", "--entrypoint", "/bin/sh"],
+    "commandSuffixAfterImage": ["-ceu", "test -f /opt/qlever-sdk/source/src/libqlever/Qlever.h && test -f /opt/qlever-sdk/build/.xpod-build-identity && test -f /opt/qlever-sdk/build/.xpod-build-contract.json && test -f /opt/qlever-sdk/build/CMakeFiles/qlever-server.dir/link.txt && test -f /opt/qlever-sdk/build/.xpod-linked-verification.json && test -f /components/qlever/scripts/check-qlever-real-runtime.cjs && test ! -e /components/qlever/qlever_pg_extension"]
+  }
+}

@@ -1,5 +1,6 @@
 /** Select once before executing; command failures never trigger another runtime. */
-export function externalRuntimeLauncher(): string {
+export function externalRuntimeLauncher(options: { payload?: 'lib/xpodcli.mjs' | 'xpod.mjs' } = {}): string {
+  const payload = options.payload ?? 'lib/xpodcli.mjs';
   return [
     '#!/bin/sh',
     'SELF=$0',
@@ -13,9 +14,9 @@ export function externalRuntimeLauncher(): string {
     'done',
     'DIR="$(CDPATH= cd "$(dirname "$SELF")/.." && pwd)" || exit 1',
     'if command -v bun >/dev/null 2>&1; then',
-    '  exec bun "$DIR/lib/xpodcli.mjs" "$@"',
+    `  exec bun "$DIR/${payload}" "$@"`,
     'elif command -v node >/dev/null 2>&1; then',
-    '  exec node "$DIR/lib/xpodcli.mjs" "$@"',
+    `  exec node "$DIR/${payload}" "$@"`,
     'fi',
     'printf "%s\\n" "Xpod CLI requires installed Bun >= 1.3.8 or Node.js >= 22" >&2',
     'exit 127',

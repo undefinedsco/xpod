@@ -2,6 +2,7 @@ import { ensureSupportedBun } from './compat/ensureSupportedBun';
 import { getLoggerFor } from 'global-logger-factory';
 import { loadConfigFromEnv, type ApiContainerConfig } from '../api/container';
 import { autoProvisionFirstRunLocal } from '../api/runtime';
+import { provisionedRuntimeEnv } from '../provision/local-identity';
 import { createHostedPodRouteTransport, resolveHostedPodRoute } from '../api/ai-gateway/pod/HostedPodRoute';
 import { closeAllIdentityConnections } from '../identity/drizzle/db';
 import { Supervisor } from '../supervisor/Supervisor';
@@ -219,15 +220,7 @@ function withProvisionedRuntimeEnv(
     ...options,
     env: {
       ...options.env,
-      SOLID_OIDC_ISSUER: config.oidcIssuer,
-      XPOD_NODE_ID: config.nodeId,
-      XPOD_NODE_TOKEN: config.nodeToken,
-      XPOD_SERVICE_TOKEN: config.serviceToken,
-      XPOD_PROVISION_CODE: config.provisionCode,
-      XPOD_PUBLIC_URL: config.publicUrl,
-      XPOD_SP_DOMAIN: config.spDomain,
-      XPOD_LOCAL_SETUP_PATH: config.localSetupPath,
-      XPOD_PROVIDER_ID: config.localSetupProviderId,
+      ...provisionedRuntimeEnv(config),
     },
   };
 }

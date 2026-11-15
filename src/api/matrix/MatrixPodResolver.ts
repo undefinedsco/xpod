@@ -35,6 +35,31 @@ export function createMatrixPodResolver(
   };
 }
 
+/**
+ * Build the storage-binding verifier used by the room directory and routing.
+ *
+ * It accepts only a canonical root persisted as this deployment's Pod base or
+ * storage URL. The verifier returns a boolean and never a Pod owner, so a
+ * verified binding never becomes a credential or an access grant.
+ */
+export function createMatrixStorageVerifier(
+  repository: Pick<PodLookupRepository, 'findByResourceIdentifier'>,
+): (canonicalRoot: string) => Promise<boolean> {
+  return async (canonicalRoot) => {
+    if (normalizeRoot(canonicalRoot) !== canonicalRoot) return false;
+    const pod = await repository.findByResourceIdentifier(canonicalRoot);
+    if (!pod) return false;
+    return [pod.baseUrl, pod.storageUrl].some(root => {
+      if (!root) return false;
+      try {
+        return normalizeRoot(root) === canonicalRoot;
+      } catch {
+        return false;
+      }
+    });
+  };
+}
+
 /** Preserve the authenticated caller; never borrow the selected Pod owner's credentials. */
 export async function resolveMatrixContext(
   request: AuthenticatedRequest,

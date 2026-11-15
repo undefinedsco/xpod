@@ -1,0 +1,23 @@
+{
+  "app": {
+    "base": "/app/",
+    "outDir": "../static/app",
+    "input": {
+      "main": "index.html",
+      "inrupt-smoke": "inrupt-smoke.html"
+    }
+  },
+  "dashboard": {
+    "base": "/dashboard/",
+    "outDir": "../static/dashboard",
+    "input": "dashboard.html"
+  },
+  "settings": {
+    "base": "/settings/",
+    "outDir": "../static/settings",
+    "input": {
+      "settings": "settings.html",
+      "auth-callback": "auth-callback.html"
+    }
+  }
+}

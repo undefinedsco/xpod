@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.20)
+project(pch_cmake CXX)
+add_compile_options(-H -Werror=invalid-pch)
+add_executable(pch main.cpp)
+target_precompile_headers(pch PRIVATE pch.hpp)

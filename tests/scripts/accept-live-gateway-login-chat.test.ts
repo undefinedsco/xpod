@@ -2,7 +2,8 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
-import { createOwnerCredentialFetch, prepareManagedLocalAcceptancePod, prepareManagedLocalAcceptancePods, parseKeyFile } from '../../scripts/accept-live-gateway-login-chat';
+import { createOwnerCredentialFetch, prepareManagedLocalAcceptancePod, prepareManagedLocalAcceptancePods, parseKeyFile,
+  requirePlatformBuiltinMode, requireReadOnlyPlatformBuiltin, selectDiscoveredModels } from '../../scripts/accept-live-gateway-login-chat';
 import { ProvisionCodeCodec } from '../../src/provision/ProvisionCodeCodec';
 import { createProvisionReceipt } from '../../src/provision/ProvisionReceiptCodec';
 import ts from 'typescript';
@@ -14,6 +15,61 @@ describe('real running Xpod login-to-chat acceptance runner', () => {
     expect(parseKeyFile('provider=unknown\napiKey=fixture-only')).toBeUndefined();
     expect(parseKeyFile('provider=deepseek\napiKey=')).toBeUndefined();
   });
+  it('treats explicit expectedModels as a requirement instead of falling back to unrelated models', () => {
+    const declared = parseKeyFile('provider=custom\napiKey=fixture-only\nbaseUrl=https://id-rc.example/v1\nexpectedModels=linx-lite\n');
+    expect(declared).toMatchObject({ id: 'custom', offeringId: 'openai-compatible', expected: ['linx-lite'], expectedSource: 'declared' });
+    expect(selectDiscoveredModels(declared!, [{ id: 'linx' }, { id: 'linx-lite' }]).map(model => model.id)).toEqual(['linx-lite']);
+    expect(() => selectDiscoveredModels(declared!, [{ id: 'unrelated' }, { id: 'also-unrelated' }]))
+      .toThrow('missing declared model(s): linx-lite');
+    // Named legacy keys keep the existing default-filter behaviour so unrelated diagnostics do not
+    // start failing on a provider whose default model list legitimately changed.
+    const legacy = parseKeyFile('OPENAI_API_KEY=fixture-only\n');
+    expect(legacy?.expectedSource).toBe('default');
+    expect(selectDiscoveredModels(legacy!, [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }]).map(model => model.id))
+      .toEqual(['a', 'b', 'c']);
+  });
+
+  it('fails the builtin flag closed outside cloud mode and on a non-1 value', () => {
+    expect(requirePlatformBuiltinMode(undefined, 'local')).toBe(false);
+    expect(requirePlatformBuiltinMode('', 'standalone')).toBe(false);
+    expect(requirePlatformBuiltinMode('1', 'cloud')).toBe(true);
+    expect(() => requirePlatformBuiltinMode('1', 'local')).toThrow('only supported for cloud mode');
+    expect(() => requirePlatformBuiltinMode('1', 'standalone')).toThrow('only supported for cloud mode');
+    expect(() => requirePlatformBuiltinMode('true', 'cloud')).toThrow('exactly 1');
+  });
+
+  it('requires the actual read-only builtin projection with both static models', () => {
+    const builtinProviderPool = {
+      id: 'xpod-builtin',
+      name: 'Xpod',
+      status: 'available',
+      builtin: true,
+      readOnly: true,
+      offerings: [],
+      credentials: [],
+      selectedModels: [
+        { id: 'linx', provider: 'xpod-builtin', displayName: 'linx', protocols: ['chatCompletions', 'responses'] },
+        { id: 'linx-lite', provider: 'xpod-builtin', displayName: 'linx-lite', protocols: ['chatCompletions', 'responses'] },
+      ],
+    };
+    // The real route answers `{ data: [...] }`; the bare array is accepted only as the same list.
+    expect(requireReadOnlyPlatformBuiltin({ data: [builtinProviderPool] }))
+      .toEqual({ id: 'xpod-builtin', models: ['linx', 'linx-lite'] });
+    expect(requireReadOnlyPlatformBuiltin([builtinProviderPool])).toEqual({ id: 'xpod-builtin', models: ['linx', 'linx-lite'] });
+    expect(() => requireReadOnlyPlatformBuiltin({ data: [] })).toThrow('exactly one');
+    expect(() => requireReadOnlyPlatformBuiltin({ data: [{
+      ...builtinProviderPool, selectedModels: [builtinProviderPool.selectedModels[0]],
+    }] })).toThrow('exactly the static model list');
+    expect(() => requireReadOnlyPlatformBuiltin({ data: [{
+      ...builtinProviderPool, selectedModels: [builtinProviderPool.selectedModels[0], { ...builtinProviderPool.selectedModels[1], provider: 'openai' }],
+    }] })).toThrow('different provider');
+    expect(() => requireReadOnlyPlatformBuiltin({ data: [{ ...builtinProviderPool, readOnly: false }] }))
+      .toThrow('read-only');
+    expect(() => requireReadOnlyPlatformBuiltin({ data: [
+      builtinProviderPool, { ...builtinProviderPool, id: 'other-builtin' },
+    ] })).toThrow('exactly one');
+  });
+
   it('type-checks the real canary against the current client and Pod store contracts', () => {
     const entry = path.resolve('scripts/accept-live-gateway-login-chat.ts');
     const program = ts.createProgram([entry], {
@@ -91,11 +147,12 @@ describe('real running Xpod login-to-chat acceptance runner', () => {
     );
   });
 
-  it('pins live acceptance to the selected Local Gateway and RC Pod authority', async () => {
+  it('pins live acceptance to the selected Xpod root and RC Pod authority', async () => {
     const script = await readFile(path.resolve('scripts/accept-live-gateway-login-chat.ts'), 'utf8');
 
-    expect(script).toContain('process.env.XPOD_LIVE_GATEWAY_URL');
-    expect(script).not.toContain('XPOD_LIVE_EXPECTED_POD_HOST_SUFFIX');
+    expect(script).toContain('process.env.XPOD_BASE_URL');
+    expect(script).not.toContain('XPOD_LIVE_GATEWAY_URL');
+    expect(script).not.toContain('XPOD_LIVE_BASE_URL');
     expect(script).toContain('Local route points at');
     expect(script).toContain('Canonical Pod route must use HTTPS');
     expect(script).toContain('Canonical Pod route is not a Cloud-assigned protocol address');

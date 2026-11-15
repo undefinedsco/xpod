@@ -1,0 +1,93 @@
+name: One controlled CSS native target product
+on:
+  workflow_call:
+    inputs:
+      target:
+        type: string
+        required: true
+permissions:
+  contents: read
+  actions: read
+  packages: write
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      runner: ${{ steps.target.outputs.runner }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.4.2
+      - id: target
+        env:
+          TARGET: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          bun -e 'import {appendFileSync} from "node:fs";import {cssNativeProducer} from "./scripts/module-product-targets.ts";appendFileSync(process.env.GITHUB_OUTPUT!,`runner=${cssNativeProducer(process.env.TARGET!).runner}\n`);'
+  native:
+    needs: resolve
+    uses: ./.github/workflows/css-native-source.yml
+    with:
+      target: ${{ inputs.target }}
+  products:
+    needs: [resolve, native]
+    runs-on: ${{ needs.resolve.outputs.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.21.1
+      - name: Produce the normal CSS preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CSS_NATIVE_ARTIFACT_ID: ${{ needs.native.outputs.artifact_id }}
+          CSS_NATIVE_ARTIFACT_DIGEST: ${{ needs.native.outputs.artifact_digest }}
+          CSS_NATIVE_SOURCE_SHA: ${{ needs.native.outputs.source_sha }}
+          CSS_NATIVE_RUN_ID: ${{ needs.native.outputs.run_id }}
+          CSS_NATIVE_RUN_ATTEMPT: ${{ needs.native.outputs.run_attempt }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p "$GITHUB_WORKSPACE/.test-data"
+          root="$GITHUB_WORKSPACE/.test-data/css-product-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ inputs.target }}"
+          echo "CSS_PRODUCT_ROOT=$root" >> "$GITHUB_ENV"
+          python3 scripts/css-module-producer.py --target "${{ inputs.target }}" --out "$root"
+      - name: Upload original preview and evidence
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: css-module-products-${{ inputs.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.CSS_PRODUCT_ROOT }}/product.tgz
+            ${{ env.CSS_PRODUCT_ROOT }}/source-materials/
+            ${{ env.CSS_PRODUCT_ROOT }}/producer.receipt.json
+            ${{ env.CSS_PRODUCT_ROOT }}/evidence/
+            ${{ env.CSS_PRODUCT_ROOT }}/originals/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload failure diagnostics
+        if: failure() && env.CSS_PRODUCT_ROOT != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: css-module-diagnostics-${{ inputs.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.CSS_PRODUCT_ROOT }}/producer.receipt.json
+            ${{ env.CSS_PRODUCT_ROOT }}/evidence/
+          if-no-files-found: warn
+          retention-days: 30

@@ -1,9 +1,13 @@
 import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import acme from 'acme-client';
 import { ClusterCertificateManager } from '../../src/edge/acme/ClusterCertificateManager';
+import { useCertificateTestClock } from '../helpers/certificateTestClock';
+
+afterEach(() => { vi.useRealTimers(); });
+
 
 const SAMPLE_CERT = `-----BEGIN CERTIFICATE-----
 MIICvjCCAaYCCQCzYZphWIDKfjANBgkqhkiG9w0BAQsFADAhMR8wHQYDVQQDDBZu
@@ -72,6 +76,7 @@ describe('ClusterCertificateManager', () => {
   });
 
   it('exposes runtime TLS status and renewal through a narrow public surface', async () => {
+    useCertificateTestClock();
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cluster-cert-status-'));
     const certPath = path.join(tmpDir, 'tls.crt');
     const keyPath = path.join(tmpDir, 'tls.key');

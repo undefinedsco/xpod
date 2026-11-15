@@ -7,7 +7,7 @@ if [ ! -d "$upstream/.git" ]; then
   git clone --filter=blob:none https://github.com/tursodatabase/agentfs "$upstream"
 fi
 git -C "$upstream" checkout --detach "$pin"
-for patch in fuse-revalidation.patch nfs-directory-cookie.patch; do
+for patch in fuse-revalidation.patch nfs-directory-cookie.patch fuse-owned-session-ready.patch; do
   if git -C "$upstream" apply --check --unidiff-zero "$script_dir/patches/$patch" 2>/dev/null; then
     git -C "$upstream" apply --unidiff-zero "$script_dir/patches/$patch"
   else

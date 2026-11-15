@@ -1,7 +1,7 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { observeSession } from '../../src/cli/agent-fs/session-view';
+import { observeSession } from '../../packages/xpod-afs/src/agent-fs/session-view';
 
 const dir = path.resolve('.test-data/agent-fs-session-view');
 afterEach(() => rmSync(dir, { recursive: true, force: true }));

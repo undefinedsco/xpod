@@ -7,6 +7,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Client } from 'pg';
+import { resolveFullIntegrationInfra } from '../helpers/fullIntegrationInfra';
 
 const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true';
 const SERVICE_READY_RETRIES = Number(process.env.XPOD_DOCKER_READY_RETRIES ?? '45');
@@ -21,7 +22,9 @@ suite('Cloud PG quota regression', () => {
   let pgClient: Client | null = null;
 
   beforeAll(async () => {
-    pgClient = new Client({ connectionString: process.env.XPOD_FULL_PG_URL ?? 'postgres://xpod:xpod@localhost:5432/xpod' });
+    pgClient = new Client({
+      connectionString: resolveFullIntegrationInfra().postgresUrl,
+    });
     await pgClient.connect();
 
     const ready = await waitForService(CLOUD_BASE_URL, SERVICE_READY_RETRIES, SERVICE_READY_DELAY_MS);

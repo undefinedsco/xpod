@@ -16,6 +16,7 @@ function client(provider: AiConnectionsProvider): AiConnectionsClient {
   return {
     webId: WEB_ID,
     apiBase: 'https://pod.example',
+    podBaseUrl: 'https://pod.example/',
     getServiceAccess: vi.fn(async () => ({ status: 'granted' })),
     listProviders: vi.fn(async () => []),
     // A capability-bearing model renders the glyph tooltips that share the

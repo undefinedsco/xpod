@@ -1,0 +1,116 @@
+[
+  {
+    "inRelease": {
+      "path": "trixie.inRelease.original",
+      "bytes": 140421,
+      "sha256": "0584fba32e13e0ab8285fb16c27adea1ec03a73669c18702821094fd6ca86675"
+    },
+    "plaintext": {
+      "path": "trixie.plaintext.original",
+      "bytes": 138612,
+      "sha256": "ed56aac47e7911e65ee63aae8d67e29f20e023f840e49f8ed037043a33de138a"
+    },
+    "status": {
+      "path": "trixie.status.original",
+      "bytes": 1086,
+      "sha256": "44aed6dc3af3e2a00e9633695b05221c4e8617722a7037b43ac1660fcf33310e"
+    },
+    "receipt": {
+      "path": "trixie.receipt.original",
+      "bytes": 780,
+      "sha256": "1597c6dec6d744b54c08188a1ae85c184bbd9edaba76b89a4d1937c027187a5c"
+    },
+    "supervision": {
+      "path": "trixie.supervision.original",
+      "bytes": 960,
+      "sha256": "4f0fc2d5f7eac959347bf7fc56fbc46d73d7bdcea8cafc5b59ff62d09071173d"
+    },
+    "suite": "trixie",
+    "supervisionRaw": {
+      "path": "trixie.supervisionRaw.original",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "stderr": {
+      "path": "trixie.stderr.original",
+      "bytes": 623,
+      "sha256": "4d57a42c44417ebb529aa673b8b4e36af35a3343e92b33667c7dacad6b94e40f"
+    }
+  },
+  {
+    "inRelease": {
+      "path": "trixie-updates.inRelease.original",
+      "bytes": 47340,
+      "sha256": "4ca6f1c5f290a1a1865561859b0405d03824c170d5df4de69240822667f1527a"
+    },
+    "plaintext": {
+      "path": "trixie-updates.plaintext.original",
+      "bytes": 45690,
+      "sha256": "09b518564d9a7c97af0548b72dd3e2bf9ca9b1c37bb4ad570fc59183bf416a4d"
+    },
+    "status": {
+      "path": "trixie-updates.status.original",
+      "bytes": 628,
+      "sha256": "6ac0e54d1c6fb070bc4bc8a702f1a6aa84c1246dddddf7f5d7cbe42e5d66e688"
+    },
+    "receipt": {
+      "path": "trixie-updates.receipt.original",
+      "bytes": 796,
+      "sha256": "5286373fac3385f0a492ce61de541d20b3a462e31b0ca5bfb96a035a35c3ced9"
+    },
+    "supervision": {
+      "path": "trixie-updates.supervision.original",
+      "bytes": 985,
+      "sha256": "a4c041bdbb030554c1fde39fa8863e2453ad6e3a0af5c7a04ca1c7ea928c5d9f"
+    },
+    "suite": "trixie-updates",
+    "supervisionRaw": {
+      "path": "trixie-updates.supervisionRaw.original",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "stderr": {
+      "path": "trixie-updates.stderr.original",
+      "bytes": 395,
+      "sha256": "24469cd4866eb5bb73e314355e5bb27e7d29e985e011cab15aac95fee23dfebd"
+    }
+  },
+  {
+    "inRelease": {
+      "path": "trixie-security.inRelease.original",
+      "bytes": 43409,
+      "sha256": "58e1c3a6e868e305500d4a02b4a9eb1f2add3fbcc9a2ea70cd9a4fc60dd3e813"
+    },
+    "plaintext": {
+      "path": "trixie-security.plaintext.original",
+      "bytes": 41759,
+      "sha256": "2417a963cfae0d5ac405dc563b61fa0edf5eae18fc40ee262456ac49555be390"
+    },
+    "status": {
+      "path": "trixie-security.status.original",
+      "bytes": 637,
+      "sha256": "689bda0dc30d028059497def85affae7e7ec49c271edca8e4171b39afac11580"
+    },
+    "receipt": {
+      "path": "trixie-security.receipt.original",
+      "bytes": 798,
+      "sha256": "aabb94bb2088d7889251369f6d4ece5870c834d2d83c958bb7fec8a0e8c0f965"
+    },
+    "supervision": {
+      "path": "trixie-security.supervision.original",
+      "bytes": 989,
+      "sha256": "c58b279dfd94ed028bbec9f72cbe465026dfd1144b1ff6251cce8f1787c2e025"
+    },
+    "suite": "trixie-security",
+    "supervisionRaw": {
+      "path": "trixie-security.supervisionRaw.original",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "stderr": {
+      "path": "trixie-security.stderr.original",
+      "bytes": 404,
+      "sha256": "1e50539a0b24dcc1fa736b598c840b44cad89a9894a5bd8688649ffbf992fa15"
+    }
+  }
+]

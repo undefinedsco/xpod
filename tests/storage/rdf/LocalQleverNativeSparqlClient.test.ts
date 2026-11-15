@@ -1,6 +1,8 @@
 import { rmSync } from 'node:fs';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { getSqliteRuntime } from '../../../src/storage/SqliteRuntime';
 import {
   LocalQleverNativeSparqlClient,
@@ -10,6 +12,13 @@ import {
 } from '../../../src/storage/rdf/LocalQleverNativeSparqlClient';
 import { createTestDir } from '../../utils/sqlite';
 import { createFakeQleverRuntimeCommand } from '../../helpers/qleverRuntime';
+
+const ownedClients = new Set<LocalQleverNativeSparqlClient>();
+afterAll(async () => {
+  const results = await Promise.allSettled([...ownedClients].map((client) => client.close()));
+  const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+  if (failures.length) throw new AggregateError(failures.map((result) => result.reason), 'Owned runtime cleanup failed');
+});
 
 const fixture = path.resolve(__dirname, '../../fixtures/fake-qlever-native-runtime.js');
 
@@ -22,7 +31,7 @@ function createClient(mode = 'normal', overrides: {
   startupTimeoutMs?: number;
   requestTimeoutMs?: number;
 } = {}): LocalQleverNativeSparqlClient {
-  return new LocalQleverNativeSparqlClient({
+  const client = new LocalQleverNativeSparqlClient({
     command: process.execPath,
     args: [ fixture, `--mode=${mode}` ],
     expectedNativeSparqlAbiVersion: 1,
@@ -30,6 +39,21 @@ function createClient(mode = 'normal', overrides: {
     ...(overrides.startupTimeoutMs === undefined ? {} : { startupTimeoutMs: overrides.startupTimeoutMs }),
     ...(overrides.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: overrides.requestTimeoutMs }),
   });
+  ownedClients.add(client);
+  return client;
+}
+
+function createShutdownClient(onShutdown: string): LocalQleverNativeSparqlClient {
+  const script = `
+    console.log(JSON.stringify({type:'ready',abiVersion:1,physicalBackendAbiVersion:7,backend:'sqlite'}));
+    setInterval(() => {}, 1000);
+    process.stdin.on('data', chunk => {
+      if (chunk.toString().includes('shutdown')) { ${onShutdown} }
+    });
+  `;
+  const client = new LocalQleverNativeSparqlClient({ command: process.execPath, args: ['-e', script] });
+  ownedClients.add(client);
+  return client;
 }
 
 function seedRuntimeDatabase(databasePath: string): void {
@@ -306,6 +330,83 @@ describe('LocalQleverNativeSparqlClient', () => {
     await client.close();
     expect(Date.now() - startedAt).toBeLessThan(2_000);
     expect(isProcessAlive(pid as number)).toBe(false);
+  });
+
+  it('shares concurrent close until the real child is reaped', async () => {
+    const client = createClient();
+    await client.start();
+    const pid = (client as any).child.pid as number;
+    const first = client.close();
+    const second = client.close();
+    expect(second).toBe(first);
+    await Promise.all([first, second]);
+    expect(isProcessAlive(pid)).toBe(false);
+  });
+
+  it('rejects a child closure timeout and retries without treating exit as drained stdio', async () => {
+    vi.useFakeTimers();
+    const client = createClient();
+    const child = Object.assign(new EventEmitter(), {
+      stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+      exitCode: 0, signalCode: null, kill: vi.fn(() => true),
+    });
+    // An exited child can still own open stdio. Only close settles ownership.
+    (client as any).child = child;
+    try {
+      const closing = client.close();
+      const rejected = expect(closing).rejects.toMatchObject({ code: 'qlever_runtime_close_timeout' });
+      await vi.advanceTimersByTimeAsync(15_000);
+      await rejected;
+      expect((client as any).failedChild).toBe(child);
+      const retry = client.close();
+      child.emit('close', 0, null);
+      await retry;
+      expect((client as any).failedChild).toBeUndefined();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      child.emit('close', 0, null);
+      child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy();
+      vi.useRealTimers();
+    }
+  });
+
+  it('surfaces a real runtime nonzero shutdown after reaping it', async () => {
+    const client = createShutdownClient('process.exit(7)');
+    await client.start();
+    const pid = (client as any).child.pid as number;
+    await expect(client.close()).rejects.toMatchObject({
+      code: 'qlever_runtime_shutdown_failed', message: expect.stringContaining('code 7'),
+    });
+    expect(isProcessAlive(pid)).toBe(false);
+    // Cleanup retry confirms absence without repeating the original failure.
+    await client.close();
+  });
+
+  it('surfaces real shutdown escalation even when SIGTERM successfully reaps the runtime', async () => {
+    const client = createShutdownClient('');
+    await client.start();
+    const pid = (client as any).child.pid as number;
+    await expect(client.close()).rejects.toMatchObject({
+      code: 'qlever_runtime_shutdown_failed', message: expect.stringContaining('required termination'),
+    });
+    expect(isProcessAlive(pid)).toBe(false);
+    await client.close();
+  }, 20_000);
+
+  it('waits for failed process cleanup before starting another runtime', async () => {
+    const client = createClient();
+    let release!: () => void;
+    (client as any).failedProcessCleanup = new Promise<void>((resolve) => { release = resolve; });
+    const starting = client.start();
+    await Promise.resolve();
+    expect((client as any).child).toBeUndefined();
+    release();
+    try {
+      await starting;
+      expect((client as any).child.pid).toEqual(expect.any(Number));
+    } finally {
+      await client.close();
+    }
   });
 
   it('does not restart after explicit close', async () => {

@@ -270,7 +270,7 @@ function patchResourceDpop(content, kind) {
   return `${content}\n// ${RESOURCE_DPOP_MARKER}\n`;
 }
 
-function patchInstalledCore(repositoryRoot) {
+function patchInstalledCore(repositoryRoot, { runtimeOnly = false } = {}) {
   const packageRoot = path.join(repositoryRoot, 'node_modules', '@inrupt', 'solid-client-authn-core');
   const manifest = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
   if (manifest.version !== SUPPORTED_VERSION) throw new Error(`Unsupported @inrupt/solid-client-authn-core ${manifest.version}; expected ${SUPPORTED_VERSION}`);
@@ -282,7 +282,7 @@ function patchInstalledCore(repositoryRoot) {
     ['dist/index.mjs', 'esm'],
   ];
   // Validate every pinned shape before writing any installed core file.
-  const updates = targets.map(([file, kind]) => {
+  const updates = targets.filter(([file]) => !runtimeOnly || file.startsWith('dist/')).map(([file, kind]) => {
     const target = path.join(packageRoot, file);
     const original = fs.readFileSync(target, 'utf8');
     return { target, original, updated: patchResourceDpop(original, kind) };
@@ -294,7 +294,7 @@ function patchInstalledCore(repositoryRoot) {
   return { patched, alreadyPatched: updates.length - patched };
 }
 
-function patchInstalledPackage(repositoryRoot = path.join(__dirname, '..')) {
+function patchInstalledPackage(repositoryRoot = path.join(__dirname, '..'), { runtimeOnly = false } = {}) {
   const packageRoot = path.join(
     repositoryRoot,
     'node_modules',
@@ -326,7 +326,7 @@ function patchInstalledPackage(repositoryRoot = path.join(__dirname, '..')) {
   ];
   let patched = 0;
   let alreadyPatched = 0;
-  for (const [relativePath, patcher] of targets) {
+  for (const [relativePath, patcher] of targets.filter(([file]) => !runtimeOnly || file.startsWith('dist/'))) {
     const targetPath = path.join(packageRoot, relativePath);
     const original = fs.readFileSync(targetPath, 'utf8');
     const updated = patcher(original);
@@ -337,7 +337,7 @@ function patchInstalledPackage(repositoryRoot = path.join(__dirname, '..')) {
       patched += 1;
     }
   }
-  const core = patchInstalledCore(repositoryRoot);
+  const core = patchInstalledCore(repositoryRoot, { runtimeOnly });
   patched += core.patched;
   alreadyPatched += core.alreadyPatched;
   console.log(

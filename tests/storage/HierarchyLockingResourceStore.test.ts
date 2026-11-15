@@ -2,7 +2,7 @@ import { setImmediate } from 'node:timers/promises';
 import { PassThrough } from 'node:stream';
 import {
   BaseIdentifierStrategy, BasicRepresentation, GreedyReadWriteLocker, MemoryMapStorage, MemoryResourceLocker,
-  WrappedExpiringReadWriteLocker,
+  WrappedExpiringReadWriteLocker, InternalServerError,
   RepresentationMetadata, BasicConditions, PreconditionFailedHttpError,
   type AuxiliaryIdentifierStrategy, type ChangeMap, type ResourceIdentifier, type ResourceStore,
 } from '@solid/community-server';
@@ -326,4 +326,512 @@ describe('HierarchyLockingResourceStore parent/child mutation boundary', () => {
       vi.restoreAllMocks();
     });
   }
+});
+
+/**
+ * Regressions for the pending representation/child lease gap: an acquired
+ * ancestor read lock must stay alive while a descendant lock acquisition or the
+ * representation creation is still pending, then hand off to the original CSS
+ * stream-read renewal. These use the real WrappedExpiringReadWriteLocker with a
+ * fake clock, so an expired lease really rejects.
+ */
+describe('HierarchyLockingResourceStore pending read lease renewal', () => {
+  const target = { path: `${root}pod/dir/file.txt` };
+
+  function fakeLockTimers(): void {
+    vi.useFakeTimers({ toFake: [ 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval' ] });
+  }
+
+  /**
+   * Counts live setInterval timers so a leak cannot hide behind a passing
+   * assertion, and can manually fire the still-active callbacks exactly like
+   * the ROOT outer-loss counterexample does. Firing after an abort must be 0.
+   */
+  function trackIntervals(): { active: () => number; fire: () => number; restore: () => void } {
+    const realSetInterval = globalThis.setInterval;
+    const realClearInterval = globalThis.clearInterval;
+    const timers = new Map<ReturnType<typeof setInterval>, () => void>();
+    (globalThis as any).setInterval = (...args: any[]) => {
+      const timer = (realSetInterval as any)(...args);
+      timers.set(timer, args[0]);
+      return timer;
+    };
+    (globalThis as any).clearInterval = (timer: any) => {
+      timers.delete(timer);
+      return realClearInterval(timer);
+    };
+    return {
+      active: () => timers.size,
+      fire: () => { let fired = 0; for (const callback of [ ...timers.values() ]) { callback(); fired += 1; } return fired; },
+      restore: () => { globalThis.setInterval = realSetInterval; globalThis.clearInterval = realClearInterval; },
+    };
+  }
+
+  function realLocks(expiration = 6000): WrappedExpiringReadWriteLocker {
+    return new WrappedExpiringReadWriteLocker(new GreedyReadWriteLocker(new MemoryResourceLocker(), new MemoryMapStorage<number>()), expiration);
+  }
+
+  function store(source: ResourceStore, locks: import('@solid/community-server').ExpiringReadWriteLocker): HierarchyLockingResourceStore {
+    return new HierarchyLockingResourceStore(source, locks, { isAuxiliaryIdentifier: () => false } as unknown as AuxiliaryIdentifierStrategy, new Strategy());
+  }
+
+  async function drain(representation: { data: AsyncIterable<unknown> }): Promise<string> {
+    const chunks: Buffer[] = [];
+    for await (const chunk of representation.data) chunks.push(Buffer.from(chunk as Buffer));
+    return Buffer.concat(chunks).toString();
+  }
+
+  it('(a) keeps a pending source read alive across multiple leases and blocks a writer', async () => {
+    fakeLockTimers();
+    const intervals = trackIntervals();
+    const entered = barrier();
+    const unblock = barrier();
+    const body = new PassThrough();
+    const source = {
+      getRepresentation: async () => { entered.release(); await unblock.promise; return new BasicRepresentation(body, 'text/plain', true); },
+    } as unknown as ResourceStore;
+    const locks = realLocks();
+    const hierarchy = store(source, locks);
+    try {
+      const reading = hierarchy.getRepresentation(target, {});
+      await entered.promise;
+      // Two full production leases pass while the source is still pending.
+      await vi.advanceTimersByTimeAsync(13_000);
+
+      let writerAcquired = false;
+      const writing = locks.withWriteLock(target, async () => { writerAcquired = true; });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(writerAcquired).toBe(false);
+
+      unblock.release();
+      const representation = await reading;
+      expect(writerAcquired).toBe(false);
+      body.end('renewed body');
+      await expect(drain(representation)).resolves.toBe('renewed body');
+      await writing;
+      expect(writerAcquired).toBe(true);
+      expect(intervals.active()).toBe(0);
+    } finally {
+      body.destroy();
+      intervals.restore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('(b) revives a held ancestor while the child lock acquisition waits longer than a lease', async () => {
+    fakeLockTimers();
+    const intervals = trackIntervals();
+    const sourceCalls: string[] = [];
+    const body = new PassThrough();
+    const source = {
+      getRepresentation: async () => { sourceCalls.push('read'); return new BasicRepresentation(body, 'text/plain', true); },
+    } as unknown as ResourceStore;
+    // Hold a raw (non-expiring) write lock on the shared locker so the deepest
+    // read acquisition is queued while the ancestors hold their read locks.
+    const greedy = new GreedyReadWriteLocker(new MemoryResourceLocker(), new MemoryMapStorage<number>());
+    const locks = new WrappedExpiringReadWriteLocker(greedy, 6000);
+    const hierarchy = store(source, locks);
+    let releaseWrite!: () => void;
+    try {
+      const writeHeld = new Promise<void>((resolve) => { releaseWrite = resolve; });
+      const blocker = greedy.withWriteLock(target, async () => { await writeHeld; });
+      const reading = hierarchy.getRepresentation(target, {});
+      await setImmediate();
+      await setImmediate();
+      expect(intervals.active()).toBeGreaterThan(0);
+
+      // The child waits longer than a full lease: held ancestors must renew
+      // themselves and the source must not run before the child is acquired.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(sourceCalls).toEqual([]);
+
+      releaseWrite();
+      await vi.advanceTimersByTimeAsync(1_000);
+      const representation = await reading;
+      expect(sourceCalls).toEqual([ 'read' ]);
+      body.end('child body');
+      await expect(drain(representation as any)).resolves.toBe('child body');
+      await blocker;
+      expect(intervals.active()).toBe(0);
+    } finally {
+      releaseWrite();
+      body.destroy();
+      intervals.restore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('(c) stops the pending interval once a representation is delivered and lets an unread stream expire', async () => {
+    fakeLockTimers();
+    const intervals = trackIntervals();
+    const body = new PassThrough();
+    const source = {
+      getRepresentation: async () => new BasicRepresentation(body, 'text/plain', true),
+    } as unknown as ResourceStore;
+    const locks = realLocks();
+    const hierarchy = store(source, locks);
+    try {
+      const representation = await hierarchy.getRepresentation(target, {});
+      // The pending interval has handed off to the stream-read renewal.
+      expect(intervals.active()).toBe(0);
+
+      let writerAcquired = false;
+      const writing = locks.withWriteLock(target, async () => { writerAcquired = true; });
+      await vi.advanceTimersByTimeAsync(7_000);
+      // The unread stream expired by the original lease, releasing ancestor locks.
+      expect(writerAcquired).toBe(true);
+      await writing;
+      expect(body.destroyed).toBe(true);
+      expect(intervals.active()).toBe(0);
+      expect(representation.data).toBeDefined();
+    } finally {
+      body.destroy();
+      intervals.restore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('(c) lets a read-then-stalled stream expire and releases the writer without an immortal timer', async () => {
+    fakeLockTimers();
+    const intervals = trackIntervals();
+    const body = new PassThrough();
+    const source = {
+      getRepresentation: async () => new BasicRepresentation(body, 'text/plain', true),
+    } as unknown as ResourceStore;
+    const locks = realLocks();
+    const hierarchy = store(source, locks);
+    try {
+      const representation = await hierarchy.getRepresentation(target, {});
+      const iterator = (representation.data as AsyncIterable<Buffer>)[Symbol.asyncIterator]();
+      body.write('first');
+      const first = await iterator.next();
+      expect(Buffer.from(first.value!).toString()).toBe('first');
+      // A read renewed the lease once; the stall then exceeds the 6s lease.
+      await vi.advanceTimersByTimeAsync(7_000);
+      let writerAcquired = false;
+      const writing = locks.withWriteLock(target, async () => { writerAcquired = true; });
+      await vi.advanceTimersByTimeAsync(500);
+      expect(writerAcquired).toBe(true);
+      await writing;
+      expect(intervals.active()).toBe(0);
+    } finally {
+      body.destroy();
+      intervals.restore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('(d) preserves a source rejection identity and clears timers and locks', async () => {
+    fakeLockTimers();
+    const intervals = trackIntervals();
+    const failure = new Error('source read exploded');
+    const source = {
+      getRepresentation: async () => { throw failure; },
+    } as unknown as ResourceStore;
+    const locks = realLocks();
+    const hierarchy = store(source, locks);
+    try {
+      await expect(hierarchy.getRepresentation(target, {})).rejects.toBe(failure);
+      let writerAcquired = false;
+      const writing = locks.withWriteLock(target, async () => { writerAcquired = true; });
+      await vi.advanceTimersByTimeAsync(500);
+      await writing;
+      expect(writerAcquired).toBe(true);
+      expect(intervals.active()).toBe(0);
+    } finally {
+      intervals.restore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('(d) releases ancestor locks on stream end, close and error', async () => {
+    fakeLockTimers();
+    const intervals = trackIntervals();
+    const locks = realLocks();
+    const hierarchy = store({ getRepresentation: async () => new BasicRepresentation(new PassThrough(), 'text/plain', true) } as unknown as ResourceStore, locks);
+    const outcomes: Array<'end' | 'close' | 'error'> = [ 'end', 'close', 'error' ];
+    try {
+      for (const outcome of outcomes) {
+        const body = new PassThrough();
+        const localLocks = realLocks();
+        const local = store({ getRepresentation: async () => new BasicRepresentation(body, 'text/plain', true) } as unknown as ResourceStore, localLocks);
+        const representation = await local.getRepresentation(target, {});
+        const iterator = (representation.data as AsyncIterable<Buffer>)[Symbol.asyncIterator]();
+        if (outcome === 'end') { body.end('done'); await iterator.next(); }
+        if (outcome === 'close') body.destroy();
+        if (outcome === 'error') body.destroy(new Error('stream failed'));
+        await vi.advanceTimersByTimeAsync(50);
+        let writerAcquired = false;
+        const writing = localLocks.withWriteLock(target, async () => { writerAcquired = true; });
+        await vi.advanceTimersByTimeAsync(500);
+        await writing;
+        expect(writerAcquired, outcome).toBe(true);
+      }
+      expect(intervals.active()).toBe(0);
+      expect(locks).toBeDefined();
+      expect(hierarchy).toBeDefined();
+    } finally {
+      intervals.restore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('(e) refuses a child that was still acquiring when the outer lease was lost', async () => {
+    fakeLockTimers();
+    const intervals = trackIntervals();
+    const lostOuter = barrier();
+    const sourceCalls: string[] = [];
+    const real = realLocks();
+    const locks = {
+      withReadLock: <T>(id: ResourceIdentifier, callback: (maintainLock: () => void) => Promise<T>): Promise<T> => {
+        if (id.path !== root) return real.withReadLock(id, callback);
+        return Promise.race([
+          callback(() => undefined),
+          lostOuter.promise.then(() => { throw new InternalServerError('Lock expired after 6000ms on /'); }),
+        ]);
+      },
+      withWriteLock: real.withWriteLock.bind(real),
+    } as unknown as import('@solid/community-server').ExpiringReadWriteLocker;
+    const source = {
+      getRepresentation: async () => { sourceCalls.push('read'); return new BasicRepresentation('late', 'text/plain', true); },
+    } as unknown as ResourceStore;
+    const hierarchy = store(source, locks);
+    try {
+      // Block the deepest child acquisition with a real held write lock.
+      let releaseWrite!: () => void;
+      const writeHeld = new Promise<void>((resolve) => { releaseWrite = resolve; });
+      const blocker = real.withWriteLock(target, async () => { await writeHeld; });
+
+      const reading = hierarchy.getRepresentation(target, {}) as Promise<{ data: unknown }>;
+      await setImmediate();
+      lostOuter.release();
+      await expect(reading).rejects.toBeInstanceOf(InternalServerError);
+
+      // The child may now acquire, but the aborted chain must never run the source.
+      releaseWrite();
+      await vi.advanceTimersByTimeAsync(2_000);
+      await blocker;
+      expect(sourceCalls).toEqual([]);
+      expect(intervals.active()).toBe(0);
+    } finally {
+      vi.restoreAllMocks();
+      intervals.restore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('(e) destroys a representation delivered after the outer lease was lost', async () => {
+    fakeLockTimers();
+    const intervals = trackIntervals();
+    const lostOuter = barrier();
+    const sourceGate = barrier();
+    const lateBody = new PassThrough();
+    const real = realLocks();
+    const locks = {
+      withReadLock: <T>(id: ResourceIdentifier, callback: (maintainLock: () => void) => Promise<T>): Promise<T> => {
+        if (id.path !== root) return real.withReadLock(id, callback);
+        return Promise.race([
+          callback(() => undefined),
+          lostOuter.promise.then(() => { throw new InternalServerError('Lock expired after 6000ms on /'); }),
+        ]);
+      },
+      withWriteLock: real.withWriteLock.bind(real),
+    } as unknown as import('@solid/community-server').ExpiringReadWriteLocker;
+    const source = {
+      getRepresentation: async () => { await sourceGate.promise; return new BasicRepresentation(lateBody, 'text/plain', true); },
+    } as unknown as ResourceStore;
+    const hierarchy = store(source, locks);
+    try {
+      const reading = hierarchy.getRepresentation(target, {}) as Promise<{ data: unknown }>;
+      await setImmediate();
+      // Lose the outer lease while the source read is still in flight.
+      lostOuter.release();
+      await expect(reading).rejects.toBeInstanceOf(InternalServerError);
+      // The late representation must be destroyed, not handed out.
+      sourceGate.release();
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(lateBody.destroyed).toBe(true);
+      expect(intervals.active()).toBe(0);
+    } finally {
+      sourceGate.release();
+      vi.restoreAllMocks();
+      intervals.restore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('(e) clears every pending renewal timer immediately when the outer lease is lost (source pending)', async () => {
+    fakeLockTimers();
+    const intervals = trackIntervals();
+    const lostOuter = barrier();
+    const sourceEntered = barrier();
+    const sourceGate = barrier();
+    const lateBody = new PassThrough();
+    const sourceCalls: string[] = [];
+    const real = realLocks();
+    const locks = {
+      withReadLock: <T>(id: ResourceIdentifier, callback: (maintainLock: () => void) => Promise<T>): Promise<T> => {
+        if (id.path !== root) return real.withReadLock(id, callback);
+        // Race the real wrapper so the callback keeps running after expiry,
+        // exactly like WrappedExpiringReadWriteLocker does in production.
+        return Promise.race([
+          real.withReadLock(id, callback),
+          lostOuter.promise.then(() => { throw new InternalServerError('Lock expired after 6000ms on /'); }),
+        ]);
+      },
+      withWriteLock: real.withWriteLock.bind(real),
+    } as unknown as import('@solid/community-server').ExpiringReadWriteLocker;
+    const source = {
+      getRepresentation: async () => {
+        sourceCalls.push('read');
+        sourceEntered.release();
+        await sourceGate.promise;
+        return new BasicRepresentation(lateBody, 'text/plain', true);
+      },
+    } as unknown as ResourceStore;
+    const hierarchy = store(source, locks);
+    try {
+      const reading = hierarchy.getRepresentation(target, {}) as Promise<{ data: unknown }>;
+      await sourceEntered.promise;
+      // Ancestor layers hold pending renewals while the source is still in flight.
+      expect(intervals.active()).toBeGreaterThan(0);
+
+      lostOuter.release();
+      await expect(reading).rejects.toBeInstanceOf(InternalServerError);
+
+      // IMMEDIATELY after the outer reject, before the source gate is opened:
+      // no timer may survive and manually firing callbacks must invoke nothing.
+      expect(intervals.active()).toBe(0);
+      expect(intervals.fire()).toBe(0);
+      expect(sourceCalls).toEqual([ 'read' ]);
+      expect(lateBody.destroyed).toBe(false);
+
+      // Releasing the still-pending source must destroy the late representation.
+      sourceGate.release();
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(lateBody.destroyed).toBe(true);
+      expect(sourceCalls).toEqual([ 'read' ]);
+      expect(intervals.active()).toBe(0);
+      expect(intervals.fire()).toBe(0);
+    } finally {
+      sourceGate.release();
+      intervals.restore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('(e) clears every pending renewal timer immediately when the outer lease is lost (child acquisition pending)', async () => {
+    fakeLockTimers();
+    const intervals = trackIntervals();
+    const lostOuter = barrier();
+    const sourceCalls: string[] = [];
+    const real = realLocks();
+    const locks = {
+      withReadLock: <T>(id: ResourceIdentifier, callback: (maintainLock: () => void) => Promise<T>): Promise<T> => {
+        if (id.path !== root) return real.withReadLock(id, callback);
+        return Promise.race([
+          real.withReadLock(id, callback),
+          lostOuter.promise.then(() => { throw new InternalServerError('Lock expired after 6000ms on /'); }),
+        ]);
+      },
+      withWriteLock: real.withWriteLock.bind(real),
+    } as unknown as import('@solid/community-server').ExpiringReadWriteLocker;
+    const source = {
+      getRepresentation: async () => { sourceCalls.push('read'); return new BasicRepresentation('late', 'text/plain', true); },
+    } as unknown as ResourceStore;
+    const hierarchy = store(source, locks);
+    let releaseWrite!: () => void;
+    try {
+      // Hold the target write lock so the deepest read acquisition stays queued.
+      const writeHeld = new Promise<void>((resolve) => { releaseWrite = resolve; });
+      const blocker = real.withWriteLock(target, async () => { await writeHeld; });
+
+      const reading = hierarchy.getRepresentation(target, {}) as Promise<{ data: unknown }>;
+      await setImmediate();
+      await setImmediate();
+      expect(intervals.active()).toBeGreaterThan(0);
+
+      lostOuter.release();
+      await expect(reading).rejects.toBeInstanceOf(InternalServerError);
+
+      // IMMEDIATELY after the outer reject, before the writer is released.
+      expect(intervals.active()).toBe(0);
+      expect(intervals.fire()).toBe(0);
+      expect(sourceCalls).toEqual([]);
+
+      // The child may acquire now, but the aborted chain must never run the source.
+      releaseWrite();
+      await vi.advanceTimersByTimeAsync(2_000);
+      await blocker;
+      expect(sourceCalls).toEqual([]);
+      expect(intervals.active()).toBe(0);
+      expect(intervals.fire()).toBe(0);
+    } finally {
+      releaseWrite();
+      intervals.restore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('(f) keeps the existing write root-first acquisition, renewal and metadata refresh order', async () => {
+    fakeLockTimers();
+    const intervals = trackIntervals();
+    const events: string[] = [];
+    const source = {
+      setRepresentation: async () => { events.push('source'); return new Map() as ChangeMap; },
+      hasResource: async () => false,
+    } as unknown as ResourceStore;
+    const locks = realLocks();
+    const order: string[] = [];
+    const originalWrite = locks.withWriteLock.bind(locks);
+    vi.spyOn(locks, 'withWriteLock').mockImplementation((id, callback) => {
+      order.push(id.path);
+      return originalWrite(id, callback);
+    });
+    const auxiliary = { isAuxiliaryIdentifier: () => false } as unknown as AuxiliaryIdentifierStrategy;
+    const hierarchy = new HierarchyLockingResourceStore(source, locks, auxiliary, new Strategy());
+    try {
+      await hierarchy.setRepresentation(target, new BasicRepresentation());
+      // Root-first: every ancestor precedes the target, and the source runs last.
+      expect(order).toEqual([ root, `${root}pod/`, `${root}pod/dir/`, target.path ]);
+      expect(events).toEqual([ 'source' ]);
+      expect(intervals.active()).toBe(0);
+    } finally {
+      vi.restoreAllMocks();
+      intervals.restore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('(g) rejects when the underlying source violates its return contract and resolves undefined', async () => {
+    fakeLockTimers();
+    const intervals = trackIntervals();
+    const source = {
+      getRepresentation: async () => undefined as unknown as BasicRepresentation,
+    } as unknown as ResourceStore;
+    const locks = realLocks();
+    const hierarchy = store(source, locks);
+    try {
+      // A contract-violating source resolves no representation. The original
+      // CSS consumer rejects with a TypeError; the hierarchy must not swallow
+      // that failure into an outward promise that never settles.
+      const settledPromise = Promise.race([
+        hierarchy.getRepresentation(target, {}).then(
+          () => ({ status: 'resolved' as const }),
+          (error: unknown) => ({ status: 'rejected' as const, error }),
+        ),
+        new Promise<{ status: 'observer_timeout' }>((resolve) => {
+          setTimeout(() => resolve({ status: 'observer_timeout' }), 50);
+        }),
+      ]);
+      await vi.advanceTimersByTimeAsync(50);
+      const settled = await settledPromise;
+      expect(settled.status).toBe('rejected');
+      if (settled.status === 'rejected') expect(settled.error).toBeInstanceOf(TypeError);
+      expect(intervals.active()).toBe(0);
+    } finally {
+      intervals.restore();
+      vi.useRealTimers();
+    }
+  });
 });

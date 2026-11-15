@@ -10,6 +10,7 @@ const embeddedNativeSource = requireFromHere('../../scripts/lib/embedded-native-
   EMBEDDED_NATIVE_SOURCE_PINS: Record<string, unknown>;
   resolveEmbeddedNativeSourcePin(packageName?: string): SourcePin;
   obtainEmbedDocs(pin: SourcePin, options?: { cacheDir?: string; docsRoot?: string }): Promise<{ docsRoot: string; obtained: string }>;
+  obtainSourceArchive(pin: SourcePin, options?: { cacheDir?: string; artifactPath?: string }): Promise<{ path: string; obtained: 'provided' | 'cache' | 'download' }>;
   assertSourcePinMatchesInstalled(options: {
     pin: SourcePin;
     nodeModulesRoot: string;
@@ -49,7 +50,7 @@ interface SourcePin {
   targets: Record<string, { binarySha256: string; binarySizeBytes: number; binaryVersionString: string }>;
   upstream: { repository: string; tag: string; commit: string };
   license: { installedRelativePath: string; sha256: string; sizeBytes: number; spdx: string; futureLicense: string; copyright: string };
-  sourceArchive: { url: string; fileName: string; sha256: string; sizeBytes: number; memberCount: number; rootDir: string };
+  sourceArchive: { url: string; urlTemplate?: string; fileName: string; sha256: string; sizeBytes: number; memberCount: number; rootDir: string };
   embedDocs: { repository: string; commit: string; sourcePath: string; fileCount: number; filesSha256Aggregate: string; rawFileUrlTemplate: string; treeApiUrlTemplate: string };
 }
 
@@ -367,7 +368,16 @@ describe('embedded native CLI source carrier', () => {
   });
 });
 
-describe('embedded docs GitHub reliability (rate-limit 403)', () => {
+function makePinnedSyntheticPin(root: string): SourcePin {
+  const pin = makeSyntheticPin(root);
+  const fixed = embeddedNativeSource.resolveEmbeddedNativeSourcePin().embedDocs;
+  pin.embedDocs.commit = fixed.commit;
+  pin.embedDocs.treeApiUrlTemplate = fixed.treeApiUrlTemplate;
+  pin.embedDocs.rawFileUrlTemplate = fixed.rawFileUrlTemplate;
+  return pin;
+}
+
+describe('embedded docs GitHub reliability (HTTP 403)', () => {
   const realFetch = globalThis.fetch;
   const realGhToken = process.env.GH_TOKEN;
 
@@ -386,8 +396,8 @@ describe('embedded docs GitHub reliability (rate-limit 403)', () => {
     const calls: FetchCall[] = [];
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
-      const headers = (init?.headers ?? {}) as Record<string, string>;
-      calls.push({ url, authorization: headers.authorization, redirect: init?.redirect as string | undefined });
+      const headers = new Headers(init?.headers);
+      calls.push({ url, authorization: headers.get('authorization') ?? undefined, redirect: init?.redirect as string | undefined });
       return handler(url);
     }) as unknown as typeof fetch;
     return calls;
@@ -399,7 +409,7 @@ describe('embedded docs GitHub reliability (rate-limit 403)', () => {
 
   it('fails closed on the anonymous 403 without inventing a fallback or partial cache', async () => {
     const root = newRoot();
-    const pin = makeSyntheticPin(root);
+    const pin = makePinnedSyntheticPin(root);
     delete process.env.GH_TOKEN;
     const calls = installMockFetch(() => new Response(
       JSON.stringify({ message: 'API rate limit exceeded for 1.2.3.4' }),
@@ -412,13 +422,13 @@ describe('embedded docs GitHub reliability (rate-limit 403)', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].url).toContain('https://api.github.com/repos/inngest/website/git/trees/');
     expect(calls[0].authorization).toBeUndefined();
-    expect(calls[0].redirect).toBe('follow');
+    expect(calls[0].redirect).toBe('manual');
     expect(existsSync(path.join(root, 'cache'))).toBe(false);
   });
 
   it('authenticates the exact api.github.com tree read and completes the pinned docs', async () => {
     const root = newRoot();
-    const pin = makeSyntheticPin(root);
+    const pin = makePinnedSyntheticPin(root);
     const docsRoot = path.join(root, 'docs');
     process.env.GH_TOKEN = '  ghs_test_ci_token  ';
     const calls = installMockFetch((url) => {
@@ -455,7 +465,7 @@ describe('embedded docs GitHub reliability (rate-limit 403)', () => {
     const rawCalls = calls.filter((call) => call.url.startsWith('https://raw.githubusercontent.com/'));
     expect(apiCalls).toHaveLength(1);
     expect(apiCalls[0].authorization).toBe('Bearer ghs_test_ci_token');
-    expect(apiCalls[0].redirect).toBe('error');
+    expect(apiCalls[0].redirect).toBe('manual');
     expect(rawCalls.length).toBeGreaterThan(0);
     for (const call of rawCalls) {
       expect(call.authorization).toBeUndefined();
@@ -471,22 +481,18 @@ describe('embedded docs GitHub reliability (rate-limit 403)', () => {
       'https://evil.example.com/repos/inngest/website/git/trees/<commit>?recursive=1',
     ]) {
       const root = newRoot();
-      const pin = withTreeUrl(makeSyntheticPin(root), template);
+      const pin = withTreeUrl(makePinnedSyntheticPin(root), template);
       const calls = installMockFetch(() => new Response('blocked', { status: 403 }));
 
       await expect(embeddedNativeSource.obtainEmbedDocs(pin, { cacheDir: path.join(root, 'cache') }))
-        .rejects.toThrow(/embedded docs tree: HTTP 403/);
-
-      expect(calls).toHaveLength(1);
-      expect(calls[0].url.startsWith(template.replace('<commit>', pin.embedDocs.commit))).toBe(true);
-      expect(calls[0].authorization).toBeUndefined();
-      expect(calls[0].redirect).toBe('follow');
+        .rejects.toThrow(/pinned HTTPS API identity/);
+      expect(calls).toHaveLength(0);
     }
   });
 
   it('fails closed when the authenticated tree read is redirected', async () => {
     const root = newRoot();
-    const pin = makeSyntheticPin(root);
+    const pin = makePinnedSyntheticPin(root);
     process.env.GH_TOKEN = 'ghs_test_ci_token';
     const calls = installMockFetch(() => new Response(null, {
       status: 302,
@@ -494,11 +500,141 @@ describe('embedded docs GitHub reliability (rate-limit 403)', () => {
     }));
 
     await expect(embeddedNativeSource.obtainEmbedDocs(pin, { cacheDir: path.join(root, 'cache') }))
-      .rejects.toThrow(/embedded docs tree: HTTP 302/);
+      .rejects.toThrow(/redirect refused/);
 
     expect(calls).toHaveLength(1);
     expect(calls[0].authorization).toBe('Bearer ghs_test_ci_token');
-    expect(calls[0].redirect).toBe('error');
+    expect(calls[0].redirect).toBe('manual');
     expect(existsSync(path.join(root, 'cache'))).toBe(false);
+  });
+});
+
+describe('cold-cache embedded docs acquisition authentication', () => {
+  const token = 'synthetic-docs-token';
+  function fixture() {
+    const root = newRoot();
+    const pin = makePinnedSyntheticPin(root);
+    return { root, pin, cacheDir: path.join(root, 'cold-cache') };
+  }
+  function mockDownloads(root: string) {
+    return vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes('/git/trees/')) return new Response(JSON.stringify({ tree: [
+        { type: 'blob', path: 'pages/docs/index.mdx' },
+        { type: 'blob', path: 'pages/docs/apps/cloud.mdx' },
+      ] }));
+      expect(new Headers(init?.headers).has('Authorization')).toBe(false);
+      return new Response(readFileSync(path.join(root, 'docs', new URL(url).pathname.split('/').slice(4).join('/'))));
+    });
+  }
+  it('authenticates only the exact pinned tree and verifies downloaded content', async () => {
+    const { root, pin, cacheDir } = fixture();
+    vi.stubEnv('GH_TOKEN', token);
+    const fetchMock = mockDownloads(root);
+    vi.stubGlobal('fetch', fetchMock);
+    await embeddedNativeSource.obtainEmbedDocs(pin, { cacheDir });
+    expect(new Headers(fetchMock.mock.calls[0][1]?.headers).get('Authorization')).toBe(`Bearer ${token}`);
+    expect(fetchMock.mock.calls[0][1]?.redirect).toBe('manual');
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+  it('keeps the local unauthenticated acquisition path', async () => {
+    const { root, pin, cacheDir } = fixture();
+    vi.stubEnv('GH_TOKEN', '');
+    const fetchMock = mockDownloads(root);
+    vi.stubGlobal('fetch', fetchMock);
+    await embeddedNativeSource.obtainEmbedDocs(pin, { cacheDir });
+    expect(new Headers(fetchMock.mock.calls[0][1]?.headers).has('Authorization')).toBe(false);
+  });
+  it.each([
+    'https://foreign.invalid/tree', 'http://api.github.com/repos/inngest/website/git/trees/<commit>?recursive=1',
+    'not-a-url', 'https://api.github.com/repos/inngest/website/git/trees/other?recursive=1',
+    'https://user:password@api.github.com/repos/inngest/website/git/trees/<commit>?recursive=1',
+  ])('never sends credentials to an invalid tree identity: %s', async (template) => {
+    const { pin, cacheDir } = fixture();
+    pin.embedDocs.treeApiUrlTemplate = template;
+    vi.stubEnv('GH_TOKEN', token);
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(new Headers(init?.headers).has('Authorization')).toBe(false);
+      return new Response('', { status: 403 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(embeddedNativeSource.obtainEmbedDocs(pin, { cacheDir })).rejects.toThrow(/pinned HTTPS API identity/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it.each([301, 302, 303, 307, 308])('refuses tree redirect %s without requesting its destination', async (status) => {
+    const { pin, cacheDir } = fixture();
+    vi.stubEnv('GH_TOKEN', token);
+    const fetchMock = vi.fn(async () => new Response('', { status, headers: { Location: 'https://foreign.invalid/secret-target' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(embeddedNativeSource.obtainEmbedDocs(pin, { cacheDir })).rejects.toThrow(/redirect/i);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]).toBeDefined();
+  });
+  it('reports 403 safely and never stages rejected source', async () => {
+    const { root, pin, cacheDir } = fixture();
+    vi.stubEnv('GH_TOKEN', token);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(token, { status: 403 })));
+    await expect(embeddedNativeSource.obtainEmbedDocs(pin, { cacheDir })).rejects.toThrow('Failed to read embedded docs tree: HTTP 403');
+    expect(existsSync(path.join(cacheDir, `${pin.packageName}-${pin.embedDocs.commit}-docs`))).toBe(false);
+    expect(existsSync(path.join(root, 'stage', 'SOURCE'))).toBe(false);
+  });
+  it('refuses a truncated tree before raw downloads', async () => {
+    const { pin, cacheDir } = fixture();
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ truncated: true, tree: [] })));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(embeddedNativeSource.obtainEmbedDocs(pin, { cacheDir })).rejects.toThrow(/truncated/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+  it('refuses downloaded aggregate drift', async () => {
+    const { root, pin, cacheDir } = fixture();
+    pin.embedDocs.filesSha256Aggregate = 'f'.repeat(64);
+    vi.stubGlobal('fetch', mockDownloads(root));
+    await expect(embeddedNativeSource.obtainEmbedDocs(pin, { cacheDir })).rejects.toThrow(/aggregate hash/);
+  });
+  it('refuses a changed pinned commit before making a request', async () => {
+    const { pin, cacheDir } = fixture();
+    pin.embedDocs.commit = 'c'.repeat(40);
+    vi.stubEnv('GH_TOKEN', token);
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(embeddedNativeSource.obtainEmbedDocs(pin, { cacheDir })).rejects.toThrow(/pinned HTTPS API identity/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it.each(['request', 'json'])('does not relay sensitive %s errors', async (failure) => {
+    const { pin, cacheDir } = fixture();
+    vi.stubEnv('GH_TOKEN', token);
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      if (failure === 'request') throw new Error(`${token} https://private.invalid/`);
+      return new Response(token);
+    }));
+    try {
+      await embeddedNativeSource.obtainEmbedDocs(pin, { cacheDir });
+      throw new Error('Expected acquisition to fail');
+    } catch (error) {
+      expect((error as Error).message).toBe(failure === 'request'
+        ? 'Failed to read embedded docs tree: request failed'
+        : 'Embedded docs tree response is not valid JSON');
+    }
+  });
+  it('reuses verified cache without another authenticated request', async () => {
+    const { root, pin, cacheDir } = fixture();
+    vi.stubEnv('GH_TOKEN', token);
+    const fetchMock = mockDownloads(root);
+    vi.stubGlobal('fetch', fetchMock);
+    await embeddedNativeSource.obtainEmbedDocs(pin, { cacheDir });
+    fetchMock.mockClear();
+    await embeddedNativeSource.obtainEmbedDocs(pin, { cacheDir });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it('never authenticates source archives even on the API origin', async () => {
+    const { root, pin, cacheDir } = fixture();
+    pin.sourceArchive.urlTemplate = 'https://api.github.com/repos/inngest/inngest/tarball/<commit>';
+    vi.stubEnv('GH_TOKEN', token);
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(new Headers(init?.headers).has('Authorization')).toBe(false);
+      return new Response(readFileSync(path.join(root, 'upstream.tar.gz')));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await embeddedNativeSource.obtainSourceArchive(pin, { cacheDir });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

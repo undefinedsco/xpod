@@ -239,6 +239,10 @@ describe('TCP P2P data plane limits and cancellation (N17)', () => {
         const client = new (require('node:net').Socket)() as Socket;
         client.connect(port, '127.0.0.1', () => resolve(client));
       });
+      // The ceiling-killed peer can answer with a reset. Capture that expected socket error
+      // here; any other error still fails the test instead of escaping as an unhandled error.
+      const socketErrors: Error[] = [];
+      socket.on('error', (error) => socketErrors.push(error));
       const closed = new Promise<void>((resolve) => socket.once('close', () => resolve()));
       socket.write(`{"type":"xpod-p2p-http-request","requestId":"x","frame":{"padding":"${'p'.repeat(16_384)}`);
 
@@ -247,6 +251,9 @@ describe('TCP P2P data plane limits and cancellation (N17)', () => {
         new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error('server kept the oversized frame')), 3_000)),
       ]);
       socket.destroy();
+      // The reset can be delivered in the same turn as close; drain it before asserting.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(socketErrors.filter((error) => (error as NodeJS.ErrnoException).code !== 'ECONNRESET')).toEqual([]);
     } finally {
       await server.close();
     }

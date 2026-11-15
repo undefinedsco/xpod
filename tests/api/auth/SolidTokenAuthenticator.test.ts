@@ -60,11 +60,13 @@ async function signDpopProof(input: {
   htm: string;
   publicKey: KeyLike;
   privateKey: KeyLike;
+  /** Bind the proof to a different token than the one presented. */
+  athFor?: string;
 }): Promise<string> {
   return new SignJWT({
     htu: input.htu,
     htm: input.htm,
-    ath: createHash('sha256').update(input.accessToken).digest('base64url'),
+    ath: createHash('sha256').update(input.athFor ?? input.accessToken).digest('base64url'),
   })
     .setProtectedHeader({
       alg: 'ES256',
@@ -215,6 +217,293 @@ describe('SolidTokenAuthenticator internal dereference', () => {
     }
   });
 
+  it('classifies a cnf-bound Bearer token as DPoP after verifying its proof', async() => {
+    stubCanonicalFetch();
+    const proofKeys = await generateKeyPair('ES256');
+    const accessToken = await signAccessToken({
+      issuer: canonicalIssuer,
+      webId: canonicalWebId,
+      dpopJkt: await calculateJwkThumbprint(await exportJWK(proofKeys.publicKey)),
+    });
+    const canonicalUrl = `${canonicalIssuer}v1/models`;
+    const proof = await signDpopProof({
+      accessToken,
+      htu: canonicalUrl,
+      htm: 'GET',
+      publicKey: proofKeys.publicKey,
+      privateKey: proofKeys.privateKey,
+    });
+
+    try {
+      const authenticator = new SolidTokenAuthenticator({
+        publicBaseUrl: canonicalIssuer,
+        internalBaseUrl: `${internalOrigin}/.oidc/token`,
+      });
+      const result = await authenticator.authenticate({
+        method: 'GET',
+        url: '/v1/models',
+        headers: {
+          ...canonicalRouteHeaders({ accessToken, proof, canonicalUrl }),
+          authorization: `Bearer ${accessToken}`,
+        },
+      } as never);
+
+      // A confirmation-bound token stays DPoP even when the caller names the scheme Bearer,
+      // so downstream Pod access never forwards it as a replayable Bearer token.
+      expect(result).toMatchObject({ success: true, context: { tokenType: 'DPoP', dpopProof: proof } });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('rejects a cnf-bound Bearer token when no DPoP proof is presented', async() => {
+    stubCanonicalFetch();
+    const proofKeys = await generateKeyPair('ES256');
+    const accessToken = await signAccessToken({
+      issuer: canonicalIssuer,
+      webId: canonicalWebId,
+      dpopJkt: await calculateJwkThumbprint(await exportJWK(proofKeys.publicKey)),
+    });
+
+    try {
+      const authenticator = new SolidTokenAuthenticator({
+        publicBaseUrl: canonicalIssuer,
+        internalBaseUrl: `${internalOrigin}/.oidc/token`,
+      });
+      const result = await authenticator.authenticate({
+        method: 'GET',
+        url: '/v1/models',
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+          host: '127.0.0.1:5173',
+          'x-forwarded-host': '127.0.0.1:5173',
+          'x-forwarded-proto': 'http',
+        },
+      } as never);
+
+      expect(result.success).toBe(false);
+      expect(result).not.toHaveProperty('context');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('still rejects a cnf-bound token whose proof uses a different key', async() => {
+    stubCanonicalFetch();
+    const tokenKeys = await generateKeyPair('ES256');
+    const proofKeys = await generateKeyPair('ES256');
+    const accessToken = await signAccessToken({
+      issuer: canonicalIssuer,
+      webId: canonicalWebId,
+      dpopJkt: await calculateJwkThumbprint(await exportJWK(tokenKeys.publicKey)),
+    });
+    const canonicalUrl = `${canonicalIssuer}v1/models`;
+    const proof = await signDpopProof({
+      accessToken,
+      htu: canonicalUrl,
+      htm: 'GET',
+      publicKey: proofKeys.publicKey,
+      privateKey: proofKeys.privateKey,
+    });
+
+    try {
+      const authenticator = new SolidTokenAuthenticator({
+        publicBaseUrl: canonicalIssuer,
+        internalBaseUrl: `${internalOrigin}/.oidc/token`,
+      });
+      const result = await authenticator.authenticate({
+        method: 'GET',
+        url: '/v1/models',
+        headers: canonicalRouteHeaders({ accessToken, proof, canonicalUrl }),
+      } as never);
+
+      expect(result.success).toBe(false);
+      expect(result).not.toHaveProperty('context');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('keeps an unbound Bearer token classified as Bearer', async() => {
+    stubCanonicalFetch();
+    const accessToken = await signAccessToken({ issuer: canonicalIssuer, webId: canonicalWebId });
+
+    try {
+      const authenticator = new SolidTokenAuthenticator({
+        publicBaseUrl: canonicalIssuer,
+        internalBaseUrl: `${internalOrigin}/.oidc/token`,
+      });
+      const result = await authenticator.authenticate({
+        method: 'GET',
+        url: '/v1/models',
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+          host: '127.0.0.1:5173',
+          'x-forwarded-host': '127.0.0.1:5173',
+          'x-forwarded-proto': 'http',
+        },
+      } as never);
+
+      expect(result).toMatchObject({ success: true, context: { tokenType: 'Bearer', dpopProof: undefined } });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('accepts and canonicalizes case-insensitive Bearer and DPoP schemes', async() => {
+    stubCanonicalFetch();
+    const proofKeys = await generateKeyPair('ES256');
+    const accessToken = await signAccessToken({
+      issuer: canonicalIssuer,
+      webId: canonicalWebId,
+      dpopJkt: await calculateJwkThumbprint(await exportJWK(proofKeys.publicKey)),
+    });
+    const canonicalUrl = `${canonicalIssuer}v1/models`;
+    const proof = await signDpopProof({
+      accessToken,
+      htu: canonicalUrl,
+      htm: 'GET',
+      publicKey: proofKeys.publicKey,
+      privateKey: proofKeys.privateKey,
+    });
+
+    try {
+      const authenticator = new SolidTokenAuthenticator({
+        publicBaseUrl: canonicalIssuer,
+        internalBaseUrl: `${internalOrigin}/.oidc/token`,
+      });
+      expect(authenticator.canAuthenticate({
+        headers: { authorization: `dPoP ${accessToken}` },
+      } as never)).toBe(true);
+      expect(authenticator.canAuthenticate({
+        headers: { authorization: `BeArEr ${accessToken}` },
+      } as never)).toBe(true);
+      expect(authenticator.canAuthenticate({
+        headers: { authorization: `Basic ${accessToken}` },
+      } as never)).toBe(false);
+
+      const result = await authenticator.authenticate({
+        method: 'GET',
+        url: '/v1/models',
+        headers: {
+          ...canonicalRouteHeaders({ accessToken, proof, canonicalUrl }),
+          authorization: `dpop ${accessToken}`,
+        },
+      } as never);
+      expect(result).toMatchObject({ success: true, context: { tokenType: 'DPoP' } });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([
+    ['Bearer', ' trailing-junk'],
+    ['DPoP', ' trailing-junk'],
+    ['Bearer', ' extra.jwt.segments'],
+    ['dpop', '\tjunk'],
+  ])('rejects a real verified %s header with trailing content: %j', async(scheme, suffix) => {
+    stubCanonicalFetch();
+    const proofKeys = await generateKeyPair('ES256');
+    const accessToken = await signAccessToken({
+      issuer: canonicalIssuer,
+      webId: canonicalWebId,
+      dpopJkt: await calculateJwkThumbprint(await exportJWK(proofKeys.publicKey)),
+    });
+    const canonicalUrl = `${canonicalIssuer}v1/models`;
+    const proof = await signDpopProof({
+      accessToken,
+      htu: canonicalUrl,
+      htm: 'GET',
+      publicKey: proofKeys.publicKey,
+      privateKey: proofKeys.privateKey,
+    });
+
+    try {
+      const authenticator = new SolidTokenAuthenticator({
+        publicBaseUrl: canonicalIssuer,
+        internalBaseUrl: `${internalOrigin}/.oidc/token`,
+      });
+      const authorization = `${scheme} ${accessToken}${suffix}`;
+      expect(authenticator.canAuthenticate({ headers: { authorization } } as never)).toBe(false);
+      const result = await authenticator.authenticate({
+        method: 'GET',
+        url: '/v1/models',
+        headers: {
+          ...canonicalRouteHeaders({ accessToken, proof, canonicalUrl }),
+          authorization,
+        },
+      } as never);
+      expect(result.success).toBe(false);
+      expect(result).not.toHaveProperty('context');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([
+    ['Bearer', ' '],
+    ['Bearer', '\t'],
+    ['Bearer', ' \t '],
+    ['DPoP', '\t'],
+  ])('accepts a real verified %s header separated by horizontal whitespace %j', async(scheme, separator) => {
+    stubCanonicalFetch();
+    const proofKeys = await generateKeyPair('ES256');
+    const accessToken = await signAccessToken({
+      issuer: canonicalIssuer,
+      webId: canonicalWebId,
+      dpopJkt: await calculateJwkThumbprint(await exportJWK(proofKeys.publicKey)),
+    });
+    const canonicalUrl = `${canonicalIssuer}v1/models`;
+    const proof = await signDpopProof({
+      accessToken,
+      htu: canonicalUrl,
+      htm: 'GET',
+      publicKey: proofKeys.publicKey,
+      privateKey: proofKeys.privateKey,
+    });
+
+    try {
+      const authenticator = new SolidTokenAuthenticator({
+        publicBaseUrl: canonicalIssuer,
+        internalBaseUrl: `${internalOrigin}/.oidc/token`,
+      });
+      const authorization = `${scheme}${separator}${accessToken}`;
+      expect(authenticator.canAuthenticate({ headers: { authorization } } as never)).toBe(true);
+      const result = await authenticator.authenticate({
+        method: 'GET',
+        url: '/v1/models',
+        headers: {
+          ...canonicalRouteHeaders({ accessToken, proof, canonicalUrl }),
+          authorization,
+        },
+      } as never);
+      expect(result).toMatchObject({ success: true, context: { tokenType: 'DPoP' } });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('rejects a verified token with a newline separator instead of treating it as whitespace', async() => {
+    stubCanonicalFetch();
+    const accessToken = await signAccessToken({ issuer: canonicalIssuer, webId: canonicalWebId });
+    try {
+      const authenticator = new SolidTokenAuthenticator({
+        publicBaseUrl: canonicalIssuer,
+        internalBaseUrl: `${internalOrigin}/.oidc/token`,
+      });
+      expect(authenticator.canAuthenticate({
+        headers: { authorization: `Bearer\n${accessToken}` },
+      } as never)).toBe(false);
+      await expect(authenticator.authenticate({
+        method: 'GET',
+        url: '/v1/models',
+        headers: { authorization: `Bearer\n${accessToken}` },
+      } as never)).resolves.toMatchObject({ success: false, error: 'Invalid Authorization header' });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('verifies a canonical DPoP signature for a request transported over a local route', async() => {
     stubCanonicalFetch();
     const proofKeys = await generateKeyPair('ES256');
@@ -358,6 +647,83 @@ describe('SolidTokenAuthenticator internal dereference', () => {
       } as never);
 
       expect(result.success).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('retains the primary ath failure when the canonical retry also fails', async() => {
+    // The canonical retry re-verifies the same proof against the configured origin.
+    // Its htu mismatch must not replace the real reason the caller failed.
+    stubCanonicalFetch();
+    const apiUrl = 'https://api.acceptance-local.nodes.acceptance.test/v1/models';
+    const proofKeys = await generateKeyPair('ES256');
+    const accessToken = await signAccessToken({
+      issuer: canonicalIssuer,
+      webId: canonicalWebId,
+      dpopJkt: await calculateJwkThumbprint(await exportJWK(proofKeys.publicKey)),
+    });
+    const proof = await signDpopProof({
+      accessToken,
+      athFor: 'a-different-access-token',
+      htu: apiUrl,
+      htm: 'GET',
+      publicKey: proofKeys.publicKey,
+      privateKey: proofKeys.privateKey,
+    });
+
+    try {
+      const authenticator = new SolidTokenAuthenticator({
+        publicBaseUrl: canonicalIssuer,
+        internalBaseUrl: `${internalOrigin}/.oidc/token`,
+      });
+      const warn = vi.spyOn((authenticator as unknown as { logger: { warn: (message: string) => void } }).logger, 'warn')
+        .mockImplementation(() => undefined);
+      try {
+        const result = await authenticator.authenticate({
+          method: 'GET',
+          url: '/v1/models',
+          headers: {
+            authorization: `DPoP ${accessToken}`,
+            dpop: proof,
+            host: 'api.acceptance-local.nodes.acceptance.test',
+            'x-forwarded-host': 'api.acceptance-local.nodes.acceptance.test',
+            'x-forwarded-proto': 'https',
+          },
+        } as never);
+        expect(result.success).toBe(false);
+        const reported = warn.mock.calls.map(call => String(call[0])).join(' | ');
+        expect(reported).toContain('ath parameter');
+        expect(reported).not.toContain('htu parameter');
+      } finally {
+        warn.mockRestore();
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('still rejects a proof whose htu names the wrong path on the api alias', async() => {
+    stubCanonicalFetch();
+    const { accessToken, proof } = await signedCanonicalRequest('GET', 'https://api.acceptance-local.nodes.acceptance.test/v1/other');
+
+    try {
+      const authenticator = new SolidTokenAuthenticator({
+        publicBaseUrl: canonicalIssuer,
+        internalBaseUrl: `${internalOrigin}/.oidc/token`,
+      });
+      const result = await authenticator.authenticate({
+        method: 'GET',
+        url: '/v1/models',
+        headers: {
+          authorization: `DPoP ${accessToken}`,
+          dpop: proof,
+          host: 'api.acceptance-local.nodes.acceptance.test',
+          'x-forwarded-host': 'api.acceptance-local.nodes.acceptance.test',
+          'x-forwarded-proto': 'https',
+        },
+      } as never);
+      expect(result.success).toBe(false);
     } finally {
       vi.unstubAllGlobals();
     }

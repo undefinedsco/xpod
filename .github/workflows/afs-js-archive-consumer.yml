@@ -1,0 +1,61 @@
+name: AFS JS normal archive consumer
+on:
+  pull_request:
+    branches: [staging, main]
+    paths:
+      - 'packages/xpod-afs/**'
+      - 'packages/xpod-cli/**'
+      - 'packages/xpod-client/**'
+      - 'src/**'
+      - 'scripts/**'
+      - 'tests/scripts/afs-*.node-test.cjs'
+      - 'types/bun/**'
+      - 'package.json'
+      - 'bun.lock'
+      - 'bunfig.toml'
+      - 'LICENSE'
+      - '.github/workflows/afs-js-archive-consumer.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  normal-archive:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.21.1
+      - name: Install locked build dependencies
+        run: bun install --frozen-lockfile
+      - name: Check orchestration contracts
+        run: node --test tests/scripts/afs-js-archive-ci.node-test.cjs
+      - name: Normal producers and original archive consumers
+        env:
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node scripts/check-afs-js-archive-ci.cjs "$(node -p 'require("node:fs").realpathSync(process.env.RUNNER_TEMP)')/afs-js-archive"
+      - name: Preserve normal archives, source snapshots and closed command originals
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: afs-js-archive-${{ runner.os }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/afs-js-archive/
+          if-no-files-found: error
+      - name: Preserve original CLI producer evidence in its required checkout directory
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: afs-js-cli-producer-${{ runner.os }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .test-data/afs-js-archive-ci-producer/
+          include-hidden-files: true
+          if-no-files-found: warn

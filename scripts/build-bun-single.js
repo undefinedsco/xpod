@@ -1,14 +1,18 @@
 #!/usr/bin/env node
 const crypto = require('node:crypto');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const childProcess = require('node:child_process');
 const zlib = require('node:zlib');
 const esbuild = require('esbuild');
+const { withOwnedTempRoot } = require('./lib/owned-temp-root.cjs');
 const { stageEmbeddedNativeCli } = require('./lib/embedded-native-cli.cjs');
 const { createSingleBinaryEntry } = require('./lib/bun-single-runtime-entry.cjs');
 const { stageRuntimeEsmPackages } = require('./lib/runtime-esm-packages.cjs');
+const { shouldCopyBundledDependency } = require('./run-npm-pack.cjs');
+const { createRequire } = require('node:module');
+const { stageInstalledDependencyClosure } = require('./lib/installed-dependency-closure.cjs');
+const { encodeArchive } = require('./lib/bun-single-archive.cjs');
 
 const repoRoot = path.resolve(__dirname, '..');
 const distRoot = path.join(repoRoot, 'dist');
@@ -16,7 +20,19 @@ const distRoot = path.join(repoRoot, 'dist');
 const RUNTIME_WORKSPACE_PACKAGES = [
   '@undefineds.co/solid-sdk',
 ];
+// All server bundles resolve these packages through the same public runtime
+// files, preserving storage classes, authentication caches and SDK Sessions.
+const CANONICAL_RUNTIME_PACKAGES = [
+  '@undefineds.co/xpod-afs', '@undefineds.co/xpod-client', 'drizzle-orm',
+];
+// Packages the runtime loads by bare specifier even though the ROOT manifest does
+// not declare them; the service bundle already keeps them external, so their
+// installed closure has to be staged or startup fails on a missing module.
+const STAGED_ENTRY_PACKAGES = ['@inrupt/solid-client-authn-node'];
+
 const COMMON_BUNDLE_EXTERNALS = [
+  ...CANONICAL_RUNTIME_PACKAGES,
+  '@inrupt/solid-client-authn-node',
   'bun:sqlite',
   'mysql',
   'mysql2',
@@ -52,8 +68,8 @@ for (const entry of requiredEntries) {
 // Validate the compiler too: it embeds its Bun runtime in the shipped binary.
 require('../dist/runtime/compat/ensureSupportedBun').ensureSupportedBun(run('bun', ['--version']).stdout.trim());
 
-const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-bun-single-'));
-const stageRoot = path.join(tempRoot, 'package');
+let tempRoot;
+let stageRoot;
 
 function run(command, args, options = {}) {
   const result = childProcess.spawnSync(command, args, {
@@ -375,7 +391,7 @@ const rootPackage = readJson(path.join(repoRoot, 'package.json'));
 
 async function main() {
   copySharedDataFactory();
-  const queue = [rootPackage.name, 'global-logger-factory'];
+  const queue = [rootPackage.name, 'global-logger-factory', '@inrupt/solid-client-authn-node'];
   const visited = new Set(['rdf-data-factory']);
 
   while (queue.length > 0) {
@@ -453,6 +469,37 @@ async function main() {
     });
   }
 
+  // Entry packages are staged here too: the closure treats canonical names as
+  // already-present, so anything it is seeded with must exist in the stage first.
+  for (const packageName of [...CANONICAL_RUNTIME_PACKAGES, ...STAGED_ENTRY_PACKAGES]) {
+    const packageDir = resolvePackageDir(packageName);
+    if (!fs.existsSync(path.join(packageDir, 'package.json'))) throw new Error(`Canonical runtime package is missing: ${packageName}`);
+    fs.cpSync(packageDir, resolveStageDir(packageName), {
+      recursive: true, dereference: true,
+      filter: (sourcePath) => shouldCopyBundledDependency(packageDir, sourcePath),
+    });
+  }
+
+  // An external public package keeps its own runtime dependencies. Stage the
+  // installed closure with Node's package-relative resolution, so two parents
+  // that really resolved different versions of one name keep both: a copy
+  // hoisted to the install root lands in the hoist slot, a copy nested under its
+  // parent stays nested there. Optional peers selected by the service manifest
+  // are followed; unselected database adapters remain absent.
+  // A public package may keep its own manifest while still needing its OWN
+  // runtime dependency closure staged: @inrupt/solid-client-authn-node declares
+  // openid-client/jose/uuid, and the packaged Gateway resolves them at startup.
+  // 'Externally kept' therefore means 'not expanded as a nested copy target from
+  // its parents', never 'do not traverse its dependencies'.
+  const { rootNames: stagedRuntimeNames } = stageInstalledDependencyClosure({
+    stageRoot,
+    repoRoot,
+    rootPackageJson: rootPackage,
+    canonicalPackages: [...CANONICAL_RUNTIME_PACKAGES, ...STAGED_ENTRY_PACKAGES],
+    resolvePackageDir,
+    shouldCopy: shouldCopyBundledDependency,
+  });
+
   await stageRuntimeEsmPackages({ nodeModulesRoot: path.join(repoRoot, 'node_modules'), stageRoot, compileTarget });
 
   // Native CLIs the runtime spawns by path. Components.js reference walking
@@ -466,7 +513,7 @@ async function main() {
 
   const cliOutputPath = path.join(stageRoot, 'dist', '__cli__.cjs');
   await esbuild.build({
-    entryPoints: [path.join(repoRoot, 'src', 'cli', 'index.ts')],
+    entryPoints: [path.join(repoRoot, 'src', 'runtime', 'service-entry.ts')],
     outfile: cliOutputPath,
     bundle: true,
     minify: true,
@@ -479,25 +526,33 @@ async function main() {
     plugins: [kyUniversalBrowserPlugin, sharedDataFactoryPlugin(cliOutputPath), sharedLoggerFactoryPlugin(cliOutputPath)],
   });
 
-  const manifest = [];
+  // Raw-payload container: small JSON metadata (path/mode/length) plus the RAW
+  // file bytes, then Brotli. The previous representation base64-inflated every
+  // file BEFORE compressing it, which both wasted space and hid repetition from
+  // the compressor. Compression, not file removal, is what has to shrink here.
+  const entries = [];
   for (const sourcePath of iterFiles(stageRoot)) {
     const relativePath = path.relative(stageRoot, sourcePath).split(path.sep).join(path.posix.sep);
-    const content = fs.readFileSync(sourcePath);
-    manifest.push({
+    entries.push({
       path: relativePath,
-      contentBase64: content.toString('base64'),
       mode: fs.statSync(sourcePath).mode & 0o777,
+      content: fs.readFileSync(sourcePath),
     });
   }
-
-  manifest.sort((left, right) => left.path.localeCompare(right.path));
-  const compressedManifest = zlib.brotliCompressSync(Buffer.from(JSON.stringify(manifest)), {
+  const { container } = encodeArchive(entries);
+  const compressedManifest = zlib.brotliCompressSync(container, {
     params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 9 },
   });
   const manifestSha = crypto.createHash('sha256').update(compressedManifest).digest('hex');
 
   const generatedEntryPath = path.join(tempRoot, 'bun-single-entry.ts');
-  fs.writeFileSync(generatedEntryPath, createSingleBinaryEntry(manifestSha, compressedManifest));
+  // Resolve every declared public subpath through Node's package resolver at
+  // build time. The compiled Bun host redirects these names without altering
+  // any canonical package's manifest or payload.
+  const stagedSpecifiers = JSON.parse(run('node', ['-e',
+    "process.stdout.write(JSON.stringify(require(process.argv[1]).collectStagedPublicSpecifiers(process.argv[2],JSON.parse(process.argv[3]))))",
+    path.join(__dirname, 'lib/staged-public-specifiers.cjs'), stageRoot, JSON.stringify([...stagedRuntimeNames])]).stdout);
+  fs.writeFileSync(generatedEntryPath, createSingleBinaryEntry(manifestSha, compressedManifest, stagedSpecifiers));
 
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   run('bun', [
@@ -514,9 +569,11 @@ async function main() {
   console.log(`[build:bun-single] component package closure: ${[ ...visited ].sort().join(', ')}`);
 }
 
-main().catch((error) => {
+withOwnedTempRoot('xpod-bun-single-', async(root) => {
+  tempRoot = root;
+  stageRoot = path.join(root, 'package');
+  await main();
+}).catch((error) => {
   console.error(error);
-  process.exit(1);
-}).finally(() => {
-  fs.rmSync(tempRoot, { recursive: true, force: true });
+  process.exitCode = 1;
 });

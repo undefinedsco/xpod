@@ -40,7 +40,7 @@ services:
       POSTGRES_PASSWORD: xpod
       POSTGRES_DB: xpod
     ports:
-      - "5432:5432"
+      - "${XPOD_FULL_POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./scripts/init-postgres.sql:/docker-entrypoint-initdb.d/init.sql:ro
@@ -53,7 +53,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "${XPOD_FULL_REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -77,7 +77,7 @@ services:
       VGW_ARGS: --port :9000
     ports:
       # No 9001 console mapping: VersityGW serves S3 only.
-      - "9000:9000"
+      - "${XPOD_FULL_OBJECT_STORE_PORT:-9000}:9000"
     volumes:
       - minio_data:/data
     # The posix backend treats every directory below its root as a bucket and no

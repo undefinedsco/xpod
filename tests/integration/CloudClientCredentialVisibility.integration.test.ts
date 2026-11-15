@@ -14,7 +14,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { createClientCredentials, getAccountControls, login } from '../../src/cli/lib/css-account';
+import { createClientCredentials, getAccountControls, login } from '../../packages/xpod-cli/src/lib/css-account';
 import { getClientCredentialsToken, setupAccount } from './helpers/solidAccount';
 
 const RUN_INTEGRATION_TESTS = process.env.XPOD_RUN_INTEGRATION_TESTS === 'true';

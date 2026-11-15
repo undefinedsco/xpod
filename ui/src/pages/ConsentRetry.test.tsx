@@ -365,7 +365,7 @@ it('does not create a replacement for ownerless existing storage', async () => {
   const readyFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = requestPath(input);
     if (init?.method === 'POST') throw new Error('Unexpected mutation');
-    if (path === consentPath) return new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' } }));
+    if (path === consentPath) return new Response(JSON.stringify({ client: { client_id: 'client', client_name: 'Client' }, webId: binding.webId }));
     if (path === pickPath) return new Response(JSON.stringify({ entries: [binding] }));
     return new Response('{}', { status: 404 });
   });

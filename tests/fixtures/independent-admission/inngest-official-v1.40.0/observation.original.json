@@ -1,0 +1,18 @@
+[
+  {
+    "name": "release.original.json",
+    "url": "https://api.github.com/repos/inngest/inngest/releases/362726265",
+    "bytes": 14021,
+    "sha256": "3db16b3b5394a6a289108cd39cb910c833daa9d46965a49b55084667d843c08a",
+    "id": 362726265,
+    "ref": null
+  },
+  {
+    "name": "tag.original.json",
+    "url": "https://api.github.com/repos/inngest/inngest/git/ref/tags/v1.40.0",
+    "bytes": 341,
+    "sha256": "251d95c032a9eaa3987048515f722caa5a71a1330672bb4dc181b61158e0b7f4",
+    "id": null,
+    "ref": "refs/tags/v1.40.0"
+  }
+]

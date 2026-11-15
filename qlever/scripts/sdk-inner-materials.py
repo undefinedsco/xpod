@@ -1,0 +1,487 @@
+"""Module SDK build-side originals. Image/origin admission belongs outside Docker."""
+import argparse
+import hashlib
+import importlib.util
+import json
+import os
+import re
+from pathlib import Path
+import shlex
+import shutil
+import sys
+import tarfile
+
+HERE=Path(__file__).resolve().parent
+LIMITS=json.loads((HERE.parents[1]/'scripts/lib/module-artifact-limits.json').read_text())
+spec=importlib.util.spec_from_file_location('sdk_cmake_file_api',HERE/'cmake_file_api.py')
+file_api=importlib.util.module_from_spec(spec);spec.loader.exec_module(file_api)
+spec=importlib.util.spec_from_file_location('sdk_commands',HERE/'sdk-command-materials.py')
+commands=importlib.util.module_from_spec(spec);spec.loader.exec_module(commands)
+spec=importlib.util.spec_from_file_location('sdk_profile_inner',HERE/'qlever_compiler_profile.py')
+profile_module=importlib.util.module_from_spec(spec);spec.loader.exec_module(profile_module)
+COMMON_SDK_TOOLS=(('ar','tool-ar'),('ranlib','tool-ranlib'),('cmake','tool-cmake'),('make','tool-make'),('ninja','tool-ninja'),('python3','tool-python3'),('git','tool-git'))
+def sdk_tools(profile_name):
+    profile=profile_module.declared_profile(profile_name)
+    return tuple((name,'tool-'+name.replace('+','x').replace('.','-')) for name in [profile['c'],profile['cxx'],profile['linker_program']])+COMMON_SDK_TOOLS
+SDK_TOOLS=sdk_tools('module-bookworm-gcc12')
+spec=importlib.util.spec_from_file_location('sdk_tar_budget',HERE/'sdk-tar-budget.py')
+tar_budget=importlib.util.module_from_spec(spec);spec.loader.exec_module(tar_budget)
+LIMIT=LIMITS['sourceMaterialBytes']
+spec=importlib.util.spec_from_file_location('sdk_budget',HERE/'sdk-execution-budget.py')
+budget_module=importlib.util.module_from_spec(spec);spec.loader.exec_module(budget_module)
+EXECUTION_BUDGET=None
+EXECUTION_RESERVE=600
+
+def check_budget():
+    if EXECUTION_BUDGET is not None:EXECUTION_BUDGET.check(EXECUTION_RESERVE)
+
+def initialize_budget(reserve=600):
+    global EXECUTION_BUDGET,EXECUTION_RESERVE
+    EXECUTION_RESERVE=reserve
+    EXECUTION_BUDGET=budget_module.ExecutionBudget(os.environ['XPOD_QLEVER_SDK_DEADLINE_UNIX'],policy=budget_module.PHASE_PARENT_BUDGET_POLICY)
+    return EXECUTION_BUDGET
+
+
+def dump(path,value):
+    Path(path).write_text(json.dumps(value,sort_keys=True,indent=2)+'\n')
+
+def file_identity(path):
+    path=Path(path)
+    if path.is_symlink() or not path.is_file():raise ValueError('SDK selected original must be regular')
+    with path.open('rb') as stream:
+        before=os.fstat(stream.fileno());value=hashlib.sha256();observed=0
+        if before.st_size>tar_budget.SHARD_LIMIT:raise ValueError('SDK original exceeds fixed member budget')
+        for block in iter(lambda:stream.read(65536),b''):
+            check_budget();observed+=len(block)
+            if observed>before.st_size:raise ValueError('SDK original grew beyond observed bound')
+            value.update(block)
+        after=os.fstat(stream.fileno())
+    identity=lambda row:(row.st_dev,row.st_ino,row.st_size,row.st_mtime_ns,row.st_mode)
+    if identity(before)!=identity(after) or identity(path.lstat())!=identity(after):raise ValueError('SDK original changed while observed')
+    return dict(bytes=after.st_size,sha256=value.hexdigest(),mode=after.st_mode&0o7777)
+
+def archive_inputs(files,out,before,compile_outputs=(),metadata_originals=(),remaining_bytes=None,observed_after=None):
+    """Only actual compiler-reported inputs are retained; candidate hashes are not copies."""
+    files=tuple(files);observed_after=observed_after or {}
+    def verify_after(path):
+        row=observed_after.get(str(path))
+        if row is not None:
+            item=path.lstat();identity=[item.st_dev,item.st_ino,item.st_mode,item.st_size,item.st_mtime_ns,item.st_ctime_ns]
+            if identity!=row['identity']:raise ValueError('Observed tool full identity changed before archive')
+    out=Path(out);out.mkdir(parents=True,exist_ok=False);inventory=[];total=0;pending=[]
+    compile_outputs={str(Path(path).resolve(strict=True)) for path in compile_outputs}
+    metadata_originals={str(Path(path).resolve(strict=True)) for path in metadata_originals}
+    links={}
+    for value in files:
+        for path in [Path(value),*Path(value).parents]:
+            if path.is_symlink():
+                target=os.readlink(path);raw=os.fsencode(target)
+                links[str(path)]=dict(originalPath=str(path),linkTarget=target,bytes=len(raw),sha256=hashlib.sha256(raw).hexdigest())
+    for path in sorted(set(Path(value).resolve(strict=True) for value in files)):
+        check_budget()
+        verify_after(path)
+        actual=file_identity(path);total+=actual['bytes']
+        if str(path) in observed_after and actual!={key:observed_after[str(path)][key] for key in ['bytes','sha256','mode']}:raise ValueError('Observed tool bytes differ from stop original')
+        if total>LIMIT:raise ValueError('SDK source domains exceed shared source budget')
+        expected=before.get(str(path))
+        if expected is None and str(path) not in compile_outputs and str(path) not in metadata_originals and str(path) not in observed_after:pending.append(dict(path=str(path),reason='generated-or-unobserved-before-compile'))
+        elif expected is not None and expected!=actual:raise ValueError('SDK compiler input differs from before observation')
+        inventory.append(dict(originalPath=str(path),archivePath=str(path).lstrip('/'),
+                              role='compile-output' if str(path) in compile_outputs else 'installed-metadata' if str(path) in metadata_originals else 'observed-input',**actual))
+    # A bounded source shard can be independently retained and rehashed.
+    shards=[];batch=[];size=0
+    def tar_info(row):
+        info=tarfile.TarInfo(row['archivePath']);info.size=row['bytes'];info.mode=row['mode']
+        return info
+    def write_batch():
+        if not batch:return
+        target=out/('inputs-'+str(len(shards))+'.tar')
+        encoded_bytes=tar_budget.archive_bytes(sum(tar_budget.member_bytes(tar_info(row)) for row in batch))
+        if remaining_bytes is not None and encoded_bytes>remaining_bytes():raise ValueError('SDK archive exceeds remaining shared source budget')
+        with tarfile.open(target,'w') as bundle:
+            for row in batch:
+                check_budget()
+                if shutil.disk_usage(out).free-row['bytes']<2*1024**3:raise ValueError('SDK input archive disk floor')
+                source=Path(row['originalPath']);verify_after(source)
+                if file_identity(source)!={key:row[key] for key in ['bytes','sha256','mode']}:raise ValueError('SDK input changed before archive')
+                info=tar_info(row)
+                with source.open('rb') as stream:
+                    observed=observed_after.get(str(source))
+                    if observed is not None:
+                        item=os.fstat(stream.fileno());identity=[item.st_dev,item.st_ino,item.st_mode,item.st_size,item.st_mtime_ns,item.st_ctime_ns]
+                        if identity!=observed['identity']:raise ValueError('Observed tool archive FD differs from stop original')
+                    bundle.addfile(info,stream)
+                    if observed is not None:
+                        item=os.fstat(stream.fileno());identity=[item.st_dev,item.st_ino,item.st_mode,item.st_size,item.st_mtime_ns,item.st_ctime_ns]
+                        if identity!=observed['identity']:raise ValueError('Observed tool archive FD changed during copy')
+                verify_after(source)
+                if file_identity(source)!={key:row[key] for key in ['bytes','sha256','mode']}:raise ValueError('SDK input changed while archiving')
+        if target.stat().st_size>tar_budget.SHARD_LIMIT:raise ValueError('SDK encoded tar exceeds shard byte budget')
+        shards.append(commands.ref(target,out.parent))
+    for row in inventory:
+        encoded=tar_budget.member_bytes(tar_info(row))
+        tar_budget.require_fit(encoded)
+        if batch and tar_budget.archive_bytes(size+encoded)>tar_budget.SHARD_LIMIT:write_batch();batch=[];size=0
+        batch.append(row);size+=encoded
+    write_batch()
+    return dict(schemaVersion=1,files=inventory,shards=shards,totalBytes=total,symlinkOriginalTargets=list(links.values()),pending=pending)
+
+def dependency_paths(build):
+    result=set()
+    for depfile in Path(build).rglob('*.o.d'):
+        if depfile.stat().st_size>8*1024**2:raise ValueError('SDK dependency record budget')
+        text=depfile.read_text().replace('\\\n',' ')
+        if ':' not in text:raise ValueError('Malformed actual compiler dependency record')
+        for name in shlex.split(text.split(':',1)[1]):
+            path=Path(name);result.add(path if path.is_absolute() else Path(build)/path)
+    if not result:raise ValueError('Actual compiler dependency originals missing')
+    return result
+
+def _makefile_depends(build):
+    """Unix Makefiles: the CMake-owned CMAKE_MAKEFILE_DEPENDS record."""
+    file=Path(build)/'CMakeFiles/Makefile.cmake'
+    if not file.is_file():raise ValueError('Actual CMake configure dependency originals missing')
+    if file.stat().st_size>8*1024**2:raise ValueError('SDK configure dependency record budget')
+    matches=re.findall(r'^set\(CMAKE_MAKEFILE_DEPENDS[ \t]*\r?\n(.*?)^[ \t]*\)[ \t]*(?:\r?\n|$)',file.read_text(),re.M|re.S)
+    if len(matches)!=1:raise ValueError('Actual CMake configure dependency layout unsupported')
+    result={file}
+    for name in shlex.split(matches[0]):
+        path=Path(name);path=path if path.is_absolute() else Path(build)/path
+        if not path.is_file():raise ValueError('Recorded CMake input original missing')
+        result.add(path)
+    return result
+
+def configure_inputs(build):
+    """Configure dependency originals for WHICHEVER generator actually ran.
+
+    Dispatch is by the actual build tree, never by preference: a Ninja build has
+    no CMakeFiles/Makefile.cmake, so the File API reply is the only source and a
+    missing reply is fatal. A Unix-Makefiles build keeps its existing record
+    byte-for-byte. Reading never creates a query.
+    """
+    build=Path(build)
+    makefile_cmake=build/'CMakeFiles/Makefile.cmake'
+    reply_dir=build/'.cmake'/'api'/'v1'/'reply'
+    if makefile_cmake.is_file():
+        if reply_dir.is_dir():
+            # Both present: require agreement on the generator, never guess.
+            try:
+                name=file_api.generator(str(build))
+            except file_api.FileApiUnavailable as error:
+                raise ValueError('Actual CMake generator identity unavailable: %s'%error)
+            if name!='Unix Makefiles':
+                raise ValueError('Actual CMake generator/reply disagreement: '+name)
+        return _makefile_depends(build)
+    if not reply_dir.is_dir():
+        raise ValueError('Actual CMake configure dependency originals missing')
+    file_api.verify_queries_present(str(build))
+    try:
+        paths,_originals=file_api.configure_inputs(str(build),check_budget)
+    except file_api.FileApiUnavailable as error:
+        raise ValueError('Actual CMake File API configure originals unavailable: %s'%error)
+    return {Path(row) for row in paths}
+
+
+def generator_metadata_originals(build):
+    """Generator-owned build-graph originals that MUST be retained.
+
+    Ninja: build.ninja plus every CMakeFiles/*.ninja (the real build graph).
+    Makefiles: the Makefile and the CMakeFiles Makefile fragments. Both also
+    retain the complete File API reply set so the semantic graph is preserved.
+    """
+    build=Path(build)
+    result=set()
+    for name in ('build.ninja','Makefile'):
+        path=build/name
+        if path.is_file():result.add(path)
+    for directory,dirs,names in os.walk(build,followlinks=False):
+        dirs[:]=[n for n in dirs if not (Path(directory)/n).is_symlink()]
+        for name in names:
+            if name.endswith('.ninja') or name in ('Makefile.cmake','cmake.check_cache'):
+                path=Path(directory)/name
+                if not path.is_symlink() and path.is_file():result.add(path)
+    reply_dir=build/'.cmake'/'api'/'v1'/'reply'
+    if reply_dir.is_dir():
+        for path in reply_dir.rglob('*.json'):
+            if not path.is_symlink() and path.is_file():result.add(path)
+    for name in ('CMakeCache.txt','compile_commands.json'):
+        path=build/name
+        if path.is_file():result.add(path)
+    return result
+
+spec=importlib.util.spec_from_file_location('sdk_debian_acquisition',HERE/'sdk-debian-source-acquisition.py')
+debian_acquisition=importlib.util.module_from_spec(spec);spec.loader.exec_module(debian_acquisition)
+
+spec=importlib.util.spec_from_file_location('sdk_symlinks',HERE/'sdk-symlink-originals.py')
+symlinks=importlib.util.module_from_spec(spec);spec.loader.exec_module(symlinks)
+
+spec=importlib.util.spec_from_file_location('sdk_upstream_inner',HERE/'sdk-upstream-source-materials.py')
+upstream=importlib.util.module_from_spec(spec);spec.loader.exec_module(upstream)
+
+spec=importlib.util.spec_from_file_location('sdk_generation_inner',HERE/'sdk-generation-materials.py')
+generation=importlib.util.module_from_spec(spec);spec.loader.exec_module(generation)
+
+spec=importlib.util.spec_from_file_location('sdk_toolchain_inner',HERE/'sdk-toolchain-materials.py')
+toolchain=importlib.util.module_from_spec(spec);spec.loader.exec_module(toolchain)
+
+spec=importlib.util.spec_from_file_location('sdk_debian_binary_hook',HERE/'sdk-debian-binary-hook.py')
+binary_hook=importlib.util.module_from_spec(spec);spec.loader.exec_module(binary_hook)
+
+def prepare_materials(component,source,build,out,jobs):
+    component=Path(component);source=Path(source);build=Path(build);out=Path(out);out.mkdir(parents=True,exist_ok=False)
+    budget=initialize_budget(4200);stages=[]
+    identity=json.loads(os.environ['XPOD_QLEVER_SDK_IDENTITY'])
+    profile=profile_module.declared_profile(identity.get('sdkProfile'))
+    if profile_module.compiler_spec()['profile']!=profile['name']:raise ValueError('Actual SDK producer/compiler profile differs')
+    def stage(name,command,inputs=(),timeout=30,reserve=4200):
+        try:
+            row=commands.capture(name,command,out,component,inputs,timeout=budget.timeout(timeout,reserve))
+        except Exception:
+            try:
+                diagnostic=commands.failed_stage_originals(name,out,lambda:budget.check(0))
+                print('SDK_PREPARED_STAGE_FAILURE '+json.dumps(diagnostic,sort_keys=True,separators=(',',':')),file=sys.stderr,flush=True)
+            except Exception as diagnostic_error:
+                print('SDK_PREPARED_STAGE_FAILURE_UNAVAILABLE '+type(diagnostic_error).__name__,file=sys.stderr,flush=True)
+            raise
+        stages.append(row);return row
+    private_key='XPOD_QLEVER_UPSTREAM_MATERIALS_DIR'
+    if private_key in os.environ:raise ValueError('Upstream capture directory is owned by the module producer')
+    os.environ[private_key]=str(out/'upstream-source')
+    try:
+        stage('source-prepare',['bash',str(component/('scripts/build-module-runtime-sdk.sh' if profile['name']=='module-bookworm-gcc12' else 'scripts/build-qlever-runtime-sdk.sh')),'source-only'],timeout=1800)
+    finally:
+        del os.environ[private_key]
+    stage('fetchcontent-prepare',['python3',str(component/'scripts/sdk-fetchcontent-materials.py'),'prepare'],timeout=3600)
+    dependency_collection=commands.ref(out/'fetchcontent/materials.json',out)
+    dependency_bytes=sum(path.stat().st_size for path in (out/'fetchcontent').rglob('*') if path.is_file())
+    dependency_bytes+=sum(stages[-1][key]['bytes'] for key in ['receipt','stdout','stderr','supervisionReceipt','supervisionRaw'])
+    dump(out/'source-prepared.json',dict(schemaVersion=1,identity=identity,deadlineUnix=budget.deadline_unix,stages=stages[:1],dependencyStage=stages[1],dependencyCollection=dependency_collection,dependencyMaterialBytes=dependency_bytes))
+
+def build_materials(component,source,build,out,jobs):
+    component=Path(component);source=Path(source);build=Path(build);out=Path(out)
+    budget=initialize_budget(4200)
+    prepared=json.loads((out/'source-prepared.json').read_text())
+    identity=json.loads(os.environ['XPOD_QLEVER_SDK_IDENTITY'])
+    if prepared['identity']!=identity or prepared['deadlineUnix']!=budget.deadline_unix:raise ValueError('Prepared SDK identity/deadline differs')
+    profile=profile_module.declared_profile(identity.get('sdkProfile'))
+    if profile_module.compiler_spec()['profile']!=profile['name']:raise ValueError('Actual prepared compiler profile differs')
+    stages=[*prepared['stages'],prepared['dependencyStage']]
+    def stage(name,command,inputs=(),timeout=30,reserve=4200):
+        try:
+            row=commands.capture(name,command,out,component,inputs,timeout=budget.timeout(timeout,reserve))
+        except Exception:
+            try:
+                diagnostic=commands.failed_stage_originals(name,out,lambda:budget.check(0))
+                print('SDK_PREPARED_STAGE_FAILURE '+json.dumps(diagnostic,sort_keys=True,separators=(',',':')),file=sys.stderr,flush=True)
+            except Exception as diagnostic_error:
+                print('SDK_PREPARED_STAGE_FAILURE_UNAVAILABLE '+type(diagnostic_error).__name__,file=sys.stderr,flush=True)
+            raise
+        stages.append(row);return row
+    def archive(files,destination,before,compile_outputs=(),metadata_originals=(),observed_after=None):
+        return archive_inputs(files,destination,before,compile_outputs,metadata_originals,remaining_bytes=lambda:toolchain.remaining_source_bytes(out),observed_after=observed_after)
+    execution=toolchain.Session(out,source,build,budget,check_budget,toolchain.remaining_source_bytes(out),prepared_dependencies=prepared['dependencyCollection'],phase_budget_policy_version=budget.policy.version)
+    try:
+        private_key='XPOD_QLEVER_UPSTREAM_MATERIALS_DIR'
+        if private_key in os.environ:raise ValueError('Upstream capture directory is owned by the module producer')
+        os.environ[private_key]=str(out/'upstream-source')
+        try:
+            stages.append(execution.phase('configure',['bash',str(component/'scripts/build-qlever-runtime-sdk.sh'),'configure-prepared'],[commands.ref(out/'source-prepared.json',out)],None,4200))
+        finally:
+            del os.environ[private_key]
+        generation_before=generation.snapshot(out,build,'before',archive,file_identity,check_budget)
+        # Candidate roots are observations only, not redistributed SDK contents.
+        before_links={};before_bindings={}
+        def candidate(path):
+            symlinks.observe([path],before_links,check_budget)
+            lexical=os.path.abspath(path);resolved=Path(path).resolve(strict=True)
+            if lexical!=str(resolved):
+                before_bindings[lexical]=dict(resolvedTarget=str(resolved),targetIdentity=symlinks.identity(resolved.stat()))
+            return resolved
+        candidates=set();compile_commands=json.loads((build/'compile_commands.json').read_text())
+        roots={component,source,build,Path('/opt/qlever-sdk/profile')}
+        for entry in compile_commands:
+            tokens=entry.get('arguments') or shlex.split(entry['command'])
+            for index,token in enumerate(tokens):
+                value=tokens[index+1] if token in ['-I','-isystem'] and index+1<len(tokens) else token[2:] if token.startswith('-I') else None
+                if value:roots.add(Path(value) if Path(value).is_absolute() else Path(entry['directory'])/value)
+        # The declared compiler reports its actual default header paths; no copied module search list.
+        row=stage('compiler-search',[profile['cxx'],'-E','-x','c++','-v','/dev/null'])
+        search=(out/row['stderr']['path']).read_text();inside=False
+        for line in search.splitlines():
+            if '#include <...> search starts here:' in line:inside=True;continue
+            if 'End of search list.' in line:inside=False
+            if inside and line.startswith(' '):roots.add(Path(line.strip()))
+        for root in sorted(roots):
+            if not root.is_dir():continue
+            for path in root.rglob('*'):
+                check_budget()
+                if '.git' in path.parts or '__pycache__' in path.parts or not path.is_file():continue
+                candidates.add(candidate(path))
+                if len(candidates)>100000:raise ValueError('SDK candidate input count budget')
+        candidates.update(candidate(path) for path in configure_inputs(build))
+        candidates.add(candidate(component.parent/'scripts/lib/module-artifact-limits.json'))
+        for name,stage_id in sdk_tools(profile['name']):
+            tool=shutil.which(name)
+            if not tool:raise ValueError('Actual SDK tool missing: '+name)
+            candidates.add(candidate(tool))
+            stage(stage_id,[tool,'--version'])
+        compiler=stage('compiler-program',[profile['cxx'],'-print-prog-name='+profile['compiler_program']])
+        actual_program=Path((out/compiler['stdout']['path']).read_text().strip())
+        if not actual_program.is_absolute() or not actual_program.is_file():raise ValueError('Actual declared compiler program path required')
+        compiler_program=candidate(actual_program);candidates.add(compiler_program)
+        link_path=build/'CMakeFiles/qlever-server.dir/link.txt'
+        # link.txt authority depends on the generator that ACTUALLY configured
+        # this tree. The schema is shared with the producer through
+        # link_command_origin, so producer and consumer cannot drift.
+        try:
+            actual_generator=file_api.generator(str(Path(build)))
+        except file_api.FileApiUnavailable as error:
+            raise ValueError('Actual CMake generator identity unavailable: %s'%error)
+        spec=importlib.util.spec_from_file_location('inner_link_origin',HERE/'link_command_origin.py')
+        link_origin=importlib.util.module_from_spec(spec);spec.loader.exec_module(link_origin)
+        # A distinct evidence set collects the Ninja origin originals BEFORE the
+        # compile. It must stay empty here: the REAL compiler dependency closure
+        # (dependency_paths) refuses a tree with no *.o.d and may only be read
+        # after the compile that produces them. The post-compile update below
+        # augments this same set, so the originals survive into archive() without
+        # being treated as claimed compiler dependencies.
+        selected=set()
+        if actual_generator=='Ninja':
+            # MANDATORY, and every referenced original is re-observed.
+            record=link_origin.read_record(link_path,
+                member_limit=link_origin.MEMBER_LIMIT_FOR_RECORD,
+                build_root=str(build),generator='Ninja',
+                materials_root=str(out))
+            # The raw capture originals are retained evidence, not a claim.
+            for key in ('rawStdout','rawStderr'):
+                path=Path(record[key]['path'])
+                if not path.is_file():raise ValueError('Derived link raw original missing: '+str(path))
+                selected.add(path)
+            selected.add(Path(link_origin.record_path(str(link_path))))
+        elif actual_generator=='Unix Makefiles':
+            if Path(link_origin.record_path(str(link_path))).exists():
+                raise ValueError('CMake-authored link command must not carry a derived origin')
+        else:
+            raise ValueError('Actual CMake generator unsupported: '+str(actual_generator))
+        link_tokens=shlex.split(link_path.read_text())
+        for token in link_tokens:
+            path=Path(token)
+            if path.is_absolute() and path.is_file() and re.search(r'\.(?:a|so(?:\.[A-Za-z0-9_.+-]+)?)$',token):candidates.add(candidate(path))
+        before={};total=0
+        for path in sorted(candidates):
+            actual=file_identity(path);total+=actual['bytes']
+            if total>LIMIT:raise ValueError('SDK candidate observation budget')
+            before[str(path)]=actual
+        dump(out/'inputs-before.json',before)
+        before_ref=commands.ref(out/'inputs-before.json',out)
+        symlinks.save(out/'symlinks-before.json',before_links,before_bindings,check_budget)
+        before_links_ref=commands.ref(out/'symlinks-before.json',out)
+        stages.append(execution.phase('compile',['bash',str(component/'scripts/build-qlever-runtime-sdk.sh'),'build-prepared'],[before_ref,before_links_ref,generation_before],14400,4800))
+        execution.close()
+        # Augment, never replace: the Ninja origin originals added above are part of
+        # the retained evidence set and must survive into archive().
+        selected.update(dependency_paths(build))
+        # Preserve original depfiles and actual direct linker inputs as build outputs.
+        outputs=set(build.rglob('*.o.d'));selected.update(outputs)
+        link=build/'CMakeFiles/qlever-server.dir/link.txt';selected.add(link)
+        for token in shlex.split(link.read_text()):
+            if re.search(r'\.(?:o|a|so(?:\.[A-Za-z0-9_.+-]+)?)$',token):
+                path=Path(token);path=path if path.is_absolute() else build/path
+                if path.is_file():
+                    selected.add(path)
+                    if path.is_relative_to(build):outputs.add(path)
+        selected.update(configure_inputs(build))
+        selected.update(path for path in Path('/opt/qlever-sdk/profile').rglob('*') if path.is_file() and not path.is_symlink())
+        selected.update(path for path in (component/'scripts').iterdir() if path.is_file() and path.suffix in ['.py','.sh'])
+        selected.update([build/'compile_commands.json',build/'CMakeCache.txt',component/'qlever.lock.json',component.parent/'scripts/lib/module-artifact-limits.json'])
+        selected.update(Path(shutil.which(name)) for name,_ in sdk_tools(profile['name']))
+        selected.add(compiler_program)
+        observed_tools,observed_tool_pending=execution.after_tool_inputs(file_identity)
+        selected.update(Path(path) for path in observed_tools)
+        ownership=[];installed=set();metadata_originals=set()
+        for original in Path('/var/lib/dpkg/info').glob('*.list'):
+            if original.stat().st_size>16*1024**2:raise ValueError('Package ownership original budget')
+            members=set(original.read_text().splitlines())
+            if any(str(path) in members for path in selected):
+                ownership.append(original);selected.add(original);metadata_originals.add(original);installed.add(original.name.removesuffix('.list').split(':')[0])
+        for package in sorted(installed):
+            copyright=Path('/usr/share/doc')/package/'copyright'
+            if copyright.is_file():
+                selected.add(copyright);metadata_originals.add(copyright)
+        ledger=stage('source-package-identities',['dpkg-query','-W','-f=${binary:Package}\t${Version}\t${source:Package}\t${source:Version}\n'])
+        grants=[]
+        for root in [component,source,build/'_deps']:
+            for path in root.rglob('*'):
+                if path.is_file() and not path.is_symlink() and path.name.lower().startswith(('license','copying','notice','copyright')):
+                    grants.append(path);selected.add(path)
+        after_links=symlinks.observe(selected,{},check_budget)
+        link_pending=symlinks.compare(before_links,after_links,selected)
+        # A new symlink at a previously ordinary input cannot borrow another candidate's bytes.
+        after_bindings={}
+        for path in selected:
+            lexical=os.path.abspath(path)
+            if lexical in before_bindings:
+                actual=dict(resolvedTarget=str(Path(path).resolve(strict=True)),targetIdentity=symlinks.identity(Path(path).stat()))
+                after_bindings[lexical]=actual
+                if actual!=before_bindings[lexical]:raise ValueError('SDK selected aliased input identity changed during compile')
+            if lexical in before and lexical!=str(Path(path).resolve(strict=True)) and path not in outputs:
+                raise ValueError('SDK ordinary input replaced by symlink during compile')
+        symlinks.save(out/'symlinks-after.json',after_links,after_bindings,check_budget)
+        after_links_ref=commands.ref(out/'symlinks-after.json',out)
+        symlink_bytes=before_links_ref['bytes']+after_links_ref['bytes']
+        inventory=archive(selected,out/'domains',before,outputs,metadata_originals,observed_after=observed_tools)
+        inventory['symlinkBeforeOriginals']=before_links_ref
+        inventory['symlinkAfterOriginals']=after_links_ref
+        inventory['symlinkCausalityPending']=link_pending
+        inventory['packageOwnershipOriginals']=[str(path) for path in ownership]
+        inventory['sourcePackageIdentityRaw']=ledger['stdout']
+        inventory['pending'].extend(observed_tool_pending)
+        inventory['pending'].extend(execution.tool_input_pending(inventory))
+        dump(out/'inputs-after.json',inventory)
+        generation_after=generation.snapshot(out,build,'after',archive,file_identity,check_budget)
+        generation_ref,generation_bytes=generation.finalize(out,build,generation_before,generation_after,inventory,before,stages,check_budget)
+        upstream_ref,upstream_bytes=upstream.finalize(out,source,inventory,stages,check_budget)
+        def source_stage(name,argv,cwd):
+            if argv[:4]==['gpgv','--status-fd','1','--keyring'] and len(argv)==6:
+                row=commands.capture_gpgv(name,argv[4],argv[5],out,cwd,timeout=budget.timeout(30,3600))
+            else:
+                row=commands.capture(name,argv,out,cwd,timeout=budget.timeout(900,3600))
+            stages.append(row);return row
+        debian_ref,debian_bytes=debian_acquisition.acquire(out,
+            [str(Path(path).resolve(strict=True)) for path in selected],
+            {path.name.removesuffix('.list'):path.read_bytes() for path in ownership},
+            ledger['stdout'],toolchain.remaining_source_bytes(out),
+            source_stage,commands.ref,check_budget)
+
+        inner=dict(schemaVersion=1,kind='qlever-linux-sdk-inner-originals',identity=identity,stages=stages,
+            executionBudget=dict(deadlineUnix=budget.deadline_unix,remainingSeconds=budget.remaining()),inputsBefore=before_ref,inputsAfter=commands.ref(out/'inputs-after.json',out),domains=inventory['shards'],
+            generationMaterials=generation_ref,generationMaterialBytes=generation_bytes,
+            generationMetadata=dict(before=generation_before,after=generation_after),
+            upstreamSource=upstream_ref,upstreamSourceBytes=upstream_bytes,
+            symlinkOriginalBytes=symlink_bytes,symlinkOriginals=dict(before=before_links_ref,after=after_links_ref),
+            grantOriginals=[str(path) for path in grants],debianSources=debian_ref,debianSourceBytes=debian_bytes,
+            pending=['official-image-build-artifact-custody-unavailable','Debian-Sources-to-signed-InRelease-checksum-binding-unverified',
+                     'toolchain-original-domain-not-yet-complete',*(['symlink-original-unavailable-before-compile'] if link_pending else []),*(['generated-input-causality-unavailable'] if inventory['pending'] else [])])
+        execution_ref,execution_bytes=execution.finalize(inner,upstream_ref,inventory)
+        if execution_bytes+debian_bytes+upstream_bytes+generation_bytes+symlink_bytes+sum(row['bytes'] for row in inventory['shards'])>LIMIT-512*1024**2:raise ValueError('Shared source/execution aggregate exceeds reserved source budget')
+        binary_ref,binary_bytes,binary_ownership_bytes=binary_hook.acquire(out,inventory['files'],ownership,ledger['stdout'],identity['target'],lambda:toolchain.remaining_source_bytes(out),source_stage,commands.ref,check_budget,sdk_profile=profile['name'])
+        toolchain.remaining_source_bytes(out)  # Whole retained domain, not overlapping counter sums.
+        inner.update(dependencyCollection=prepared['dependencyCollection'],dependencyMaterialBytes=prepared['dependencyMaterialBytes'],toolchainExecution=execution_ref,toolchainExecutionBytes=execution_bytes,debianBinaries=binary_ref,debianBinaryBytes=binary_bytes,debianBinaryOwnershipBytes=binary_ownership_bytes)
+        dump(out/'build-inner.json',inner)
+    finally:
+        execution.abort()
+
+def linked_materials(component,source,build,out,jobs):
+    budget=initialize_budget()
+    out=Path(out);original=commands.ref(out/'build-inner.json',out);stages=[]
+    if json.loads((out/'build-inner.json').read_text())['executionBudget']['deadlineUnix']!=budget.deadline_unix:
+        raise ValueError('SDK linked stage deadline differs from actual build')
+    base=['--qlever-source',source,'--qlever-build-dir',build,'--adapter-build-dir','/tmp/module-real-adapter']
+    stages.append(commands.capture('test-adapter',['node',str(Path(component)/'scripts/check-qlever-real-adapter-build.cjs'),*base,'--skip-upstream-configure','--jobs',jobs],out,component,[original],timeout=budget.timeout(1800,2400)))
+    stages.append(commands.capture('test-runtime',['node',str(Path(component)/'scripts/check-qlever-real-runtime.cjs'),*base,'--runtime-build-dir','/tmp/module-real-runtime','--skip-prerequisites','--jobs',jobs],out,component,[original],timeout=budget.timeout(1800,600)))
+    dump(out/'linked-inner.json',dict(schemaVersion=1,kind='qlever-linux-sdk-linked-originals',executionBudget=dict(deadlineUnix=budget.deadline_unix,remainingSeconds=budget.remaining()),build=original,stages=stages,releaseAccepted=False))
+
+if __name__=='__main__':
+    parser=argparse.ArgumentParser();parser.add_argument('phase',choices=['prepare','build','linked']);args=parser.parse_args()
+    values=dict(component='/components/qlever',source='/opt/qlever-sdk/source',build='/opt/qlever-sdk/build',out='/opt/qlever-sdk/materials',jobs=os.environ.get('XPOD_QLEVER_BUILD_JOBS','2'))
+    {'prepare':prepare_materials,'build':build_materials,'linked':linked_materials}[args.phase](**values)

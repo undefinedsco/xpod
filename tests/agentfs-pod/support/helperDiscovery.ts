@@ -1,4 +1,4 @@
-import { describePrerequisites } from '../../../src/cli/agent-fs/mount';
+import { describePrerequisites } from '../../../packages/xpod-afs/src/agent-fs/mount';
 
 export interface AgentFsHelper {
   /** True when a real AgentFS-linked helper binary exists (not the diagnostic shell). */

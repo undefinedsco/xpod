@@ -59,13 +59,13 @@ describe('SecretCellVault', () => {
     const vault = createVault({ activeKeyId: 'root-v1', keys: { 'root-v1': rootV1 } });
     const sealed = await vault.seal(new TextEncoder().encode('sk-tamper-secret'), context);
 
-    const tamperedCiphertext = { ...sealed, ciphertext: `${sealed.ciphertext.slice(0, -2)}AA` };
-    const tamperedNonce = { ...sealed, nonce: `${sealed.nonce.slice(0, -2)}AA` };
+    const tamperedCiphertext = { ...sealed, ciphertext: tamperBase64Url(sealed.ciphertext) };
+    const tamperedNonce = { ...sealed, nonce: tamperBase64Url(sealed.nonce) };
     const tamperedDek = {
       ...sealed,
       wrappedDek: {
         ...sealed.wrappedDek,
-        ciphertext: `${sealed.wrappedDek.ciphertext.slice(0, -2)}AA`,
+        ciphertext: tamperBase64Url(sealed.wrappedDek.ciphertext),
       },
     };
     const tamperedPurpose: SecretCellEnvelope = { ...sealed, aadPurpose: 'xpod.secret-cell.other' as never };
@@ -154,6 +154,26 @@ describe('DeploymentRootKeyProvider', () => {
     expect(() => parseDeploymentRootKeyConfig(`${rootV1.slice(0, -1)}!`)).toThrow(/base64/i);
   });
 });
+
+it('changes decoded tamper material even when the encoded value already ends in AA', () => {
+  const original = Buffer.from([0, 0, 0]);
+  const encoded = original.toString('base64url');
+  expect(encoded.endsWith('AA')).toBe(true);
+  expect(Buffer.from(tamperBase64Url(encoded), 'base64url').equals(original)).toBe(false);
+});
+
+// Change actual bytes: replacing a base64url suffix can leave the input intact.
+function tamperBase64Url(value: string): string {
+  const original = Buffer.from(value, 'base64url');
+  const tampered = Buffer.from(original);
+  if (tampered.length === 0) throw new Error('cannot tamper empty material');
+  tampered[0] ^= 0x01;
+  const encoded = tampered.toString('base64url');
+  if (Buffer.from(encoded, 'base64url').equals(original)) {
+    throw new Error('tamper did not change decoded material');
+  }
+  return encoded;
+}
 
 function createVault(input: {
   activeKeyId: string;

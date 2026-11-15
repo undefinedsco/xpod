@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 const fs = require('node:fs');
 const net = require('node:net');
-const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 const { execFileSync } = require('node:child_process');
-const { createRegistry, publishArtifact, run } = require('./check-package-registry-consumer.cjs');
+const { captureManifestEvidence, captureRegistryMetadataEvidence } = require('./lib/compat-manifest-evidence.cjs');
+const { createOwnedTempRoot, withOwnedTempRoot } = require('./lib/owned-temp-root.cjs');
+const { createRegistry, publishArtifact, run, verifyRootRegistryInstallation, publishRootSupply } = require('./check-package-registry-consumer.cjs');
 
 function getCommandInvocation(packageManager, args) {
   if (packageManager === 'bun') {
@@ -48,12 +49,11 @@ function resolveInstallSpec(input) {
   return normalizeInstallSpec(input);
 }
 
-function createSmokeTarball(installSpec) {
-  if (!fs.existsSync(installSpec) || !installSpec.endsWith('.tgz')) {
-    return installSpec;
-  }
+function isLocalTarball(installSpec) {
+  return fs.existsSync(installSpec) && installSpec.endsWith('.tgz');
+}
 
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xpod-package-smoke-'));
+function buildSmokeTarball(installSpec, tempRoot) {
   const unpackDir = path.join(tempRoot, 'unpack');
   const packageDir = path.join(unpackDir, 'package');
   const packageJsonPath = path.join(packageDir, 'package.json');
@@ -70,6 +70,20 @@ function createSmokeTarball(installSpec) {
 
   execFileSync('tar', [ '-czf', smokeTarballPath, '-C', unpackDir, 'package' ]);
   return smokeTarballPath;
+}
+
+// Legacy path-returning API: the caller owns the returned archive's lifetime.
+// Normal install/probe callers use withSmokeTarball instead.
+function createSmokeTarball(installSpec) {
+  if (!isLocalTarball(installSpec)) return installSpec;
+  const owned = createOwnedTempRoot('xpod-package-smoke-');
+  try { return buildSmokeTarball(installSpec, owned.path); }
+  catch (error) { owned.cleanup({ error }); throw error; }
+}
+
+async function withSmokeTarball(installSpec, operation) {
+  if (!isLocalTarball(installSpec)) return await operation(installSpec);
+  return await withOwnedTempRoot('xpod-package-smoke-', root => operation(buildSmokeTarball(installSpec, root)));
 }
 
 function toInstallerSpec(installSpec, packageManager) {
@@ -216,7 +230,7 @@ async function runCommand(packageManager, args, cwd, cacheDir, baseEnv) {
 // bundled `file:` edges. Uses npm's real publication capture (no hand-written
 // packument) and pins the loopback registry so an inherited override cannot
 // redirect the install elsewhere.
-async function installLocalTarballViaRegistry(tarballPath, targetDir, cacheDir, baseEnv) {
+async function installLocalTarballViaRegistry(tarballPath, targetDir, cacheDir, baseEnv, manifestEvidenceFile) {
   // Fail closed rather than let the installer walk up to an ancestor project and
   // write outside the target (a consumer manifest must exist in the target).
   if (!fs.existsSync(path.join(targetDir, 'package.json'))) {
@@ -235,12 +249,37 @@ async function installLocalTarballViaRegistry(tarballPath, targetDir, cacheDir, 
   // (docs/RELEASE.md XPOD_INSTALL_REGISTRY); only the Xpod metadata is pinned
   // to the loopback. Capture the upstream before overriding the install env.
   const upstreamRegistry = resolveInstallRegistry(baseEnv);
-  const server = createRegistry(artifact, token, upstreamRegistry);
+  // Only the explicit legacy lane supplies normal private originals. Other
+  // callers retain the original singleton registry behavior.
+  const inputFile = baseEnv.XPOD_LEGACY_ROOT_SUPPLY_INPUT;
+  let supply = { artifacts: [], required: [] }, supplyDirectory;
+  if (inputFile) {
+    const helper = require('./lib/root-registry-supply.cjs');
+    supplyDirectory = path.join(path.dirname(path.resolve(inputFile)), 'registry-supply');
+    try {
+      const produced = await helper.produceRootSupply({ inputFile, root: process.cwd(), rootArtifact: artifact, destination: supplyDirectory, cache: cacheDir });
+      const requestFile = path.join(supplyDirectory, 'request.original.json');
+      fs.writeFileSync(requestFile, JSON.stringify({ receipt: produced.receipt }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+      supply = helper.readRootSupply(requestFile, process.cwd(), artifact);
+    } catch (error) {
+      try { if (fs.existsSync(supplyDirectory)) fs.writeFileSync(path.join(supplyDirectory, 'failure.original.json'), JSON.stringify({ message: error.message, published: false }, null, 2) + '\n', { flag: 'wx', mode: 0o600 }); }
+      catch (secondary) { throw new AggregateError([error, secondary], 'Normal supply and failure receipt write failed', { cause: error }); }
+      throw error;
+    }
+  }
+  const server = createRegistry(artifact, token, upstreamRegistry, { artifacts: supply.artifacts, required: supply.required });
   // Acquire the evidence root before listening so a failure here cannot leave an
   // open server behind; the finally closes only a listening server and always
   // removes the evidence, even if close reports an error.
   const evidenceRoot = fs.mkdtempSync(path.join(cacheDir, 'registry-publish-'));
   let listening = false;
+  let metadataCaptured = false;
+  const captureMetadata = () => {
+    if (!manifestEvidenceFile || metadataCaptured) return;
+    metadataCaptured = true;
+    try { captureRegistryMetadataEvidence(path.join(path.dirname(manifestEvidenceFile), 'registry.metadata.json'),
+      server.publishedMetadata(), artifact, manifestEvidenceFile); } catch { /* Diagnostic cannot replace the install outcome. */ }
+  };
   try {
     await new Promise((resolve, reject) => {
       server.once('error', reject);
@@ -248,14 +287,21 @@ async function installLocalTarballViaRegistry(tarballPath, targetDir, cacheDir, 
     });
     const registry = `http://127.0.0.1:${server.address().port}`;
     await publishArtifact(artifact, registry, token, evidenceRoot);
+    if (inputFile) {
+      await publishRootSupply({ artifact, supply, server, registry, token, evidenceRoot, retainedDirectory: supplyDirectory });
+      require('./lib/root-registry-supply.cjs').readRootSupply(path.join(supplyDirectory, 'request.original.json'), process.cwd(), artifact);
+    }
+    captureMetadata();
     // The shared resolver reads XPOD_INSTALL_REGISTRY; pinning it is the single
     // source of truth and prevents an inherited override redirecting the install.
     await runCommand('bun', [ 'add', `${manifest.name}@${manifest.version}` ], targetDir, cacheDir, {
       ...baseEnv,
       XPOD_INSTALL_REGISTRY: registry,
     });
+    if (inputFile) await verifyRootRegistryInstallation(artifact, targetDir, supplyDirectory, baseEnv);
     return registry;
   } finally {
+    captureMetadata();
     if (listening) {
       server.closeAllConnections?.();
       await new Promise((resolve) => server.close(() => resolve()));
@@ -283,48 +329,56 @@ async function main() {
   const resolvedInstallSpec = resolveInstallSpec(rawInstallSpec);
   // The npm local smoke strips optionalDependencies; the Bun registry route must
   // consume the untouched original artifact bytes with all metadata retained.
-  const installSpec = packageManager === 'npm' ? createSmokeTarball(resolvedInstallSpec) : resolvedInstallSpec;
-  const installerSpec = toInstallerSpec(installSpec, packageManager);
-  const installEnv = await sanitizeProxyEnv(process.env);
-  const installRegistry = resolveInstallRegistry(installEnv);
-  let usedRegistry = installRegistry;
-  let installedLabel = installerSpec;
-
-  fs.rmSync(targetDir, { recursive: true, force: true });
-  fs.mkdirSync(targetDir, { recursive: true });
-  fs.mkdirSync(cacheDir, { recursive: true });
-
-  if (packageManager === 'bun') {
-    await runCommand(packageManager, [ 'init', '-y' ], targetDir, cacheDir, installEnv);
-    if (fs.existsSync(resolvedInstallSpec) && resolvedInstallSpec.endsWith('.tgz')) {
-      usedRegistry = await installLocalTarballViaRegistry(resolvedInstallSpec, targetDir, cacheDir, installEnv);
-      installedLabel = resolvedInstallSpec;
-    } else {
-      await runCommand(packageManager, [ 'add', installerSpec ], targetDir, cacheDir, installEnv);
+  const install = async(installSpec) => {
+    if (process.env.XPOD_COMPAT_MANIFEST_EVIDENCE_FILE) {
+      captureManifestEvidence(process.env.XPOD_COMPAT_MANIFEST_EVIDENCE_FILE, resolvedInstallSpec, installSpec, packageManager);
     }
-  } else {
-    await runCommand(packageManager, [ 'init', '-y' ], targetDir, cacheDir, installEnv);
-    const optionalArgs = installEnv.XPOD_PACKAGE_SMOKE_INCLUDE_OPTIONAL === 'true'
-      ? []
-      : [ '--omit=optional' ];
-    await runCommand(packageManager, [ 'install', ...optionalArgs, '--prefer-offline', '--no-audit', '--no-fund', installerSpec ], targetDir, cacheDir, installEnv);
-  }
+    const installerSpec = toInstallerSpec(installSpec, packageManager);
+    const installEnv = await sanitizeProxyEnv(process.env);
+    delete installEnv.XPOD_COMPAT_MANIFEST_EVIDENCE_FILE;
+    const installRegistry = resolveInstallRegistry(installEnv);
+    let usedRegistry = installRegistry;
+    let installedLabel = installerSpec;
 
-  const probe = path.join(__dirname, '..', 'tests', 'scripts', 'packaged-auth-probe.cjs');
-  const runtime = packageManager === 'bun' ? (process.platform === 'win32' ? 'bun.exe' : 'bun') : (process.platform === 'win32' ? 'node.exe' : 'node');
-  const probeArgs = [probe, path.join(targetDir, 'node_modules', '@undefineds.co', 'xpod')];
-  if (packageManager === 'bun') probeArgs.unshift('--no-install');
-  execFileSync(runtime, probeArgs, {
-    cwd: targetDir, stdio: 'inherit', env: { ...installEnv, NODE_PATH: '' },
-  });
+    fs.rmSync(targetDir, { recursive: true, force: true });
+    fs.mkdirSync(targetDir, { recursive: true });
+    fs.mkdirSync(cacheDir, { recursive: true });
 
-  console.log(`[package-install] manager=${packageManager}`);
-  console.log(`[package-install] installed ${installedLabel}`);
-  console.log(`[package-install] registry=${usedRegistry ?? 'package-manager-default'}`);
-  if (packageManager === 'npm' && resolvedInstallSpec !== installSpec) {
-    console.log(`[package-install] sanitized optionalDependencies for local tarball smoke`);
-  }
-  console.log(`[package-install] target ${targetDir}`);
+    if (packageManager === 'bun') {
+      await runCommand(packageManager, [ 'init', '-y' ], targetDir, cacheDir, installEnv);
+      if (fs.existsSync(resolvedInstallSpec) && resolvedInstallSpec.endsWith('.tgz')) {
+        usedRegistry = await installLocalTarballViaRegistry(resolvedInstallSpec, targetDir, cacheDir, installEnv, process.env.XPOD_COMPAT_MANIFEST_EVIDENCE_FILE);
+        installedLabel = resolvedInstallSpec;
+      } else {
+        await runCommand(packageManager, [ 'add', installerSpec ], targetDir, cacheDir, installEnv);
+      }
+    } else {
+      await runCommand(packageManager, [ 'init', '-y' ], targetDir, cacheDir, installEnv);
+      const optionalArgs = installEnv.XPOD_PACKAGE_SMOKE_INCLUDE_OPTIONAL === 'true'
+        ? []
+        : [ '--omit=optional' ];
+      await runCommand(packageManager, [ 'install', ...optionalArgs, '--prefer-offline', '--no-audit', '--no-fund', installerSpec ], targetDir, cacheDir, installEnv);
+    }
+
+    const probe = path.join(__dirname, '..', 'tests', 'scripts', 'packaged-auth-probe.cjs');
+    const runtime = packageManager === 'bun' ? (process.platform === 'win32' ? 'bun.exe' : 'bun') : (process.platform === 'win32' ? 'node.exe' : 'node');
+    const probeArgs = [probe, path.join(targetDir, 'node_modules', '@undefineds.co', 'xpod')];
+    if (packageManager === 'bun') probeArgs.unshift('--no-install');
+    execFileSync(runtime, probeArgs, {
+      cwd: targetDir, stdio: 'inherit', env: { ...installEnv, NODE_PATH: '' },
+    });
+
+    console.log(`[package-install] manager=${packageManager}`);
+    console.log(`[package-install] installed ${installedLabel}`);
+    console.log(`[package-install] registry=${usedRegistry ?? 'package-manager-default'}`);
+    if (packageManager === 'npm' && resolvedInstallSpec !== installSpec) {
+      console.log(`[package-install] sanitized optionalDependencies for local tarball smoke`);
+    }
+    console.log(`[package-install] target ${targetDir}`);
+  };
+  return packageManager === 'npm'
+    ? await withSmokeTarball(resolvedInstallSpec, install)
+    : await install(resolvedInstallSpec);
 }
 
 if (require.main === module) {
@@ -334,4 +388,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { installLocalTarballViaRegistry, createSmokeTarball, resolveInstallSpec };
+module.exports = { installLocalTarballViaRegistry, createSmokeTarball, withSmokeTarball, resolveInstallSpec };

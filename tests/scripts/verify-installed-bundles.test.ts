@@ -15,6 +15,7 @@ function fixture() {
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: `@undefineds.co/${name}`, version: '1.0.0' }));
     fs.writeFileSync(path.join(dir, 'dist/index.js'), 'export const fresh = true;');
   }
+  fs.writeFileSync(path.join(source, 'package.json'), JSON.stringify({ name: '@undefineds.co/xpod', version: '1.0.0' }));
   const tarball = path.join(root, 'artifact.tgz'); execFileSync('tar', ['czf', tarball, '-C', root, 'package']);
   const installed = path.join(root, 'installed'); fs.cpSync(source, installed, { recursive: true });
   return { root, tarball, installed, sdk: path.join(installed, 'node_modules/@undefineds.co/solid-sdk') };

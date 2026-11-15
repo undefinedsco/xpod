@@ -1,8 +1,11 @@
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { startPodContractServer, type PodContractServer } from './support/podContractServer';
+import { MountCleanupGuard, makeObservingKernelObserver } from './support/mountCleanup';
+import { isObservedConditionalConflict } from './support/mountHarness';
 import { discoverAgentFsHelper } from './support/helperDiscovery';
 
 const helper = discoverAgentFsHelper();
@@ -12,8 +15,14 @@ const runNative = Boolean(helper.helperPath);
 const runOverlay = runNative && process.env.XPOD_AGENTFS_RUN_OVERLAY === '1';
 const ROOT = path.resolve('.test-data/agent-directory-workers/agentfs-test/overlay');
 const TOKEN = 'overlay-token';
+const cleanup = new MountCleanupGuard({
+  observe: makeObservingKernelObserver('overlay'),
+  remove: (root) => rm(root, { recursive: true, force: true }),
+  report: (record) => console.error('[mount-cleanup]', JSON.stringify(record)),
+});
+let primaryFailure: unknown;
 
-interface ExecResult { status: number; stdout: string; stderr: string }
+interface ExecResult { state: 'closed' | 'spawn-error'; actualExit: number | null; signal: NodeJS.Signals | null; status: number; stdout: string; stderr: string }
 
 function exec(command: string, args: string[], env: NodeJS.ProcessEnv = {}, timeoutMs = 30_000, cwd = process.cwd()): Promise<ExecResult> {
   return new Promise((resolve) => {
@@ -23,8 +32,8 @@ function exec(command: string, args: string[], env: NodeJS.ProcessEnv = {}, time
     const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
     child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8'); });
     child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
-    child.on('error', (error) => { clearTimeout(timer); resolve({ status: 1, stdout, stderr: error.message }); });
-    child.on('close', (code) => { clearTimeout(timer); resolve({ status: code ?? 1, stdout, stderr }); });
+    child.on('error', (error) => { clearTimeout(timer); resolve({ state: 'spawn-error', actualExit: null, signal: null, status: 1, stdout, stderr: error.message }); });
+    child.on('close', (code, signal) => { clearTimeout(timer); resolve({ state: 'closed', actualExit: code, signal, status: code ?? 1, stdout, stderr }); });
   });
 }
 
@@ -60,30 +69,68 @@ describe.runIf(runOverlay)('native session overlay: dirty before commit, restart
   const binary = helper.helperPath as string;
   const mnt = path.join(ROOT, 'mnt');
   const session = path.join(ROOT, 'session');
+  let ownedMountAttempted = false;
 
   async function mount(): Promise<ExecResult> {
-    return exec(binary, [ 'mount', '--server', server.podRoot, '--mountpoint', mnt, '--backend', 'nfs', '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN });
+    cleanup.assertAbsent(ROOT);
+    ownedMountAttempted = true;
+    const result = await exec(binary, [ 'mount', '--server', server.podRoot, '--mountpoint', mnt, '--backend', process.env.XPOD_MOUNTED_BACKEND ?? 'nfs', '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN });
+    // Persist the real mount stdout/stderr into evidence on failure so the actual
+    // daemon/readiness error is diagnosable (frozen detached daemon uses Stdio::null).
+    if (result.status !== 0 && process.env.XPOD_MOUNTED_EVIDENCE) {
+      const { writeFileSync, chmodSync } = await import('node:fs');
+      // PARENT-CLI (the foreground `mount` command), NOT the detached product
+      // daemon (stdout/stderr are Stdio::null in frozen c7; never claim to
+      // recover that). The combined file is stdout-then-stderr CONCATENATION,
+      // not the original chronological interleaving.
+      const raw = Buffer.from(`${result.stdout}\n--- stderr ---\n${result.stderr}`);
+      const base = path.join(process.env.XPOD_MOUNTED_EVIDENCE, `overlay-mount-${Date.now()}`);
+      writeFileSync(`${base}.raw.log`, raw, { mode: 0o600 });
+      chmodSync(`${base}.raw.log`, 0o600);
+      writeFileSync(`${base}.json`, `${JSON.stringify({
+        status: result.status,
+        source: 'parent-cli-foreground-mount-not-detached-daemon',
+        stdoutBytes: Buffer.byteLength(result.stdout, 'utf8'),
+        stderrBytes: Buffer.byteLength(result.stderr, 'utf8'),
+        rawCombinedOrder: 'stdout-then-stderr-concatenation-not-chronological',
+        rawSHA256: createHash('sha256').update(raw).digest('hex'),
+      }, null, 2)}\n`, { mode: 0o600 });
+      chmodSync(`${base}.json`, 0o600);
+    }
+    return result;
   }
-  async function unmount(): Promise<void> {
-    await exec(binary, [ 'unmount', '--mountpoint', mnt, '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN });
+  async function unmount(primary?: unknown): Promise<void> {
+    await cleanup.unmount(mnt, () => exec(binary, [ 'unmount', '--mountpoint', mnt, '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN }),
+      { mountpoint: mnt, sessionDir: session, binary }, primary);
   }
 
-  afterEach(async () => {
-    await unmount();
+  afterEach(async context => {
+    if (context.task.result?.state === 'fail') primaryFailure ??= context.task.result;
+    try { await unmount(primaryFailure); } catch (error) { primaryFailure ??= error; throw error; }
     expect(await waitForOwnedDaemons(binary, mnt, 0), 'the owned mount daemon must exit after unmount').toBe(true);
+    // Retire the owned-mount flag ONLY after a successful unmount (kernel
+    // absence proven by cleanup.unmount) AND the owned daemon actually exited.
+    // afterAll then handles only an UNRETIRED attempt; unknown/pending never
+    // clears, and a failed unmount keeps the scene for retry.
+    ownedMountAttempted = false;
   });
 
   beforeAll(async () => {
-    await rm(ROOT, { recursive: true, force: true });
+    cleanup.assertAbsent(ROOT);
+    await cleanup.remove(ROOT, primaryFailure);
     await mkdir(mnt, { recursive: true });
     await mkdir(session, { recursive: true });
     server = await startPodContractServer({ token: TOKEN, files: { 'alpha.txt': 'ALPHA_BODY_0123456789\n' } });
   });
 
   afterAll(async () => {
-    await unmount();
-    await server.close();
-    await rm(ROOT, { recursive: true, force: true });
+    let secondary: unknown;
+    if (ownedMountAttempted) {
+      try { await unmount(primaryFailure); } catch (error) { secondary = error; }
+    }
+    try { await server?.close(); } catch (error) { secondary ??= error; }
+    await cleanup.remove(ROOT, primaryFailure ?? secondary);
+    if (primaryFailure === undefined && secondary !== undefined) throw secondary;
   });
 
   it('keeps uncommitted edits local, recovers them across restart, then writes back on commit', async () => {
@@ -149,8 +196,10 @@ describe.runIf(runOverlay)('native session overlay: dirty before commit, restart
     server.mutate('alpha.txt', 'REMOTE_MOVED_ON\n');
     expect((await mount()).status).toBe(0);
 
+    const commitLogStart = server.log.length;
     const commit = await exec(binary, [ 'commit', '--pod-root', server.podRoot, '--session-dir', session ], { XPOD_AGENTFS_TOKEN: TOKEN });
-    expect(commit.status, `commit should surface the 412 conflict: ${commit.stdout}${commit.stderr}`).not.toBe(0);
+    expect(isObservedConditionalConflict(commit, server.log.slice(commitLogStart), 'alpha.txt'),
+      `actual closed conditional 412 conflict required: ${JSON.stringify(commit)}`).toBe(true);
     expect(server.readBody('alpha.txt')).toBe('REMOTE_MOVED_ON\n');
     expect(await readFile(path.join(mnt, 'alpha.txt'), 'utf8')).toBe('LOCAL_EDIT\n');
     const installedCli = process.env.XPOD_AGENTFS_TEST_CLI;

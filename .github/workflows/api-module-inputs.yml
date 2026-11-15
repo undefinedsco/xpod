@@ -1,0 +1,75 @@
+name: API module official native input verification
+
+# Original input evidence only; no publication, RC, or deployment.
+on:
+  push:
+    branches: ['codex/module-installed-consumer-20261013']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inputs:
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+          - target: linux-x64
+            runner: ubuntu-24.04
+          - target: darwin-arm64
+            runner: macos-14
+          - target: darwin-x64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Verify input preparation failures
+        run: bun test ./packages/xpod-api/tests/prepare-inngest-inputs.test.ts
+      - name: Download and bind original official inputs
+        env:
+          TARGET: ${{ matrix.target }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          case "$TARGET:$(uname -s):$(uname -m)" in
+            linux-arm64:Linux:aarch64|linux-x64:Linux:x86_64|darwin-arm64:Darwin:arm64|darwin-x64:Darwin:x86_64) ;;
+            *) echo '::error::native runner differs from target'; exit 1 ;;
+          esac
+          root="$GITHUB_WORKSPACE/.test-data/api-inputs-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$TARGET"
+          mkdir -p -m 700 "$root"
+          echo "API_INPUT_ROOT=$root" >> "$GITHUB_ENV"
+          bun packages/xpod-api/scripts/prepare-inngest-inputs.ts --target "$TARGET" --out "$root/originals" > "$root/preparation.stdout.raw" 2> "$root/preparation.stderr.raw"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          python3 - "$root" <<'PY'
+          import hashlib,json,os,pathlib,sys
+          root=pathlib.Path(sys.argv[1]); originals=root/'originals'
+          receipt=json.loads((originals/'prepare-inputs.receipt.safe.json').read_text())
+          assert receipt['ok'] is True and receipt['streamsClosed'] is True and receipt['releaseAccepted'] is False
+          assert receipt['target']==os.environ['TARGET']
+          for row in receipt['downloads']:
+              file=originals/row['path']
+              assert file.stat().st_size==row['bytes']
+              assert hashlib.sha256(file.read_bytes()).hexdigest()==row['sha256']
+          with (root/'workflow.safe.json').open('x') as output:
+              json.dump({'sourceSHA':os.environ['GITHUB_SHA'],'target':os.environ['TARGET'],'originalInputsVerified':True,'nativeExecutionVerified':False,'moduleConsumerVerified':False,'releaseAccepted':False},output)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always() && env.API_INPUT_ROOT != ''
+        with:
+          name: api-original-inputs-${{ matrix.target }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .test-data/api-inputs-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.target }}/
+          if-no-files-found: error
+          retention-days: 30

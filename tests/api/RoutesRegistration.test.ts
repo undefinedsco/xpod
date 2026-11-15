@@ -1,8 +1,9 @@
 import os from 'node:os';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AcmeCertificateManager } from '../../src/edge/acme/AcmeCertificateManager';
+
 import {
   getEdgeNodeCertificateCapabilityBridge,
   hasEdgeNodeCertificateCapabilityBridge,
@@ -18,6 +19,9 @@ import { createOwnerPodBaseUrlResolver } from '../../src/api/ai-gateway/pod/PodB
 import type { ApiContainerConfig } from '../../src/api/container/types';
 import type { ApiServer } from '../../src/api/ApiServer';
 import { serve } from 'inngest/node';
+import { useCertificateTestClock } from '../helpers/certificateTestClock';
+
+afterEach(() => { vi.useRealTimers(); });
 
 const SAMPLE_CERT = `-----BEGIN CERTIFICATE-----
 MIICvjCCAaYCCQCzYZphWIDKfjANBgkqhkiG9w0BAQsFADAhMR8wHQYDVQQDDBZu
@@ -631,6 +635,7 @@ describe('registerRoutes mode wiring', () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'routes-acme-cert-'));
     const bridgeId = resolveEdgeNodeCertificateCapabilityBridgeId({ nodeId: 'node-1' })!;
     const bridge = getEdgeNodeCertificateCapabilityBridge(bridgeId);
+    useCertificateTestClock();
     try {
       const certPath = path.join(tmpDir, 'tls.crt');
       await fs.writeFile(certPath, SAMPLE_CERT, 'utf8');

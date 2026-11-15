@@ -169,6 +169,8 @@ History favors emoji-prefixed, imperative commit titles such as `🐛 Fix quadst
 ### 版本发布
 RC 只从 `staging` 发起：开发分支先完成隔离验证和 PR 审查，普通 merge 合入 `staging` 保留祖先后再对不可变 SHA/digest 排队验收；通过后 squash 同步到 `main`，stable tag 仍绑定已验收的 `staging` SHA。开发持续沿 `staging`，不把 `main` 反向合回；`main` 不接独立改动。不得从其他分支占用或覆盖共享 RC，不得自动中断在验候选；跨仓库或手工发布须协调同一环境的独占权。具体流程与锁的边界见 `docs/RELEASE.md`。
 
+RC 失败时**先拿到真实错误再改代码**：读取加密诊断或在保留的 RC 上本地复现，不靠"合入—等 RC—看失败码"试错；RC 未恢复绿色前冻结新增门禁，且不得把文件字节哈希写进其他源码或测试。见 `docs/RELEASE.md`"失败排查"与"门禁冻结"。
+
 发布新版本的详细流程参见 `docs/RELEASE.md`。
 
 ## Security & Configuration Tips
@@ -200,6 +202,7 @@ Do not commit secrets; generate `.env.local` / `.env.server` from `example.env` 
 - **协议插件作为次一级扩展机制**：非一等原生能力应通过协议插件或带路径前缀的兼容入口提供支持，并保持产品抽象独立于具体后端。
 
 ## Package Manager
+- **CLI 与可选模块边界**：`xpod` CLI 独立发布，CSS/API/AFS 按需下载；包归属、单一认证来源、平台产物、下载校验与迁移边界以 [`docs/module-distribution.md`](docs/module-distribution.md) 为准。CLI 默认构建不得带入服务端/UI/原生引擎，也不得跨包穿透源码；根 `src/cli` 已迁移文件只允许作为转发 adapter。
 - **主线使用 Bun**：根目录默认使用 Bun 管理依赖、执行脚本和启动服务。
 - **运行时 Bun 优先**：Gateway、CSS 和 API 优先使用 Bun；Bun 单文件产物的子服务复用自身可执行文件，不依赖系统 Node。Node 仅用于未安装 Bun 的 JS 分发兼容路径，以及已确认需要 Node ABI/工具链的构建或测试工具。不得因为使用 `node:` API 就认定必须使用 Node，也不得在服务启动失败时静默切换运行时掩盖配置或代码错误。
 - **禁止 npm**：不要使用 `npm install`，避免生成 `package-lock.json`。

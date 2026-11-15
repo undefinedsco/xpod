@@ -24,6 +24,7 @@ jobs:
       source_branch: ${{ steps.acceptance.outputs.source_branch }}
       candidate_version: ${{ steps.acceptance.outputs.candidate_version }}
       candidate_run_id: ${{ steps.acceptance.outputs.candidate_run_id }}
+      desktop_accepted: ${{ steps.acceptance.outputs.desktop_accepted }}
     env:
       TAG_NAME: ${{ github.ref_name }}
       TAG_SHA: ${{ github.sha }}
@@ -33,8 +34,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      - id: verifier_tooling
+        uses: ./.github/actions/setup-legacy-root-verifier
+
       - name: Validate release tag and accepted candidate evidence
         id: acceptance
+        env:
+          VERIFIER_NODE_PATH: ${{ steps.verifier_tooling.outputs.node-path }}
+          VERIFIER_NODE_OPTIONS: ${{ steps.verifier_tooling.outputs.node-options }}
         run: |
           set -euo pipefail
           TAG_REGEX='^v[0-9]+\.[0-9]+\.[0-9]+$'
@@ -62,20 +69,32 @@ jobs:
             exit 1
           fi
 
+          # The service is promoted from the completed candidate run that holds
+          # the service acceptance artifact. The run as a whole may have failed on
+          # desktop acceptance: the desktop is accepted and released on its own.
           runs_json="$(gh run list \
             --workflow "Release Candidate" \
             --commit "$TAG_SHA" \
-            --status success \
+            --status completed \
             --limit 20 \
             --json databaseId,headBranch,headSha,name,status,conclusion)"
-          CANDIDATE_RUN_ID="$(RUNS_JSON="$runs_json" TAG_SHA="$TAG_SHA" node -e '
+          CANDIDATE_RUN_ID=""
+          for run_id in $(RUNS_JSON="$runs_json" TAG_SHA="$TAG_SHA" node -e '
             const runs = JSON.parse(process.env.RUNS_JSON || "[]");
-            const match = runs.find((run) => run.headSha === process.env.TAG_SHA);
-            if (match) process.stdout.write(String(match.databaseId));
-          ')"
+            for (const run of runs) if (run.headSha === process.env.TAG_SHA && run.headBranch === "staging") console.log(run.databaseId);
+          '); do
+            count="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts?name=release-acceptance-${TAG_SHA}" --jq '[.artifacts[] | select(.expired | not)] | length')"
+            if [[ "$count" -gt 0 ]]; then CANDIDATE_RUN_ID="$run_id"; break; fi
+          done
           if [[ -z "$CANDIDATE_RUN_ID" ]]; then
-            echo "::error::no successful Release Candidate workflow found for exact tag SHA"
+            echo "::error::no Release Candidate run accepted the service for exact tag SHA"
             exit 1
+          fi
+          desktop_count="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${CANDIDATE_RUN_ID}/artifacts?name=desktop-acceptance-${TAG_SHA}" --jq '[.artifacts[] | select(.expired | not)] | length')"
+          if [[ "$desktop_count" -gt 0 ]]; then desktop_accepted=true; else desktop_accepted=false; fi
+          echo "desktop_accepted=$desktop_accepted" >> "$GITHUB_OUTPUT"
+          if [[ "$desktop_accepted" != true ]]; then
+            echo "::warning::the candidate did not accept the desktop; the service is promoted without a desktop release"
           fi
 
           ACCEPTANCE_DIR="$RUNNER_TEMP/release-acceptance"
@@ -84,8 +103,8 @@ jobs:
             -n "release-acceptance-${TAG_SHA}" \
             -D "$ACCEPTANCE_DIR"
 
-          MANIFEST_PATH="$(find "$ACCEPTANCE_DIR" -type f -name 'release-acceptance.json' -print -quit)"
-          if [[ -z "$MANIFEST_PATH" ]]; then
+          MANIFEST_PATH="$ACCEPTANCE_DIR/release-acceptance.json"
+          if [[ ! -f "$MANIFEST_PATH" ]]; then
             echo "::error::release acceptance manifest artifact is missing release-acceptance.json"
             exit 1
           fi
@@ -109,10 +128,57 @@ jobs:
             --required-check ai-connections \
             --required-check models \
             --required-check chat \
+            --required-check rc-pod-sparql \
+            --required-check rc-builtin-models-chat \
+            --required-check rc-matrix-collaboration \
+            --required-check rc-browser-consent \
             --required-check task-approval \
+            --required-check native-sparql \
+            --required-check native-public16 \
+            --required-check native-private17 \
+            --required-check native-namespace-pull \
             --required-check qlever-local \
             --required-check package-consumers \
-            --required-check desktop > "$RUNNER_TEMP/acceptance-validation.json"
+            --required-check legacy-root-compat \
+            --required-check runtime-mode-matrix > "$RUNNER_TEMP/acceptance-validation.json"
+
+          # Original compat proof is a sibling in this same accepted artifact.
+          # A manifest-only passed value cannot authorize old service delivery.
+          NODE_PATH="$VERIFIER_NODE_PATH" NODE_OPTIONS="$VERIFIER_NODE_OPTIONS" node scripts/release-gate-evidence.cjs verify-root-compat \
+            --source-sha "$TAG_SHA" --run-id "$CANDIDATE_RUN_ID" \
+            --archive-dir "$ACCEPTANCE_DIR/compat" \
+            --evidence "$ACCEPTANCE_DIR/compat/compat.receipt.json" \
+            > "$RUNNER_TEMP/compat-validation.json"
+
+          # Re-observe the actual successful matrix job, including retained successes across partial reruns.
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${CANDIDATE_RUN_ID}" > "$RUNNER_TEMP/accepted-candidate-run.json"
+          ACCEPTED_IMAGE="$(node -e 'process.stdout.write("ghcr.io/undefinedsco/xpod@" + require(process.argv[1]).imageDigest)' "$MANIFEST_PATH")"
+          MODE_SELECTION_FIELDS="$(MODE_SELECTION_FILE="$ACCEPTANCE_DIR/mode-authority/selection.safe.json" ACCEPTED_IMAGE="$ACCEPTED_IMAGE" CANDIDATE_RUN_ID="$CANDIDATE_RUN_ID" node - <<'NODE'
+          const fs = require('node:fs'); const path = require('node:path');
+          const { readCanonicalFile } = require('./scripts/lib/mode-evidence-reader.cjs');
+          const { validateModeSelection } = require('./scripts/lib/mode-artifact-authority.cjs');
+          (async () => {
+            const run = JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'accepted-candidate-run.json'), 'utf8'));
+            if (String(run.id) !== process.env.CANDIDATE_RUN_ID || run.head_sha !== process.env.TAG_SHA || run.status !== 'completed') throw new Error('Candidate run identity mismatch');
+            const file = process.env.MODE_SELECTION_FILE;
+            const selection = JSON.parse((await readCanonicalFile(path.dirname(file), path.basename(file))).toString());
+            validateModeSelection(selection, { sourceSha: process.env.TAG_SHA, image: process.env.ACCEPTED_IMAGE, platform: 'linux/amd64', runId: process.env.CANDIDATE_RUN_ID });
+            process.stdout.write(`${selection.artifactId} ${selection.runAttempt}`);
+          })().catch(() => { process.stderr.write('Accepted matrix selection invalid\n'); process.exitCode = 1; });
+          NODE
+          )"
+          read -r MODE_ARTIFACT_ID MODE_MATRIX_ATTEMPT <<< "$MODE_SELECTION_FIELDS"
+          mkdir -m 700 "$RUNNER_TEMP/current-mode-authority"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${MODE_ARTIFACT_ID}" > "$RUNNER_TEMP/current-mode-authority/artifact.original.json"
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${CANDIDATE_RUN_ID}/jobs?filter=all&per_page=100" > "$RUNNER_TEMP/current-mode-authority/jobs.original.json"
+          node scripts/verify-service-image-modes.cjs \
+            --directory "$ACCEPTANCE_DIR/mode-matrix" \
+            --source-sha "$TAG_SHA" --image "$ACCEPTED_IMAGE" --platform linux/amd64 \
+            --run-id "$CANDIDATE_RUN_ID" --run-attempt "$MODE_MATRIX_ATTEMPT" \
+            --selection-file "$ACCEPTANCE_DIR/mode-authority/selection.safe.json" \
+            --artifact-file "$RUNNER_TEMP/current-mode-authority/artifact.original.json" \
+            --jobs-file "$RUNNER_TEMP/current-mode-authority/jobs.original.json" \
+            > "$RUNNER_TEMP/mode-matrix-validation.json"
 
           MANIFEST_PATH="$MANIFEST_PATH" VERSION="$VERSION" CANDIDATE_RUN_ID="$CANDIDATE_RUN_ID" node - <<'NODE'
           const fs = require('node:fs');
@@ -456,213 +522,21 @@ jobs:
       environment: co
     secrets: inherit
 
-  build_desktop_macos:
-    name: Build macOS desktop release
+  # Desktop is accepted and released on its own: it never blocks the service
+  # promotion above, and ships only for a candidate that holds desktop evidence.
+  # A desktop accepted later for this same tag is released by dispatching
+  # release-desktop.yml directly.
+  release_desktop:
+    name: Release macOS desktop
     needs:
       - promotion_guard
       - deploy_production_co
-    runs-on: macos-15
-    environment: rc
+    if: ${{ needs.promotion_guard.outputs.desktop_accepted == 'true' }}
     permissions:
       actions: read
-      contents: read
-    env:
-      RELEASE_VERSION: ${{ needs.promotion_guard.outputs.version }}
-      CANDIDATE_RUN_ID: ${{ needs.promotion_guard.outputs.candidate_run_id }}
-      XPOD_ACCEPTED_SHA: ${{ github.sha }}
-      GH_TOKEN: ${{ github.token }}
-      XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT: ${{ github.workspace }}/.test-data/qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
-      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-      XPOD_LIVE_PROVIDER_API_KEY_CONFIG: ${{ secrets.XPOD_LIVE_PROVIDER_API_KEY_CONFIG }}
-      XPOD_AI_PROXY_URL: ${{ secrets.XPOD_AI_PROXY_URL }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.2
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Download the accepted native runtime without rebuilding
-        run: |
-          set -euo pipefail
-          mkdir -p "$(dirname "$XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT")"
-          gh run download "$CANDIDATE_RUN_ID" \
-            -n "qlever-local-runtime-darwin-arm64-${XPOD_ACCEPTED_SHA}" \
-            -D "$(dirname "$XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT")"
-          test -s "$XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT"
-
-      - run: bun install --frozen-lockfile
-
-      - name: Bootstrap the Electron vendor binary
-        run: node node_modules/electron/install.js
-
-      - name: Validate desktop version
-        run: |
-          node -e '
-            const desktop = require("./desktop/package.json");
-            if (desktop.version !== process.env.RELEASE_VERSION) {
-              throw new Error(`desktop version ${desktop.version} does not match ${process.env.RELEASE_VERSION}`);
-            }
-          '
-
-      - name: Build DMG and ZIP
-        working-directory: desktop
-        run: |
-          set -euo pipefail
-          bun run dist
-          test -d release/mac-arm64/Xpod.app
-          find release -maxdepth 1 -type f -name '*-mac.zip' -print -quit | grep -q .
-          # The in-app updater reads this feed, so a release without it cannot be offered as an
-          # update (update.electronjs.org looks for latest-mac.yml among the release assets).
-          test -s release/latest-mac.yml
-
-      - name: Verify packaged version and native runtime payload
-        run: |
-          set -euo pipefail
-          app="desktop/release/mac-arm64/Xpod.app"
-          runtime="$app/Contents/Resources/runtime/qlever/bin/xpod_qlever_local_runtime"
-          actual="$(defaults read "$PWD/$app/Contents/Info" CFBundleShortVersionString)"
-          [[ "$actual" == "$RELEASE_VERSION" ]]
-          test -x "$runtime"
-          test -s "$app/Contents/Resources/runtime/qlever/manifest.json"
-
-      - name: Accept actual stable packaged desktop permissions and operations
-        run: |
-          set -euo pipefail
-          test -n "$XPOD_LIVE_PROVIDER_API_KEY_CONFIG"
-          provider_file="${RUNNER_TEMP}/desktop-provider-api-key"
-          printf '%s\n' "$XPOD_LIVE_PROVIDER_API_KEY_CONFIG" > "$provider_file"
-          chmod 600 "$provider_file"
-          new_zip="$(find "$PWD/desktop/release" -maxdepth 1 -type f -name '*-mac.zip' -print -quit)"
-          test -n "$new_zip"
-          bun scripts/accept-packaged-desktop-permissions.ts \
-            --archive "$new_zip" \
-            --version "$RELEASE_VERSION" \
-            --source-sha "$XPOD_ACCEPTED_SHA" \
-            --issuer "https://id.undefineds.co/" \
-            --key-file "$provider_file" \
-            --private-directory "${RUNNER_TEMP}/desktop-permission-private" \
-            --evidence "${RUNNER_TEMP}/desktop-permission-evidence.json"
-
-      - name: Accept stable self-update and verify the combined desktop contract
-        run: |
-          set -euo pipefail
-          accepted_evidence="${RUNNER_TEMP}/accepted-desktop-update"
-          gh run download "$CANDIDATE_RUN_ID" \
-            -n "desktop-self-update-acceptance-${XPOD_ACCEPTED_SHA}" -D "$accepted_evidence"
-          old_tag="$(node -e 'const e=require(process.argv[1]); if (!/^v\d+\.\d+\.\d+$/.test(e.oldReleaseTag)) process.exit(1); process.stdout.write(e.oldReleaseTag)' "$accepted_evidence/desktop-self-update-evidence.json")"
-          dest="${RUNNER_TEMP}/stable-old-desktop"
-          mkdir -p "$dest"
-          gh release download "$old_tag" --repo "${{ github.repository }}" \
-            --pattern '*-arm64-mac.zip' --dir "$dest"
-          old_zip="$(find "$dest" -maxdepth 1 -type f -name '*-arm64-mac.zip' -print -quit)"
-          test -n "$old_zip"
-          unzip -q "$old_zip" -d "$dest/unpacked"
-          old_app="$(find "$dest/unpacked" -type d -name 'Xpod.app' -print -quit)"
-          new_zip="$(find "$PWD/desktop/release" -maxdepth 1 -type f -name '*-mac.zip' -print -quit)"
-          test -n "$old_app"
-          test -n "$new_zip"
-          node desktop/scripts/packaged-update-acceptance.mjs \
-            --old "$old_app" --old-zip "$old_zip" --old-release-tag "$old_tag" \
-            --new-zip "$new_zip" --version "$RELEASE_VERSION" \
-            --source-sha "$XPOD_ACCEPTED_SHA" --timeout 180000 \
-            --evidence-out "${RUNNER_TEMP}/desktop-self-update-evidence.json"
-          node scripts/desktop-acceptance.cjs \
-            --self-update-evidence "${RUNNER_TEMP}/desktop-self-update-evidence.json" \
-            --permission-evidence "${RUNNER_TEMP}/desktop-permission-evidence.json" \
-            --source-sha "$XPOD_ACCEPTED_SHA" --version "$RELEASE_VERSION" \
-            --expected-archive "$new_zip" --checks-out "${RUNNER_TEMP}/desktop-check.json"
-
-      - name: Upload allowlisted stable desktop acceptance evidence
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-stable-acceptance-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/desktop-self-update-evidence.json
-            ${{ runner.temp }}/desktop-permission-evidence.json
-            ${{ runner.temp }}/desktop-check.json
-          if-no-files-found: error
-          retention-days: 30
-
-      # The archive ships an ad-hoc (linker) signature; `create_github_release` publishes
-      # these exact bytes after production deploys, so hand them over as one artifact.
-      - uses: actions/upload-artifact@v4
-        with:
-          name: xpod-desktop-macos-${{ needs.promotion_guard.outputs.version }}
-          path: |
-            desktop/release/*.dmg
-            desktop/release/*.zip
-            desktop/release/*.blockmap
-            desktop/release/latest-mac.yml
-          if-no-files-found: error
-          retention-days: 14
-      - name: Upload stable desktop permission failure summary
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-permission-failure-${{ github.sha }}
-          path: ${{ runner.temp }}/desktop-permission-private/failure-safe.json
-          if-no-files-found: ignore
-          retention-days: 30
-
-  create_github_release:
-    name: Create GitHub Release
-    needs:
-      - promotion_guard
-      - deploy_production_co
-      - build_desktop_macos
-    runs-on: ubuntu-latest
-    permissions:
       contents: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
-      TAG_NAME: ${{ github.ref_name }}
-      RELEASE_VERSION: ${{ needs.promotion_guard.outputs.version }}
-      ACCEPTED_IMAGE_DIGEST: ${{ needs.promotion_guard.outputs.image_digest }}
-      CANDIDATE_VERSION: ${{ needs.promotion_guard.outputs.candidate_version }}
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: xpod-desktop-macos-${{ needs.promotion_guard.outputs.version }}
-          path: ${{ runner.temp }}/desktop-release
-
-      - name: Create release after production deploy
-        run: |
-          set -euo pipefail
-          notes_file="$RUNNER_TEMP/release-notes.md"
-          {
-            printf 'Promoted accepted release candidate `%s`.\n\n' "$CANDIDATE_VERSION"
-            printf 'Container digest: `%s`\n' "$ACCEPTED_IMAGE_DIGEST"
-          } > "$notes_file"
-          if gh release view "$TAG_NAME" > /dev/null 2>&1; then
-            gh release edit "$TAG_NAME" \
-              --title "Xpod ${RELEASE_VERSION}" \
-              --notes-file "$notes_file"
-          else
-            gh release create "$TAG_NAME" \
-              --verify-tag \
-              --title "Xpod ${RELEASE_VERSION}" \
-              --notes-file "$notes_file"
-          fi
-
-          mapfile -t desktop_assets < <(find "$RUNNER_TEMP/desktop-release" -type f \
-            \( -name '*.dmg' -o -name '*.zip' -o -name '*.blockmap' -o -name 'latest-mac.yml' \) -print)
-          if [[ "${#desktop_assets[@]}" -eq 0 ]]; then
-            echo "::error::desktop release assets are missing"
-            exit 1
-          fi
-          for asset in "${desktop_assets[@]}"; do
-            if [[ "$(basename "$asset")" == 'latest-mac.yml' ]]; then
-              have_feed=1
-            fi
-          done
-          if [[ "${have_feed:-0}" -ne 1 ]]; then
-            echo "::error::desktop release is missing latest-mac.yml, so the in-app updater cannot see it"
-            exit 1
-          fi
-          gh release upload "$TAG_NAME" "${desktop_assets[@]}" --clobber
+    uses: ./.github/workflows/release-desktop.yml
+    with:
+      tag: ${{ github.ref_name }}
+      candidate_run_id: ${{ needs.promotion_guard.outputs.candidate_run_id }}
+    secrets: inherit

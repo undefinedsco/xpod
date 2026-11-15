@@ -18,16 +18,27 @@ export type MountedPermissionCondition = 'mounted-runtime' | 'service-access'
 
 /** A mounted Pod permission failure that keeps its exact diagnostic text private
  * and publishes only a reviewed closed-vocabulary condition. */
+/** Closed, bounded cause classes for a service-access rejection. Never free text. */
+export type MountedPermissionDetail = 'get-failed' | 'descriptor-invalid'
+  | 'http-400' | 'http-401' | 'http-403' | 'http-404' | 'http-409' | 'http-429' | 'http-500' | 'http-503'
+  | 'request-error' | 'transport-error' | 'unknown'
+  | 'missing-client' | 'unbound-client' | 'foreign-pod'
+  | 'applet-id' | 'service-block' | 'empty-resources' | 'resource' | 'descriptor' | 'unclassified';
+
 export class MountedPermissionError extends Error {
   readonly condition: MountedPermissionCondition;
+  /** Reviewed closed token for the job log; never the underlying message. */
+  readonly detail?: MountedPermissionDetail;
   /** The untranslated rejection behind an attributed operation, kept for the
    * private 600-mode evidence only. */
   override readonly cause?: unknown;
-  constructor(condition: MountedPermissionCondition, detail: string, cause?: unknown) {
+  constructor(condition: MountedPermissionCondition, detail: string, cause?: unknown,
+    closed?: MountedPermissionDetail) {
     super(detail);
     this.name = 'MountedPermissionError';
     this.condition = condition;
     this.cause = cause;
+    if (closed !== undefined) this.detail = closed;
   }
 }
 
@@ -44,6 +55,17 @@ export async function attributeMountedOperation<T>(condition: MountedPermissionC
     throw new MountedPermissionError(condition,
       `Mounted permission operation "${condition}" was rejected: ${cause}`, error);
   }
+}
+
+/** Closed classification for a descriptor the parser refused. */
+function classifyDescriptorFailure(cause: unknown): MountedPermissionDetail {
+  const message = cause instanceof Error ? cause.message : '';
+  if (/invalid_empty_resources/u.test(message)) return 'empty-resources';
+  if (/invalid_applet_id/u.test(message)) return 'applet-id';
+  if (/invalid_service/u.test(message)) return 'service-block';
+  if (/invalid_resource/u.test(message)) return 'resource';
+  if (/invalid_descriptor/u.test(message)) return 'descriptor';
+  return 'unclassified';
 }
 
 /** Observe requests; never replace transport or read credential headers/bodies. */
@@ -156,10 +178,56 @@ export async function acceptMountedPodPermissions(page: Page, binding: { webId: 
     return true;
   };
   try {
-    request = await attributeMountedOperation('service-access', async () => parseAiConnectionsServiceAccess(await handle.evaluate(({ controller }) => {
-      if (!controller.client) throw new Error('Missing mounted AI client');
-      return controller.client.getServiceAccess();
-    }), binding.podUrl));
+    request = await attributeMountedOperation('service-access', async () => {
+      // Fail closed BEFORE the request if the captured client is bound to a
+      // different Pod of the same owner: its X-Xpod-Pod-Url would make the
+      // server describe that other Pod and every resource would be rejected as
+      // outside this stage's Pod. Only a status-only class is published.
+      const bound = await handle.evaluate(({ controller }, podUrl: string): string => {
+        if (!controller.client) return 'missing-client';
+        const clientPod = controller.client.podBaseUrl;
+        if (typeof clientPod !== 'string') return 'unbound-client';
+        // Compare NORMALIZED FULL ROOTS on both sides: same Pod with a trailing
+        // slash variance is the same binding; a different root on the same
+        // origin is not. Never widen this to an origin comparison.
+        const root = (value: string): string => value.endsWith('/') ? value : `${value}/`;
+        return root(clientPod) === root(podUrl) ? 'bound' : 'foreign-pod';
+      }, binding.podUrl).catch(() => 'unavailable');
+      if (bound !== 'bound') throw new MountedPermissionError('service-access',
+        'Mounted AI client binding rejected', undefined, bound as MountedPermissionDetail);
+      // Classify the original rejection in-page: Playwright drops custom error
+      // fields when it reconstructs a thrown browser error in Node. Return only
+      // fixed tokens on failure; successful descriptors retain their raw shape.
+      const envelope = await handle.evaluate(async ({ controller }) => {
+        if (!controller.client) return { ok: false as const, detail: 'missing-client' as const };
+        try {
+          return { ok: true as const, descriptor: await controller.client.getServiceAccess() };
+        } catch (cause) {
+          const status = (cause as { status?: unknown } | undefined)?.status;
+          const allowed = [400, 401, 403, 404, 409, 429, 500, 503];
+          let detail: MountedPermissionDetail;
+          if (typeof status === 'number' && Number.isInteger(status) && allowed.includes(status)) {
+            detail = `http-${status}` as MountedPermissionDetail;
+          } else if ((cause as { name?: unknown } | undefined)?.name === 'AiConnectionsRequestError') {
+            detail = 'request-error';
+          } else {
+            detail = cause instanceof Error ? 'transport-error' : 'unknown';
+          }
+          return { ok: false as const, detail };
+        }
+      }).catch(cause => {
+        throw new MountedPermissionError('service-access', 'service-access evaluation failed', cause, 'transport-error');
+      });
+      if (!envelope.ok) {
+        throw new MountedPermissionError('service-access', 'service-access GET failed', undefined, envelope.detail);
+      }
+      try {
+        return parseAiConnectionsServiceAccess(envelope.descriptor, binding.podUrl);
+      } catch (cause) {
+        const closed = classifyDescriptorFailure(cause);
+        throw new MountedPermissionError('service-access', 'service-access descriptor rejected', cause, closed);
+      }
+    });
     const resourceIds = request.resources.map(resource => resource.id);
     if (resourceIds.length !== AI_CONNECTIONS_SERVICE_RESOURCE_IDS.length || new Set(resourceIds).size !== resourceIds.length
       || AI_CONNECTIONS_SERVICE_RESOURCE_IDS.some(id => !resourceIds.includes(id))) throw new MountedPermissionError('service-access', 'Incomplete shared target declaration');

@@ -272,6 +272,8 @@ def create_smoke_database(path: Path) -> None:
 def readline_with_timeout(
     process: subprocess.Popen[str], timeout_seconds: float, context: str
 ) -> str:
+    if hasattr(process, 'read_protocol_line'):
+        return process.read_protocol_line()
     assert process.stdout is not None
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ)
@@ -297,18 +299,17 @@ def sparql_bindings(response: str) -> list[dict[str, object]]:
     return bindings
 
 
-def run_runtime_smoke(runtime_path: Path, smoke_database: Path) -> tuple[int, int]:
-    smoke = subprocess.Popen(
-        [
-            str(runtime_path),
-            "--sqlite-path",
-            str(smoke_database),
-        ],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+def run_runtime_smoke(runtime_path: Path, smoke_database: Path, *, session_factory=None) -> tuple[int, int]:
+    command = [str(runtime_path), "--sqlite-path", str(smoke_database)]
+    if session_factory is not None:
+        with session_factory(command) as smoke:
+            return _run_runtime_smoke_session(smoke)
+    smoke = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True)
+    return _run_runtime_smoke_session(smoke)
+
+
+def _run_runtime_smoke_session(smoke) -> tuple[int, int]:
     assert smoke.stdin is not None
     assert smoke.stdout is not None
 
@@ -769,7 +770,7 @@ def main() -> int:
     parser.add_argument("--lock", required=True, type=Path)
     provenance = parser.add_mutually_exclusive_group(required=True)
     provenance.add_argument("--prior-sdk-image")
-    provenance.add_argument("--build-source")
+    provenance.add_argument("--build-source", choices=["macos-arm64", "macos-x64", "linux-arm64", "linux-x64"])
     parser.add_argument("--smoke-database", required=True, type=Path)
     args = parser.parse_args()
 
@@ -795,7 +796,11 @@ def main() -> int:
         else {
             "source": "native-platform-build",
             "platform": args.build_source,
-            "entrypoint": "qlever/scripts/build-macos-local-runtime.sh",
+            "entrypoint": (
+                "qlever/scripts/prepare-linux-physical-runtime.py"
+                if args.build_source.startswith("linux-")
+                else "qlever/scripts/build-macos-local-runtime.sh"
+            ),
         }
     )
     manifest = {

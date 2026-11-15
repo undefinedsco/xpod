@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { verifyInstalled, verifyRuntimeImports, exportEntries } = require('../../scripts/workspace-package-consumer.cjs');
+const { PACKAGES, verifyInstalled, verifyRuntimeImports, exportEntries } = require('../../scripts/workspace-package-consumer.cjs');
 const { assertSource, compareStable } = require('../../scripts/publish-workspace-packages.cjs');
 
 function fixture(callback) {
@@ -136,3 +136,21 @@ test('declaration gate fails packed package errors even when consumer namespace 
   verifyInstalled(root, [manifest]);
   assert.throws(() => check(root, [manifest.name]), /missing.js/);
 }));
+
+// A clean registry consumer cannot resolve unpublished workspace dependencies.
+test('shared publication contains the complete runtime dependency graph in dependency order', () => {
+  const root = path.resolve(__dirname, '../..');
+  const positions = new Map(PACKAGES.map((name, index) => [name, index]));
+  assert.equal(positions.size, PACKAGES.length, 'duplicate publication package');
+  for (const name of PACKAGES) {
+    const manifest = JSON.parse(fs.readFileSync(path.join(root, 'packages', name, 'package.json')));
+    for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
+      for (const [dependency, version] of Object.entries(manifest[field] || {})) {
+        if (!version.startsWith('workspace:')) continue;
+        const packageName = dependency.split('/').pop();
+        assert.ok(positions.has(packageName), `${manifest.name} requires unpublished ${dependency}`);
+        assert.ok(positions.get(packageName) < positions.get(name), `${dependency} must be available before ${manifest.name}`);
+      }
+    }
+  }
+});

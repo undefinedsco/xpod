@@ -8,6 +8,7 @@ function client(): AiConnectionsClient {
   return {
     webId: WEB_ID,
     apiBase: 'https://pod.example',
+    podBaseUrl: 'https://pod.example/',
     getServiceAccess: async () => ({ status: 'granted' }),
     listProviders: async () => [],
     listModels: async () => [],

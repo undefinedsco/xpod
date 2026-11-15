@@ -1,0 +1,80 @@
+name: Resolve QLever native target
+on:
+  workflow_call:
+    inputs:
+      sdk_profile:
+        type: string
+        default: service-trixie
+      target:
+        type: string
+        required: true
+      platform:
+        type: string
+        required: true
+    outputs:
+      sdk_profile:
+        value: ${{ jobs.resolve.outputs.sdk_profile }}
+      sdk_dockerfile:
+        value: ${{ jobs.resolve.outputs.sdk_dockerfile }}
+      runtime_dockerfile:
+        value: ${{ jobs.resolve.outputs.runtime_dockerfile }}
+      repository_profile_suffix:
+        value: ${{ jobs.resolve.outputs.repository_profile_suffix }}
+      sdk_profile_identity:
+        value: ${{ jobs.resolve.outputs.sdk_profile_identity }}
+      runner:
+        value: ${{ jobs.resolve.outputs.runner }}
+      target:
+        value: ${{ jobs.resolve.outputs.target }}
+      arch:
+        value: ${{ jobs.resolve.outputs.arch }}
+      docker_platform:
+        value: ${{ jobs.resolve.outputs.docker_platform }}
+      repository_suffix:
+        value: ${{ jobs.resolve.outputs.repository_suffix }}
+permissions:
+  contents: read
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    outputs:
+      sdk_profile: ${{ steps.target.outputs.sdk_profile }}
+      sdk_dockerfile: ${{ steps.target.outputs.sdk_dockerfile }}
+      runtime_dockerfile: ${{ steps.target.outputs.runtime_dockerfile }}
+      repository_profile_suffix: ${{ steps.target.outputs.repository_profile_suffix }}
+      sdk_profile_identity: ${{ steps.target.outputs.sdk_profile_identity }}
+      runner: ${{ steps.target.outputs.runner }}
+      target: ${{ steps.target.outputs.target }}
+      arch: ${{ steps.target.outputs.arch }}
+      docker_platform: ${{ steps.target.outputs.docker_platform }}
+      repository_suffix: ${{ steps.target.outputs.repository_suffix }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.4.2
+      - name: Resolve native target from the shared catalog
+        id: target
+        env:
+          REQUESTED_TARGET: ${{ inputs.target }}
+          REQUESTED_PROFILE: ${{ inputs.sdk_profile }}
+          EXPECTED_PLATFORM: ${{ inputs.platform }}
+        run: |
+          set -euo pipefail
+          bun scripts/module-product-targets.ts css "$REQUESTED_TARGET" > "$RUNNER_TEMP/qlever-target.json"
+          python3 qlever/scripts/qlever_compiler_profile.py sdk-profile "$REQUESTED_PROFILE" > "$RUNNER_TEMP/qlever-sdk-profile.json"
+          python3 - "$RUNNER_TEMP/qlever-target.json" "$RUNNER_TEMP/qlever-sdk-profile.json" <<'PYTHON'
+          import json, os, sys
+          row = json.load(open(sys.argv[1]))
+          profile = json.load(open(sys.argv[2]))
+          if row['platform'] != os.environ['EXPECTED_PLATFORM']:
+              raise RuntimeError('Native producer platform/target mismatch')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              for key, value in [('sdk_profile', profile['name']), ('sdk_dockerfile', profile['dockerfile']), ('runtime_dockerfile', profile['runtime_dockerfile']), ('repository_profile_suffix', profile['repository_suffix']), ('sdk_profile_identity', profile['identity'])]:
+                  output.write(key + '=' + value + '\n')
+              for key in ['runner', 'target', 'arch']:
+                  output.write(key + '=' + row[key] + '\n')
+              docker_arch = 'amd64' if row['arch'] == 'x64' else row['arch']
+              output.write('docker_platform=' + row['platform'] + '/' + docker_arch + '\n')
+              output.write('repository_suffix=' + ('' if row['arch'] == 'x64' else '-' + row['arch']) + '\n')
+          PYTHON
