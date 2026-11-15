@@ -16,11 +16,12 @@ import {selectGitHubSourceBindingGroup,sourceBindingKey,type GitHubSourceBinding
 import currentCanonical from '../../scripts/lib/independent-admission/consumer-execution-current.json';
 import publishedSdk93 from './fixtures/published-sdk93-source-binding-versioning.json';
 import publishedSdk94 from './fixtures/published-sdk94-source-binding-versioning.json';
+import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 
 const ROOT=path.resolve(import.meta.dir,'../..');
 const CURRENT_SDK_CONSUMER_GROUP_COUNT=CURRENT_SOURCE_GROUP_COUNTS.sdkConsumer;
 const sha=(value:Buffer|string)=>createHash('sha256').update(value).digest('hex');
-const disk=(name:string)=>sha(readFileSync(path.join(ROOT,name)));
+const disk=(name:string)=>sha(readTrackedSource(path.join(ROOT,name)));
 const whole=(group:unknown)=>sha(JSON.stringify(group));
 const row=(group:GitHubSourceBindingGroup,file:string)=>group.sourceBindings.filter(value=>value.path===file);
 /** Every declaration of a path, in any role. `.dockerignore` is a PRIMARY

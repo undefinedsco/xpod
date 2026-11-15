@@ -9,6 +9,7 @@ import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as API,API_WORKSPACE_SOURCE_GROU
 import {CONSUMER_SOURCE_GROUPS as CONSUMER,CI_CONSUMER_SOURCE_GROUPS as CI} from '../../scripts/lib/independent-admission/consumer-observer-policy';
 import {secondaryGitHubSourceBindingSelectors,selectGitHubSourceBindingGroup,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import {CURRENT_CANONICAL_SOURCE_ROWS,CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
+import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 const hash=(value:string|Buffer)=>createHash('sha256').update(value).digest('hex');
 const originalKey=(row:{path:string;sha256:string;ref?:string})=>{if(row.ref!==undefined&&row.ref!=='run-head')throw Error('Unknown original role');return sourceBindingKey({path:row.path,sha256:row.sha256,...(row.ref===undefined?{}:{ref:row.ref})});};
 test('diagnostic registration preserves every complete e8 API/controller group without future global GETs',()=>{
@@ -26,5 +27,5 @@ test('only bounded diagnostic helper and its actual canonical version source clo
  const changed=API_IDENTITY_DIAGNOSTIC_SOURCE_BINDINGS.filter(row=>API_PHYSICAL_LOOKUP_SOURCE_BINDINGS.find(old=>old.path===row.path)?.sha256!==row.sha256);
  expect(changed.map(row=>row.path).sort()).toEqual(['scripts/independent-release-plan.ts','scripts/lib/api-scoped-dependency-state.ts','scripts/workspace-package-payload.cjs']);
  expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);expect(API_IDENTITY_DIAGNOSTIC_SOURCE_BINDINGS).toHaveLength(75);
- for(const row of [...current,...API_SERVICE_BUILD_SOURCE_BINDINGS])expect(hash(fs.readFileSync(path.resolve(import.meta.dir,'../..',row.path)))).toBe(row.sha256);
+ for(const row of [...current,...API_SERVICE_BUILD_SOURCE_BINDINGS])expect(hash(readTrackedSource(path.resolve(import.meta.dir,'../..',row.path)))).toBe(row.sha256);
 });

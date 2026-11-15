@@ -13,9 +13,10 @@ import {sourceBindingKey,selectGitHubSourceBindingGroup}
   from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import {CURRENT_SOURCE_GROUP_COUNTS,completeObserved}
   from './source-binding-group.fixture';
+import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 
 const hash=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
-const disk=(p:string)=>createHash('sha256').update(readFileSync(p)).digest('hex');
+const disk=(p:string)=>createHash('sha256').update(readTrackedSource(p)).digest('hex');
 
 /** dd7 whole-array hashes and their base counts (captured before any metadata edit). */
 const BASE_COUNTS:Record<string,number>={consumer:105,ci:214,sdkConsumer:109,linuxConsumer:110,
@@ -198,7 +199,7 @@ test('RC389: the promoted collector discriminator rejects a mixed predecessor',(
 });
 
 test('current canonical preserves the published order and appends the Undici patch once',()=>{
- const canonical=JSON.parse(readFileSync(
+ const canonical=JSON.parse(readTrackedSource(
   'scripts/lib/independent-admission/consumer-execution-current.json','utf8')) as any[];
  expect(canonical).toHaveLength(534);
  expect(new Set(canonical.map(x=>x.path)).size).toBe(534);

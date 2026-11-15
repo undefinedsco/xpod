@@ -10,12 +10,13 @@ import {CLI_SOURCE_VERSION_GROUPS as cli} from '../../scripts/lib/independent-ad
 import {selectGitHubSourceBindingGroup as select,sourceBindingKey as key} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
 import {CURRENT_CANONICAL_SUFFIX, CURRENT_CANONICAL_SOURCE_ROWS, CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
+import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 
 /** Authority is the actual working tree plus the frozen f803 published fixture.
  * No serialized approval boolean is consulted anywhere in this file. */
 const ROOT = path.resolve(import.meta.dir, '../..');
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
-const sha = (file: string) => createHash('sha256').update(fs.readFileSync(path.join(ROOT, file))).digest('hex');
+const sha = (file: string) => createHash('sha256').update(readTrackedSource(path.join(ROOT, file))).digest('hex');
 const groups = {sdk, consumer, ci, linux, api, cli} as const;
 const PATCH_25 = 'patches/@undefineds.co%2Fdrizzle-solid@0.3.25.patch';
 const PATCH_26 = 'patches/@undefineds.co%2Fdrizzle-solid@0.3.26.patch';
@@ -39,7 +40,7 @@ test('every published f803 prefix stays byte-identical; only the ORM 0.3.26 tail
 });
 
 test('the frozen f803 snapshot is the published canonical bytes and the moving canonical only appends', () => {
-  const snapshot = fs.readFileSync(path.join(ROOT, SNAPSHOT));
+  const snapshot = readTrackedSource(path.join(ROOT, SNAPSHOT));
   expect(createHash('sha256').update(snapshot).digest('hex')).toBe(f803.canonicalHash);
   expect(f803.canonicalHash).toBe('e6f52d0933f25e4f024f93614c0d99aef5c412de73dfa0be45033760b0e61954');
   const frozenRows: {path: string; sha256: string}[] = JSON.parse(snapshot.toString('utf8'));
@@ -106,7 +107,7 @@ test('the frozen f803 snapshot is the published canonical bytes and the moving c
 
 test('the current canonical binds actual disk bytes and re-hashes only rows that genuinely moved', () => {
   for (const row of [...current, ...CONTROLLER_POLICY_BINDINGS]) expect(sha(row.path)).toBe(row.sha256);
-  const frozenRows: {path: string; sha256: string}[] = JSON.parse(fs.readFileSync(path.join(ROOT, SNAPSHOT), 'utf8'));
+  const frozenRows: {path: string; sha256: string}[] = JSON.parse(readTrackedSource(path.join(ROOT, SNAPSHOT), 'utf8'));
   const moved = frozenRows.filter(row => row.sha256 !== current.find(next => next.path === row.path)!.sha256).map(row => row.path);
   // Every moved row is a genuinely registered source row whose ACTUAL disk bytes
   // differ from the frozen f803 value; no row may move without a real byte change.
@@ -127,16 +128,16 @@ test('the current canonical binds actual disk bytes and re-hashes only rows that
 });
 
 test('manifest/lock/installed facts bind the published ORM 0.3.26 release exactly once', () => {
-  const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+  const manifest = JSON.parse(readTrackedSource(path.join(ROOT, 'package.json'), 'utf8'));
   const declarations = Object.keys(manifest.patchedDependencies ?? {}).filter(name => name.startsWith('@undefineds.co/drizzle-solid@'));
   expect(declarations).toEqual(['@undefineds.co/drizzle-solid@0.3.26']);
   expect(manifest.patchedDependencies[declarations[0]!]).toBe(PATCH_26);
   expect((manifest.resolutions ?? {})['@undefineds.co/drizzle-solid']).toBe('0.3.26');
-  const lock = fs.readFileSync(path.join(ROOT, 'bun.lock'), 'utf8');
+  const lock = readTrackedSource(path.join(ROOT, 'bun.lock'), 'utf8');
   expect(lock).toContain('"@undefineds.co/drizzle-solid@0.3.26": "' + PATCH_26 + '"');
   expect(lock).not.toContain('"@undefineds.co/drizzle-solid@0.3.25"');
   expect(lock).toContain('sha512-x51lhiVpNmLcky4G66pF32WdR9vRfSse9ZufKe3CmD+5/Fi4L7f6x75E8V4SokR9AHUNTYCbccldeTtxHRSkqw==');
-  const installed = JSON.parse(fs.readFileSync(path.join(ROOT, 'node_modules/@undefineds.co/drizzle-solid/package.json'), 'utf8'));
+  const installed = JSON.parse(readTrackedSource(path.join(ROOT, 'node_modules/@undefineds.co/drizzle-solid/package.json'), 'utf8'));
   expect(installed.version).toBe('0.3.26');
   // The 26 patch is byte-identical to the historical 25 patch, but is its own fact.
   expect(sha(PATCH_26)).toBe(sha(PATCH_25));

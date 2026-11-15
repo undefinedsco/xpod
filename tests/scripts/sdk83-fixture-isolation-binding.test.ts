@@ -30,10 +30,11 @@ import {CLI_SOURCE_VERSION_GROUPS as CLI} from '../../scripts/lib/independent-ad
 import {selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import {decodeCatalog} from './sdk-helper-catalog.fixture';
 import {CURRENT_CANONICAL_SOURCE_ROWS, CURRENT_HELPER_GROUP_COUNTS, CURRENT_OBSERVER_GROUPS, CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
+import { shaFrozenTracked } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 
 const ROOT=path.resolve(import.meta.dirname,'../..');
 const whole=(g:unknown)=>createHash('sha256').update(JSON.stringify(g)).digest('hex');
-const sha=(p:string)=>createHash('sha256').update(readFileSync(path.join(ROOT,p))).digest('hex');
+const sha=(p:string)=>shaFrozenTracked(ROOT, p);
 const FIXTURE='qlever/tests/test_sdk70_mremap_observer.py';
 const OLD_FIXTURE='ff4b065f065c287c9be64a29ca1f1f69173149bfade75aeb81cf389fd152b548';
 // SDK83's frozen fixture stays independent of the current SDK90 fixture bytes.

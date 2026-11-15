@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { verifyCliBuildExecution, compactPortableSourceMaterials, portableMetafileInputPath, portableSourceMaterialView, verifyCollectedCliBuildExecution, type CliExecutionInput, type BuildArchiveMember } from '../../scripts/lib/independent-admission/source-execution';
+import { readFrozenTracked } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 const require = createRequire(import.meta.url);
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 let tracked = spawnSync('git', ['ls-tree', '-r', '--name-only', '-z', 'HEAD'], { encoding: 'utf8' }).stdout.split('\0').filter(Boolean);
@@ -16,7 +17,18 @@ const exact = [...TOOLS, ...PATCHES.map((name: string) => 'scripts/' + name), 's
   ...JSON.parse(readFileSync('packages/xpod-cli/scripts/canonical-host-sources.json', 'utf8')).map((name: string) => 'src/' + name)];
 const names = tracked.filter(name => exact.includes(name) || prefixes.some(prefix => name === prefix || name.startsWith(prefix + '/')));
 const sourceBytes = new Map(names.map(name => [name, readFileSync(name)]));
-const readTracked = (name: string) => { const bytes = name === 'bun.lock' ? readFileSync(name) : sourceBytes.get(name); if (!bytes) throw Error('untracked fixture input'); return bytes; };
+// The frozen CLI17 tuple pins the accepted-419 package.json/bun.lock bytes, which
+// an ordinary version bump changes. Resolve exactly those version-metadata paths
+// to the immutable capture so historical/synthetic checks keep describing the
+// frozen generation; every other path still reads the real checkout.
+const readTracked = (name: string) => {
+  if (name === 'bun.lock' || name === 'package.json' || name === 'desktop/package.json') {
+    return readFrozenTracked(process.cwd(), name);
+  }
+  const bytes = sourceBytes.get(name);
+  if (!bytes) throw Error('untracked fixture input');
+  return bytes;
+};
 
 // Real policy and tracked first-party input bytes; synthetic command/output
 // originals never grant origin authority or qualify a product for publication.

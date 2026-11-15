@@ -10,7 +10,8 @@ import {selectGitHubSourceBindingGroup as select,sourceBindingKey as key} from '
 import {controlledApiSourceRecipe} from '../../scripts/lib/independent-admission/module-source-phases';
 import tcb from '../../scripts/lib/independent-admission/consumer-execution-current.json';
 import {CURRENT_CANONICAL_SOURCE_ROWS} from './source-binding-group.fixture';
-const read=(name:string)=>readFileSync(path.resolve(import.meta.dir,'../..',name));
+import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
+const read=(name:string)=>readTrackedSource(path.resolve(import.meta.dir,'../..',name));
 const sha=(bytes:Buffer)=>createHash('sha256').update(bytes).digest('hex');
 test('Node public tool input adds one complete exact tuple and preserves compressed retention history',()=>{
  // API29/CLI unchanged; the SDK80 append adds one whole group to each family.

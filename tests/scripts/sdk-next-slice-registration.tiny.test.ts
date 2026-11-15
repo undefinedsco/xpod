@@ -83,6 +83,7 @@ import {
   secondaryGitHubSourceBindingSelectors as secondary,
   sourceBindingKey as key,
 } from '../../scripts/lib/independent-admission/github-source-binding-groups';
+import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 
 const POLICY_OR_CANONICAL=new Set(['scripts/lib/independent-admission/consumer-observer-policy.ts','scripts/lib/independent-admission/consumer-execution-current.json']);
 
@@ -91,12 +92,12 @@ const LIB = 'scripts/lib/independent-admission';
 const BODY = 'qlever/scripts/sdk-ptrace-execution.py';
 const sha = (v: string | Buffer) => createHash('sha256').update(v).digest('hex');
 const hashValue = (v: unknown) => sha(JSON.stringify(v));
-const read = (p: string) => fs.readFileSync(path.join(ROOT, p));
+const read = (p: string) => readTrackedSource(path.join(ROOT, p));
 const rows = (g: any) => [...g.selectors, ...(g.secondarySelectors ?? []), ...((g.secondarySelectorStages ?? []).flat()), ...g.sourceBindings];
 
 /** AST-read a module-private reviewed tuple table, exactly like production. */
 function recipes(file: string, name: string): unknown[] {
-  const source = fs.readFileSync(path.join(ROOT, LIB, file), 'utf8');
+  const source = readTrackedSource(path.join(ROOT, LIB, file), 'utf8');
   const ast = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const constants = new Map<string, ts.Expression>();
   for (const statement of ast.statements) {

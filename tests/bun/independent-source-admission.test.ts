@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { createHash } from 'node:crypto';
 import { verifyAdmission, type AdmissionContext } from '../../scripts/lib/independent-admission';
+import { readFrozenTracked } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 const hash = (data: Buffer) => createHash('sha256').update(data).digest('hex');
 function fixture() {
   const sourceSha = 'a'.repeat(40), archive = Buffer.from('tiny original archive');
@@ -103,7 +104,16 @@ describe('reviewed normal CLI input-set policy', () => {
   // Include newly staged verifier inputs in this structural pre-commit fixture.
   // Operational source capabilities still require an exact clean Git commit.
   const tracked = spawnSync('git', ['ls-files', '-z'], { encoding: 'utf8' }).stdout.split('\0').filter(Boolean);
-  const read = (name: string) => readFileSync(name);
+  // Frozen CLI17 pins the accepted-419 package.json/bun.lock bytes; an ordinary
+  // version bump changes them. Resolve only those version-metadata paths to the
+  // immutable capture so this historical/synthetic check keeps describing the
+  // frozen generation. Unreviewed CURRENT metadata still fails the real policy.
+  const read = (name: string) => {
+    if (name === 'package.json' || name === 'bun.lock' || name === 'desktop/package.json') {
+      return readFrozenTracked(process.cwd(), name);
+    }
+    return readFileSync(name);
+  };
   const prefixes = ['packages/xpod-cli/src', 'packages/xpod-cli/scripts', 'packages/xpod-cli/tests', 'packages/xpod-cli/licenses',
     'packages/xpod-client/src', 'packages/xpod-client/scripts', 'packages/xpod-client/tests', 'packages/xpod-client/licenses', 'types/bun'];
   const { TOOLS, PATCHES } = require('../../scripts/check-cli-publication.cjs') as { TOOLS: readonly string[]; PATCHES: readonly string[] };
