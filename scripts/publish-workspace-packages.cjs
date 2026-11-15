@@ -5,7 +5,7 @@ const os = require('node:os');
 const { execFileSync } = require('node:child_process');
 const { PACKAGES, consume } = require('./workspace-package-consumer.cjs');
 const { packWorkspacePackages } = require('./workspace-package-pack.cjs');
-const { sha512Integrity, assertIntegrity, comparePackagePayloads } = require('./workspace-package-payload.cjs');
+const { sha512Integrity, assertIntegrity, comparePackagePayloads, inspectTarballBuffer } = require('./workspace-package-payload.cjs');
 const root = path.resolve(__dirname, '..');
 const registry = 'https://registry.npmjs.org';
 // Provenance only: `npm pack` injects the accepted SHA as `gitHead`, so a re-run under a
@@ -108,6 +108,42 @@ function assertSelectedIntegrity(published, tarballPath, label) {
   if (published?.dist?.integrity !== expected) throw new Error(`Registry integrity mismatch for ${label}`);
   return expected;
 }
+// Generated source materials record the commit the package was built from
+// (`sourceAuthority.sourceCommit`), so an unchanged, already published version re-packed
+// under a later accepted SHA differs only there, plus the index digests of the two files
+// that carry it. This is provenance like `gitHead`; content identity (`snapshotSHA256`,
+// every source file and every other field) must still match exactly. Kept here, on top
+// of the shared payload comparator, so the comparator's reviewed bytes do not move.
+const MATERIALS_PROVENANCE = /^(package\/dist\/materials\/(?:build-provenance|source-inventory|index)\.json): content changed$/;
+const COMMIT_BOUND_MATERIALS = Object.freeze(['build-provenance.json', 'source-inventory.json']);
+function normalizeMaterials(member, content) {
+  const value = JSON.parse(content.toString('utf8'));
+  const commit = value?.sourceAuthority?.sourceCommit;
+  if (typeof commit !== 'string' || !/^[0-9a-f]{40}$/.test(commit)) throw new Error('invalid sourceCommit');
+  const normalized = { ...value, sourceAuthority: { ...value.sourceAuthority, sourceCommit: null } };
+  if (member.endsWith('/index.json')) {
+    if (!Array.isArray(value.files)) throw new Error('files must be an array');
+    normalized.files = value.files.map((file) => (COMMIT_BOUND_MATERIALS.includes(file?.path) ? { ...file, sha256: null } : file));
+  }
+  return JSON.stringify(normalized);
+}
+function compareSharedPayloads(publishedBytes, localBytes) {
+  const comparison = comparePackagePayloads(publishedBytes, localBytes);
+  if (comparison.ok) return comparison;
+  const entries = (bytes) => new Map(inspectTarballBuffer(bytes).entries.map((entry) => [entry.path, entry]));
+  const published = entries(publishedBytes);
+  const local = entries(localBytes);
+  const reasons = comparison.reasons.filter((reason) => {
+    const member = MATERIALS_PROVENANCE.exec(reason)?.[1];
+    if (!member) return true;
+    try {
+      return normalizeMaterials(member, published.get(member).content) !== normalizeMaterials(member, local.get(member).content);
+    } catch {
+      return true;
+    }
+  });
+  return { ok: reasons.length === 0, reasons };
+}
 // Pure decision function. It verifies immutable existing versions and selects the exact
 // consumer tarballs, but never publishes or mutates a dist-tag; callers own registry
 // mutation. Injected lookup/materialize keep it unit-testable without network access.
@@ -128,7 +164,7 @@ async function planSharedPublication({ manifests, packed, lookup, materialize })
     const publishedTarball = await materialize(existing);
     const publishedBytes = fs.readFileSync(publishedTarball);
     assertIntegrity(publishedBytes, existing.dist?.integrity, `Published ${manifest.name}@${manifest.version}`);
-    const comparison = comparePackagePayloads(publishedBytes, fs.readFileSync(packedTarball));
+    const comparison = compareSharedPayloads(publishedBytes, fs.readFileSync(packedTarball));
     if (!comparison.ok) {
       throw new Error(`Existing shared version ${manifest.name}@${manifest.version} is immutable and diverges from the packed payload (${comparison.reasons.join('; ')}); bump the shared package version instead of overwriting it`);
     }
@@ -208,7 +244,7 @@ function selectMode(argv) {
   if (args.length === 1 && args[0] === '--verify-only') return 'verify';
   throw new Error('Only --verify-only is supported');
 }
-module.exports = { assertSource, compareStable, tarballIntegrity, readBoundedBody, planSharedPublication, assertSelectedIntegrity, selectMode };
+module.exports = { assertSource, compareStable, tarballIntegrity, readBoundedBody, compareSharedPayloads, planSharedPublication, assertSelectedIntegrity, selectMode };
 if (require.main === module) {
   const mode = selectMode(process.argv);
   (mode === 'verify' ? verifyOnly() : publish()).catch((error) => { console.error(error.message); process.exitCode = 1; });
