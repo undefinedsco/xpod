@@ -871,7 +871,10 @@ export class AiGatewayService {
   }
 
   private builtinRoute(model: string | undefined): ModelRouteResult {
-    const requested = model?.trim() || DEPLOYMENT_BUILTIN_CONNECTION_ID;
+    // Route evidence carries the BARE canonical model: a client that followed
+    // the advertised `xpod-builtin` provider namespace must not leak that
+    // qualified form into the route or the upstream request.
+    const requested = this.builtin!.canonicalModel(model) ?? model?.trim() ?? DEPLOYMENT_BUILTIN_CONNECTION_ID;
     const provider: ProviderDescriptor = {
       id: this.builtin!.id,
       label: this.builtin!.label,
