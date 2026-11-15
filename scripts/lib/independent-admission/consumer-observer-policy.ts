@@ -511,6 +511,9 @@ function rc398ConsumerVariant<T extends GitHubSourceBindingGroup>(group: T): T {
  * family is appended; every published group and both RC398 variants stay byte-exact.
  * Only this new variant uses the held-FD live controller self-reference. */
 const QLEVER_RC399_POLICY_SHA256='ef3aaabc50c442afbad710f47c1ec2eb2e78313525e6c0c0cbcd829fa9e6264c';
+/** New SDK policy bytes for the appended referenced-graph-PG generation. The published
+ * RC399 constant above stays at its reviewed value for the published generic tail. */
+const QLEVER_REFERENCED_GRAPH_PG_POLICY_SHA256='2c8de344b2406b5d131a496139870fb12f5e2943a5ee6c0d0f680c3cddb55ca0';
 /** Live bytes of the release inputs this generation's dependency declaration and its
  * already-owned policy rows actually moved. Only these rows move; every earlier tuple
  * keeps its published bytes. */
@@ -562,16 +565,32 @@ const RC399_LIVE_RELEASE_INPUTS: Readonly<Record<string, string>> = Object.freez
   // module itself - another already-owned row of these tails.
   'scripts/lib/independent-admission/module-source-phases.ts': 'c666324e9c0f22d5854d9dfa681720642f2a7eca27a7e0d9973dbb4091da6637',
 });
-function rc399ConsumerVariant<T extends GitHubSourceBindingGroup>(group: T): T {
+/* The PUBLISHED RC399 controller tuple. The old generic tail was reviewed against THESE
+ * bytes, so it must keep them even after later appends move the live files. Using the live
+ * held-FD bindings here would rewrite already-published consumer/CI history. */
+const RC399_FROZEN_CONTROLLER_BINDINGS = Object.freeze([
+  Object.freeze({ path: 'scripts/lib/independent-admission/consumer-observer-policy.ts',
+    sha256: '3ca0f484531a4e2862c2fa44271ffc6b2d8cb95584fb9ec15eda7e28b98c4c5f' }),
+  Object.freeze({ path: 'scripts/lib/independent-admission/consumer-execution-current.json',
+    sha256: '7fc62f82041d2e2edc736f932dcbc3a4786ba76cf3a9735ca648da01c39da8fc' }),
+]);
+/* Parameterised so ONE implementation serves both tails: the published RC399 variant keeps its
+ * frozen controller tuple + old SDK policy literal (defaults), and the appended variant passes
+ * the live bindings + the new SDK policy hash. Defaults reproduce the old groups byte-for-byte. */
+function rc399ConsumerVariant<T extends GitHubSourceBindingGroup>(
+  group: T,
+  policySha256: string = QLEVER_RC399_POLICY_SHA256,
+  controllerBindings: readonly Readonly<{ path: string; sha256: string }>[] = RC399_FROZEN_CONTROLLER_BINDINGS,
+): T {
   const rebind = (row: GitHubSourceBinding): GitHubSourceBinding => {
     if (row.path === 'scripts/lib/independent-admission/consumer-observer-policy.ts') {
-      return CONTROLLER_POLICY_BINDINGS[0]!;
+      return controllerBindings[0]!;
     }
     if (row.path === 'scripts/lib/independent-admission/consumer-execution-current.json') {
-      return CONTROLLER_POLICY_BINDINGS[1]!;
+      return controllerBindings[1]!;
     }
     if (row.path === 'scripts/lib/independent-admission/qlever-sdk-origin-policy.ts') {
-      return Object.freeze({ ...row, sha256: QLEVER_RC399_POLICY_SHA256 });
+      return Object.freeze({ ...row, sha256: policySha256 });
     }
     // This generation also declared the direct @inrupt/solid-client dependency,
     // which moved exactly these two owned release inputs. Only those rows move;
@@ -591,6 +610,10 @@ export const CONSUMER_SOURCE_GROUPS = Object.freeze([
   ...reviewedDeclarations.consumer,
   rc398ConsumerVariant(reviewedDeclarations.consumer[112]!),
   rc399ConsumerVariant(reviewedDeclarations.consumer[112]!),
+  // REFERENCED_GRAPH_PG_REGISTRATION: ONE appended generic variant after the published
+  // consumer115. It is the only tail that binds the new SDK policy bytes and the live
+  // held-FD controller tuple, so the published prefix above stays byte-exact.
+  rc399ConsumerVariant(reviewedDeclarations.consumer[112]!, QLEVER_REFERENCED_GRAPH_PG_POLICY_SHA256, CONTROLLER_POLICY_BINDINGS),
 ]);
 export const CI_CONSUMER_SOURCE_GROUPS = Object.freeze([
   ...reviewedDeclarations.ci,
@@ -598,6 +621,10 @@ export const CI_CONSUMER_SOURCE_GROUPS = Object.freeze([
   rc398ConsumerVariant(reviewedDeclarations.ci[229]!),
   rc399ConsumerVariant(reviewedDeclarations.ci[228]!),
   rc399ConsumerVariant(reviewedDeclarations.ci[229]!),
+  // REFERENCED_GRAPH_PG_REGISTRATION: ONE appended CI pair after the published ci234,
+  // mirroring the two published CI groups.
+  rc399ConsumerVariant(reviewedDeclarations.ci[228]!, QLEVER_REFERENCED_GRAPH_PG_POLICY_SHA256, CONTROLLER_POLICY_BINDINGS),
+  rc399ConsumerVariant(reviewedDeclarations.ci[229]!, QLEVER_REFERENCED_GRAPH_PG_POLICY_SHA256, CONTROLLER_POLICY_BINDINGS),
 ]);
 freezeGitHubSourceBindingGroups(CONSUMER_SOURCE_GROUPS);
 freezeGitHubSourceBindingGroups(CI_CONSUMER_SOURCE_GROUPS);

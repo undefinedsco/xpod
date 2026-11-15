@@ -190,10 +190,24 @@ test('A owns one Linux display/Electron preparation and allows B a ten-second ca
 });
 
 const { MATRIX_JOB_NAME, artifactName, validateModeSelection, validateModeArtifactAuthority } = require('../../scripts/lib/mode-artifact-authority.cjs');
+// The real job records the timestamps GitHub retains for a cloned row and the
+// steps that actually ran; a genuine rerun changes those timestamps.
+function authoritySteps() {
+  return [
+    { name: 'Set up job', status: 'completed', conclusion: 'success', number: 1, started_at: '2026-11-15T09:08:19Z', completed_at: '2026-11-15T09:08:21Z' },
+    { name: 'Verify all modes against the same immutable image', status: 'completed', conclusion: 'success', number: 2, started_at: '2026-11-15T09:08:21Z', completed_at: '2026-11-15T09:20:34Z' },
+    { name: 'Complete job', status: 'completed', conclusion: 'success', number: 3, started_at: '2026-11-15T09:20:34Z', completed_at: '2026-11-15T09:20:41Z' },
+  ];
+}
+function authorityJob(attempt, overrides = {}) {
+  const { steps = authoritySteps(), started_at = '2026-11-15T09:08:19Z', completed_at = '2026-11-15T09:20:41Z', ...rest } = overrides;
+  return { id: 5000 + Number(attempt), name: MATRIX_JOB_NAME, run_id: Number(expected.runId), run_attempt: Number(attempt), head_sha: sourceSha,
+    status: 'completed', conclusion: 'success', started_at, completed_at, steps, ...rest };
+}
 function authorityFixture(attempt='1') {
   const e={...expected,runAttempt:attempt};const selection={schemaVersion:1,...e,artifactId:123,artifactDigest:`sha256:${sha}`,artifactName:artifactName(sourceSha,e.runId,attempt)};
   const artifact={id:123,name:selection.artifactName,digest:selection.artifactDigest,expired:false,size_in_bytes:1024,workflow_run:{id:Number(e.runId),head_sha:sourceSha}};
-  const job={id:456,name:MATRIX_JOB_NAME,run_id:Number(e.runId),run_attempt:Number(attempt),head_sha:sourceSha,status:'completed',conclusion:'success'};
+  const job=authorityJob(attempt);
   return {e,selection,artifact,job};
 }
 test('retained successful matrix attempt1 survives finalize/global attempt2 without rewriting mode original',()=>{
@@ -204,8 +218,35 @@ test('retained successful matrix attempt1 survives finalize/global attempt2 with
 });
 test('latest actual failed matrix2 cannot borrow successful matrix1, and failed matrix1 cannot qualify',()=>{
   const {e,selection,artifact,job}=authorityFixture();assert.throws(()=>validateModeArtifactAuthority(selection,artifact,[{jobs:[{...job,conclusion:'failure'}]}],e));
-  assert.throws(()=>validateModeArtifactAuthority(selection,artifact,[{jobs:[job,{...job,id:457,run_attempt:2,conclusion:'failure'}]}],e));
+  assert.throws(()=>validateModeArtifactAuthority(selection,artifact,[{jobs:[job,{...authorityJob(2),conclusion:'failure'}]}],e));
   const second=authorityFixture('2');assert.equal(validateModeArtifactAuthority(second.selection,second.artifact,[{jobs:[{...job,conclusion:'failure'},second.job]}],second.e).actualMatrixAttempt,'2');
+});
+test('retained successful attempt2 survives a later clone row at attempt3 without relabeling the producer',()=>{
+  const {e,selection,artifact,job}=authorityFixture('2');const before=JSON.stringify(selection);
+  const clone=authorityJob(3,{id:458});const pages=[{jobs:[authorityJob(1,{status:'completed',conclusion:'skipped',steps:[]}),job]},{jobs:[clone]}];
+  const result=validateModeArtifactAuthority(selection,artifact,pages,e);
+  assert.equal(result.actualMatrixAttempt,'2');assert.equal(result.jobId,job.id);assert.equal(JSON.stringify(selection),before);
+});
+test('retained clone lineage rejects a later real execution or an incomplete/ambiguous row',()=>{
+  const {e,selection,artifact,job}=authorityFixture('2');
+  const clone=authorityJob(3,{id:458});
+  // A genuine rerun changes the retained job window or any step timestamp.
+  assert.throws(()=>validateModeArtifactAuthority(selection,artifact,[{jobs:[job,authorityJob(3,{started_at:'2026-11-15T10:00:00Z'})]}],e));
+  assert.throws(()=>validateModeArtifactAuthority(selection,artifact,[{jobs:[job,{...clone,steps:[{...authoritySteps()[0],completed_at:'2026-11-15T09:08:22Z'},...authoritySteps().slice(1)]}]}],e));
+  assert.throws(()=>validateModeArtifactAuthority(selection,artifact,[{jobs:[job,{...clone,steps:[...authoritySteps().slice(0,2),{...authoritySteps()[2],name:'Complete job (replayed)'}]}]}],e));
+  // A later real new success, failure, cancellation or pending row rejects the older proof.
+  assert.throws(()=>validateModeArtifactAuthority(selection,artifact,[{jobs:[job,{...clone,status:'in_progress',conclusion:null}]}],e));
+  assert.throws(()=>validateModeArtifactAuthority(selection,artifact,[{jobs:[job,{...clone,conclusion:'failure'}]}],e));
+  assert.throws(()=>validateModeArtifactAuthority(selection,artifact,[{jobs:[job,{...clone,conclusion:'cancelled'}]}],e));
+  assert.throws(()=>validateModeArtifactAuthority(selection,artifact,[{jobs:[job,{...clone,status:'queued',conclusion:null}]}],e));
+  // Unknown/incomplete producer facts fail closed, and a duplicate attempt row is ambiguous.
+  assert.throws(()=>validateModeArtifactAuthority(selection,artifact,[{jobs:[{...job,steps:[]},clone]}],e));
+  assert.throws(()=>validateModeArtifactAuthority(selection,artifact,[{jobs:[{...job,started_at:null},clone]}],e));
+  assert.throws(()=>validateModeArtifactAuthority(selection,artifact,[{jobs:[job,clone,{...clone,id:459}]}],e));
+  assert.throws(()=>validateModeArtifactAuthority(selection,artifact,[{jobs:[job,{...clone,id:job.id}]}],e));
+  // Without a later row the producer alone still qualifies; a real later success with fresh facts does not.
+  assert.equal(validateModeArtifactAuthority(selection,artifact,[{jobs:[job]}],e).actualMatrixAttempt,'2');
+  assert.throws(()=>validateModeArtifactAuthority(selection,artifact,[{jobs:[job,authorityJob(3,{started_at:'2026-11-15T10:00:00Z',steps:authoritySteps().map(step=>({...step,started_at:'2026-11-15T10:00:00Z',completed_at:'2026-11-15T10:01:00Z'}))})]}],e));
 });
 test('mode authority rejects cross source/digest/run/actualattempt/artifact and absent observations',()=>{
   const {e,selection,artifact,job}=authorityFixture();

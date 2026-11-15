@@ -18,6 +18,13 @@ const CANONICAL_SELF_DECLARED='5c6b5cec930b2eb19a42a09dc338d5b46b9bd326684cf0069
 const POLICY_SELF='scripts/lib/independent-admission/consumer-observer-policy.ts';
 const POLICY_SELF_DECLARED='22c9639ea85964e97f30e223aa336792aa1e707989ec7ca089be6e1e143beb32';
 const FIXED_ORIGIN='759eefd48a0bbac724546cc12dda18f377a34b0e4ad6cf0c004df6cea54e7f12';
+// FROZEN PUBLISHED PREFIX BOUNDARIES. Captured by Root from the clean published source
+// 78adaff8ae966445640bdada9fddf7c1db3f5fc3 (same policy blobs as 64fa) BEFORE the
+// referenced-graph-PG append, and stored in the rc389-unchanged-baseline snapshot.
+// These are history boundaries, NOT CURRENT totals: 234 CI groups and 115 consumer
+// groups are published, so a later append must extend the array without moving them.
+const FROZEN_PUBLISHED_CI_PREFIX_234='a3b3f43b8eddc620beb2131a97a6fda689277a4abb239f2fbf32a99f96db2cd1';
+const FROZEN_PUBLISHED_CONSUMER_PREFIX_115='0937a96e2ccf4d6de61514e45213c676f2a8ef727258246a36b16757935c6b3a';
 // CI203/CI204 whole-group aggregates captured from the real 9bd2706 snapshot
 // (rc384-bindings-baseline-private BASELINE.json families.ci.aggregates[202]/[203]).
 const FROZEN_CI203='c047ca85c9f763db546e4b9220e83d05af0ef0fc3f990cee1c231a34a64373a3';
@@ -53,7 +60,7 @@ test('CI197/CI198 are FROZEN to their exact 1a01 values, not rebuilt live',()=>{
   expect(current1a01.ci198).toBe('2d7a4f3001bfe2869401748166444d6be149b398617a7a6a20855786206b7dcc');
 });
 
-test('NEW variants are appended, and the shared CI total reflects 214',()=>{
+test('NEW variants are appended, and the shared CI total tracks the CURRENT fixture',()=>{
   // RC381 added CI199/200 (origin fix); RC382 appended CI201/202 (workspace-build
   // replay identity repair); RC383 appended CI203/204 (candidate queued-run state);
   // RC384 appended CI205/206 (producer test-scratch boundary); RC385 appended
@@ -61,7 +68,9 @@ test('NEW variants are appended, and the shared CI total reflects 214',()=>{
   // frozen published history.
   expect(CI_CONSUMER_SOURCE_GROUPS.length).toBe(CURRENT_SOURCE_GROUP_COUNTS.ci);
   // Sourced from the single CURRENT fixture, never a second scattered literal.
-  expect(CURRENT_SOURCE_GROUP_COUNTS.ci).toBe(234);
+  // The already-published 234 groups are a FROZEN history boundary: the whole-prefix
+  // aggregate pins them so an append can only extend, never rewrite, published history.
+  expect(sha(CI_CONSUMER_SOURCE_GROUPS.slice(0,234))).toBe(FROZEN_PUBLISHED_CI_PREFIX_234);
   // The RC384 and RC385 pairs are now historical: freeze them rather than letting a
   // later append re-bind them.
   expect(sha(CI_CONSUMER_SOURCE_GROUPS[204]!)).toBe(FROZEN_CI205);
@@ -137,7 +146,9 @@ test('consumer101 and CI205/CI206 are FROZEN whole-group history, not live',()=>
   expect(sha(CI_CONSUMER_SOURCE_GROUPS[207]!)).toBe(FROZEN_CI208);
   expect(sha(CI_CONSUMER_SOURCE_GROUPS[208]!)).not.toBe(FROZEN_CI207);
   expect(sha(CI_CONSUMER_SOURCE_GROUPS[215]!)).not.toBe(FROZEN_CI208);
-  expect(CURRENT_SOURCE_GROUP_COUNTS.consumer).toBe(115);
+  // The already-published 115 consumer groups are a FROZEN history boundary, pinned as a
+  // whole-prefix aggregate like the CI boundary above; only the shared fixture moves.
+  expect(sha(CONSUMER_SOURCE_GROUPS.slice(0,115))).toBe(FROZEN_PUBLISHED_CONSUMER_PREFIX_115);
 });
 
 test('real resolver picks CI224 for current bytes and refuses an old-origin mix',()=>{

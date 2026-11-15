@@ -4337,6 +4337,59 @@ bool preparedGraphKeyIsRequired(const xpod_qlever_query_request& request) {
           request.access_scope->denied_graphs_size != 0);
 }
 
+// The term dictionary is global: a graph IRI can already be interned as the
+// subject or object of a quad in another document before the graph itself
+// exists. Dictionary presence therefore cannot decide whether the graph already
+// owns a source; graph membership can. Only facts in the graph make it an
+// existing graph.
+struct PreparedGraphOwnershipProbe {
+  bool owns_facts = false;
+};
+
+xpod_rdf_status recordPreparedGraphOwnership(
+    void* user_data,
+    const xpod_rdf_quad_batch* batch) {
+  if (user_data == nullptr || batch == nullptr) {
+    return XPOD_RDF_STATUS_BACKEND_ERROR;
+  }
+  auto* probe = static_cast<PreparedGraphOwnershipProbe*>(user_data);
+  if (batch->row_count != 0) {
+    probe->owns_facts = true;
+  }
+  return XPOD_RDF_STATUS_OK;
+}
+
+xpod_rdf_status preparedGraphOwnsFacts(
+    xpod::rdf::PhysicalBackend backend,
+    const xpod_qlever_query_request& request,
+    xpod_rdf_term_key graph_key,
+    bool& out_owns_facts,
+    std::string& error_storage) {
+  out_owns_facts = false;
+  xpod_rdf_scan_request scan = {};
+  scan.snapshot = request.snapshot;
+  scan.cancellation = request.cancellation;
+  scan.permutation = XPOD_RDF_PERM_GSPO;
+  scan.graph_scope.kind = XPOD_RDF_GRAPH_SCOPE_EXACT;
+  scan.graph_scope.exact_graph = graph_key;
+  // Ownership is a storage fact, not an authorization decision: a graph whose
+  // facts are denied by the access scope must still fail as an unbound existing
+  // graph instead of being mistaken for a new graph.
+  scan.access_scope = nullptr;
+  // Existence needs one row, never a full graph count.
+  scan.limit = 1;
+
+  PreparedGraphOwnershipProbe probe;
+  const xpod_rdf_status status = backend.scanPermutation(
+      scan, recordPreparedGraphOwnership, &probe);
+  if (status != XPOD_RDF_STATUS_OK) {
+    error_storage = "prepared update graph membership scan failed";
+    return status;
+  }
+  out_owns_facts = probe.owns_facts;
+  return XPOD_RDF_STATUS_OK;
+}
+
 xpod_rdf_status validatePreparedUpdateMutation(
     xpod::rdf::PhysicalBackend backend,
     const xpod_qlever_query_request& request,
@@ -4442,26 +4495,41 @@ xpod_rdf_status validatePreparedUpdateMutation(
       resolved_graph_key_is_required;
   const xpod_rdf_status lookup_status =
       backend.lookupTerm(quad.graph, request.snapshot, graph_key);
-  if (lookup_status == XPOD_RDF_STATUS_NOT_FOUND) {
+  bool graph_is_new = lookup_status == XPOD_RDF_STATUS_NOT_FOUND;
+  if (lookup_status == XPOD_RDF_STATUS_OK && !has_source_node) {
+    // A dictionary hit is not graph existence: the IRI may only be interned as
+    // the subject or object of another document. Decide from graph membership,
+    // so a graph that owns facts but has no resolvable source still fails closed.
+    bool graph_owns_facts = false;
+    const xpod_rdf_status membership_status = preparedGraphOwnsFacts(
+        backend, request, graph_key, graph_owns_facts, error_storage);
+    if (membership_status != XPOD_RDF_STATUS_OK) {
+      return membership_status;
+    }
+    if (graph_owns_facts) {
+      error_storage =
+          "prepared update source provenance is not uniquely identified";
+      return XPOD_RDF_STATUS_UNSUPPORTED;
+    }
+    graph_is_new = true;
+  } else if (lookup_status != XPOD_RDF_STATUS_OK &&
+             lookup_status != XPOD_RDF_STATUS_NOT_FOUND) {
+    error_storage =
+        "prepared update graph metadata lookup failed";
+    return lookup_status;
+  }
+  if (graph_is_new) {
     if ((!has_source_node && request.source_scope.has_source_node != 0) ||
         source_uri != graph_iri) {
       error_storage =
           "prepared update v1 requires a new graph sourceUri to equal graphIri";
       return XPOD_RDF_STATUS_UNSUPPORTED;
     }
-    if (graph_key_is_required) {
+    if (lookup_status == XPOD_RDF_STATUS_NOT_FOUND && graph_key_is_required) {
       error_storage =
           "prepared update graph cannot be mapped to backend metadata";
       return XPOD_RDF_STATUS_UNSUPPORTED;
     }
-  } else if (lookup_status == XPOD_RDF_STATUS_OK && !has_source_node) {
-    error_storage =
-        "prepared update source provenance is not uniquely identified";
-    return XPOD_RDF_STATUS_UNSUPPORTED;
-  } else if (lookup_status != XPOD_RDF_STATUS_OK) {
-    error_storage =
-        "prepared update graph metadata lookup failed";
-    return lookup_status;
   }
 
   if (!graphScopeAllowsGraph(

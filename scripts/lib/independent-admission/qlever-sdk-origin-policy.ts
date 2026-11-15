@@ -3026,7 +3026,22 @@ const QLEVER_NORMAL_RC399_CLEANUP_GROUP:GitHubSourceBindingGroup=Object.freeze({
   sourceBindings:Object.freeze(QLEVER_NORMAL_RC398_PLATFORM_GROUP.sourceBindings.map(row=>
     Object.freeze({...row,sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_RC399_CANDIDATE_WORKFLOW_HASH:row.sha256}))),
 });
-export const QLEVER_NORMAL_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([QLEVER_NORMAL_PREVIOUS_GROUP,QLEVER_NORMAL_CURRENT_GROUP,QLEVER_NORMAL_DOCKERIGNORE_GROUP,QLEVER_NORMAL_REGISTRY_PRODUCER_GROUP,QLEVER_NORMAL_RC385_VERIFIER_GROUP,QLEVER_NORMAL_RC392_LOAD_GROUP,QLEVER_NORMAL_RC396_SCOPE_GROUP,QLEVER_NORMAL_RC397_RETRY_GROUP,QLEVER_NORMAL_RC398_PLATFORM_GROUP,QLEVER_NORMAL_RC399_CLEANUP_GROUP]);
+/* REFERENCED_GRAPH_PG_REGISTRATION: append-only normal producer variant for the candidate
+ * workflow that carries the c23 referenced-graph prepared-update fix and pins the PG image
+ * built from it. Group 9 (RC399) stays byte-exact published history; this group clones it and
+ * rebinds ONLY the candidate-workflow row it already owns. No proof axis and no other
+ * source/recipe binding moves, so the prior SDK393 source proofs stay on group 9. */
+/* candidate.yml IS a normal SDK recipe input, so this generation changes the full normal SDK
+ * input identity H: the new workflow context legitimately gets a new H. All other source and
+ * recipe rows are unchanged, and the checked prior-digest input still validates the build. */
+const QLEVER_REFERENCED_GRAPH_PG_CANDIDATE_WORKFLOW_HASH='3b3bb13fd5abd3670ba9577a1dc7082b420732d4552f5d5cfe2cf57269baf8cf';
+const QLEVER_NORMAL_REFERENCED_GRAPH_PG_GROUP:GitHubSourceBindingGroup=Object.freeze({...QLEVER_NORMAL_RC399_CLEANUP_GROUP,
+  secondarySelectors:Object.freeze((QLEVER_NORMAL_RC399_CLEANUP_GROUP.secondarySelectors??[]).map(row=>
+    Object.freeze({...row,sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_REFERENCED_GRAPH_PG_CANDIDATE_WORKFLOW_HASH:row.sha256}))),
+  sourceBindings:Object.freeze(QLEVER_NORMAL_RC399_CLEANUP_GROUP.sourceBindings.map(row=>
+    Object.freeze({...row,sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_REFERENCED_GRAPH_PG_CANDIDATE_WORKFLOW_HASH:row.sha256}))),
+});
+export const QLEVER_NORMAL_SOURCE_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([QLEVER_NORMAL_PREVIOUS_GROUP,QLEVER_NORMAL_CURRENT_GROUP,QLEVER_NORMAL_DOCKERIGNORE_GROUP,QLEVER_NORMAL_REGISTRY_PRODUCER_GROUP,QLEVER_NORMAL_RC385_VERIFIER_GROUP,QLEVER_NORMAL_RC392_LOAD_GROUP,QLEVER_NORMAL_RC396_SCOPE_GROUP,QLEVER_NORMAL_RC397_RETRY_GROUP,QLEVER_NORMAL_RC398_PLATFORM_GROUP,QLEVER_NORMAL_RC399_CLEANUP_GROUP,QLEVER_NORMAL_REFERENCED_GRAPH_PG_GROUP]);
 
 export const QLEVER_SDK_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...PUBLISHED_SDK_GROUPS,NEXT_SDK_GROUP,INPUT_PLAN_SDK_GROUP,ORM326_SDK_GROUP,SDK19_TELEMETRY_GROUP,CAPTURE_INDEX_SDK_GROUP,SDK78_GROUP,SDK79_GROUP,SDK80_GROUP,SDK81_GROUP,SDK82_GROUP,SDK83_GROUP,SDK84_GROUP,SDK85_GROUP,SDK86_GROUP,SDK87_GROUP,SDK88_GROUP,SDK89_GROUP,SDK90_GROUP,SDK91_GROUP,SDK92_GROUP,SDK93_GROUP]);
 export const QLEVER_LINUX_EXECUTION_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([
@@ -3377,5 +3392,22 @@ const RC399_SDK117_GROUP:GitHubSourceBindingGroup=Object.freeze({...RC398_SDK116
   sourceBindings:Object.freeze(RC398_SDK116_GROUP.sourceBindings.map(row=>
     Object.freeze({...row,sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_RC399_CANDIDATE_WORKFLOW_HASH:rc399LiveReleaseRow(row).sha256}))),
 });
-export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP,RC391_SDK110_GROUP,RC392_SDK111_GROUP,RC393_SDK112_GROUP,RC395_SDK113_GROUP,RC396_SDK114_GROUP,RC397_SDK115_GROUP,RC398_SDK116_GROUP,RC399_SDK117_GROUP]);
-export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP,RC391_SDK110_GROUP,RC392_SDK111_GROUP,RC393_SDK112_GROUP,RC395_SDK113_GROUP,RC396_SDK114_GROUP,RC397_SDK115_GROUP,RC398_SDK116_GROUP,RC399_SDK117_GROUP]);
+/* REFERENCED_GRAPH_PG_REGISTRATION: one shared SDK/Linux consumer variant for the
+ * candidate workflow that pins the referenced-graph PG image. RC399_SDK117 stays
+ * byte-exact published history; the candidate role is already an owned stage entry +
+ * sourceBinding, so it is rebound in place and the relationship follows. No path,
+ * stage, role or release-input row is added: only the owned candidate row moves, so
+ * the SDK393 source proofs keep resolving on their own earlier group. */
+const REFERENCED_GRAPH_PG_SDK118_GROUP:GitHubSourceBindingGroup=Object.freeze({...RC399_SDK117_GROUP,
+  candidateServiceRelationship:RC399_SDK117_GROUP.candidateServiceRelationship
+    ?Object.freeze({...RC399_SDK117_GROUP.candidateServiceRelationship,
+      workflowSha256:QLEVER_REFERENCED_GRAPH_PG_CANDIDATE_WORKFLOW_HASH})
+    :undefined,
+  secondarySelectorStages:Object.freeze((RC399_SDK117_GROUP.secondarySelectorStages??[]).map(stage=>
+    Object.freeze(stage.map(row=>Object.freeze({...row,
+      sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_REFERENCED_GRAPH_PG_CANDIDATE_WORKFLOW_HASH:row.sha256}))))),
+  sourceBindings:Object.freeze(RC399_SDK117_GROUP.sourceBindings.map(row=>
+    Object.freeze({...row,sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_REFERENCED_GRAPH_PG_CANDIDATE_WORKFLOW_HASH:row.sha256}))),
+});
+export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP,RC391_SDK110_GROUP,RC392_SDK111_GROUP,RC393_SDK112_GROUP,RC395_SDK113_GROUP,RC396_SDK114_GROUP,RC397_SDK115_GROUP,RC398_SDK116_GROUP,RC399_SDK117_GROUP,REFERENCED_GRAPH_PG_SDK118_GROUP]);
+export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP,RC391_SDK110_GROUP,RC392_SDK111_GROUP,RC393_SDK112_GROUP,RC395_SDK113_GROUP,RC396_SDK114_GROUP,RC397_SDK115_GROUP,RC398_SDK116_GROUP,RC399_SDK117_GROUP,REFERENCED_GRAPH_PG_SDK118_GROUP]);
