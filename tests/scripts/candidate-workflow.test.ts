@@ -1418,7 +1418,7 @@ if args[0]=='create':
  print(json.dumps(job))
 elif 'get' in args:
  kind=args[args.index('get')+1]
- if kind=='statefulset': print(json.dumps({'kind':'StatefulSet','metadata':{'name':'xpod-rdf-postgres','namespace':'assigned-rc'},'spec':{'template':{'spec':{'imagePullSecrets':[{'name':'xpod-rdf-ghcr'}],'containers':[{'name':'postgres','image':'ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:635a5eee0ea1461c8cde8425fdf0ca7d0965bc083d8860bb7aa04498c9688986'}]}}}}))
+ if kind=='statefulset': print(json.dumps({'kind':'StatefulSet','metadata':{'name':'xpod-rdf-postgres','namespace':'assigned-rc'},'spec':{'template':{'spec':{'imagePullSecrets':[{'name':'xpod-rdf-ghcr'}],'containers':[{'name':'postgres','image':os.environ['PG_REGISTRY_AUTHORITY_IMAGE']}]}}}}))
  if kind=='job':
   if jobfile.exists():
    job=json.loads(jobfile.read_text())
