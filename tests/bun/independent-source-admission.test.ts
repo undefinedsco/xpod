@@ -99,21 +99,17 @@ it('keeps copied publication preparation import independent of admission files',
 
 describe('reviewed normal CLI input-set policy', () => {
   const { verifyCliInputSet } = require('../../scripts/lib/independent-admission/source-rules') as typeof import('../../scripts/lib/independent-admission/source-rules');
-  const { readFileSync } = require('node:fs') as typeof import('node:fs');
   const { spawnSync } = require('node:child_process') as typeof import('node:child_process');
   // Include newly staged verifier inputs in this structural pre-commit fixture.
   // Operational source capabilities still require an exact clean Git commit.
   const tracked = spawnSync('git', ['ls-files', '-z'], { encoding: 'utf8' }).stdout.split('\0').filter(Boolean);
-  // Frozen CLI17 pins the accepted-419 package.json/bun.lock bytes; an ordinary
-  // version bump changes them. Resolve only those version-metadata paths to the
-  // immutable capture so this historical/synthetic check keeps describing the
-  // frozen generation. Unreviewed CURRENT metadata still fails the real policy.
-  const read = (name: string) => {
-    if (name === 'package.json' || name === 'bun.lock' || name === 'desktop/package.json') {
-      return readFrozenTracked(process.cwd(), name);
-    }
-    return readFileSync(name);
-  };
+  // The shared reader serves the immutable accepted-source capture for exactly the
+  // paths whose live bytes legitimately moved (the three manifests and the captured
+  // historical originals, including scripts/workspace-package-payload.cjs) and the
+  // real checkout for everything else. No local path switch is kept here, so a new
+  // capture automatically applies. Unreviewed CURRENT metadata still fails the real
+  // policy, which compares against its own frozen catalogue.
+  const read = (name: string) => readFrozenTracked(process.cwd(), name);
   const prefixes = ['packages/xpod-cli/src', 'packages/xpod-cli/scripts', 'packages/xpod-cli/tests', 'packages/xpod-cli/licenses',
     'packages/xpod-client/src', 'packages/xpod-client/scripts', 'packages/xpod-client/tests', 'packages/xpod-client/licenses', 'types/bun'];
   const { TOOLS, PATCHES } = require('../../scripts/check-cli-publication.cjs') as { TOOLS: readonly string[]; PATCHES: readonly string[] };

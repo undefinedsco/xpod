@@ -8,6 +8,7 @@ import {controlledApiSourceRecipe,reviewedModulePhasePlan,verifiedNoticeSuppleme
 import {sourceBindingKey as key,selectGitHubSourceBindingGroup as select} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import {CURRENT_CANONICAL_SOURCE_ROWS,completeObserved,observedSecondaryBindings} from './source-binding-group.fixture';
 import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
+import {createPhasePlanFixture} from '../fixtures/independent-admission/cli17-accepted-419/phase-plan-fixture';
 const root=path.resolve(import.meta.dir,'../..'),read=(name:string)=>readTrackedSource(path.join(root,name)),sha=(raw:Buffer|string)=>createHash('sha256').update(raw).digest('hex');
 test('Notice API17 closes its executed wrapper/imports and preserves every SDK29 and earlier API/controller whole tree',()=>{
  for(const[name,groups]of Object.entries({api,sdk,consumer,ci})){const prior=before[name as keyof typeof before];for(let i=0;i<prior.length;i++)expect(sha(JSON.stringify(groups[i]))).toBe(prior[i]);}
@@ -39,42 +40,12 @@ test(`real staged original primary/secondary resolver closes each old/current tu
  * version-bearing manifests served from the captured accepted bytes. No private
  * or untracked file is copied, and nothing in the live tree is modified.
  */
-function noticePhaseFixtureRoot(): string {
- fs.mkdirSync(path.join(root,'.test-data'),{recursive:true});
- const base=fs.mkdtempSync(path.join(root,'.test-data/notice-phase-fixture-'));
- try{
- const copy=(name:string,bytes?:Buffer)=>{
-  const target=path.join(base,name);fs.mkdirSync(path.dirname(target),{recursive:true});
-  if(bytes)fs.writeFileSync(target,bytes);else fs.copyFileSync(path.join(root,name),target);
- };
- // 1) tracked `scripts/` closure, copied BY BYTES so the verifier's own module URL
- //    resolves inside the fixture instead of back to the live tree.
- const tracked=execFileSync('git',['ls-files','-z','--','scripts'],{cwd:root,encoding:'buffer'}).toString('utf8').split('\0').filter(Boolean);
- for(const name of tracked)copy(name);
- // 2) the 17 non-scripts modules its STATIC import closure reaches (enumerated,
- //    not whole-repo): the fixture root must contain every local import so the
- //    copied planner loads unchanged.
- const outside=['packages/xpod-api/scripts/bun-build-api.ts','packages/xpod-api/scripts/bundle-products.ts',
-  'packages/xpod-api/scripts/bundle-runtime.ts','packages/xpod-api/scripts/bundle-stage.ts',
-  'packages/xpod-api/scripts/closure.ts','packages/xpod-api/scripts/inngest-controlled-build-policy.json',
-  'packages/xpod-api/scripts/inngest-controlled-materials-contract.json','packages/xpod-api/scripts/inngest-input-pins.json',
-  'packages/xpod-api/scripts/node-builtins.ts','packages/xpod-api/scripts/sourcekit-producer.ts',
-  'packages/xpod-api/scripts/sourcekit.ts','packages/xpod-api/scripts/static-material.ts',
-  'packages/xpod-cli/scripts/canonical-host-sources.json','packages/xpod-cli/src/launcher.ts',
-  'packages/xpod-cli/src/manifest.ts','packages/xpod-cli/src/module-catalog.ts','packages/xpod-cli/src/source-materials.ts'];
- for(const name of outside)copy(name);
- // 3) the 83 declared inputs, read through the captured-metadata reader so the
- //    three manifests carry the accepted bytes the frozen rows actually pin.
- for(const row of API_SERVICE_BUILD_SOURCE_BINDINGS)copy(row.path,read(row.path));
- return base;
- }catch(error){fs.rmSync(base,{recursive:true,force:true});throw error;}
-}
 test('actual verifier-owned Python phase_plan preserves every old command and appends only tracked notice argv',async()=>{
- const fixtureRoot=noticePhaseFixtureRoot();
+ // The shared factory copies the UNCHANGED planner into a temporary historical root
+ // and imports that copy, so its own module URL resolves to the fixture bytes.
+ const fixture=await createPhasePlanFixture();
  try{
-  // Import the COPIED module so its own `new URL('../../../', import.meta.url)`
-  // root is the fixture, not the live checkout.
-  const planner=await import(pathToFileURL(path.join(fixtureRoot,'scripts/lib/independent-admission/module-source-phases.ts')).href) as typeof import('../../scripts/lib/independent-admission/module-source-phases');
+  const fixtureRoot=fixture.root,planner=fixture.planner;
   const output=path.join(fixtureRoot,'.test-data/notice-plan-projection'),directory='packages/xpod-api/notice-supplements';
   for(const controlled of [undefined,{sourceKind:'xpod-controlled-inngest-build-v1',retainedByteCeiling:1024**3}]as const){
    const workspace=controlled?{recipe:'api-ui-root-minimal-v2' as const,sourceSha:'1'.repeat(40)}:undefined;
@@ -82,5 +53,5 @@ test('actual verifier-owned Python phase_plan preserves every old command and ap
    expect(after.map(row=>row.name)).toEqual(before.map(row=>row.name));
    for(let i=0;i<before.length;i++){const row=before[i]!,next=after[i]!;expect(next.timeoutSeconds).toBe(row.timeoutSeconds);expect(next.command).toEqual(row.name==='notices'?[...row.command,'--registry-lock',path.join(fixtureRoot,'bun.lock'),path.join(fixtureRoot,directory)]:row.command);}
   }
- }finally{fs.rmSync(fixtureRoot,{recursive:true,force:true});}
+ }finally{fixture.cleanup();}
 });

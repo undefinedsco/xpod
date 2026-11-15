@@ -14,6 +14,18 @@ const MANIFEST_MAX_BYTES = 16 * 1024 ** 2;
 // provenance commit. There is deliberately no caller-supplied override surface; any
 // other field difference is real content and must fail closed.
 const PROVENANCE_FIELDS = Object.freeze(['gitHead']);
+// The deployment-owned material collector embeds the accepted commit into its own
+// provenance, so a re-pack under a NEW accepted SHA changes exactly one field in
+// these files while the package source, snapshot and runtime bytes are identical.
+// They are content files, not manifest fields, so they need their own narrow rule.
+const MATERIAL_MANIFEST = 'package/dist/materials/build-provenance.json';
+const MATERIAL_INDEX = 'package/dist/materials/index.json';
+const MATERIAL_INVENTORY = 'package/dist/materials/source-inventory.json';
+const MATERIAL_MEMBERS = Object.freeze([MATERIAL_MANIFEST, MATERIAL_INDEX, MATERIAL_INVENTORY]);
+const MATERIAL_SCHEMA_VERSION = 1;
+// The only field that may differ across accepted commits, plus the two index child
+// digests whose value is a pure function of it.
+const MATERIAL_COMMIT_FIELD = 'sourceCommit';
 
 function sha256(buffer) {
   return crypto.createHash('sha256').update(buffer).digest('hex');
@@ -349,6 +361,130 @@ function collectManifestDifferences(published, local) {
   return reasons;
 }
 
+/**
+ * Validates ONE side's material provenance and returns the ONLY facts that may
+ * legitimately differ between accepted commits.
+ *
+ * Fails closed on anything unexpected: a missing/malformed JSON file, a schema
+ * other than the known one, a sourceAuthority whose commit is not a 40-hex sha,
+ * a commit that disagrees between the three files, an index whose recorded child
+ * digests do not match the ACTUAL member bytes it claims to summarise, or an
+ * inventory/manifest whose file list disagrees with the real tarball.
+ *
+ * Nothing here is package-name specific and no payload buffer is modified.
+ */
+function readMaterialFacts(entries, side) {
+  const byPath = new Map(entries.map((entry) => [entry.path, entry]));
+  const fail = (message) => { throw new Error(`${side} material provenance invalid: ${message}`); };
+  const parse = (member, label) => {
+    const entry = byPath.get(member);
+    if (!entry || entry.type !== 'file') fail(`${label} is not a regular file`);
+    const raw = entry.content.toString('utf8');
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch { fail(`${label} is not valid JSON`); }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) fail(`${label} is not an object`);
+    // The collector emits exactly `JSON.stringify(value, null, 2) + "\n"`. Requiring
+    // that form means duplicate keys (which JSON.parse silently collapses) and
+    // unrelated whitespace/formatting deltas are refused rather than normalized away.
+    if (raw !== `${JSON.stringify(parsed, null, 2)}\n`) fail(`${label} is not in the collector's canonical form`);
+    if (parsed.schemaVersion !== MATERIAL_SCHEMA_VERSION) fail(`${label} has an unknown schemaVersion`);
+    const authority = parsed.sourceAuthority;
+    if (!authority || typeof authority !== 'object' || Array.isArray(authority)) fail(`${label} has no sourceAuthority`);
+    const commit = authority[MATERIAL_COMMIT_FIELD];
+    if (typeof commit !== 'string' || !/^[a-f0-9]{40}$/.test(commit)) fail(`${label} has an invalid ${MATERIAL_COMMIT_FIELD}`);
+    for (const key of ['tracked', 'dirty', 'missingTrackedSourceCount', 'snapshotSHA256', 'scope']) {
+      if (!(key in authority)) fail(`${label} is missing sourceAuthority.${key}`);
+    }
+    if (typeof authority.tracked !== 'boolean' || typeof authority.dirty !== 'boolean') fail(`${label} has a malformed boolean authority field`);
+    if (!Number.isInteger(authority.missingTrackedSourceCount) || authority.missingTrackedSourceCount < 0) fail(`${label} has a malformed missingTrackedSourceCount`);
+    if (typeof authority.snapshotSHA256 !== 'string' || !/^[a-f0-9]{64}$/.test(authority.snapshotSHA256)) fail(`${label} has a malformed snapshotSHA256`);
+    if (typeof authority.scope !== 'string' || !authority.scope) fail(`${label} has a malformed scope`);
+    return parsed;
+  };
+
+  const manifest = parse(MATERIAL_MANIFEST, 'build-provenance.json');
+  const index = parse(MATERIAL_INDEX, 'index.json');
+  const inventory = parse(MATERIAL_INVENTORY, 'source-inventory.json');
+
+  // The commit must be ONE fact, not three independently moving ones.
+  const commits = new Set([manifest.sourceAuthority[MATERIAL_COMMIT_FIELD],
+    index.sourceAuthority[MATERIAL_COMMIT_FIELD], inventory.sourceAuthority[MATERIAL_COMMIT_FIELD]]);
+  if (commits.size !== 1) fail(`the three files disagree about ${MATERIAL_COMMIT_FIELD}`);
+
+  // Every index row must describe the ACTUAL bytes present in this tarball, except
+  // the two rows whose digests are derived from the commit field itself.
+  if (!Array.isArray(index.files)) fail('index.json has no files list');
+  const indexRows = new Map();
+  for (const row of index.files) {
+    if (!row || typeof row !== 'object' || typeof row.path !== 'string') fail('index.json has a malformed row');
+    if (indexRows.has(row.path)) fail(`index.json repeats ${row.path}`);
+    indexRows.set(row.path, row);
+  }
+  // The index is a SUMMARY of the material payload, not a complete member list, so
+  // only the rows it DECLARES are cross-checked. Every declared row must bind the
+  // ACTUAL bytes with no exception — including the two commit-derived children, whose
+  // digests are validated HERE before the comparison is allowed to normalize them.
+  for (const [relative, row] of indexRows) {
+    // Index rows are relative to the material directory itself.
+    const member = `package/dist/materials/${relative}`;
+    const entry = byPath.get(member);
+    if (!entry) fail(`index.json declares a missing member ${relative}`);
+    if (row.bytes !== entry.size) fail(`index.json has a stale size for ${relative}`);
+    if (row.sha256 !== entry.sha256) fail(`index.json has a stale digest for ${relative}`);
+  }
+
+  // source-inventory must list the real source files, and its own rows must match them.
+  if (!Array.isArray(inventory.files)) fail('source-inventory.json has no files list');
+  const inventoryPaths = new Set();
+  for (const row of inventory.files) {
+    if (!row || typeof row.path !== 'string' || typeof row.sha256 !== 'string') fail('source-inventory.json has a malformed row');
+    if (inventoryPaths.has(row.path)) fail(`source-inventory.json repeats ${row.path}`);
+    inventoryPaths.add(row.path);
+    const entry = byPath.get(`package/dist/materials/source/${row.path}`);
+    if (!entry) fail(`source-inventory.json lists a missing source file ${row.path}`);
+    if (entry.sha256 !== row.sha256 || entry.size !== row.bytes) fail(`source-inventory.json disagrees with source/${row.path}`);
+    if (typeof row.tracked !== 'boolean') fail(`source-inventory.json row ${row.path} is missing tracked`);
+  }
+
+  const manifestFiles = Array.isArray(manifest.bundles) ? manifest.bundles : null;
+  if (manifest.bundles !== undefined && !manifestFiles) fail('build-provenance.json has a malformed bundles list');
+
+  return { commit: manifest.sourceAuthority[MATERIAL_COMMIT_FIELD], manifest, index, inventory };
+}
+
+/**
+ * Permits ONLY: sourceAuthority.sourceCommit differing between the two sides, and
+ * the two index child digests that are a pure function of it.
+ *
+ * Everything else - snapshotSHA256, inventory paths/digests, compiled bundles,
+ * schema, extra keys, runtime bytes, manifest content - must still match exactly.
+ */
+function compareMaterialProvenance(publishedEntries, localEntries, reasons) {
+  const published = readMaterialFacts(publishedEntries, 'published');
+  const local = readMaterialFacts(localEntries, 'packed');
+  const strip = (value) => {
+    const clone = JSON.parse(JSON.stringify(value));
+    clone.sourceAuthority[MATERIAL_COMMIT_FIELD] = null;
+    return clone;
+  };
+  for (const [label, left, right] of [['build-provenance.json', published.manifest, local.manifest],
+    ['source-inventory.json', published.inventory, local.inventory]]) {
+    if (JSON.stringify(strip(left)) !== JSON.stringify(strip(right))) reasons.push(`${label}: content changed beyond ${MATERIAL_COMMIT_FIELD}`);
+  }
+  const stripIndex = (value) => {
+    const clone = JSON.parse(JSON.stringify(value));
+    clone.sourceAuthority[MATERIAL_COMMIT_FIELD] = null;
+    for (const row of clone.files ?? []) {
+      // Index rows are relative to the material directory.
+      if (row.path === 'build-provenance.json' || row.path === 'source-inventory.json') row.sha256 = null;
+    }
+    return clone;
+  };
+  if (JSON.stringify(stripIndex(published.index)) !== JSON.stringify(stripIndex(local.index))) {
+    reasons.push('index.json: content changed beyond the commit-derived child digests');
+  }
+}
+
 // Compares the full payload (names, types, modes, content) of two gzipped tarballs and
 // the manifest semantic fields. Argument order is published first, packed/local second,
 // so every reason label reads published vs local. Only the fixed provenance field
@@ -359,6 +495,11 @@ function comparePackagePayloads(publishedBuffer, localBuffer) {
   const reasons = [];
   const publishedByPath = new Map(published.entries.map((entry) => [entry.path, entry]));
   const localByPath = new Map(local.entries.map((entry) => [entry.path, entry]));
+  // The material exemption applies ONLY when BOTH sides carry the complete set of
+  // material files and the special comparison below actually runs. A partial set on
+  // either side keeps the ORIGINAL strict byte comparison, so a half-material packet
+  // can never hide content differences.
+  const materialsComplete = MATERIAL_MEMBERS.every((member) => publishedByPath.has(member) && localByPath.has(member));
   for (const member of publishedByPath.keys()) if (!localByPath.has(member)) reasons.push(`only in published: ${member}`);
   for (const member of localByPath.keys()) if (!publishedByPath.has(member)) reasons.push(`only in local: ${member}`);
   for (const [member, publishedEntry] of publishedByPath) {
@@ -367,7 +508,15 @@ function comparePackagePayloads(publishedBuffer, localBuffer) {
     if (publishedEntry.type !== localEntry.type) reasons.push(`${member}: type ${publishedEntry.type} != ${localEntry.type}`);
     if (publishedEntry.mode !== localEntry.mode) reasons.push(`${member}: mode ${publishedEntry.mode.toString(8)} != ${localEntry.mode.toString(8)}`);
     if (member === MANIFEST_PATH) continue;
+    if (materialsComplete && MATERIAL_MEMBERS.includes(member)) continue;
     if (publishedEntry.sha256 !== localEntry.sha256) reasons.push(`${member}: content changed`);
+  }
+  if (materialsComplete) {
+    try {
+      compareMaterialProvenance(published.entries, local.entries, reasons);
+    } catch (error) {
+      reasons.push(error.message);
+    }
   }
   for (const reason of collectManifestDifferences(published.manifest, local.manifest)) {
     reasons.push(`${MANIFEST_PATH}: ${reason}`);
