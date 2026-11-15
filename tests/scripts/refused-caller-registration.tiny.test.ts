@@ -11,6 +11,7 @@ import {CLI_SOURCE_VERSION_GROUPS as cli} from '../../scripts/lib/independent-ad
 import {selectGitHubSourceBindingGroup as select,sourceBindingKey,secondaryGitHubSourceBindingSelectors as secondary} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
 import {CURRENT_CANONICAL_SUFFIX, CURRENT_CANONICAL_SOURCE_ROWS, CURRENT_SOURCE_GROUP_COUNTS, completeObserved} from './source-binding-group.fixture';
+import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 
 /** This module's ONLY authority is the actual git data at the published 9d02
  * commit plus the files on disk now. The fixture was captured from those blobs. */
@@ -32,7 +33,7 @@ const blobAt=(commit:string,file:string):Buffer=>{
 const blob=(file:string)=>blobAt(BASE,file);
 const blob2406=(file:string)=>blobAt(PUBLISHED_2406,file);
 const digest=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
-const disk=(file:string)=>readFileSync(path.join(ROOT,file));
+const disk=(file:string)=>readTrackedSource(path.join(ROOT,file));
 const sha=(file:string)=>createHash('sha256').update(disk(file)).digest('hex');
 /** The controller policy row is the OWNED role that legitimately discriminates
  * the new current append; it is requested in secondarySelectors AND owned in the

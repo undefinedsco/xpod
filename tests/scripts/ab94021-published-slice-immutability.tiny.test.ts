@@ -32,6 +32,7 @@ import {
   secondaryGitHubSourceBindingSelectors as secondary,
   sourceBindingKey as key,
 } from '../../scripts/lib/independent-admission/github-source-binding-groups';
+import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 
 const ROOT = path.resolve(import.meta.dir, '../..');
 const LIB = 'scripts/lib/independent-admission';
@@ -55,7 +56,7 @@ test('immutable ab94021 baseline proves every published prefix byte-for-byte', (
 
 test('the frozen ab canonical snapshot keeps its published rows and bytes', () => {
   const snapshotPath = `${LIB}/consumer-execution-ab94021-snapshot.json`;
-  const bytes = fs.readFileSync(path.join(ROOT, snapshotPath));
+  const bytes = readTrackedSource(path.join(ROOT, snapshotPath));
   expect((abGroups as any).canonical.path).toBe('scripts/lib/independent-admission/consumer-execution-current.json');
   expect((abGroups as any).canonical.rows).toBe(478);
   expect((abGroups as any).canonical.sha256).toBe(sha(bytes));
@@ -64,14 +65,14 @@ test('the frozen ab canonical snapshot keeps its published rows and bytes', () =
 });
 
 test('the live canonical binds every actual row byte and retains every old member', () => {
-  const snapshot = JSON.parse(fs.readFileSync(
+  const snapshot = JSON.parse(readTrackedSource(
     path.join(ROOT, LIB, 'consumer-execution-ab94021-snapshot.json'), 'utf8')) as {path: string; sha256: string}[];
   const byPath = new Map((current as {path: string; sha256: string}[]).map(row => [row.path, row.sha256]));
   // No published member path may disappear.
   for (const row of snapshot) expect(byPath.has(row.path)).toBe(true);
   // Every current row must match the real bytes on disk (never a stale claim).
   for (const row of current as {path: string; sha256: string}[]) {
-    expect(sha(fs.readFileSync(path.join(ROOT, row.path)))).toBe(row.sha256);
+    expect(sha(readTrackedSource(path.join(ROOT, row.path)))).toBe(row.sha256);
   }
   // The append only adds members; it never drops below the published count.
   expect((current as unknown[]).length).toBeGreaterThanOrEqual(snapshot.length);

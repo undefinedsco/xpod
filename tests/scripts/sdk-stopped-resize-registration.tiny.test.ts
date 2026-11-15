@@ -1,5 +1,6 @@
 import fs from 'node:fs';import{createHash}from'node:crypto';import{test,expect}from'bun:test';
 import before from'../fixtures/independent-admission/pre-stopped-resize-whole-groups.original.json';
+import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 import{API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as api}from'../../scripts/lib/independent-admission/github-origin';import{QLEVER_SDK_EXECUTION_GROUPS as sdk,QLEVER_SDK_CONSUMER_GROUPS as currentSdkConsumer}from'../../scripts/lib/independent-admission/qlever-sdk-origin-policy';import{CONSUMER_SOURCE_GROUPS as consumer,CI_CONSUMER_SOURCE_GROUPS as ci}from'../../scripts/lib/independent-admission/consumer-observer-policy';import current from'../../scripts/lib/independent-admission/consumer-execution-current.json';
 import{sourceBindingKey as key,secondaryGitHubSourceBindingSelectors as secondary,selectGitHubSourceBindingGroup as select}from'../../scripts/lib/independent-admission/github-source-binding-groups';
 import{CURRENT_CANONICAL_SOURCE_ROWS, completeObserved,observedSecondaryBindings}from'./source-binding-group.fixture';
@@ -7,7 +8,7 @@ const sha=(value:Buffer|string)=>createHash('sha256').update(value).digest('hex'
 test('SDK42 preserves all 219 actual prior whole recipes and binds the exact stopped resize/complete source closure',()=>{
  for(const[name,values]of Object.entries(groups)){const old=before.hashes[name as keyof typeof before.hashes];for(let i=0;i<old.length;i++)expect(sha(JSON.stringify(values[i]))).toBe(old[i]!);}
 
- for(const row of [...current,...currentSdkConsumer.at(-1)!.selectors,...currentSdkConsumer.at(-1)!.sourceBindings])expect(sha(fs.readFileSync(row.path))).toBe(row.sha256);
+ for(const row of [...current,...currentSdkConsumer.at(-1)!.selectors,...currentSdkConsumer.at(-1)!.sourceBindings])expect(sha(readTrackedSource(row.path))).toBe(row.sha256);
  expect(sdk[41]!.sourceBindings.find(row=>row.path==='qlever/scripts/sdk-generated-vma-originals.py')!.sha256).toBe('25e6eebc35cc7447588785bfaa5eca0e26c588b841e4e9db17e92f6ccdbb4854');
  expect(api[20]!.sourceBindings.find(row=>row.path==='packages/xpod-api/scripts/sourcekit-producer.ts')!.sha256).toBe('393f3a9b1eccd47b8b7d20954e02a267e69afd79135afab6bf2305f53644119a');
 });
@@ -19,6 +20,6 @@ for(const[name,values]of Object.entries({api,sdk,consumer,ci}))for(const group o
  expect(select(values,tuple)).toBe(group);for(const role of observedSecondaryBindings(group,tuple)){const missing=new Map(tuple);missing.delete(key(role));expect(()=>select(values,missing)).toThrow();const mixed=new Map(tuple);mixed.set(key(role),'f'.repeat(64));expect(()=>select(values,mixed)).toThrow();}
 });
 test('SDK42 policy stays within actual Contents inline byte threshold and bounded JSON wire envelope',()=>{
- const body=fs.readFileSync(new URL('../../scripts/lib/independent-admission/consumer-observer-policy.ts',import.meta.url));expect(body.length<1000000).toBe(true);
+ const body=readTrackedSource(new URL('../../scripts/lib/independent-admission/consumer-observer-policy.ts',import.meta.url));expect(body.length<1000000).toBe(true);
  const content=body.toString('base64').match(/.{1,60}/gu)!.join('\n')+'\n';expect(Buffer.byteLength(JSON.stringify({encoding:'base64',size:body.length,content}))<2*1024**2).toBe(true);
 });
