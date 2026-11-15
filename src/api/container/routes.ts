@@ -79,6 +79,7 @@ import {
 import * as path from 'node:path';
 import { PACKAGE_ROOT } from '../../runtime/package-root';
 import { registerServiceInfoRoute } from '../handlers/ServiceInfoHandler';
+import { resolveLocalStorageProviderBaseUrl } from './storage-base-url';
 
 /**
  * 注册所有 API 路由
@@ -503,23 +504,9 @@ export function resolveCloudSignalApiUrl(
   return env.XPOD_PUBLIC_API_URL ?? config.cloudApiEndpoint ?? config.publicUrl;
 }
 
-export function resolveLocalStorageProviderBaseUrl(
-  config: Pick<ApiContainerConfig, 'publicUrl' | 'solidBaseUrl'>,
-  env: NodeJS.ProcessEnv = process.env,
-): string {
-  const configuredUrl = env.XPOD_PUBLIC_URL
-    ?? config.publicUrl
-    ?? config.solidBaseUrl
-    ?? env.CSS_BASE_URL
-    ?? 'http://localhost:3000/';
-  const url = new URL(configuredUrl);
-  url.hash = '';
-  url.search = '';
-  if (!url.pathname.endsWith('/')) {
-    url.pathname += '/';
-  }
-  return url.toString();
-}
+// Sole definition lives in the pure helper so the auth wiring can share it
+// without importing this HTTP route layer; re-exported for existing importers.
+export { resolveLocalStorageProviderBaseUrl };
 
 /**
  * Local 模式专属路由

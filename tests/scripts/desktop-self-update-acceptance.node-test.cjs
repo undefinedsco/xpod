@@ -206,8 +206,8 @@ test('candidate workflow binds the desktop check to real source-bound acceptance
   // permission evidence and the declared resource ids before it can set
   // `desktop`, so assert the binding that actually exists instead of the old flag.
   assert.match(candidate, /scripts\/desktop-acceptance\.cjs/);
-  assert.match(candidate, /--self-update-evidence "\$\{\{ runner\.temp \}\}\/desktop-self-update\/desktop-self-update-evidence\.json"/);
-  assert.match(candidate, /--permission-evidence "\$\{\{ runner\.temp \}\}\/desktop-permissions\/desktop-permission-evidence\.json"/);
+  assert.match(candidate, /--self-update-evidence "\$\{RUNNER_TEMP\}\/desktop-self-update\/desktop-self-update-evidence\.json"/);
+  assert.match(candidate, /--permission-evidence "\$\{RUNNER_TEMP\}\/desktop-permission-evidence\.json"/);
   assert.match(candidate, /--expected-archive "\$candidate_zip"/);
   assert.match(candidate, /desktop-self-update-acceptance-\$\{\{ github\.sha \}\}/);
   assert.match(candidate, /desktop-permission-acceptance-\$\{\{ github\.sha \}\}/);

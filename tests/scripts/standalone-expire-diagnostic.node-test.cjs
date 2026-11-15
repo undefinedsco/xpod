@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const {
   IMAGE_PATTERN, PROFILE, requireImmutableImage, safeFailureProjection,
-  safeLifecycleProjection, renderCompose, ownedNonce,
+  safeLifecycleProjection, renderCompose, ownedNonce, SAFE_PHASES,
 } = require('../../scripts/diagnose-standalone-expire-session.cjs');
 
 const DIGEST = `sha256:${'a'.repeat(64)}`;
@@ -93,6 +93,27 @@ test('failure projection is closed, clamps counters and drops foreign keys', () 
       ['authorizationCodes', 'passwordPosts', 'phase', 'reason', 'refreshFailures',
         'refreshGrants', 'requestCount', 'present', 'restartObserver'].sort().join(','));
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('every finer initial-session checkpoint survives instead of collapsing', () => {
+  // The shared closed enum gained four initial labels. This driver's own allowlist
+  // must accept them too; otherwise a real initial PUT/ACL/TTL failure would be
+  // silently reported as `preflight`, i.e. exactly the ambiguity being removed.
+  const phases = ['initial-token-ttl', 'initial-token-refresh', 'initial-put',
+    'initial-acl-put', 'initial-private-read'];
+  for (const phase of phases) {
+    assert.equal(SAFE_PHASES.has(phase), true, phase);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'diag-initial-'));
+    try {
+      const file = path.join(dir, 'failure.safe.json');
+      fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1,
+        diagnostic: { phase, reason: 'assertion-failed', authorizationCodes: 1,
+          passwordPosts: 1, refreshGrants: 0, refreshFailures: 0, requestCount: 9 } }));
+      assert.equal(safeFailureProjection(file).phase, phase);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  }
+  // A genuinely unknown phase still collapses; the allowance is not widened.
+  assert.equal(SAFE_PHASES.has('initial-evil-phase'), false);
 });
 
 test('failure projection refuses unknown enums and out-of-range counters', () => {

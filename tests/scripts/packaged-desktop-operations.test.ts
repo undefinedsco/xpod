@@ -6,6 +6,7 @@ import { credentialResource } from '@undefineds.co/models';
 import { PiConfigAdapter } from '@undefineds.co/ai-connections/client-config';
 import type { MountedPodPermissionPhase } from '../../scripts/helpers/packaged-desktop-permissions';
 import { accountCreationResponseSucceeded, assertAccountCredentialsRestored, assertNewAccountCredential, assertMountedModelBinding, createConfirmedMountedProvider, createMountedKeyInUi, readOwnedPiConfiguration } from '../../scripts/helpers/packaged-desktop-operations';
+import { createAiConnectionsClient } from '../../packages/ai-connections-runtime/src/contract/client/request';
 
 it('confirms collection row keys against credential resource ids through the shared model', async () => {
   const rowKey = 'deepseek-fixture';
@@ -76,6 +77,55 @@ it('matches the actual discovery credential, selected model and published provid
     { ...result, webId: input.webId.replace('#me', '#other') }]) {
     expect(() => assertMountedModelBinding(input, changed)).toThrow('binding');
   }
+});
+
+/**
+ * Contract-level regression for the real `/v1/models` wire shape.
+ *
+ * The Gateway projection emits a BARE model id with `owned_by` = the provider id
+ * (src/api/ai-gateway/routing/ModelRouter.ts modelProjection), and the deployment
+ * builtin emits `owned_by: 'xpod-builtin'` (DeploymentBuiltinConnection.ts). The
+ * SHIPPED client parses that payload and the REAL binding assertion consumes it.
+ * This is a unit contract over a Response wire seam, not a live Xpod.
+ */
+it('keeps a Pod-owned bare platform-named model while dropping genuine builtin rows', async () => {
+  const podBaseUrl = 'https://pod.example/owner/';
+  const selected = { id: 'linx-lite', object: 'model', owned_by: 'custom' };
+  const other = { id: 'deepseek-flash', object: 'model', owned_by: 'deepseek' };
+  const builtin = { id: 'linx', object: 'model', owned_by: 'xpod-builtin' };
+  const barePlatform = { id: 'undefineds/linx-lite', object: 'model' };
+  const calls: string[] = [];
+  const client = createAiConnectionsClient({
+    webId: 'https://id.example/card#me',
+    podBaseUrl,
+    authenticatedFetch: async (url) => {
+      calls.push(String(url));
+      return new Response(JSON.stringify({ object: 'list', data: [builtin, barePlatform, selected, other] }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+  const models = await client.listGatewayModels!();
+  // The genuine builtin row and the ownerless platform alias stay filtered.
+  expect(models.map((model) => model.id)).toEqual(['linx-lite', 'deepseek-flash']);
+  // `provider` is a closed provider union, so the builtin marker cannot appear
+  // at all: assert the parsed provider set instead of comparing to that literal.
+  expect([...new Set(models.map((model) => model.provider))].sort()).toEqual(['custom', 'deepseek']);
+  // The real binding assertion must PASS for the selected Pod model, which the
+  // previous injected-models test could not demonstrate.
+  assertMountedModelBinding(
+    { provider: 'custom', credentialId: 'cred-1', model: 'linx-lite', webId: 'https://id.example/card#me' },
+    {
+      credential: { id: 'cred-1', provider: 'custom' }, credentialCount: 1, providerId: 'custom',
+      webId: 'https://id.example/card#me',
+      discovery: { provider: 'custom', credential: 'cred-1', models: [{ id: 'linx-lite' }] },
+      models: models.map((model) => ({
+        id: model.id, provider: model.provider ?? '', availability: 'available',
+      })),
+    },
+  );
+  expect(calls).toHaveLength(1);
+  expect(calls[0]).toContain('/v1/models');
 });
 
 it('requires actual Pi files in the owned home and refuses foreign paths or gateway configuration', async () => {

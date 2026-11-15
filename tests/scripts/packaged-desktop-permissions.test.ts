@@ -162,3 +162,87 @@ it('the REAL helper yields DISTINCT closed detail tokens for GET-403 vs an inval
   });
   expect(weird?.detail).toBe('request-error');
 });
+
+/**
+ * The bug this pins: Playwright serialises a thrown browser error with only
+ * message/stack/name, so a service-access HTTP failure used to lose its class,
+ * name AND numeric status and always degrade to `transport-error`. The helper
+ * must classify INSIDE the page and return a data envelope.
+ *
+ * This crosses the REAL installed Chromium with the REAL helper path from
+ * acceptMountedPodPermissions down to the failing GET — it does not copy the
+ * callback and does not fake a throw mapping.
+ */
+it('classifies service-access HTTP failures inside the real Chromium page boundary', async () => {
+  const { chromium } = await import('@playwright/test');
+  const binding = { webId: 'https://id.example/card#me', podUrl: 'https://local.example/b/' };
+  const hostile = 'https://id.example/private?token=abc Authorization: Bearer sk-live-9f2c1d password=hunter2';
+
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    await page.setContent('<div id="root"></div>');
+
+    // Install a committed fiber tree whose controller.client is the ONLY source
+    // of the GET, so captureBrowserAiConnections and the real helper run for
+    // real and the request happens inside this browser.
+    const install = async (mode: string, status?: number) => await page.evaluate(
+      ({ webId, podUrl, hostileText, kind, code }: { webId: string; podUrl: string; hostileText: string; kind: string; code?: number }) => {
+        class AiConnectionsRequestError extends Error {
+          readonly status: number;
+          readonly payload: unknown;
+          constructor(payload: unknown, httpStatus: number) {
+            super(`AI Connection request failed (HTTP ${httpStatus}) ${hostileText}`);
+            this.name = 'AiConnectionsRequestError';
+            this.status = httpStatus;
+            this.payload = payload;
+          }
+        }
+        const client = {
+          webId, apiBase: new URL(podUrl).origin, podBaseUrl: podUrl,
+          getServiceAccess: async () => {
+            if (kind === 'http') throw new AiConnectionsRequestError({ error: 'denied' }, code as number);
+            if (kind === 'transport') { const e = new TypeError(`Failed to fetch ${hostileText}`); throw e; }
+            if (kind === 'missing') return undefined;
+            return { appletId: 'co.undefineds.ai-connections', service: { webId, label: 'X' }, resources: [], invocation: { apiKey: 'k' } };
+          },
+        };
+        const host = { solid: {
+          session: { getSnapshot: () => ({ status: 'authenticated', webId }), fetch: async () => { throw new Error('unused'); } },
+          permissions: { revokeAgentAccess: async () => ({ status: 'missing' }) },
+          pod: { status: 'ready', current: { webId, podUrl } },
+        }, capabilities: {} };
+        const applet = { memoizedState: { memoizedState: [host, []],
+          next: { memoizedState: [{ layout: 'two-pane', controller: { client, authorizeService: async () => undefined } }, []] } } };
+        const root = document.getElementById('root') as unknown as Record<string, unknown>;
+        root.__reactContainer$real = { stateNode: { current: { memoizedProps: { value: {} }, child: applet } } };
+      }, { webId: binding.webId, podUrl: binding.podUrl, hostileText: hostile, kind: mode, code: status });
+
+    const run = async (mode: string, status?: number) => {
+      await install(mode, status);
+      let error: unknown;
+      try { await acceptMountedPodPermissions(page, binding); } catch (cause) { error = cause; }
+      return error as MountedPermissionError | undefined;
+    };
+
+    // Allowed statuses keep their own token instead of collapsing to transport-error.
+    for (const status of [401, 403, 503]) {
+      const error = await run('http', status);
+      expect(error?.condition).toBe('service-access');
+      expect(error?.detail).toBe(`http-${status}`);
+      // Hostile text must never be published.
+      expect(JSON.stringify({ d: error?.detail, m: error?.message })).not.toMatch(/sk-live|Bearer|hunter2|token=abc/u);
+    }
+
+    // A non-allowlisted status stays inside request-error.
+    expect((await run('http', 418))?.detail).toBe('request-error');
+    // A real transport failure stays transport-error.
+    expect((await run('transport'))?.detail).toBe('transport-error');
+    // Success keeps the RAW descriptor intact and reaches the REAL parser, which
+    // rejects the deliberately empty resources with its own token — proving the
+    // envelope's ok:true branch hands the descriptor through untouched.
+    expect((await run('success'))?.detail).toBe('empty-resources');
+  } finally {
+    await browser.close();
+  }
+});

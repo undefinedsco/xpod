@@ -3,11 +3,12 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import path from 'node:path';
 import { test } from 'vitest';
 import {
+  classifyInitialDenial, INITIAL_DENIAL_CLASSES,
   EXTERNAL_PHASES, EXTERNAL_REASONS, externalPhaseDiagnostic, describeExternalPhase,
   isExternalPhaseDiagnostic, failureSafeEnvelope, isFailureSafeEnvelope, FAILURE_SAFE_FILE,
   recordExternalFailure, assertRestartObserver, RESTART_SILENT_AUTHORIZATION_CODES,
   inspectRestartObserver, restartObserverDiagnostic, isRestartObserverDiagnostic,
-  privateReadOutcomeForStatus,
+  privateReadOutcomeForStatus, initialSessionDiagnostic, isInitialSessionDiagnostic,
 } from './browserExternalPhase';
 
 /**
@@ -54,16 +55,18 @@ test('the projection is a fixed key set so extra fields cannot leak', () => {
     pageText: 'secret body text',
     token: 'SEKRET',
   } as never);
-  assert.equal(Object.keys(row).length, 12);
+  assert.equal(Object.keys(row).length, 13);
   assert.equal(JSON.stringify(row).includes('SEKRET'), false);
   assert.equal(JSON.stringify(row).includes('secret body text'), false);
   assert.deepEqual(Object.keys(row).sort(), [
-    'authenticated', 'authorizationCodes', 'hostReady', 'passwordPosts', 'phase',
-    'privateRead', 'privateReadStatus', 'reason', 'refreshFailures', 'refreshGrants',
-    'requestCount', 'restartObserver',
+    'authenticated', 'authorizationCodes', 'hostReady', 'initialSession', 'passwordPosts',
+    'phase', 'privateRead', 'privateReadStatus', 'reason', 'refreshFailures',
+    'refreshGrants', 'requestCount', 'restartObserver',
   ]);
   // The nested observer projection is itself a closed numeric key set.
   assert.equal(Object.keys(row.restartObserver).length, 8);
+  // The initial-session projection is a closed numeric key set too.
+  assert.equal(Object.keys(row.initialSession).length, 3);
 });
 
 test('validator rejects the bounds-violating counters it used to accept', () => {
@@ -76,7 +79,7 @@ test('validator rejects the bounds-violating counters it used to accept', () => 
   }
   assert.equal(isExternalPhaseDiagnostic({ phase: 'renewal', reason: 'assertion-failed',
     authorizationCodes: 0, passwordPosts: 0, refreshGrants: 0, refreshFailures: 0, requestCount: 0,
-    restartObserver: restartObserverDiagnostic(undefined),
+    restartObserver: restartObserverDiagnostic(undefined), initialSession: initialSessionDiagnostic(undefined),
     privateRead: 'not-reached', privateReadStatus: 0, authenticated: 0, hostReady: 0 }), true);
 });
 
@@ -104,6 +107,285 @@ test('new phase names cover restart read, observer binding and cleanup-final', (
   for (const phase of ['restart-private-read', 'observer-binding', 'cleanup-final'] as const) {
     assert.ok(EXTERNAL_PHASES.includes(phase), phase);
   }
+});
+
+
+test('the denied initial write maps observed SHAPES to neutral closed classes', () => {
+  // CAUTION: a JSON H403/ForbiddenHttpError body is written by several CSS/product
+  // forbidden paths. The class names the observed shape and never attributes the
+  // producer or proves an internal reason.
+  // The product proxy's own root-mutation 403 carries one exact cause literal.
+  assert.equal(classifyInitialDenial({ status: 403, body: JSON.stringify({
+    name: 'ForbiddenHttpError', message: 'Write to server root is not allowed.',
+    statusCode: 403, errorCode: 'H403', details: { cause: 'root-container-write' },
+  }) }), 'root-container-write');
+  // A generic forbiddden shape stays NEUTRAL: no producer, no authenticated proof.
+  assert.equal(classifyInitialDenial({ status: 403, body: JSON.stringify({
+    name: 'ForbiddenHttpError', message: 'Forbidden', statusCode: 403, errorCode: 'H403', details: {},
+  }) }), 'forbidden');
+  // The exact root marker outranks the generic shape.
+  assert.equal(classifyInitialDenial({ status: 403, body: JSON.stringify({
+    name: 'ForbiddenHttpError', statusCode: 403, errorCode: 'H403',
+    details: { cause: 'root-container-write' },
+  }) }), 'root-container-write');
+  // 401 proves only "unauthorized"; 400 only "bad request".
+  assert.equal(classifyInitialDenial({ status: 401, body: '' }), 'unauthorized');
+  assert.equal(classifyInitialDenial({ status: 400, body: 'not json' }), 'bad-request');
+  // E0001 counts ONLY as the identifier-space cause with a matching 5xx HTTP shape.
+  assert.equal(classifyInitialDenial({ status: 500, body: JSON.stringify({
+    name: 'InternalServerError', message: 'x', statusCode: 500, errorCode: 'E0001',
+  }) }), 'identifier-outside-space');
+  assert.equal(classifyInitialDenial({ status: 404, body: JSON.stringify({
+    name: 'NotFoundHttpError', message: 'x', statusCode: 404, errorCode: 'E0001',
+  }) }), 'unknown');
+  assert.equal(classifyInitialDenial({ status: 500, body: JSON.stringify({
+    name: 'InternalServerError', message: 'x', statusCode: 500, errorCode: 'H500',
+  }) }), 'unknown');
+  // A mismatched statusCode field never confers the authorised shape.
+  assert.equal(classifyInitialDenial({ status: 403, body: JSON.stringify({
+    name: 'ForbiddenHttpError', statusCode: 200, errorCode: 'H403', details: {},
+  }) }), 'unknown');
+  // Everything else is honestly unknown rather than guessed.
+  for (const response of [
+    { status: 403, body: 'plain text' },
+    { status: 502, body: '{}' },
+    { status: 201, body: '{}' },
+    { status: undefined, body: undefined },
+    undefined,
+  ]) assert.equal(classifyInitialDenial(response as never), 'unknown', JSON.stringify(response));
+  // The closed set is exactly what the recorder may ever emit.
+  assert.deepEqual([...INITIAL_DENIAL_CLASSES].sort(), [
+    'bad-request', 'forbidden', 'identifier-outside-space',
+    'root-container-write', 'unauthorized', 'unknown',
+  ]);
+});
+
+test('the classifier agrees with the REAL CSS error serializer output', () => {
+  // Use the installed authoritative serializer and error classes, not a hand-copied
+  // object, so the shape cannot silently drift from the CSS this product ships.
+  const { ErrorToJsonConverter } = require('@solid/community-server/dist/storage/conversion/ErrorToJsonConverter.js');
+  const { ForbiddenHttpError } = require('@solid/community-server/dist/util/errors/ForbiddenHttpError.js');
+  const { BadRequestHttpError } = require('@solid/community-server/dist/util/errors/BadRequestHttpError.js');
+  const { UnauthorizedHttpError } = require('@solid/community-server/dist/util/errors/UnauthorizedHttpError.js');
+  const serialize = (error: unknown): string => JSON.stringify(new ErrorToJsonConverter().errorToJson(error));
+
+  // The real generic forbidden serialization: neutral class, no producer claim.
+  assert.equal(classifyInitialDenial({ status: 403, body: serialize(new ForbiddenHttpError()) }), 'forbidden');
+  // The real 400/401 serializations: shape-only classes.
+  assert.equal(classifyInitialDenial({ status: 400, body: serialize(new BadRequestHttpError('nope')) }), 'bad-request');
+  assert.equal(classifyInitialDenial({ status: 401, body: serialize(new UnauthorizedHttpError()) }), 'unauthorized');
+  // Adding the product's root marker to that SAME real shape changes the class,
+  // proving the discriminator is the exact literal and nothing else.
+  const realForbidden = JSON.parse(serialize(new ForbiddenHttpError())) as Record<string, unknown>;
+  assert.equal(classifyInitialDenial({ status: 403, body: JSON.stringify({
+    ...realForbidden, details: { cause: 'root-container-write' },
+  }) }), 'root-container-write');
+  // Re-serialized real bytes must not leak the stack/message through the projection.
+  const withSecret = classifyInitialDenial({ status: 403,
+    body: JSON.stringify({ ...realForbidden, message: 'SEKRET-STACK-VALUE' }) });
+  assert.equal(withSecret, 'forbidden');
+  assert.equal(JSON.stringify(withSecret).includes('SEKRET'), false);
+});
+
+test('a denied initial write cannot carry secret-like text into the projection', () => {
+  const secret = 'Bearer SEKRET https://id-rc.example/?access_token=SEKRET alice@example.test';
+  // A hostile body smuggling secret text in EVERY field still classifies by the
+  // fixed literals only; the text itself is never returned.
+  const hostile = classifyInitialDenial({ status: 403, body: JSON.stringify({
+    statusCode: 403, name: 'ForbiddenHttpError', message: secret, errorCode: 'H403',
+    details: { cause: secret, path: secret },
+  }) });
+  assert.equal(hostile, 'forbidden');
+  assert.equal(JSON.stringify(hostile).includes('SEKRET'), false);
+  // An over-bound body is not parsed at all.
+  assert.equal(classifyInitialDenial({ status: 400, body: `${'x'.repeat(5000)}` }), 'bad-request');
+  // A non-enum class is rejected by the serializer instead of being written.
+  const row = externalPhaseDiagnostic({
+    phase: 'initial-put', reason: 'assertion-failed',
+    initialHttpStatus: 403, initialTokenTtl: 30, initialRefreshIssued: true,
+    initialDenial: `BEARER ${secret}` as never,
+  });
+  assert.equal(row.initialSession.initialDenial, undefined);
+  assert.equal(JSON.stringify(row).includes('SEKRET'), false);
+  // And an injected enum value never survives validation.
+  assert.equal(isInitialSessionDiagnostic({
+    initialHttpStatus: 403, initialTokenTtl: 30, initialRefreshIssued: 1,
+    initialDenial: secret,
+  }), false);
+});
+
+test('the denial enum reaches the real failure file and stays backward compatible', () => {
+  const root = path.resolve('.test-data/browser-external-phase');
+  mkdirSync(root, { recursive: true });
+  const dir = mkdtempSync(path.join(root, 'denial-'));
+  try {
+    recordExternalFailure({
+      outputDirectory: dir, phase: 'initial-put', reason: 'assertion-failed',
+      initialHttpStatus: 403, initialTokenTtl: 30, initialRefreshIssued: true,
+      initialDenial: 'root-container-write',
+    });
+    const onDisk = JSON.parse(readFileSync(path.join(dir, FAILURE_SAFE_FILE), 'utf8'));
+    // The FAILED status is preserved even though the cause is known.
+    assert.equal(onDisk.diagnostic.initialSession.initialHttpStatus, 403);
+    assert.equal(onDisk.diagnostic.initialSession.initialDenial, 'root-container-write');
+    assert.equal(onDisk.diagnostic.phase, 'initial-put');
+    assert.equal(isFailureSafeEnvelope(onDisk), true);
+    // Re-projection keeps the class and the real numbers.
+    const again = failureSafeEnvelope(onDisk.diagnostic).diagnostic;
+    assert.equal(again.initialSession.initialDenial, 'root-container-write');
+    assert.equal(again.initialSession.initialTokenTtl, 30);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+
+  // A historical receipt with exactly three keys stays admissible and unchanged,
+  // and re-projection does not invent a denial class for it.
+  const historical = { initialHttpStatus: 403, initialTokenTtl: 30, initialRefreshIssued: 1 };
+  assert.equal(isInitialSessionDiagnostic(historical), true);
+  const reprojected = failureSafeEnvelope(externalPhaseDiagnostic({
+    phase: 'initial-put', reason: 'assertion-failed',
+    initialHttpStatus: 403, initialTokenTtl: 30, initialRefreshIssued: true,
+  })).diagnostic;
+  assert.equal('initialDenial' in reprojected.initialSession, false);
+  assert.equal(reprojected.initialSession.initialHttpStatus, 403);
+});
+
+test('a successful initial write records NO denial class', () => {
+  // The spec only classifies a non-201, so success keeps the three-key shape.
+  const row = externalPhaseDiagnostic({
+    phase: 'initial-private-read', reason: 'assertion-failed',
+    initialHttpStatus: 201, initialTokenTtl: 30, initialRefreshIssued: true,
+  });
+  assert.equal('initialDenial' in row.initialSession, false);
+  assert.equal(isInitialSessionDiagnostic(row.initialSession), true);
+});
+
+test('the FIVE initial-session checkpoints all survive and stay ordered', () => {
+  // Each of the five historically-conflated initial assert groups gets its own
+  // closed token. `initial-private-read` is retained for the actual initial GET.
+  const checkpoints = ['initial-token-ttl', 'initial-token-refresh', 'initial-put',
+    'initial-acl-put', 'initial-private-read'] as const;
+  for (const phase of checkpoints) {
+    assert.ok(EXTERNAL_PHASES.includes(phase), phase);
+    const row = externalPhaseDiagnostic({ phase, reason: 'assertion-failed' });
+    assert.equal(row.phase, phase);
+    // A realistic initial failure is writable and still admissible.
+    assert.equal(isExternalPhaseDiagnostic(row), true);
+  }
+  const i = (p: string) => EXTERNAL_PHASES.indexOf(p as never);
+  // Before the token asserts is `login`; the five are strictly ordered and the
+  // GET token is last, immediately before the unchanged anonymous-denied phase.
+  assert.ok(i('initial-token-ttl') > i('login'));
+  assert.ok(i('initial-token-refresh') > i('initial-token-ttl'));
+  assert.ok(i('initial-put') > i('initial-token-refresh'));
+  assert.ok(i('initial-acl-put') > i('initial-put'));
+  assert.ok(i('initial-private-read') > i('initial-acl-put'));
+  assert.ok(i('anonymous-denied') > i('initial-private-read'));
+});
+
+test('initial-session projection accepts only three bounded numbers', () => {
+  // Real contract shape: 30s deployment TTL, HTTP 201, refresh issued.
+  const row = externalPhaseDiagnostic({
+    phase: 'initial-put', reason: 'assertion-failed',
+    initialHttpStatus: 500, initialTokenTtl: 30, initialRefreshIssued: true,
+  });
+  assert.deepEqual(row.initialSession, {
+    initialHttpStatus: 500, initialTokenTtl: 30, initialRefreshIssued: 1,
+  });
+  assert.equal(isInitialSessionDiagnostic(row.initialSession), true);
+  // Absent initial data is honest zeros, never a fabricated pass value.
+  assert.deepEqual(initialSessionDiagnostic(undefined), {
+    initialHttpStatus: 0, initialTokenTtl: 0, initialRefreshIssued: 0,
+  });
+  // A rejected fetch/unknown TTL projects as 0; only the number survives.
+  assert.deepEqual(initialSessionDiagnostic({
+    initialHttpStatus: undefined, initialTokenTtl: undefined, initialRefreshIssued: false,
+  }), { initialHttpStatus: 0, initialTokenTtl: 0, initialRefreshIssued: 0 });
+});
+
+test('arbitrary secret-like initial values cannot enter the projection', () => {
+  const secret = 'Bearer SEKRET https://id-rc.example/?access_token=SEKRET 30 expires_in';
+  const row = externalPhaseDiagnostic({
+    phase: 'initial-token-ttl', reason: 'assertion-failed',
+    initialHttpStatus: secret as never,
+    initialTokenTtl: secret as never,
+    initialRefreshIssued: 'true' as never,
+  });
+  const text = JSON.stringify(row);
+  assert.equal(text.includes('SEKRET'), false);
+  assert.equal(text.includes('id-rc.example'), false);
+  assert.equal(text.includes('Bearer'), false);
+  // Non-numbers clamp: status 0, ttl 0, refresh bit 0 (a string is not `true`).
+  assert.deepEqual(row.initialSession, {
+    initialHttpStatus: 0, initialTokenTtl: 0, initialRefreshIssued: 0,
+  });
+  // Bounds: out-of-range/fractional TTLs and statuses are rejected, not shipped.
+  for (const ttl of [-1, 0.5, 86_401, Number.NaN, '30']) {
+    assert.equal(isInitialSessionDiagnostic({
+      initialHttpStatus: 0, initialTokenTtl: ttl, initialRefreshIssued: 0,
+    }), false, String(ttl));
+  }
+  for (const status of [99, 600, -1, 1.5, Number.NaN, '401', '403 Unauthorized']) {
+    assert.equal(isInitialSessionDiagnostic({
+      initialHttpStatus: status, initialTokenTtl: 0, initialRefreshIssued: 0,
+    }), false, String(status));
+  }
+  // Extra foreign keys are inadmissible, so text cannot ride along.
+  assert.equal(isInitialSessionDiagnostic({
+    initialHttpStatus: 0, initialTokenTtl: 0, initialRefreshIssued: 0, token: 'SEKRET',
+  }), false);
+  // A raw boolean flag is not 0|1 and must be rejected.
+  assert.equal(isInitialSessionDiagnostic({
+    initialHttpStatus: 0, initialTokenTtl: 0, initialRefreshIssued: true,
+  }), false);
+});
+
+test('initial-session facts survive the real file pipeline and re-projection', () => {
+  const root = path.resolve('.test-data/browser-external-phase');
+  mkdirSync(root, { recursive: true });
+  const dir = mkdtempSync(path.join(root, 'initial-'));
+  try {
+    recordExternalFailure({
+      outputDirectory: dir, phase: 'initial-put', reason: 'assertion-failed',
+      initialHttpStatus: 500, initialTokenTtl: 30, initialRefreshIssued: true,
+    });
+    const onDisk = JSON.parse(readFileSync(path.join(dir, FAILURE_SAFE_FILE), 'utf8'));
+    assert.equal(onDisk.diagnostic.phase, 'initial-put');
+    assert.deepEqual(onDisk.diagnostic.initialSession, {
+      initialHttpStatus: 500, initialTokenTtl: 30, initialRefreshIssued: 1,
+    });
+    assert.equal(isFailureSafeEnvelope(onDisk), true);
+    // Re-projection is idempotent and keeps the real numbers (30 is the exact TTL).
+    const again = failureSafeEnvelope(onDisk.diagnostic).diagnostic;
+    assert.deepEqual(again.initialSession, onDisk.diagnostic.initialSession);
+    assert.equal(again.initialSession.initialTokenTtl, 30);
+    // The later post-renew field is untouched and stays independently 0 here.
+    assert.equal(onDisk.diagnostic.privateReadStatus, 0);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('each of the five initial checkpoints writes a distinct record', () => {
+  // Proves every checkpoint can actually reach failure.safe.json, not just exist
+  // in the enum: an RC failure stops at exactly one of these five labels.
+  const root = path.resolve('.test-data/browser-external-phase');
+  mkdirSync(root, { recursive: true });
+  const phases = ['initial-token-ttl', 'initial-token-refresh', 'initial-put',
+    'initial-acl-put', 'initial-private-read'] as const;
+  const written: string[] = [];
+  try {
+    for (const phase of phases) {
+      const dir = mkdtempSync(path.join(root, `${phase}-`));
+      try {
+        recordExternalFailure({ outputDirectory: dir, phase, reason: 'assertion-failed',
+          initialHttpStatus: phase === 'initial-private-read' ? 200 : 0, initialTokenTtl: 30 });
+        const onDisk = JSON.parse(readFileSync(path.join(dir, FAILURE_SAFE_FILE), 'utf8'));
+        assert.equal(onDisk.diagnostic.phase, phase);
+        assert.equal(isFailureSafeEnvelope(onDisk), true);
+        written.push(onDisk.diagnostic.phase);
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    }
+    // Five distinct labels, no collapse back into one checkpoint.
+    assert.deepEqual(written, [...phases]);
+    assert.equal(new Set(written).size, 5);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test('per-field restart binding phases exist and are ordered after restart-runtime', () => {
@@ -374,6 +656,7 @@ test('new readiness flags reject raw booleans, strings and out-of-range values',
     phase: 'restart-private-read' as const, reason: 'assertion-failed' as const,
     authorizationCodes: 0, passwordPosts: 0, refreshGrants: 0, refreshFailures: 0,
     requestCount: 0, restartObserver: restartObserverDiagnostic(undefined),
+    initialSession: initialSessionDiagnostic(undefined),
     privateRead: 'ok' as const, privateReadStatus: 200, authenticated: 1, hostReady: 0,
   });
   assert.equal(isExternalPhaseDiagnostic(base()), true);
@@ -483,6 +766,7 @@ test('privateReadStatus accepts 0 and 100..599 only; fractions, strings and junk
     phase: 'restart-private-read' as const, reason: 'assertion-failed' as const,
     authorizationCodes: 0, passwordPosts: 0, refreshGrants: 0, refreshFailures: 0,
     requestCount: 0, restartObserver: restartObserverDiagnostic(undefined),
+    initialSession: initialSessionDiagnostic(undefined),
     privateRead: 'not-reached' as const, privateReadStatus: 0,
     authenticated: 0, hostReady: 0,
   });

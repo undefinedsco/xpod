@@ -38,6 +38,9 @@ const PLATFORM = 'linux/amd64';
 const LABEL = 'co.undefineds.xpod.diagnostic';
 const SAFE_PHASES = new Set([
   'preflight', 'storage-verify', 'browser-verify', 'electron-launch', 'login',
+  // Finer initial-section labels mirror the shared closed enum; the run can stop
+  // at exactly one of the five. `initial-private-read` remains the initial GET.
+  'initial-token-ttl', 'initial-token-refresh', 'initial-put', 'initial-acl-put',
   'initial-private-read', 'anonymous-denied', 'renewal', 'post-renew-runtime',
   'restart-launch', 'restart-runtime', 'restart-binding-webid', 'restart-binding-pod',
   'restart-binding-issuer', 'restart-private-read', 'observer-binding',

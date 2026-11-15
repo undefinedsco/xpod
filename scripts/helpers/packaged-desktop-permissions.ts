@@ -57,24 +57,6 @@ export async function attributeMountedOperation<T>(condition: MountedPermissionC
   }
 }
 
-/**
- * Closed classification for a failed service-access GET. Only fixed tokens.
- * An HTTP status is included only when it is already a number on the error.
- */
-function classifyFetchFailure(cause: unknown): MountedPermissionDetail {
-  const status = (cause as { status?: unknown } | undefined)?.status;
-  // Bounded: only these exact HTTP statuses have their own token. Any other
-  // status stays inside 'request-error' so the published value is a finite set.
-  // 503 is included because AiGatewayManagementHandler.sendAiConnectionsServiceAccessError
-  // maps unknown/wiring/issuer failures to 503 for this exact endpoint.
-  const allowed = new Set([400, 401, 403, 404, 409, 429, 500, 503]);
-  if (typeof status === 'number' && Number.isInteger(status) && allowed.has(status)) {
-    return `http-${status}` as MountedPermissionDetail;
-  }
-  if (cause instanceof Error) return cause.name === 'AiConnectionsRequestError' ? 'request-error' : 'transport-error';
-  return 'unknown';
-}
-
 /** Closed classification for a descriptor the parser refused. */
 function classifyDescriptorFailure(cause: unknown): MountedPermissionDetail {
   const message = cause instanceof Error ? cause.message : '';
@@ -213,23 +195,36 @@ export async function acceptMountedPodPermissions(page: Page, binding: { webId: 
       }, binding.podUrl).catch(() => 'unavailable');
       if (bound !== 'bound') throw new MountedPermissionError('service-access',
         'Mounted AI client binding rejected', undefined, bound as MountedPermissionDetail);
-      // Safe discriminator: a GET failure and a descriptor/parse failure are
-      // different causes and must not collapse into one opaque enum. Only a
-      // closed class token is attached, never the message, body, URL or token.
-      let raw: unknown;
-      try {
-        raw = await handle.evaluate(({ controller }) => {
-          if (!controller.client) throw new Error('Missing mounted AI client');
-          return controller.client.getServiceAccess();
-        });
-      } catch (cause) {
-        const closed = classifyFetchFailure(cause) as MountedPermissionDetail;
-        throw new MountedPermissionError('service-access', 'service-access GET failed', cause, closed);
+      // Classify the original rejection in-page: Playwright drops custom error
+      // fields when it reconstructs a thrown browser error in Node. Return only
+      // fixed tokens on failure; successful descriptors retain their raw shape.
+      const envelope = await handle.evaluate(async ({ controller }) => {
+        if (!controller.client) return { ok: false as const, detail: 'missing-client' as const };
+        try {
+          return { ok: true as const, descriptor: await controller.client.getServiceAccess() };
+        } catch (cause) {
+          const status = (cause as { status?: unknown } | undefined)?.status;
+          const allowed = [400, 401, 403, 404, 409, 429, 500, 503];
+          let detail: MountedPermissionDetail;
+          if (typeof status === 'number' && Number.isInteger(status) && allowed.includes(status)) {
+            detail = `http-${status}` as MountedPermissionDetail;
+          } else if ((cause as { name?: unknown } | undefined)?.name === 'AiConnectionsRequestError') {
+            detail = 'request-error';
+          } else {
+            detail = cause instanceof Error ? 'transport-error' : 'unknown';
+          }
+          return { ok: false as const, detail };
+        }
+      }).catch(cause => {
+        throw new MountedPermissionError('service-access', 'service-access evaluation failed', cause, 'transport-error');
+      });
+      if (!envelope.ok) {
+        throw new MountedPermissionError('service-access', 'service-access GET failed', undefined, envelope.detail);
       }
       try {
-        return parseAiConnectionsServiceAccess(raw, binding.podUrl);
+        return parseAiConnectionsServiceAccess(envelope.descriptor, binding.podUrl);
       } catch (cause) {
-        const closed = classifyDescriptorFailure(cause) as MountedPermissionDetail;
+        const closed = classifyDescriptorFailure(cause);
         throw new MountedPermissionError('service-access', 'service-access descriptor rejected', cause, closed);
       }
     });

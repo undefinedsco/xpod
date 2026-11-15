@@ -275,6 +275,10 @@ const sessionFailure = {schemaVersion: 1, diagnostic: {
   // The closed schema also carries the bounded private-read class and the two
   // readiness flags, so a real RC failure names WHAT failed, not just where.
   privateRead: 'not-reached', privateReadStatus: 0, authenticated: 0, hostReady: 0,
+  // The initial-section facts are a separate nested closed set (three numbers),
+  // so a local+idle failure can name the token TTL / HTTP op without reusing
+  // privateReadStatus. Absent initial data is honestly all zeros.
+  initialSession: {initialHttpStatus: 0, initialTokenTtl: 0, initialRefreshIssued: 0},
 }};
 
 test('failed session exports its bounded checkpoint and excludes private output', async () => {
@@ -297,6 +301,15 @@ test('session export drops malformed, oversized and out-of-schema failure data',
       '{invalid-json',
       JSON.stringify({...sessionFailure, token: 'private-test-key'}),
       JSON.stringify({...sessionFailure, diagnostic: {...sessionFailure.diagnostic, requestCount: -1}}),
+      // Initial-session facts are a CLOSED numeric set too: a text field, a bogus
+      // enum value or an out-of-range status must keep the whole file inadmissible
+      // rather than letting an assertion/URL ride along.
+      JSON.stringify({...sessionFailure, diagnostic: {...sessionFailure.diagnostic,
+        initialSession: {...sessionFailure.diagnostic.initialSession, initialTokenTtl: 'SEKRET'}}}),
+      JSON.stringify({...sessionFailure, diagnostic: {...sessionFailure.diagnostic,
+        initialSession: {...sessionFailure.diagnostic.initialSession, initialHttpStatus: 700}}}),
+      JSON.stringify({...sessionFailure, diagnostic: {...sessionFailure.diagnostic,
+        initialSession: {...sessionFailure.diagnostic.initialSession, url: 'https://evil.example/'}}}),
       // The OLD 7-key shape (no restartObserver) must stay inadmissible: the schema
       // is closed at exactly 8 keys, so accepting it would silently weaken the
       // contract this fixture was updated to satisfy.

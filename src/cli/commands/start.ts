@@ -20,7 +20,7 @@ import {
   buildCssChildEnv,
   createCssChildRuntimeConfig,
 } from '../../runtime/css-process';
-import { DEFAULT_LOCAL_OIDC_ISSUER, isLoopbackIssuer, resolveExternalOidcIssuer } from '../../runtime/oidc-issuer';
+import { resolveCliOidcIssuer } from '../../runtime/oidc-issuer';
 import { resolveAuthModeFromEnv } from '../../authorization/AuthMode';
 import { loadConfigFromEnv } from '../../api/container';
 import { autoProvisionFirstRunLocal } from '../../api/runtime';
@@ -323,24 +323,7 @@ export function describeIngressDecision(ingress: {
   return 'derived from the gateway port (gateway+3..+9)';
 }
 
-export function resolveCliOidcIssuer(
-  env: Record<string, string | undefined>,
-  provisionedIssuer?: string,
-  edition?: string,
-): string | undefined {
-  const explicit = resolveExternalOidcIssuer(env);
-  if (explicit) {
-    return explicit;
-  }
-  // A remembered issuer is residue from an earlier run, so it only counts when the
-  // network can still serve it. Adopting a loopback one points every login at a port
-  // with no listener - and the identity origin must never become this machine's port.
-  const remembered = resolveExternalOidcIssuer({ SOLID_OIDC_ISSUER: provisionedIssuer });
-  if (remembered && !isLoopbackIssuer(remembered)) {
-    return remembered;
-  }
-  return edition === 'local' ? DEFAULT_LOCAL_OIDC_ISSUER : undefined;
-}
+export { resolveCliOidcIssuer } from '../../runtime/oidc-issuer';
 
 export function resolveManagedEdgeAgentConfig(
   config: Pick<ReturnType<typeof loadConfigFromEnv>, 'cloudApiEndpoint' | 'nodeId' | 'nodeToken'>,

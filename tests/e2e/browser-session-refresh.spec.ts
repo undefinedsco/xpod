@@ -10,7 +10,7 @@ import { recordOwnedHost, closeOwnedHost, cleanupOwnedHostGroup, hostGroupPassed
 import { startBrowserExternalRp } from '../helpers/browserExternalRp';
 import { completeOidcLogin, OidcApprovalError } from '../helpers/browserSolidOidc';
 import { fetchBrowserXpodPod, readBrowserXpodRuntime } from '../helpers/browserXpodRuntime';
-import { assertRestartObserver, inspectRestartObserver, recordExternalFailure, privateReadOutcomeForStatus, type ExternalPhase, type PrivateReadOutcome, type RestartObserverInput } from '../helpers/browserExternalPhase';
+import { assertRestartObserver, inspectRestartObserver, recordExternalFailure, privateReadOutcomeForStatus, classifyInitialDenial, type ExternalPhase, type InitialDenialClass, type PrivateReadOutcome, type RestartObserverInput } from '../helpers/browserExternalPhase';
 
 const external = externalRefreshFromEnvironment();
 
@@ -175,6 +175,16 @@ for (const mode of profiles) {
     let privateReadOutcome: PrivateReadOutcome = 'not-reached';
     // Actual numeric status of the failed read: 0 means no response arrived.
     let privateReadStatus = 0;
+    // Bounded facts about the CURRENT initial post-login operation. The numeric
+    // status is RESET before every initial HTTP op, so an earlier success can
+    // never be reported as the status of a later failure. The token fields keep
+    // the authorization_code response's TTL/refresh bit as numbers only.
+    let initialHttpStatus = 0;
+    let initialTokenTtl: number | undefined;
+    let initialRefreshIssued: boolean | undefined;
+    // Closed cause class of the FIRST denied initial Pod write. Only the enum
+    // survives; the response body text never leaves this scope.
+    let initialDenial: InitialDenialClass | undefined;
     let failureAuthenticated = false;
     let failureHostReady = false;
     // Fixed-enum checkpoint so the EXTERNAL failure keeps its location without
@@ -271,13 +281,50 @@ for (const mode of profiles) {
         expect(runtime.issuer).toBe(external.input.issuer);
       }
       const initial = tokens.find((entry) => entry.grant === 'authorization_code')!;
-      phase = 'initial-private-read';
+      // FIVE distinct closed checkpoints for the FIVE assert groups that used to
+      // share one label. Every assertion and expected value below is unchanged;
+      // only WHERE the run stopped becomes precise. `initial-private-read` is
+      // retained for the actual initial GET.
+      phase = 'initial-token-ttl';
+      // Project the token response's real TTL as a bounded number before asserting,
+      // so a TTL mismatch is distinguishable from a failed Pod request. 30 stays
+      // the exact contract (oidc-provider returns the configured expiresIn).
+      initialTokenTtl = typeof initial.expiresIn === 'number' ? initial.expiresIn : 0;
       expect(initial.expiresIn).toBe(fixture.ready.accessTokenTtl);
+      phase = 'initial-token-refresh';
+      initialRefreshIssued = initial.refreshIssued === true;
       expect(initial.refreshIssued).toBe(true);
-      expect((await fetchBrowserXpodPod(page, resource, { method: 'PUT', headers: { 'content-type': 'text/plain' }, body: payload })).status).toBe(201);
+      phase = 'initial-put';
+      // RESET before every initial HTTP op: a previous success must never be
+      // reported as the status of the operation that actually failed. A rejected
+      // fetch leaves 0 ("no response"); a real response records its real value.
+      initialHttpStatus = 0;
+      // Content negotiation for the FAILURE representation only: CSS converts an
+      // error can render as HTML/text without an explicit JSON preference. Method,
+      // target, content type and body are unchanged, and the 201 assertion below
+      // is untouched.
+      const initialPut = await fetchBrowserXpodPod(page, resource, { method: 'PUT', headers: { 'content-type': 'text/plain', accept: 'application/json' }, body: payload });
+      initialHttpStatus = initialPut.status;
+      // Classify BEFORE asserting so a denied write leaves a closed cause class
+      // while the SAME 201 assertion still fails the run. A success records no class.
+      if (initialPut.status !== 201) initialDenial = classifyInitialDenial(initialPut);
+      expect(initialPut.status).toBe(201);
       const acl = `@prefix acl: <http://www.w3.org/ns/auth/acl#>. <#owner> a acl:Authorization; acl:accessTo <${resource}>; acl:agent <${fixture.ready.account.webId}>; acl:mode acl:Read, acl:Write, acl:Control.`;
-      expect([200, 201, 205]).toContain((await fetchBrowserXpodPod(page, `${resource}.acl`, { method: 'PUT', headers: { 'content-type': 'text/turtle' }, body: acl })).status);
-      expect(await fetchBrowserXpodPod(page, resource)).toEqual({ status: 200, body: payload });
+      phase = 'initial-acl-put';
+      initialHttpStatus = 0;
+      const initialAclPut = await fetchBrowserXpodPod(page, `${resource}.acl`, { method: 'PUT', headers: { 'content-type': 'text/turtle' }, body: acl });
+      initialHttpStatus = initialAclPut.status;
+      expect([200, 201, 205]).toContain(initialAclPut.status);
+      phase = 'initial-private-read';
+      initialHttpStatus = 0;
+      const initialGet = await fetchBrowserXpodPod(page, resource);
+      initialHttpStatus = initialGet.status;
+      expect(initialGet).toEqual({ status: 200, body: payload });
+      // The initial section is complete and all five asserts passed. Clear the
+      // HTTP status so a LATER-phase failure never carries a stale 200 that could
+      // be misread as this failing operation's response. The token fields stay:
+      // they are observed facts about the one authorization_code response.
+      initialHttpStatus = 0;
       evidence.initialPrivateRead = true;
       phase = 'anonymous-denied';
       const anonymous = await anonymousFetch(new URL(resource, fixture.ready.account.podUrl));
@@ -451,6 +498,14 @@ for (const mode of profiles) {
           observer: restartObserver,
           privateRead: privateReadOutcome,
           privateReadStatus,
+          // Distinct INITIAL-section facts. `privateReadStatus` above stays the
+          // post-renew/restart read only; these name the initial token and HTTP
+          // operations, so a local+idle failure at an initial checkpoint is
+          // attributable without repurposing any existing field.
+          initialHttpStatus,
+          initialTokenTtl,
+          initialRefreshIssued,
+          initialDenial,
           authenticated: failureAuthenticated,
           hostReady: failureHostReady,
         }));

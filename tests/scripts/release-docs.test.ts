@@ -108,7 +108,8 @@ describe('release lifecycle documentation', () => {
     expect(text).toContain('| Secret | `XPOD_RC_SEED_CONFIG` | 固定 RC seed JSON，必须包含 Alice 和 Bob 账号及 Pod 名称 |');
     expect(text).toContain('| Secret | `XPOD_LIVE_PROVIDER_API_KEY_CONFIG` | 可选的第三方上游监测/手动诊断输入');
     expect(text).toContain('不是 RC 或 stable 发布必填项');
-    expect(text).toContain('required checks 全部 29 项通过');
+    expect(text).toContain('required checks 全部 28 项通过');
+    expect(text).toContain('desktop-acceptance-${GITHUB_SHA}');
     expect(text).toContain('candidate/release 不依赖该 run');
     expect(text).not.toContain('| Variable | `SEALOS_NAMESPACE` | 默认 `xpod-rc` |');
     expect(text).not.toContain('| Variable | `XPOD_RUNTIME_SECRET_NAME` | 默认 `xpod-rc-secret` |');
