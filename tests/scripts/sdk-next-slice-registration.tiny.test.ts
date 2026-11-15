@@ -75,6 +75,7 @@ import {
   CONSUMER_SOURCE_GROUPS as consumer,
   CI_CONSUMER_SOURCE_GROUPS as ci,
 } from '../../scripts/lib/independent-admission/consumer-observer-policy';
+import{currentProgramSdkConsumerGroups,currentProgramLinuxConsumerGroups}from'../../scripts/lib/independent-admission/current-program-definition';
 import {QLEVER_SDK_EXECUTION_GROUPS as sdk, QLEVER_SDK_CONSUMER_GROUPS as consumerSdk, QLEVER_LINUX_EXECUTION_GROUPS as linuxGroups, QLEVER_LINUX_CONSUMER_GROUPS as consumerLinux} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as api} from '../../scripts/lib/independent-admission/github-origin';
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
@@ -290,7 +291,7 @@ test('the appended groups bind the actual frozen body and real module bytes', ()
     // family bind today's disk bytes. CI has TWO existing current variants that
     // differ only in the run-head workflow selector, so both current SOURCE
     // closures are tested; the run-head rows themselves stay skipped.
-    const currentFamily = name === 'sdk' ? consumerSdk : name === 'linux' ? consumerLinux : groups;
+    const currentFamily = name === 'sdk' ? currentProgramSdkConsumerGroups() : name === 'linux' ? currentProgramLinuxConsumerGroups() : groups;
     const current = name === 'ci' ? currentFamily.slice(-2) : currentFamily.slice(-1);
     for (const group of current) {
       for (const row of rows(group)) {

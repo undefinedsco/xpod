@@ -27,3 +27,6 @@ packages/**/licenses/** -text
 # These signature fixtures retain the original transport and gpgv protocol bytes.
 /tests/fixtures/independent-admission/debian-bookworm-backports/** -text
 /tests/fixtures/independent-admission/debian-bookworm-backports/status.original.raw whitespace=-blank-at-eol
+
+# CURRENT tooling compares this recipe with its original GitHub bytes on every OS.
+/.github/workflows/candidate.yml text eol=lf

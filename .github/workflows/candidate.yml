@@ -2109,7 +2109,7 @@ jobs:
           fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'service-image-mode-authority/selection.safe.json'), JSON.stringify(selection), { mode: 0o600, flag: 'wx' });
           NODE
           gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${MATRIX_ARTIFACT_ID}" > "${RUNNER_TEMP}/service-image-mode-authority/artifact.original.json"
-          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?filter=all&per_page=100" > "${RUNNER_TEMP}/service-image-mode-authority/jobs.original.json"
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?filter=all&per_page=20" > "${RUNNER_TEMP}/service-image-mode-authority/jobs.original.json"
       - name: Revalidate same-image mode originals
         env:
           XPOD_MATRIX_IMAGE: ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}

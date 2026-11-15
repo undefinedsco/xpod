@@ -24,6 +24,7 @@ import {CURRENT_HELPER_GROUP_COUNTS, CURRENT_SOURCE_GROUP_COUNTS} from './source
 import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as api} from '../../scripts/lib/independent-admission/github-origin';
 import {QLEVER_SDK_EXECUTION_GROUPS as sdk, QLEVER_LINUX_EXECUTION_GROUPS as linux, QLEVER_SDK_CONSUMER_GROUPS as consumerSdk, QLEVER_LINUX_CONSUMER_GROUPS as consumerLinux} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import {CONSUMER_SOURCE_GROUPS as consumer, CI_CONSUMER_SOURCE_GROUPS as ci} from '../../scripts/lib/independent-admission/consumer-observer-policy';
+import {currentProgramSdkConsumerGroups, currentProgramLinuxConsumerGroups} from '../../scripts/lib/independent-admission/current-program-definition';
 import {CLI_SOURCE_VERSION_GROUPS as cli} from '../../scripts/lib/independent-admission/source-rules';
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
 import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
@@ -270,7 +271,10 @@ test('CURRENT source catalogue counts and actual declared bindings close indepen
     CURRENT_SOURCE_GROUP_COUNTS.current,
   ]);
   const digest = (name: string) => createHash('sha256').update(readTrackedSource(path.join(ROOT, name))).digest('hex');
-  for (const rows of Object.values({api, sdk: consumerSdk, consumer, ci, linux: consumerLinux, cli})) {
+  // The frozen axes above stay byte-exact history; live-disk verification follows
+  // the CURRENT program definition, whose only moving row is the workflow.
+  for (const rows of Object.values({api, sdk: currentProgramSdkConsumerGroups(), consumer, ci,
+    linux: currentProgramLinuxConsumerGroups(), cli})) {
     const group = rows[rows.length - 1]!;
     const g = group as any;
     for (const row of [...(g.selectors ?? []), ...(g.secondarySelectors ?? []),

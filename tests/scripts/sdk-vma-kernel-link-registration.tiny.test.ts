@@ -1,3 +1,4 @@
+import{currentProgramSdkConsumerGroups}from'../../scripts/lib/independent-admission/current-program-definition';
 import fs from 'node:fs';import{createHash}from'node:crypto';import{test,expect}from'bun:test';
 import before from'../fixtures/independent-admission/pre-vma-kernel-link-whole-groups.original.json';
 import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
@@ -8,9 +9,9 @@ const sha=(value:Buffer|string)=>createHash('sha256').update(value).digest('hex'
 test('SDK39 preserves all 206 actual prior whole recipes and binds exact kernel-link plus failure-only CMake helper bytes',()=>{
  for(const[name,values]of Object.entries(groups)){const old=before.hashes[name as keyof typeof before.hashes];for(let i=0;i<old.length;i++)expect(sha(JSON.stringify(values[i]))).toBe(old[i]!);}
 
- for(const row of [...current,...currentSdkConsumer.at(-1)!.selectors,...currentSdkConsumer.at(-1)!.sourceBindings])expect(sha(readTrackedSource(row.path))).toBe(row.sha256);
+ for(const row of [...current,...currentProgramSdkConsumerGroups().at(-1)!.selectors,...currentProgramSdkConsumerGroups().at(-1)!.sourceBindings])expect(sha(readTrackedSource(row.path))).toBe(row.sha256);
  expect(sdk[before.hashes.sdk.length]!.sourceBindings.find(row=>row.path==='qlever/scripts/sdk-toolchain-materials.py')!.sha256).toBe('0cc20e6c0c589f6b3af8420a6aa230e65a39ca12f429bcba88e0578aeb02dee1');
- expect(currentSdkConsumer.at(-1)!.sourceBindings.find(row=>row.path==='qlever/scripts/sdk-toolchain-materials.py')!.sha256).toBe(sha(readTrackedSource('qlever/scripts/sdk-toolchain-materials.py')));
+ expect(currentProgramSdkConsumerGroups().at(-1)!.sourceBindings.find(row=>row.path==='qlever/scripts/sdk-toolchain-materials.py')!.sha256).toBe(sha(readTrackedSource('qlever/scripts/sdk-toolchain-materials.py')));
 });
 for(const[name,values]of Object.entries({sdk,consumer,ci}))for(const group of values.slice(name==='ci'?-2:-1))test('SDK39 new whole tuple uses only its own immutable secondary originals '+name+' '+group.sourceBindings[0]!.sha256,()=>{
  const tuple=completeObserved(values as any,group as any);

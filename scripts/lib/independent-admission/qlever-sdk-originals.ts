@@ -1,6 +1,6 @@
+import {currentProgramSdkConsumerGroups} from './current-program-definition';
 import {inspectCandidateServiceRelationship,inspectCandidateServiceJobChain} from './qlever-sdk-service-relationship';
 import {isCandidateServiceImageGitHubOrigin} from './github-origin';
-import {QLEVER_SDK_CONSUMER_GROUPS} from './qlever-sdk-origin-policy';
 import {NORMAL_BUILD_MODEL,inspectNormalBuildSdkMasterBinding} from './qlever-sdk-normal-build';
 import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
@@ -102,7 +102,7 @@ export function inspectRoutedQleverSdkReference(final:any,native:{sourceSha:stri
 }
 /** Resolve the candidate job-chain contract for exact retained workflow bytes.
  *
- * The authority is the CURRENT consumer axis (`QLEVER_SDK_CONSUMER_GROUPS`), not the
+ * The expectation comes from the CURRENT program consumer axis, not the
  * frozen SDK-execution producer axis: the execution groups are historical and stop at
  * the published generation, while the consumer axis carries the reviewed contract for
  * each current recipe.
@@ -112,7 +112,7 @@ export function inspectRoutedQleverSdkReference(final:any,native:{sourceSha:stri
  * than resolved last-wins. Unknown workflow bytes yield undefined, so the caller
  * fails closed. */
 export function resolveCandidateWorkflowContract(workflowSha:string){
- return resolveCandidateWorkflowContractFrom(QLEVER_SDK_CONSUMER_GROUPS,workflowSha);
+ return resolveCandidateWorkflowContractFrom(currentProgramSdkConsumerGroups(),workflowSha);
 }
 
 /** Pure data resolver over an explicit recipe axis, so the authority choice and the
