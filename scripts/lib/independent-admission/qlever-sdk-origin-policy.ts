@@ -3019,7 +3019,7 @@ const QLEVER_NORMAL_RC398_PLATFORM_GROUP:GitHubSourceBindingGroup=Object.freeze(
  * The workspace build+consumer precedes the candidate-version transform, and
  * the root outputs are compiled before desktop packaging on a cold runner.
  * Every published RC396/RC397/RC398 value above stays byte-exact. */
-const QLEVER_RC399_CANDIDATE_WORKFLOW_HASH='837d5a9fffe362c926f5121a718a79d0da359d79669ba2f78a1ae248434db673';
+const QLEVER_RC399_CANDIDATE_WORKFLOW_HASH='43a9114d330a544f5ffd3a54e1ab6530dca6a28379da2c26b2fcf1a089235ec8';
 const QLEVER_NORMAL_RC399_CLEANUP_GROUP:GitHubSourceBindingGroup=Object.freeze({...QLEVER_NORMAL_RC398_PLATFORM_GROUP,
   secondarySelectors:Object.freeze((QLEVER_NORMAL_RC398_PLATFORM_GROUP.secondarySelectors??[]).map(row=>
     Object.freeze({...row,sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_RC399_CANDIDATE_WORKFLOW_HASH:row.sha256}))),

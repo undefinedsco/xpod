@@ -73,6 +73,16 @@ jobs:
             fs.appendFileSync(process.env.GITHUB_OUTPUT, `sourceSha=${metadata.sourceSha}\n`);
             fs.appendFileSync(process.env.GITHUB_OUTPUT, `runAttempt=${process.env.RUN_ATTEMPT}\n`);
           ' "$metadata"
+          # A released version is immutable. Fail in seconds, not at tag time an
+          # hour later, when staging still carries a version already released
+          # from another commit. Re-qualifying the tagged commit itself (e.g. its
+          # desktop) stays allowed.
+          target="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).targetVersion)' "$metadata")"
+          released="$(git ls-remote --tags origin "refs/tags/v${target}" "refs/tags/v${target}^{}" | awk '{print $1}' | tail -n 1)"
+          if [[ -n "$released" && "$released" != "$SOURCE_SHA" ]]; then
+            echo "::error::v${target} is already released from ${released}; bump the root package.json version before requesting a new candidate"
+            exit 1
+          fi
 
   legacy_root_compat:
     permissions:
