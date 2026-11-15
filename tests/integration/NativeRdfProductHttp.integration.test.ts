@@ -269,6 +269,89 @@ run('native RDF product HTTP path', () => {
     expect(localAuthority).toContain('urn:allowed-copy');
     expect(localAuthority).not.toContain('urn:denied-copy');
   });
+
+  // Regression for the Bob bootstrap ordering: a Chat/Contact index document names the
+  // Contact document IRI as an object before that Contact document exists, then the first
+  // write to the Contact is `INSERT DATA` targeting that same IRI. Native prepared-update
+  // validation used to see the globally interned graph IRI (term dictionary hit) without a
+  // source node and reject the write with "prepared update source provenance is not
+  // uniquely identified". Graph ownership, not global dictionary membership, must decide
+  // whether the document already exists, so this first write must create it.
+  it('creates a not-yet-existing target document whose IRI is already an object elsewhere', async () => {
+    const targetGraph = `${origin}/alice/bootstrap/contact-1.ttl`;
+    const referrerGraph = `${origin}/alice/bootstrap/chat-index.ttl`;
+    const contactName = 'https://schema.org/name';
+
+    const postUpdate = (body: string) => fetch(`${origin}/alice/-/sparql`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/sparql-update',
+        'x-webid': 'https://id.example/alice#me',
+      },
+      body,
+    });
+
+    try {
+      const referrer = await postUpdate(`
+        INSERT DATA {
+          GRAPH <${referrerGraph}> {
+            <${referrerGraph}#entry> <urn:p> <${targetGraph}>
+          }
+        }
+      `);
+      const referrerText = await referrer.text();
+      expect(referrer.status, referrerText).toBe(204);
+
+      const existsBefore = encodeURIComponent(`
+        ASK { GRAPH <${targetGraph}> { ?s ?p ?o } }
+      `);
+      const before = await fetch(`${origin}/alice/-/sparql?query=${existsBefore}`, {
+        headers: { 'x-webid': 'https://id.example/alice#me' },
+      });
+      const beforeText = await before.text();
+      expect(before.status, beforeText).toBe(200);
+      expect(JSON.parse(beforeText).boolean).toBe(false);
+
+      const target = await postUpdate(`
+        INSERT DATA {
+          GRAPH <${targetGraph}> {
+            <${targetGraph}> <${contactName}> "Bootstrap Contact"
+          }
+        }
+      `);
+      const targetText = await target.text();
+      expect(target.status, targetText).toBe(204);
+
+      // Prove the freshly created document is readable as RDF, not merely accepted.
+      const readBack = encodeURIComponent(`
+        CONSTRUCT { <${targetGraph}> <${contactName}> ?name }
+        WHERE { GRAPH <${targetGraph}> { <${targetGraph}> <${contactName}> ?name } }
+      `);
+      const verified = await fetch(`${origin}/alice/-/sparql?query=${readBack}`, {
+        headers: {
+          accept: 'application/n-triples',
+          'x-webid': 'https://id.example/alice#me',
+        },
+      });
+      const verifiedText = await verified.text();
+      expect(verified.status, verifiedText).toBe(200);
+      expect(verifiedText).toContain('"Bootstrap Contact"');
+    } finally {
+      // Remove only this case's documents so the shared fixture is left tidy. Two requests
+      // because a pre-fix run leaves the target uncreated: its delete must not block the
+      // referrer cleanup. The PostgreSQL container itself is fresh for every suite run.
+      await postUpdate(`
+        DELETE DATA {
+          GRAPH <${targetGraph}> { <${targetGraph}> <${contactName}> "Bootstrap Contact" }
+        }
+      `).catch(() => undefined);
+      await postUpdate(`
+        DELETE DATA {
+          GRAPH <${referrerGraph}> { <${referrerGraph}#entry> <urn:p> <${targetGraph}> }
+        }
+      `).catch(() => undefined);
+    }
+  });
 });
 
 class TestIdentifierStrategy extends BaseIdentifierStrategy {
