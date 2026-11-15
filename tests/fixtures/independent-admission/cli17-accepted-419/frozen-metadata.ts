@@ -3,10 +3,12 @@
  * SYNTHETIC contract tests.
  *
  * The CLI17 catalogue (and the sibling policies) freeze their tuples at the
- * accepted 0.4.31 staging bytes. Three version-bearing manifests plus the exact
- * historical TEST-FILE originals captured here are the only paths whose live
- * checkout bytes legitimately differ from those frozen rows, because an ordinary
- * version bump changes the manifests and later commits edit the tests.
+ * accepted 0.4.31 staging bytes. SEVEN captures live here: three version-bearing
+ * manifests, three historical test-file originals, and one historical production
+ * helper original. Together they cover exactly the paths whose live checkout bytes
+ * legitimately differ from those frozen rows, because an ordinary version bump
+ * changes the manifests, later commits edit the tests, and later work edits the
+ * helper. Nothing else is captured.
  *
  * The capture directory is named for the COMMIT PREFIX it came from
  * (`419...`, the RC425 candidate at 0.4.31-rc.425). See PROVENANCE.md.
@@ -43,21 +45,32 @@ const FROZEN_MANIFESTS: ReadonlySet<string> = new Set([
 ])
 
 /**
- * Historical TEST-FILE originals, keyed by their repo-relative path.
+ * Historical SOURCE originals, keyed by their repo-relative path.
  *
- * These are whole-file captures because a frozen catalogue row pins the test's
- * OWN bytes. Without them, editing such a test to use this reader would break the
- * very assertion it needs to keep: the catalogue must still see the historical
- * bytes, while the live file is edited. Captured from `419...`; every entry is
- * verified against the declared row in the catalogue (see PROVENANCE.md).
+ * These are whole-file captures because a frozen catalogue row pins the bytes of
+ * the path itself. Without them, editing such a path to use this reader would
+ * break the very assertion it needs to keep: the catalogue must still see the
+ * HISTORICAL bytes, while the live file carries later work.
+ *
+ * The set spans three historical TEST files (whose own bytes are catalog rows) and
+ * ONE historical PRODUCTION helper (`scripts/workspace-package-payload.cjs`, whose
+ * bytes are also a catalog row). Capturing the helper is test data only: it is
+ * never imported or executed, and it exists so the hermetic notice fixture's copied
+ * root carries the bytes the frozen row actually pins.
+ *
+ * Captured from `419...`; every entry is verified against the declared row in the
+ * catalogue (see PROVENANCE.md).
  */
-const FROZEN_TEST_ORIGINALS: ReadonlyMap<string, string> = new Map([
+const FROZEN_SOURCE_ORIGINALS: ReadonlyMap<string, string> = new Map([
   ['tests/scripts/candidate-producer-attempt-binding.test.ts',
     'candidate-producer-attempt-binding.test.ts.original.txt'],
   ['tests/scripts/controller-helper-admission.test.ts',
     'controller-helper-admission.test.ts.original.txt'],
   ['tests/scripts/candidate-producer-attempt.tiny.test.ts',
     'candidate-producer-attempt.tiny.test.ts.original.txt'],
+  // Historical production helper bytes, used ONLY as inert fixture data.
+  ['scripts/workspace-package-payload.cjs',
+    'workspace-package-payload.cjs.original.txt'],
 ])
 
 /** A filesystem target -> its captured original, only within this repository. */
@@ -68,7 +81,7 @@ function capturedFileFor(target: string | URL): string | undefined {
     ? path.resolve(target)
     : fileURLToPath(target)
   const relative = path.relative(REPO_ROOT, absolute).split(path.sep).join('/')
-  const original = FROZEN_TEST_ORIGINALS.get(relative)
+  const original = FROZEN_SOURCE_ORIGINALS.get(relative)
   if (original) return path.join(FROZEN_DIR, original)
   if (FROZEN_MANIFESTS.has(relative)) return path.join(FROZEN_DIR, relative)
   return undefined

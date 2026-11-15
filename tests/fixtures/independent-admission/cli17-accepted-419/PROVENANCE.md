@@ -8,6 +8,11 @@ It is **not** RC419.
 Status of these bytes: **accepted source bytes**, not a published release asset.
 Stable `v0.4.31` had not been published when the capture was taken.
 
+## SEVEN captures, one reason
+
+Every capture below exists because a FROZEN catalogue row owns that path's bytes,
+while the live checkout has legitimately moved on. Nothing else is captured.
+
 Captured at development time from the public repository:
 
 ```
@@ -17,11 +22,14 @@ git show 4194795915ac5f956cd593131647ece7049be24d:desktop/package.json
 git show 4194795915ac5f956cd593131647ece7049be24d:tests/scripts/candidate-producer-attempt-binding.test.ts
 git show 4194795915ac5f956cd593131647ece7049be24d:tests/scripts/candidate-producer-attempt.tiny.test.ts
 git show 4194795915ac5f956cd593131647ece7049be24d:tests/scripts/controller-helper-admission.test.ts
+git show 4194795915ac5f956cd593131647ece7049be24d:scripts/workspace-package-payload.cjs
 ```
 
-All THREE captured paths, with the hashes that the CLI17 catalogue pins
-(`scripts/lib/independent-admission/source-rules.ts`). That catalogue is the
-single operative authority; the values are restated here for audit only:
+### 1-3. Version-bearing manifests
+
+Three manifests move on every version bump. The CLI17 catalogue
+(`scripts/lib/independent-admission/source-rules.ts`) is the single operative
+authority; the values are restated here for audit only.
 
 | file | sha256 |
 | --- | --- |
@@ -29,12 +37,11 @@ single operative authority; the values are restated here for audit only:
 | `bun.lock` | `b7fa5ccb7ea73679a345aeafafa0dfe2a03c119d721d31abab3c02e82a483808` |
 | `desktop/package.json` | `a09bb65633addabdcd0ed8bd43e2dcbe8817949a21d6363f394007bf05e0057b` |
 
-Public repository data; no secrets.
+### 4-6. Historical TEST-file originals
 
-Three test-source originals are also captured as `.original.txt` data. Existing
-catalogue rows own these tests' historical bytes: editing the live tests must not
-rewrite those rows. The data is never executed or discovered as an extra test.
-These hashes document existing catalogue values; they add no admission rule.
+Frozen rows own these tests' own bytes, so editing the live tests must not
+rewrite those rows. Captured as `.original.txt`; never executed, and never
+discovered as an extra test.
 
 | original repository path | sha256 |
 | --- | --- |
@@ -42,10 +49,35 @@ These hashes document existing catalogue values; they add no admission rule.
 | `tests/scripts/candidate-producer-attempt.tiny.test.ts` | `e68b1c080b7cc5c8ce209eed3067898960f145708693efd0b18e80271d08d662` |
 | `tests/scripts/controller-helper-admission.test.ts` | `b11b2861601c850488a7e0629e59c9738f39242f660c387d59637bcd60f6a889` |
 
-These bytes exist so historical/synthetic contract tests can keep describing the
-frozen CLI17 generation without reading the mutable checkout version. They do
-NOT qualify any current source: an unreviewed CURRENT package version still
-fails the production trust policy, which compares against its own catalogue.
+### 7. Historical PRODUCTION-helper original
+
+`scripts/workspace-package-payload.cjs` is itself a frozen catalogue row
+(`058c6f633ed805cf0af2f5f3ebac1cfd1706c8ed106da2f16766dde4a20c145a`), and the
+live helper legitimately changed for the RC426 material-provenance fix. Captured
+as inert `.original.txt` **data** — it is never imported, required or executed.
+It exists so the hermetic notice fixture's copied root carries the bytes the
+frozen row actually pins, instead of the updated live helper.
+
+| original repository path | sha256 |
+| --- | --- |
+| `scripts/workspace-package-payload.cjs` | `058c6f633ed805cf0af2f5f3ebac1cfd1706c8ed106da2f16766dde4a20c145a` |
+
+Proof of capture fidelity (development time, public data):
+
+```
+$ git show 4194795915...:scripts/workspace-package-payload.cjs | sha256sum
+058c6f633ed805cf0af2f5f3ebac1cfd1706c8ed106da2f16766dde4a20c145a
+```
+
+## Scope
+
+Public repository data; no secrets.
+
+These bytes let historical/synthetic contract tests keep describing the frozen
+CLI17 generation without reading mutable checkout state. They do **NOT** qualify
+any current source: an unreviewed CURRENT version still fails the production
+trust policy, which compares against its own catalogue. The updated comparator
+is covered separately by its own Node cases.
 
 Regeneration is intentionally NOT automated: replacing them would silently
 rewrite frozen history.

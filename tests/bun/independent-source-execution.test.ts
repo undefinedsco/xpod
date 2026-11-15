@@ -16,11 +16,10 @@ const prefixes = [...CLI_ENTRIES.map((name: string) => 'packages/xpod-cli/' + na
 const exact = [...TOOLS, ...PATCHES.map((name: string) => 'scripts/' + name), 'scripts/check-cli-publication.cjs', 'scripts/cli-build-inputs.cjs', '.github/workflows/cli-package.yml', 'bunfig.toml', 'package.json', 'packages/xpod-cli/publication.bun.lock',
   ...JSON.parse(readFileSync('packages/xpod-cli/scripts/canonical-host-sources.json', 'utf8')).map((name: string) => 'src/' + name)];
 const names = tracked.filter(name => exact.includes(name) || prefixes.some(prefix => name === prefix || name.startsWith(prefix + '/')));
-const sourceBytes = new Map(names.map(name => [name, readFileSync(name)]));
-// The frozen CLI17 tuple pins the accepted-419 package.json/bun.lock bytes, which
-// an ordinary version bump changes. Resolve exactly those version-metadata paths
-// to the immutable capture so historical/synthetic checks keep describing the
-// frozen generation; every other path still reads the real checkout.
+const sourceBytes = new Map(names.map(name => [name, readFrozenTracked(process.cwd(), name)]));
+// Populate owned fixture bytes through the shared captured-source reader. The
+// manifest reads below also supply policy context outside the tracked input set;
+// every other name must retain the fixture's own bytes or fail as untracked.
 const readTracked = (name: string) => {
   if (name === 'bun.lock' || name === 'package.json' || name === 'desktop/package.json') {
     return readFrozenTracked(process.cwd(), name);

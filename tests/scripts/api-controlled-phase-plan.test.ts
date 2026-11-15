@@ -2,32 +2,20 @@ import preSdk47ApiOriginals from '../fixtures/independent-admission/pre-sdk47-ap
 import preNodePolicy from '../fixtures/independent-admission/controlled-pre-node-policy.original.json';
 import preBudget from '../fixtures/independent-admission/controlled-public-pre-budget-recipe.json';
 import prePublic from '../fixtures/independent-admission/controlled-descriptor-pre-public-recipe.json';
-import {describe,it,expect,vi} from 'vitest';
+import {describe,it,expect} from 'vitest';
 // `reviewedModulePhasePlan` resolves the historical/current tuple by hashing the
 // repository root INTERNALLY, so the only test-level seam is the fs read itself.
 // Redirect exactly the three version-bearing manifests to the frozen accepted-419
 // capture; every other path passes straight through to the real file. This keeps
 // the production trust logic untouched and still fails closed for unreviewed
 // CURRENT metadata that does not match a frozen tuple.
-vi.mock('node:fs', async importOriginal => {
-  const actual = await importOriginal<typeof import('node:fs')>();
-  const FROZEN = new Set(['package.json', 'bun.lock', 'desktop/package.json']);
-  const fixtureDir = path.join(process.cwd(), 'tests/fixtures/independent-admission/cli17-accepted-419');
-  return {
-    ...actual,
-    readFileSync: ((target: any, options?: any) => {
-      const name = typeof target === 'string' ? path.relative(process.cwd(), path.resolve(target)) : '';
-      if (FROZEN.has(name)) return actual.readFileSync(path.join(fixtureDir, name), options);
-      return actual.readFileSync(target, options);
-    }) as typeof actual.readFileSync,
-  };
-});
 import oldFixture from '../fixtures/independent-admission/controlled-linux-v1-phase-plan.json';
 import recipeFixture from '../fixtures/independent-admission/controlled-linux-v1-recipe.json';
 import {readFileSync} from 'node:fs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
-import {controlledApiSourceRecipe,moduleSourcePhasePolicy,reviewedModulePhasePlan} from '../../scripts/lib/independent-admission/module-source-phases';
+import {controlledApiSourceRecipe,moduleSourcePhasePolicy} from '../../scripts/lib/independent-admission/module-source-phases';
+import {createPhasePlanFixture} from '../fixtures/independent-admission/cli17-accepted-419/phase-plan-fixture';
 import {readFrozenTracked} from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 // Historical/synthetic tuples pin the CLI17 generation, whose only mutable rows
 // are the version-bearing manifests. Route exactly those three through the
@@ -58,7 +46,13 @@ describe('one reviewed API parent recipe',()=>{
   expect(()=>controlledApiSourceRecipe(old,oldFixture.producerSha256,'darwin-arm64')).toThrow();
   expect(()=>controlledApiSourceRecipe(name=>name==='scripts/lib/inngest-controlled-build.py'?old(name):read(name),producer,'linux-arm64')).toThrow('complete source recipe');
  });
- it('preserves historical controlled Linux argv while explicitly selecting the current workspace controller',()=>{
+ it('preserves historical controlled Linux argv while explicitly selecting the current workspace controller',async()=>{
+  // `reviewedModulePhasePlan` hash-checks its OWN source through its own module URL,
+  // so the controlled tuple must be read from HISTORICAL bytes. The shared fixture
+  // copies the unchanged planner into a temporary root and we import THAT copy.
+  const fixture=await createPhasePlanFixture();
+  try{
+  const reviewedModulePhasePlan=fixture.planner.reviewedModulePhasePlan;
   const historical=reviewedModulePhasePlan('api','/nonexistent/candidate','/nonexistent/output','1.2.3','linux-arm64',{...scope,planVersion:'linux-arm64-v1'},workspace);
   // Workspace installation has its own current prefix. The historical native
   // argv remains exact; an old global controller is never relabelled current.
@@ -71,30 +65,38 @@ describe('one reviewed API parent recipe',()=>{
    const argv=rows.find(row=>row.name==='inngest-controlled-acquire')!.command;expect(argv[argv.indexOf('--target')+1]).toBe(target);
   }
   expect(()=>reviewedModulePhasePlan('api','/r','/o','1.2.3','darwin-arm64',{...scope,planVersion:'linux-arm64-v1'},workspace)).toThrow();
+  }finally{fixture.cleanup();}
  });
- it('projects historical official and exact current controlled plans without executing candidate paths',()=>{
+ it('projects historical official and exact current controlled plans without executing candidate paths',async()=>{
+  const fixture=await createPhasePlanFixture();
+  try{
+  const reviewedModulePhasePlan=fixture.planner.reviewedModulePhasePlan;
   const old=reviewedModulePhasePlan('api','/nonexistent/candidate','/nonexistent/output','1.2.3','linux-arm64');
   const controlled=reviewedModulePhasePlan('api','/nonexistent/candidate','/nonexistent/output','1.2.3','linux-arm64',scope,workspace);
   expect(old).toHaveLength(11);expect(controlled).toHaveLength(23);
   expect(controlled.find(row=>row.name==='inngest-controlled-acquire')!.command).toEqual(['/usr/bin/python3','-I','-S','-B','/nonexistent/candidate/scripts/lib/inngest-controlled-build.py','acquire','/nonexistent/output/controlled-inngest-work','--target','linux-arm64','--retained-byte-ceiling','1000000000']);
   expect(controlled.some(row=>row.name==='native-material'||row.name==='native-inputs')).toBe(false);
+  }finally{fixture.cleanup();}
  });
- it('rejects unsupported source kinds, targets and expanded retained budgets',()=>{
+ it('rejects unsupported source kinds, targets and expanded retained budgets',async()=>{
+  const fixture=await createPhasePlanFixture();
+  try{
+  const reviewedModulePhasePlan=fixture.planner.reviewedModulePhasePlan;
   for(const value of [{sourceKind:'other',retainedByteCeiling:1},{sourceKind:'xpod-controlled-inngest-build-v1',retainedByteCeiling:sourceMaterialBytes+1}])expect(()=>reviewedModulePhasePlan('api','/r','/o','1.2.3','linux-arm64',value,workspace)).toThrow();
   expect(()=>reviewedModulePhasePlan('api','/r','/o','1.2.3','windows-x64',{...scope,retainedByteCeiling:1},workspace)).toThrow();
+  }finally{fixture.cleanup();}
  });
  it('rejects an UNREVIEWED or MIXED API source tuple read through the production reader',()=>{
   // The 0bcd workaround substituted package.json/check-dependency-state.ts so the
   // positives read a frozen snapshot. API33 is now a legitimate reviewed program tuple,
   // so the SIX assertions above read the tree DIRECTLY.
   //
-  // This seventh case is the genuine negative. HONEST SCOPE: this file DOES install a
-  // module-scope `vi.mock('node:fs')` above, but that mock only redirects the THREE
-  // version-bearing manifests to the frozen capture and passes every other read
-  // through. The rejection below is still decided by production trust code: the
+  // This seventh case is the genuine negative. HONEST SCOPE: this case uses the
+  // captured-metadata reader (`read`), which serves HISTORICAL accepted bytes for the
+  // three version manifests and the real tree for everything else. There is no
+  // filesystem mock. The rejection below is decided by production trust code: the
   // mutations in (2) and (3) change bytes the policy compares, so an unreviewed
-  // mutation and a mixed old/new tuple must both be refused. Nothing here mocks the
-  // policy, the recipe table, or the comparison itself, and nothing writes to disk.
+  // mutation and a mixed old/new tuple must both be refused.
   //
   // 1) baseline: the actual tree IS the reviewed tuple
   expect(controlledApiSourceRecipe(read,producer,'linux-arm64').planVersion).toBe('current');
