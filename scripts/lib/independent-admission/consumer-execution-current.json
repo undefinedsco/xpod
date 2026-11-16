@@ -49,11 +49,11 @@
   },
   {
     "path": "packages/ai-connections-runtime/package.json",
-    "sha256": "f9c72637124b3510120a20c3b6b93ff33eebcf7796d314eeee3374e5cbfbfd20"
+    "sha256": "d6af8eecb871be684616ddf691d0d0b38a4be66c741748afa9445d94a0f1b86a"
   },
   {
     "path": "packages/ai-connections/package.json",
-    "sha256": "33bae7d03ba80c0d976ad1b2e66e932baeb71036de2ce15195b8267a192ad4c7"
+    "sha256": "6a48c4069f9291c08c987affe1d10eab2c8f96908b55a78b937effe47487265e"
   },
   {
     "path": "packages/extension-host-contracts/package.json",
@@ -941,7 +941,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "1af0af981798ce06995dc36384d7fe551ee6dd4581801a947e9500e478d381b1"
+    "sha256": "0ec24c131c8bed015eb1ebd11dd388370432ba495f2efbbf22f0cd5e435b5864"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",
