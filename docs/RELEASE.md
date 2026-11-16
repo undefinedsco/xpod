@@ -131,6 +131,14 @@ policy 为空。上线前必须补齐分支与环境策略；创建/推送 stagi
   stable tag 上手动触发：`gh workflow run release-desktop.yml --ref vX.Y.Z -f tag=vX.Y.Z -f candidate_run_id=<run-id>`。
   `scripts/desktop-release-guard.cjs` 要求 tag、候选 run、服务验收、桌面验收一致，且该 tag 的生产
   部署已成功，桌面永远不会先于它依赖的服务到达用户。
+- **产物源码恒为 stable tag。** workflow 的 runner ref 只是 CI 入口，可以指向包含工作流修复的
+  reviewed ref（例如临时 repair 分支），但 packaged 源码只取输入 `tag` 解析出的
+  `refs/tags/<tag>^{commit}`：guard job 用 workflow ref 的 checkout 运行修正后的脚本，自行解析该
+  tag commit，并在 tag 严格为 `vX.Y.Z` 时把它作为 `source_sha` 输出。构建、QLever 原件重取
+  （`QLEVER_SOURCE_SHA`）、验收证据、artifact 名称与 `XPOD_ACCEPTED_SHA` 全部绑定这个已核验的
+  `source_sha`，不是 `github.sha`。因此 CI 修复可以直接对已打 tag 运行，不需要移动/重建 tag，
+  也不会把 runner ref 的代码打包进桌面产物。不要为此新增第二套发布 workflow；若临时 repair ref
+  需要进入 `rc` Environment，用完成后即删除的精确 ref policy，并在发布结束后核对清理。
 - 桌面修复需要改产品代码时，随下一个候选与版本发布；被跳过的版本不补发桌面。
 
 ### 版本号管理

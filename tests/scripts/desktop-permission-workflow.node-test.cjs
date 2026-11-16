@@ -66,13 +66,45 @@ test('stable repeats both actual operations and self-update for its newly built 
   assert.match(combined.run, /--version "\$RELEASE_VERSION"/);
   assert.match(combined.run, /--source-sha "\$XPOD_ACCEPTED_SHA"/);
   assert.match(combined.run, /--expected-archive "\$new_zip"/);
-  const evidence = job.steps.find(step => step.with?.name === 'desktop-stable-acceptance-${{ github.sha }}');
+  const evidence = job.steps.find(step => step.with?.name === 'desktop-stable-acceptance-${{ needs.desktop_guard.outputs.source_sha }}');
   assert.equal(evidence.with['if-no-files-found'], 'error');
   assert.ok(!evidence.with.path.includes('private'));
-  const stableFailure = job.steps.find(step => step.with?.name === 'desktop-permission-failure-${{ github.sha }}');
+  const stableFailure = job.steps.find(step => step.with?.name === 'desktop-permission-failure-${{ needs.desktop_guard.outputs.source_sha }}');
   assert.ok(stableFailure);
   assert.equal(stableFailure.if, 'failure()');
   assert.equal(stableFailure.with.path, '${{ runner.temp }}/desktop-permission-private/failure-safe.json');
+});
+
+test('stable retains verified packages before acceptance and publishes only after acceptance succeeds', () => {
+  const workflow = read('release-desktop.yml');
+  const steps = workflow.jobs.build_desktop_macos.steps;
+  const name = 'xpod-desktop-macos-${{ needs.desktop_guard.outputs.version }}';
+  const uploads = steps.filter(step => step.uses === 'actions/upload-artifact@v4' && step.with?.name === name);
+  assert.equal(uploads.length, 1, 'product archive must be uploaded exactly once');
+  const archiveAt = steps.findIndex(step =>
+    step.uses === 'actions/upload-artifact@v4' && step.with?.name === name);
+  const verifyAt = steps.findIndex(step => step.name === 'Verify packaged version and native runtime payload');
+  assert.ok(verifyAt >= 0 && archiveAt > verifyAt, 'only verified packages may be retained');
+  const archive = steps[archiveAt];
+  assert.deepEqual(String(archive.with.path).trim().split('\n').map(line => line.trim()),
+    ['desktop/release/*.dmg', 'desktop/release/*.zip', 'desktop/release/*.blockmap', 'desktop/release/latest-mac.yml']);
+  assert.equal(archive.with['if-no-files-found'], 'error');
+  assert.equal(archive.if, undefined, 'retention must not depend on later acceptance');
+  assert.equal(archive['continue-on-error'], undefined);
+  const permissionAt = steps.findIndex(step => step.run?.includes('bun scripts/accept-packaged-desktop-permissions.ts'));
+  const selfUpdateAt = steps.findIndex(step => step.run?.includes('node desktop/scripts/packaged-update-acceptance.mjs'));
+  assert.ok(permissionAt > archiveAt, 'permission acceptance must run after custody');
+  assert.ok(selfUpdateAt > permissionAt, 'self-update acceptance must follow permissions');
+  assert.ok(steps[selfUpdateAt].run.includes('node scripts/desktop-acceptance.cjs'));
+  assert.equal(steps[permissionAt]['continue-on-error'], undefined);
+  assert.equal(steps[selfUpdateAt]['continue-on-error'], undefined);
+  const publish = workflow.jobs.create_github_release;
+  assert.ok(publish.needs.includes('build_desktop_macos'), 'publication must depend on the build job succeeding');
+  assert.equal(publish.if, undefined, 'publication must not bypass a failed desktop job');
+  assert.equal(publish['continue-on-error'], undefined);
+  const download = publish.steps.find(step => step.uses === 'actions/download-artifact@v4');
+  assert.equal(download.with?.name, name, 'publication must download the exact retained artifact');
+  assert.ok(!publish.steps.some(step => String(step.if ?? '').includes('always()')));
 });
 
 test('RC scale-down waits for desktop and final acceptance even when upstream jobs fail', () => {
@@ -250,7 +282,7 @@ test('stable job consumes the ACCEPTED candidate run through the shared retainer
   const retain = job.steps.find(s => s.run?.includes('retain-qlever-materials.py'));
   assert.ok(retain, 'stable must use the shared retainer, not an ad-hoc download');
   assert.equal(retain.env.QLEVER_ARTIFACT_SOURCE_RUN_ID, '${{ needs.desktop_guard.outputs.candidate_run_id }}');
-  assert.equal(retain.env.QLEVER_SOURCE_SHA, '${{ github.sha }}');
+  assert.equal(retain.env.QLEVER_SOURCE_SHA, '${{ needs.desktop_guard.outputs.source_sha }}');
   // No artifact-id/digest inputs for the stable path: the accepted run + accepted
   // source define the identity breadth, and the helper selects the single match.
   assert.equal(retain.env.QLEVER_ARTIFACT_ID, undefined);

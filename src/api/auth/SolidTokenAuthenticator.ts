@@ -18,7 +18,22 @@ export interface SolidTokenAuthenticatorOptions {
    */
   resolveAccountId?: (webId: string) => Promise<string | undefined>;
   publicBaseUrl?: string;
+  /** Published API endpoint for this Cloud deployment, independent of its identity origin. */
+  apiBaseUrl?: string;
   internalBaseUrl?: string;
+}
+
+function configuredApiOrigin(value: string | undefined): string | undefined {
+  if (!value?.trim()) return undefined;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) {
+      return undefined;
+    }
+    return url.origin;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -56,11 +71,18 @@ export class SolidTokenAuthenticator implements Authenticator {
   private readonly verify: ReturnType<typeof createSolidTokenVerifier>;
   private readonly resolveAccountId?: (webId: string) => Promise<string | undefined>;
   private readonly publicOrigin?: string;
+  private readonly canonicalOrigins: string[];
 
   public constructor(options: SolidTokenAuthenticatorOptions = {}) {
     this.resolveAccountId = options.resolveAccountId;
     const { issuerKeySetCache, webIdIssuersCache, publicOrigin } = createRoutedSolidTokenCaches(options);
     this.publicOrigin = publicOrigin;
+    // Discovery and trusted local-route hints still use the identity authority.
+    // Only the no-hint retry also accepts this deployment's configured API origin.
+    this.canonicalOrigins = [...new Set([
+      publicOrigin,
+      configuredApiOrigin(options.apiBaseUrl),
+    ].filter((origin): origin is string => origin !== undefined))];
     const loopbackOrigin = configuredHttpLoopbackOrigin(publicOrigin);
     this.verify = loopbackOrigin
       ? createConfiguredLoopbackSolidTokenVerifier({
@@ -179,21 +201,19 @@ export class SolidTokenAuthenticator implements Authenticator {
       if (!dpopHeader) {
         throw error;
       }
-      const configuredCanonicalUrl = this.configuredCanonicalRequestUrl(request, url);
-      if (!configuredCanonicalUrl) {
-        throw error;
+      for (const configuredCanonicalUrl of this.configuredCanonicalRequestUrls(request, url)) {
+        try {
+          return await this.verify(authorization, {
+            header: dpopHeader,
+            method,
+            url: configuredCanonicalUrl,
+          }) as unknown as Record<string, unknown>;
+        } catch {
+          // Every retry performs full verification. Preserve the primary error
+          // if none of the deployment's configured authorities verifies it.
+        }
       }
-      try {
-        return await this.verify(authorization, {
-          header: dpopHeader,
-          method,
-          url: configuredCanonicalUrl,
-        }) as unknown as Record<string, unknown>;
-      } catch {
-        // Retain the primary diagnostic when both attempts fail: reporting the
-        // retry's htu mismatch would hide the reason the caller actually failed.
-        throw error;
-      }
+      throw error;
     }
   }
 
@@ -232,20 +252,19 @@ export class SolidTokenAuthenticator implements Authenticator {
     return canonicalUrl.href;
   }
 
-  private configuredCanonicalRequestUrl(request: IncomingMessage, primaryUrl: string): string | undefined {
-    if (!this.publicOrigin || this.hasLocalRouteHeader(request)) {
-      return undefined;
-    }
-    const publicUrl = new URL(this.publicOrigin);
-    if (publicUrl.protocol !== 'https:') {
-      return undefined;
+  private configuredCanonicalRequestUrls(request: IncomingMessage, primaryUrl: string): string[] {
+    if (this.hasLocalRouteHeader(request)) {
+      return [];
     }
     const requestPath = this.pathAndSearch(request.url ?? '/');
     if (!requestPath) {
-      return undefined;
+      return [];
     }
-    const configuredUrl = new URL(requestPath, this.publicOrigin).href;
-    return configuredUrl === primaryUrl ? undefined : configuredUrl;
+    return this.canonicalOrigins.flatMap((origin) => {
+      if (new URL(origin).protocol !== 'https:') return [];
+      const configuredUrl = new URL(requestPath, origin).href;
+      return configuredUrl === primaryUrl ? [] : [configuredUrl];
+    });
   }
 
   private hasLocalRouteHeader(request: IncomingMessage): boolean {
