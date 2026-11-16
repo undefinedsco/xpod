@@ -42,6 +42,14 @@ function renderApplet(options: {
     solid: readySolid(),
     capabilities: {
       solidNotifications: options.notifications.capability,
+      // This harness describes a full host: the page's key surface is included
+      // in what it renders, so the account capability is present as it is on a
+      // host that can manage keys.
+      aiClientCredentials: {
+        create: async () => ({ apiKey: 'sk-test', clientId: 'client', resource: 'https://id.example/.account/credentials/one/' }),
+        list: async () => [],
+        revoke: async () => undefined,
+      },
       aiConnectionsPodStore: {
         credentialsTableDocument: () => CREDENTIALS_DOCUMENT,
         providerTableDocument: (provider: string) => providerDocument(provider),

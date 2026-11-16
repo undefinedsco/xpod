@@ -8,7 +8,7 @@ import { resolveFullIntegrationInfra } from '../tests/helpers/fullIntegrationInf
 import { RESERVED_PORTS_ENV, reservedPorts } from '../src/runtime/port-reservations';
 import { getEphemeralLoopbackPort, isFreePortForWildcard, getFreePortForWildcard, requireFreePortForWildcard } from '../src/runtime/port-finder';
 import { startXpodRuntime, type XpodRuntimeHandle } from '../src/runtime/XpodRuntime';
-import { createFakeQleverRuntimeCommand } from '../tests/helpers/qleverRuntime';
+import { createFakeQleverRuntimeCommand, nativeQleverRuntimeEnv } from '../tests/helpers/qleverRuntime';
 import {
   OBJECT_STORE_ACCESS_KEY,
   OBJECT_STORE_BUCKET,
@@ -612,6 +612,9 @@ async function main(): Promise<void> {
       STANDALONE_PORT: String(ports.standalone.gateway),
       STANDALONE_API_PORT: String(ports.standalone.api),
       SOLID_ENV_FILE: path.resolve('.test-data', 'integration', 'full.env'),
+      // Required native-fresh binding: explicit (candidate same-run image) wins,
+      // otherwise Linux pins the current published immutable runtime.
+      ...nativeQleverRuntimeEnv(),
       ...(externalInfra ? fullIntegrationInfraEnv(externalInfra) : {}),
     };
     runtimes.push(...await startFullRuntimes(ports, qleverRuntimeFixture.command, infrastructurePorts, externalInfra));

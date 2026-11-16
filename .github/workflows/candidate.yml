@@ -215,6 +215,10 @@ jobs:
       service_artifact_digest: ${{ steps.service_originals_upload.outputs.artifact-digest }}
       service_master_sha256: ${{ steps.service_originals.outputs.master_sha256 }}
       service_master_bytes: ${{ steps.service_originals.outputs.master_bytes }}
+      # Pass-through of the immutable runtime image this same build consumed, so
+      # consumers of build_image can bind the exact accepted runtime without a
+      # second dependency edge (this job already needs the publish job).
+      local_runtime_image: ${{ needs.publish_qlever_local_runtime.outputs.image }}
     env:
       REF_NAME: ${{ github.ref_name }}
     steps:
@@ -673,11 +677,26 @@ jobs:
             --fixture qlever/tests/fixtures/qlever-semantic-conformance.cjs \
             --artifact-dir "${RUNNER_TEMP}/immutable-native-conformance"
 
+      - name: Bind the candidate's immutable Linux QLever runtime
+        id: native_runtime_binding
+        env:
+          # Exact accepted runtime image this candidate's build consumed; the
+          # full integration suite must never use a mutable tag or a stale pin.
+          LOCAL_RUNTIME_IMAGE: ${{ needs.build_image.outputs.local_runtime_image }}
+        run: |
+          set -euo pipefail
+          [[ "$LOCAL_RUNTIME_IMAGE" =~ ^[A-Za-z0-9._:/-]+@sha256:[a-f0-9]{64}$ ]]
+          docker pull --platform linux/amd64 "$LOCAL_RUNTIME_IMAGE"
+          echo "image=$LOCAL_RUNTIME_IMAGE" >> "$GITHUB_OUTPUT"
+
       - name: Run full integration against the same PG17 candidate before RC mutation
         env:
           XPOD_FULL_POSTGRES_IMAGE: ${{ env.NATIVE_PG_IMAGE }}
           XPOD_FULL_PROJECT: xpod-native-full-${{ github.run_id }}-${{ github.run_attempt }}
           XPOD_FULL_RUN_ID: native-${{ github.run_id }}-${{ github.run_attempt }}
+          # Native freshness is required in this gate; it is the runtime the RC
+          # itself was built against (same-run immutable digest).
+          XPOD_QLEVER_LOCAL_RUNTIME_IMAGE: ${{ steps.native_runtime_binding.outputs.image }}
         run: bun run test:integration
 
       # ROOT publishes only the sanitized proof after private exact-image acceptance.

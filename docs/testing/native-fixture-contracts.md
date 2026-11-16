@@ -37,3 +37,30 @@ SDK 的预算策略必须显式版本化，并与实际执行源一起冻结。`
 4. 再进入 TypeScript 全量、integration、immutable image 和集群验收。
 
 完整镜像 conformance 是最终交付证据，不能替代前面的快速夹具门禁。
+
+## Host-native 新鲜度夹具（`ExplicitMetadataReadNativeFresh`）
+
+`tests/integration/ExplicitMetadataReadNativeFresh.integration.test.ts` 验证“同一活进程写后立刻读”：
+创建目录资源 → `PATCH .meta` → 读 facet → 再 `PATCH` → 再读 → `DELETE` → 读到空。全程不允许重启、
+checkpoint、定时刷新或手工改库，并用一个 launcher ledger 证明只有一个 native runtime 进程。
+
+绑定规则：
+
+- runtime 必须与 SQLite writer **同 OS**。Linux 容器通过 bind mount 读 Darwin 写入的 SQLite 是无效
+  boundary（WAL 不跨该挂载一致），不能拿它判定产品缺陷。
+- 两个集成 runner 会给其它用例注入 fake QLever 命令
+  （`createFakeQleverRuntimeCommand()`），fake 只能证明 HTTP 路径，不能证明 SQLite 新鲜度。因此该用例
+  用显式输入 `XPOD_QLEVER_LOCAL_RUNTIME_NATIVE_COMMAND` 指向本机打包的 `xpod_qlever_local_runtime`；
+  路径必须在仓库之外，禁止写死私有 checkout 或 `:latest`。
+- 未选择集成运行（`XPOD_RUN_INTEGRATION_TESTS !== 'true'`）时按现有 `describe.skip` 语义跳过；
+  一旦选择集成运行而 runtime binding 缺失/不可执行，该 suite **失败**，不跳过、不 fallback 到 fake。
+- 绑定输入：macOS 用 `XPOD_QLEVER_LOCAL_RUNTIME_NATIVE_COMMAND`（本机打包二进制）；Linux/CI 用
+  `XPOD_QLEVER_LOCAL_RUNTIME_IMAGE`（不可变 `@sha256:` 镜像，经现有
+  `scripts/run-qlever-local-runtime-image.sh` 与写者同内核运行）。Darwin 上声明 Linux 镜像会被直接拒绝。
+- 集成 runner 是规范的绑定入口：`scripts/run-integration-lite-local.ts` 与
+  `run-integration-full.ts` 通过 `nativeQleverRuntimeEnv()` 注入 binding。显式
+  `XPOD_QLEVER_LOCAL_RUNTIME_IMAGE`（candidate 的同 run 输出）优先，其次显式 native 路径；Linux 上缺省使用
+  当前发布的不可变镜像 `…@sha256:ea5efcbf…`。macOS 本地仍须显式给 native 路径，否则 suite 明确失败。
+- 这样普通 CI 工作流文件保持已登记字节不变（`ci.yml` 在规范源索引里），native binding 由 runner 承担，
+  必需用例不会被跳过或 mock。
+- launcher 只在启动时追加一行 `pid/ppid` 到 ledger；它不解析、不改写协议流量，也不按请求重启进程。

@@ -9,8 +9,10 @@ import type {
   SparqlVoidOptions,
 } from '../sparql/SubgraphQueryEngine';
 import {
+  METADATA_GRAPH_PREFIX,
   filterRdfAccessGraphs,
   rdfAccessGraphAllowed,
+  rdfReadGraphAllowed,
   RdfAccessMode,
   type RdfAccessScope,
 } from './RdfAccessScope';
@@ -156,6 +158,47 @@ export class RdfQuerySparqlEngine implements SparqlEngine {
       }
     }
     return new ArrayIterator(quads);
+  }
+
+  /**
+   * Metadata facet reads run under the literal `meta:` scheme for this base so
+   * the data-prefix scope can never admit a facet accidentally. Collection
+   * discovery lists facet graphs from that same namespace.
+   */
+  public async queryMetadataBindings(
+    query: string,
+    basePath: string,
+    accessScope?: RdfAccessScope,
+    options?: SparqlQueryOptions,
+  ): Promise<RdfBindingsStream> {
+    const metadataBase = `${METADATA_GRAPH_PREFIX}${basePath}`;
+    return this.queryBindings(query, metadataBase, {
+      ...accessScope,
+      basePath: metadataBase,
+      mode: RdfAccessMode.READ,
+    }, options);
+  }
+
+  public async listMetadataGraphs(basePath: string, accessScope?: RdfAccessScope): Promise<Set<string>> {
+    const metadataBase = `${METADATA_GRAPH_PREFIX}${basePath}`;
+    const stream = await this.queryBindings(
+      'SELECT DISTINCT ?g WHERE { GRAPH ?g { ?s ?p ?o } }',
+      metadataBase,
+      { ...accessScope, basePath: metadataBase, mode: RdfAccessMode.READ },
+    );
+    const graphs = new Set<string>();
+    for await (const binding of stream) {
+      const graph = binding.get('g');
+      if (graph?.termType === 'NamedNode' && graph.value.startsWith(metadataBase)) {
+        graphs.add(graph.value);
+      }
+    }
+    const metaScope: RdfAccessScope = {
+      ...accessScope,
+      basePath: metadataBase,
+      mode: RdfAccessMode.READ,
+    };
+    return new Set([ ...graphs ].filter((graph) => rdfReadGraphAllowed(graph, metaScope)));
   }
 
   public async listGraphs(basePath: string, accessScope?: RdfAccessScope): Promise<Set<string>> {
