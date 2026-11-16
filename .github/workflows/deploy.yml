@@ -239,12 +239,17 @@ jobs:
             exit 1
           fi
 
-          ready_pod="$(kubectl -n "$SEALOS_NAMESPACE" get pod -l app=$XPOD_DEPLOYMENT -o 'jsonpath={.items[?(@.status.phase=="Running")].metadata.name}' | awk '{print $1}')"
-          if [[ -z "$ready_pod" ]]; then
-            echo "::error::no running ${XPOD_DEPLOYMENT} pod found"
+          # A rollout can list the terminating old Pod as Running next to the new
+          # one, so the gate selects on deletionTimestamp, Ready, the service
+          # container, the desired spec image, and the actual imageID digest.
+          pods_json="$(kubectl -n "$SEALOS_NAMESPACE" get pod -l app=$XPOD_DEPLOYMENT -o json)"
+          pod_selection="$(printf '%s' "$pods_json" | node scripts/lib/production-deployment-pod.cjs --target-image "$TARGET_IMAGE" --service-container "$service_container")"
+          ready_pod="$(printf '%s' "$pod_selection" | jq -r '.podName')"
+          pod_image_id="$(printf '%s' "$pod_selection" | jq -r '.imageID')"
+          if [[ -z "$ready_pod" || "$ready_pod" == "null" ]]; then
+            echo "::error::no ready ${XPOD_DEPLOYMENT} pod found for the requested digest"
             exit 1
           fi
-          pod_image_id="$(kubectl -n "$SEALOS_NAMESPACE" get pod "$ready_pod" -o json | jq -r --arg name "$service_container" '.status.containerStatuses[] | select(.name == $name) | .imageID')"
           if [[ "$pod_image_id" != *"$INPUT_IMAGE_DIGEST"* ]]; then
             echo "::error::ready pod imageID does not contain requested digest"
             exit 1
@@ -451,12 +456,17 @@ jobs:
             exit 1
           fi
 
-          ready_pod="$(kubectl -n "$SEALOS_NAMESPACE" get pod -l app=$XPOD_DEPLOYMENT -o 'jsonpath={.items[?(@.status.phase=="Running")].metadata.name}' | awk '{print $1}')"
-          if [[ -z "$ready_pod" ]]; then
-            echo "::error::no running ${XPOD_DEPLOYMENT} pod found"
+          # A rollout can list the terminating old Pod as Running next to the new
+          # one, so the gate selects on deletionTimestamp, Ready, the service
+          # container, the desired spec image, and the actual imageID digest.
+          pods_json="$(kubectl -n "$SEALOS_NAMESPACE" get pod -l app=$XPOD_DEPLOYMENT -o json)"
+          pod_selection="$(printf '%s' "$pods_json" | node scripts/lib/production-deployment-pod.cjs --target-image "$TARGET_IMAGE" --service-container "$service_container")"
+          ready_pod="$(printf '%s' "$pod_selection" | jq -r '.podName')"
+          pod_image_id="$(printf '%s' "$pod_selection" | jq -r '.imageID')"
+          if [[ -z "$ready_pod" || "$ready_pod" == "null" ]]; then
+            echo "::error::no ready ${XPOD_DEPLOYMENT} pod found for the requested digest"
             exit 1
           fi
-          pod_image_id="$(kubectl -n "$SEALOS_NAMESPACE" get pod "$ready_pod" -o json | jq -r --arg name "$service_container" '.status.containerStatuses[] | select(.name == $name) | .imageID')"
           if [[ "$pod_image_id" != *"$INPUT_IMAGE_DIGEST"* ]]; then
             echo "::error::ready pod imageID does not contain requested digest"
             exit 1

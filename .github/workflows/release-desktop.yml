@@ -44,6 +44,7 @@ jobs:
       image_digest: ${{ steps.guard.outputs.image_digest }}
       candidate_version: ${{ steps.guard.outputs.candidate_version }}
       candidate_run_id: ${{ steps.guard.outputs.candidate_run_id }}
+      source_sha: ${{ steps.guard.outputs.source_sha }}
     env:
       GH_TOKEN: ${{ github.token }}
       TAG_NAME: ${{ inputs.tag }}
@@ -56,8 +57,24 @@ jobs:
         id: guard
         run: |
           set -euo pipefail
+          # The workflow runner ref may carry a reviewed CI repair; the product
+          # source is always the immutable stable tag commit. Resolve that tag
+          # explicitly and hand ONLY it to the guard and downstream build.
+          TAG_REGEX='^v[0-9]+\.[0-9]+\.[0-9]+$'
+          if [[ ! "$TAG_NAME" =~ $TAG_REGEX ]]; then
+            echo "::error::release tag must be stable vX.Y.Z"
+            exit 1
+          fi
+          if ! SOURCE_SHA="$(git rev-parse "refs/tags/${TAG_NAME}^{commit}")"; then
+            echo "::error::stable tag ${TAG_NAME} does not resolve to a commit"
+            exit 1
+          fi
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::could not resolve the immutable tag commit"
+            exit 1
+          fi
           node scripts/desktop-release-guard.cjs \
-            --repository "$GITHUB_REPOSITORY" --tag "$TAG_NAME" --sha "$GITHUB_SHA" \
+            --repository "$GITHUB_REPOSITORY" --tag "$TAG_NAME" --sha "$SOURCE_SHA" \
             --candidate-run-id "$CANDIDATE_RUN_ID" --work-dir "$RUNNER_TEMP/desktop-guard" \
             >> "$GITHUB_OUTPUT"
 
@@ -72,12 +89,15 @@ jobs:
     env:
       RELEASE_VERSION: ${{ needs.desktop_guard.outputs.version }}
       CANDIDATE_RUN_ID: ${{ needs.desktop_guard.outputs.candidate_run_id }}
-      XPOD_ACCEPTED_SHA: ${{ github.sha }}
+      XPOD_ACCEPTED_SHA: ${{ needs.desktop_guard.outputs.source_sha }}
       GH_TOKEN: ${{ github.token }}
       XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT: ${{ github.workspace }}/.test-data/qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.desktop_guard.outputs.source_sha }}
+          fetch-depth: 0
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -97,7 +117,7 @@ jobs:
       - name: Retain the accepted original QLever artifact without rebuilding
         env:
           QLEVER_ARTIFACT_SOURCE_RUN_ID: ${{ needs.desktop_guard.outputs.candidate_run_id }}
-          QLEVER_SOURCE_SHA: ${{ github.sha }}
+          QLEVER_SOURCE_SHA: ${{ needs.desktop_guard.outputs.source_sha }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           RUNNER_TEMP: ${{ runner.temp }}
         run: |
@@ -141,7 +161,7 @@ jobs:
         if: failure() && env.XPOD_API_CAPABILITY_ROOT != ''
         uses: actions/upload-artifact@v4
         with:
-          name: api-capability-diagnostics-release-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: api-capability-diagnostics-release-${{ needs.desktop_guard.outputs.source_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ env.XPOD_API_CAPABILITY_ROOT }}/producer.receipt.json
             ${{ env.XPOD_API_CAPABILITY_ROOT }}/evidence/
@@ -192,6 +212,19 @@ jobs:
           test -x "$runtime"
           test -s "$app/Contents/Resources/runtime/qlever/manifest.json"
 
+      # Retain the verified build before acceptance so a later failure preserves
+      # its original bytes. Publication still requires this whole job to succeed.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xpod-desktop-macos-${{ needs.desktop_guard.outputs.version }}
+          path: |
+            desktop/release/*.dmg
+            desktop/release/*.zip
+            desktop/release/*.blockmap
+            desktop/release/latest-mac.yml
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Accept actual stable packaged desktop permissions and operations
         run: |
           set -euo pipefail
@@ -237,7 +270,7 @@ jobs:
       - name: Upload allowlisted stable desktop acceptance evidence
         uses: actions/upload-artifact@v4
         with:
-          name: desktop-stable-acceptance-${{ github.sha }}
+          name: desktop-stable-acceptance-${{ needs.desktop_guard.outputs.source_sha }}
           path: |
             ${{ runner.temp }}/desktop-self-update-evidence.json
             ${{ runner.temp }}/desktop-permission-evidence.json
@@ -245,23 +278,11 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      # The archive ships an ad-hoc (linker) signature; `create_github_release` publishes
-      # these exact bytes after production deploys, so hand them over as one artifact.
-      - uses: actions/upload-artifact@v4
-        with:
-          name: xpod-desktop-macos-${{ needs.desktop_guard.outputs.version }}
-          path: |
-            desktop/release/*.dmg
-            desktop/release/*.zip
-            desktop/release/*.blockmap
-            desktop/release/latest-mac.yml
-          if-no-files-found: error
-          retention-days: 14
       - name: Upload stable desktop permission failure summary
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: desktop-permission-failure-${{ github.sha }}
+          name: desktop-permission-failure-${{ needs.desktop_guard.outputs.source_sha }}
           path: ${{ runner.temp }}/desktop-permission-private/failure-safe.json
           if-no-files-found: ignore
           retention-days: 30
@@ -277,7 +298,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: desktop-permission-sealed-${{ github.sha }}-${{ github.run_attempt }}
+          name: desktop-permission-sealed-${{ needs.desktop_guard.outputs.source_sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/desktop-permission-sealed/diagnostics.sealed
           if-no-files-found: ignore
           retention-days: 14

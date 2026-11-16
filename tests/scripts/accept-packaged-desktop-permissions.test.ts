@@ -16,6 +16,8 @@ import { acceptPackagedDesktopPermissions, assertOwnedTaskRows, classifyLaunchDe
   rendererOwnerFetch, requestPackagedForeignRun,
   summarizeStartupTelemetry } from '../../scripts/accept-packaged-desktop-permissions';
 import { acceptMountedPodPermissions, attributeMountedOperation, MountedPermissionError } from '../../scripts/helpers/packaged-desktop-permissions';
+import { PackagedOperationError } from '../../scripts/helpers/packaged-desktop-operations';
+import { PlatformProviderError } from '../../scripts/prepare-rc-platform-provider';
 import { attributeOidcOperation, OidcApprovalError } from '../../tests/helpers/browserSolidOidc';
 
 import * as packagedSource from '../../scripts/helpers/packaged-desktop-source';
@@ -229,7 +231,8 @@ it('retains the original failing stage and cannot emit public evidence from an i
     expect(safe).toMatchObject({ schemaVersion: 1, kind: 'desktop-permission-failure', version: '0.4.26', stage: 'input' });
     expect(safe.failures).toEqual([{ code: 'invalid-arguments',
       explanation: 'The packaged desktop runner arguments failed validation' }]);
-    expect((await stat(safeFile)).mode & 0o777).toBe(0o644);
+    // The public summary requests 0644; respect a caller's stricter umask.
+    expect((await stat(safeFile)).mode & 0o777).toBe(0o644 & ~process.umask());
     await expect(readFile(evidenceFile)).rejects.toHaveProperty('code', 'ENOENT');
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
@@ -260,6 +263,51 @@ it('preserves mounted attribution through the driver final failure projection', 
     const diagnostic = await readFile(path.join(directory, 'failure-private.json'), 'utf8');
     expect(diagnostic).toContain(secret);
     expect((await stat(path.join(directory, 'failure-private.json'))).mode & 0o777).toBe(0o600);
+    await expect(readFile(path.join(directory, 'public.json'))).rejects.toHaveProperty('code', 'ENOENT');
+  } finally {
+    verify.mockRestore(); launch.mockRestore();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it('projects a nested provider transport token into private evidence only', async () => {
+  const parent = path.join(process.cwd(), '.test-data', 'packaged-desktop-runner');
+  await mkdir(parent, { recursive: true });
+  const directory = await mkdtemp(path.join(parent, 'transport-token-'));
+  const secret = 'Bearer sk-live-9f2c1d4b8a7e6f5c at https://id.undefineds.co/v1/models?token=abc';
+  // The REAL production chain: attributePackagedOperation('provider-create')
+  // wraps the provider rejection, and the provider error carries the closed
+  // transport token. This is what run 43877838230 produced minus the token.
+  const providerError = new PlatformProviderError('unexpected', undefined, 'tls');
+  providerError.message = secret;
+  const operationError = new PackagedOperationError('provider-create', providerError);
+  const verify = vi.spyOn(packagedSource, 'verifyPackagedSourceCheckout').mockResolvedValue(undefined);
+  const launch = vi.spyOn(packagedFixture, 'launchOwnedPackagedDesktop').mockRejectedValue(operationError);
+  try {
+    await expect(acceptPackagedDesktopPermissions({ archive: 'synthetic-launch-rejection', version: '0.4.31',
+      sourceSha: 'a'.repeat(40), issuer: 'https://id.example/', privateDirectory: directory,
+      evidenceFile: path.join(directory, 'public.json') })).rejects.toThrow('private evidence retained');
+
+    // Private evidence keeps the real chain AND the closed token.
+    const diagnostic = JSON.parse(await readFile(path.join(directory, 'failure-private.json'), 'utf8'));
+    const privateJson = JSON.stringify(diagnostic);
+    expect(privateJson).toContain('"transport":"tls"');
+    expect(privateJson).toContain('provider-create');
+    expect((await stat(path.join(directory, 'failure-private.json'))).mode & 0o777).toBe(0o600);
+
+    // Public projection: no transport token, no raw network message, and no
+    // new field beyond the existing reviewed schema.
+    const safe = JSON.parse(await readFile(path.join(directory, 'failure-safe.json'), 'utf8'));
+    const safeWire = JSON.stringify(safe);
+    expect(safe).toMatchObject({ kind: 'desktop-permission-failure', stage: 'launch',
+      failures: [{ code: 'pod-operation', evidence: 'provider-create' }] });
+    expect(safeWire).not.toContain('transport');
+    expect(safeWire).not.toContain('tls');
+    expect(safeWire).not.toContain('sk-live');
+    expect(safeWire).not.toContain('id.undefineds.co');
+    expect(Object.keys(safe).sort()).toEqual(['failures', 'kind', 'schemaVersion', 'sourceSha', 'stage', 'version']);
+    // The public summary requests 0644; respect a caller's stricter umask.
+    expect((await stat(path.join(directory, 'failure-safe.json'))).mode & 0o777).toBe(0o644 & ~process.umask());
     await expect(readFile(path.join(directory, 'public.json'))).rejects.toHaveProperty('code', 'ENOENT');
   } finally {
     verify.mockRestore(); launch.mockRestore();

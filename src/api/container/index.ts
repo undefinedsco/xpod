@@ -179,6 +179,7 @@ export function loadConfigFromEnv(): ApiContainerConfig {
     corsOrigins: process.env.CORS_ORIGINS?.split(',').map(s => s.trim()) ?? ['*'],
     cssTokenEndpoint: resolveCssTokenEndpoint(),
     solidBaseUrl,
+    apiBaseUrl: normalizeOptionalUrl(process.env.XPOD_API_BASE_URL),
     solidRootFilePath: path.resolve(rootDir),
     aiConnectionInvocationSecret: process.env.XPOD_AI_CONNECTION_INVOCATION_SECRET,
     aiConnectionInvocationKeyId: process.env.XPOD_AI_CONNECTION_INVOCATION_KEY_ID,

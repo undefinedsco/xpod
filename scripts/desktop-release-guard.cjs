@@ -9,14 +9,20 @@
  *  - is already deployed to production by the Release workflow,
  * so the desktop never reaches users ahead of the service it talks to.
  *
- * Prints GitHub step outputs (tag, version, image_digest, candidate_version,
- * candidate_run_id) on success.
+ * Prints GitHub step outputs (tag, version, source_sha, image_digest,
+ * candidate_version, candidate_run_id) on success. `sha` is the immutable tag
+ * commit resolved by the caller; the workflow runner ref is not product source.
  */
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
+// release.yml names the reusable caller `Deploy production .co`; GitHub lists
+// its reusable job as the hierarchical `Deploy production .co / Deploy to .co`.
+// Accept exactly those two .co identities, never .cn or a fuzzy suffix.
 const PRODUCTION_DEPLOY_JOB = 'Deploy production .co';
+const PRODUCTION_DEPLOY_REUSABLE_JOB = 'Deploy production .co / Deploy to .co';
+const PRODUCTION_DEPLOY_JOB_NAMES = new Set([PRODUCTION_DEPLOY_JOB, PRODUCTION_DEPLOY_REUSABLE_JOB]);
 
 function validateDesktopRelease({ tag, sha, tagSha, candidateRunId, run, manifest, desktopCheck, releaseJobs }) {
   if (!/^v\d+\.\d+\.\d+$/.test(tag)) throw new Error('release tag must be stable vX.Y.Z');
@@ -34,11 +40,11 @@ function validateDesktopRelease({ tag, sha, tagSha, candidateRunId, run, manifes
   }
   if (!/^sha256:[0-9a-f]{64}$/.test(String(manifest.imageDigest))) throw new Error('service acceptance has no image digest');
   if (desktopCheck?.desktop !== 'passed') throw new Error('the candidate did not accept the desktop');
-  if (!releaseJobs.some(job => job.name === PRODUCTION_DEPLOY_JOB && job.conclusion === 'success')) {
+  if (!releaseJobs.some(job => PRODUCTION_DEPLOY_JOB_NAMES.has(job.name) && job.conclusion === 'success')) {
     throw new Error('the service is not deployed to production for this tag yet');
   }
-  return { tag, version, image_digest: manifest.imageDigest, candidate_version: manifest.candidateVersion,
-    candidate_run_id: String(candidateRunId) };
+  return { tag, version, source_sha: sha, image_digest: manifest.imageDigest,
+    candidate_version: manifest.candidateVersion, candidate_run_id: String(candidateRunId) };
 }
 
 function parseArgs(argv) {
@@ -61,7 +67,8 @@ function main(argv) {
     gh('run', 'download', args['candidate-run-id'], '--repo', args.repository, '-n', name, '-D', directory);
     return directory;
   };
-  const tagSha = execFileSync('git', ['rev-parse', `${args.tag}^{commit}`], { encoding: 'utf8' }).trim();
+  if (!/^v\d+\.\d+\.\d+$/.test(args.tag)) throw new Error('release tag must be stable vX.Y.Z');
+  const tagSha = execFileSync('git', ['rev-parse', `refs/tags/${args.tag}^{commit}`], { encoding: 'utf8' }).trim();
   const run = JSON.parse(gh('api', `repos/${args.repository}/actions/runs/${args['candidate-run-id']}`));
   const manifest = JSON.parse(fs.readFileSync(path.join(download(`release-acceptance-${args.sha}`), 'release-acceptance.json'), 'utf8'));
   const desktopCheck = JSON.parse(fs.readFileSync(path.join(download(`desktop-acceptance-${args.sha}`), 'desktop-check.json'), 'utf8'));
@@ -73,7 +80,7 @@ function main(argv) {
   process.stdout.write(Object.entries(outputs).map(([key, value]) => `${key}=${value}\n`).join(''));
 }
 
-module.exports = { validateDesktopRelease, PRODUCTION_DEPLOY_JOB };
+module.exports = { validateDesktopRelease, PRODUCTION_DEPLOY_JOB, PRODUCTION_DEPLOY_REUSABLE_JOB };
 
 if (require.main === module) {
   try {

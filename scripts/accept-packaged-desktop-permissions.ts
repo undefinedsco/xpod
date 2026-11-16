@@ -10,7 +10,8 @@ import { getSolidDataset, getThing, getPodUrlAllFrom } from '@inrupt/solid-clien
 import { AI_CONNECTIONS_SERVICE_RESOURCE_IDS } from '@undefineds.co/ai-connections/service-access-resources';
 import { discoverSolidLocalRoute } from '@undefineds.co/solid-sdk/local-route-fetch';
 import { createCloudAccountPassword, prepareManagedLocalAcceptancePods, parseKeyFile } from './accept-live-gateway-login-chat';
-import { createPlatformProviderForAccount } from './prepare-rc-platform-provider';
+import { createPlatformProviderForAccount, isPlatformTransportKind,
+  PlatformProviderError } from './prepare-rc-platform-provider';
 import { launchOwnedPackagedDesktop, isLaunchSubphase, readGatewayTelemetry, type GatewayTelemetry, type LaunchSubphase,
   type OwnedPackagedDesktop } from './helpers/packaged-desktop-fixture';
 import { acceptMountedPodPermissions, attributeMountedOperation, MountedPermissionError,
@@ -371,7 +372,13 @@ export function failureLine(published: PublishedDesktopFailure, failures: unknow
 function privateError(error: unknown): unknown {
   const cause = error instanceof OidcApprovalError || error instanceof MountedPermissionError
     || error instanceof PackagedOperationError || error instanceof DesktopAcceptanceError ? error.cause : undefined;
+  // The closed transport token is the ONLY diagnostic added here, and it comes
+  // from the provider module's single finite-kind authority. It is never
+  // recomputed from raw error text, so the private file gains no second table.
+  const transport = error instanceof PlatformProviderError && isPlatformTransportKind(error.transport)
+    ? error.transport : undefined;
   return error instanceof Error ? { name: error.name, message: error.message, stack: error.stack,
+    ...(transport === undefined ? {} : { transport }),
     ...(cause === undefined ? {} : { cause: privateError(cause) }),
     ...(error instanceof AggregateError ? { errors: error.errors.map(privateError) } : {}) }
     : { name: 'unknown', message: String(error) };
