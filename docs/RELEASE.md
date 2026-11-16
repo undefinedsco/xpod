@@ -133,6 +133,22 @@ policy 为空。上线前必须补齐分支与环境策略；创建/推送 stagi
   部署已成功，桌面永远不会先于它依赖的服务到达用户。
 - 桌面修复需要改产品代码时，随下一个候选与版本发布；被跳过的版本不补发桌面。
 
+### 版本号管理
+
+服务与桌面共用**一条版本线**：根 `package.json` 的 `version` 是唯一来源，桌面构建时写入同一版本。
+版本号表示一次源码快照，不表示某一端；各端只发布自己验收通过的版本，允许跳号。
+
+- 桌面内置同版本的服务端代码（本地 CSS/API 与 QLever runtime），也只与同版本服务一起验收过，所以
+  "桌面 X.Y.Z" 只在生产服务已是 X.Y.Z 后发布（`desktop-release-guard.cjs` 强制）。
+- 两端都通过：同一版本一起发布。只有服务通过：只发服务，桌面停在上一版（如 0.4.31）。
+- 只需修桌面时同样升版本，让服务与桌面在同一候选中验收后一起发布；服务端源码未变时只是复用已验收
+  镜像重新部署。
+- 已打出的 stable tag 不可复用。`candidate.yml` 的 metadata 步骤在版本已从**其他提交**发布时立即失败，
+  提示先升根 `package.json`；重新验收已打 tag 的同一提交（例如补做其桌面验收）仍然允许。
+  因此每次 stable 发布后，下一个合入 staging 的改动应带上版本号提升。
+- 独立版本线只用于本身独立分发的产物：workspace 共享包（`packages/*`，内容不变则复用已发布版本，
+  见"共享包版本复用与 provenance"）和 `xpod` CLI（见[模块分发规范](module-distribution.md)）。
+
 macOS QLever 以原生输入、构建 workflow、验收脚本和 Clang 身份缓存已验证的完整 runtime，
 不以 Xpod 提交 SHA 作为缓存键。精确命中后跳过 C++ 编译和构建工具安装，先校验旧产物的
 归档/manifest/二进制摘要，再重新执行 ready、ABI、RDF、FTS、VEC 和 shutdown smoke，
@@ -602,8 +618,10 @@ image 并等待 readiness，然后输出 diagnostics。回滚不是新发布；�
 stable promotion 不得覆写它。`scripts/publish-workspace-packages.cjs` 对已存在的
 版本执行只读复用校验：从 registry 下载该版本的精确 tarball，先按
 `dist.integrity` 校验原始字节，再逐项比较完整载荷——成员文件名、类型、权限位、
-内容以及 manifest 语义字段——仅显式排除 provenance 字段 `gitHead`。内容一致
-（只有 `gitHead` 不同）时，直接复用该已验证的已发布 tarball，不再重新发布。
+内容以及 manifest 语义字段。只允许两类构建来源差异：manifest 的 `gitHead`，以及
+材料收集器生成的 `dist/materials/{build-provenance,source-inventory,index}.json`
+中的 `sourceAuthority.sourceCommit` 和由其变化产生的两个子文件索引摘要。
+其余载荷一致时，直接复用已验证的已发布 tarball，不再重新发布或改写其来源记录。
 
 必须区分两个 SHA：
 
@@ -611,10 +629,15 @@ stable promotion 不得覆写它。`scripts/publish-workspace-packages.cjs` 对�
   也是 `npm pack` 注入到 `gitHead` 的值；
 - **shared artifact original gitHead**：该共享包版本最初发布时的 commit。
 
-用一个新的 accepted root SHA 重跑时，`gitHead` 必然变化，所以重新打包的 tarball
-字节不可能与已发布版本逐字节相同；这不是内容漂移。只要该版本的运行时、类型、
-CSS、文件集合、权限位与 manifest 语义字段都未变、仅 `gitHead` 不同，就判定为可
-复用并沿用已发布字节，而不是重新发布。若除 `gitHead` 外任何内容、成员集合、
+用一个新的 accepted root SHA 重跑时，`gitHead` 和材料中的 `sourceCommit` 会变化，
+因此重新打包的 tarball 不要求与已发布版本逐字节相同。比较器须先分别核对两份材料的
+原始索引大小和摘要，包括 `build-provenance.json`、`source-inventory.json` 的真实摘要；
+再确认三份材料的提交一致、格式符合收集器输出、源文件清单与实际字节对应，才能在
+比较时排除上述来源差异。缺失材料走原有逐字节比较，不得获得来源差异豁免。
+
+运行时、类型、CSS、源内容快照、编译器与目标平台、文件集合、权限位以及其他材料
+和 manifest 语义字段仍须一致。复用保留发布原件的来源提交，不把它改标为本轮
+accepted root SHA。若除上述来源差异外任何内容、成员集合、
 权限或 manifest 语义字段（`name`、`version`、`types`、`exports`、`dependencies`、
 `peerDependencies`、`optionalDependencies`、`devDependencies` 等）发生变化，或
 tarball 损坏、integrity 不匹配、出现重复成员、路径穿越、链接或不受支持的条目

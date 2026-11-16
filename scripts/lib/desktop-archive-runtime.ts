@@ -13,6 +13,7 @@
  */
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
+import { StringDecoder } from 'node:string_decoder'
 import path from 'node:path'
 import { resolveRuntimeLaunchCommand } from '../../desktop/src/runtime-manager'
 
@@ -71,10 +72,10 @@ function run(command: string, args: string[]): Promise<Buffer> {
       if (settled) return
       chunks.push(chunk)
       size += chunk.length
-      // The only members read wholesale are small manifests or listings; the
-      // launcher is streamed separately, so a bound here keeps a hostile
-      // archive cheap instead of buffering it into memory.
-      if (size > 8 * 1024 * 1024) {
+      // The only members read wholesale are small manifests; the launcher and
+      // the archive LISTING are streamed separately, so a bound here keeps a
+      // hostile archive cheap instead of buffering it into memory.
+      if (size > MANIFEST_BOUND_BYTES) {
         child.kill()
         fail('archive member exceeds metadata bound')
       }
@@ -82,7 +83,136 @@ function run(command: string, args: string[]): Promise<Buffer> {
   })
 }
 
-async function readMember(archive: string, member: string): Promise<Buffer> {
+/**
+ * Bounded memory budgets for the two DIFFERENT things this module reads.
+ *
+ * `MANIFEST_BOUND_BYTES` guards a single small manifest/plist member, read
+ * whole. `INVENTORY_BOUND_BYTES` guards the complete member-NAME inventory,
+ * which is genuinely needed in full (duplicate detection, single-app-root
+ * detection, and the resolver's membership probe). They are deliberately not
+ * the same number: a manifest is kilobytes, an inventory for a real published
+ * bundle is ~12MB. Neither is unbounded, and the small budget is never raised to
+ * accommodate a listing.
+ */
+const MANIFEST_BOUND_BYTES = 8 * 1024 * 1024
+const INVENTORY_BOUND_BYTES = 32 * 1024 * 1024
+
+/**
+ * The largest single unterminated line this module will hold.
+ *
+ * A line is only ever accumulated between newlines, so this caps the transient
+ * buffer for a hostile stream that never emits one. It is sized far above the
+ * longest real member path and far below the inventory budget.
+ */
+const MAX_PENDING_LINE_BYTES = 1024 * 1024
+
+/**
+ * The ONE streaming line reader shared by both listings.
+ *
+ * Spawns `command args`, decodes stdout with a `StringDecoder` so a multibyte
+ * UTF-8 character split across chunk boundaries is reassembled rather than
+ * corrupted, splits on newlines, and hands each COMPLETE line to `collect`.
+ * A trailing line without a newline is delivered at EOF.
+ *
+ * `collect` may throw; the failure is propagated and the child is killed, so a
+ * parser error can never be mistaken for a successful read. Reaching
+ * `boundBytes` of total output, or `MAX_PENDING_LINE_BYTES` in one partial line,
+ * kills the child and fails closed. Child `error`/`close`/kill handling and the
+ * single-settlement guard live here once, not in each caller.
+ */
+function streamLines(
+  command: string,
+  args: readonly string[],
+  options: { boundBytes: number; collect: (line: string) => void },
+): Promise<void> {
+  const { boundBytes, collect } = options
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const fail = (message: string): void => {
+      if (settled) return
+      settled = true
+      child.kill()
+      reject(new Error(message))
+    }
+    const child = spawn(command, [...args], { stdio: ['ignore', 'pipe', 'ignore'] })
+    const decoder = new StringDecoder('utf8')
+    let pending = ''
+    let bytes = 0
+    child.once('error', () => fail(`archive metadata tool failed: ${command}`))
+    child.once('close', (code: number | null) => {
+      if (settled) return
+      if (code !== 0) {
+        fail('archive metadata tool failed')
+        return
+      }
+      // Flush the decoder, then deliver any final line that had no newline.
+      pending += decoder.end()
+      try {
+        if (pending) collect(pending)
+      } catch (error) {
+        fail(error instanceof Error ? error.message : 'archive listing unparsable')
+        return
+      }
+      settled = true
+      resolve()
+    })
+    child.stdout!.on('data', (chunk: Buffer) => {
+      if (settled) return
+      bytes += chunk.length
+      if (bytes > boundBytes) {
+        fail('archive member exceeds metadata bound')
+        return
+      }
+      pending += decoder.write(chunk)
+      let index = pending.indexOf('\n')
+      while (index !== -1) {
+        const line = pending.slice(0, index)
+        pending = pending.slice(index + 1)
+        try {
+          if (line) collect(line)
+        } catch (error) {
+          fail(error instanceof Error ? error.message : 'archive listing unparsable')
+          return
+        }
+        if (settled) return
+        index = pending.indexOf('\n')
+      }
+      if (pending.length > MAX_PENDING_LINE_BYTES) {
+        fail('archive listing line exceeds bound')
+      }
+    })
+  })
+}
+
+/** Complete member-name inventory, streamed; every name is retained. */
+async function streamMemberNames(archive: string): Promise<string[]> {
+  const names: string[] = []
+  await streamLines('unzip', ['-Z1', '--', archive], {
+    boundBytes: INVENTORY_BOUND_BYTES,
+    collect: (line) => { names.push(line) },
+  })
+  return names
+}
+
+/**
+ * Stream a `unzip` long listing, retaining ONLY the lines whose trailing field is
+ * one of `wanted`. The full line is kept because the caller parses its mode field.
+ */
+async function streamListing(
+  command: string,
+  args: readonly string[],
+  wanted: readonly string[],
+): Promise<string[]> {
+  const matched: string[] = []
+  await streamLines(command, args, {
+    boundBytes: INVENTORY_BOUND_BYTES,
+    collect: (line) => { if (wanted.some(name => line.endsWith(` ${name}`))) matched.push(line) },
+  })
+  return matched
+}
+
+/** Bounded read one small manifest member whole; never used for a listing. */
+function readMember(archive: string, member: string): Promise<Buffer> {
   return run('unzip', ['-p', '--', archive, member])
 }
 
@@ -122,9 +252,12 @@ async function hashMember(archive: string, member: string): Promise<{ sha256: st
  * spaces stays unambiguous.
  */
 async function memberModes(archive: string, wanted: readonly string[]): Promise<Map<string, string>> {
-  const listing = (await run('unzip', ['-Z', '--', archive])).toString('utf8').split('\n')
+  // The long listing for a real bundle is many MiB (tens of thousands of
+  // members), so it is streamed and only the WANTED lines are retained. The
+  // per-line mode/name parsing is unchanged.
+  const matched = await streamListing('unzip', ['-Z', '--', archive], wanted)
   const modes = new Map<string, string>()
-  for (const line of listing) {
+  for (const line of matched) {
     const match = /^(\S{10})\s.*?\s(\S+)$/u.exec(line)
     if (!match) continue
     const [, mode, name] = match as unknown as [string, string, string]
@@ -174,7 +307,7 @@ function plistString(plist: string, key: string): string | undefined {
  * or version is not the strict packaged CLI contract.
  */
 export async function readDesktopArchiveRuntime(archive: string): Promise<DesktopArchiveRuntime> {
-  const listing = (await run('unzip', ['-Z1', '--', archive])).toString('utf8').split('\n').filter(Boolean)
+  const listing = await streamMemberNames(archive)
   if (listing.length === 0) throw new Error('desktop archive has no members')
 
   const repeated = duplicates(listing)

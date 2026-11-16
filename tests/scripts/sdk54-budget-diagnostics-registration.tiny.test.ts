@@ -1,3 +1,4 @@
+import{currentProgramSdkConsumerGroups}from'../../scripts/lib/independent-admission/current-program-definition';
 import {test,expect} from 'bun:test';
 import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
@@ -7,6 +8,7 @@ import {QLEVER_SDK_EXECUTION_GROUPS as sdk,QLEVER_SDK_CONSUMER_GROUPS as current
 import {CONSUMER_SOURCE_GROUPS as consumer,CI_CONSUMER_SOURCE_GROUPS as ci} from '../../scripts/lib/independent-admission/consumer-observer-policy';
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
 import {sourceBindingKey as key,secondaryGitHubSourceBindingSelectors as secondary,selectGitHubSourceBindingGroup as select} from '../../scripts/lib/independent-admission/github-source-binding-groups';
+import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 import{CURRENT_CANONICAL_SOURCE_ROWS, completeObserved,observedSecondaryBindings}from'./source-binding-group.fixture';
 const sha=(raw:Buffer|string)=>createHash('sha256').update(raw).digest('hex');
 test('SDK54 preserves all 274 exact pre-diagnostic complete recipes and binds current 426 physical originals',()=>{
@@ -14,7 +16,7 @@ test('SDK54 preserves all 274 exact pre-diagnostic complete recipes and binds cu
  expect(Object.values(before.hashes).reduce((sum,rows)=>sum+rows.length,0)).toBe(274);
 
  for(const [name,values] of Object.entries({api,sdk,consumer,ci})){const old=before.hashes[name as keyof typeof before.hashes];expect(values.slice(0,old.length).map(row=>sha(JSON.stringify(row)))).toEqual(old);}
- for(const row of [...current,...actualApi,...currentSdkConsumer.at(-1)!.selectors,...currentSdkConsumer.at(-1)!.sourceBindings])expect(sha(readFileSync(row.path))).toBe(row.sha256);
+ for(const row of [...current,...actualApi,...currentProgramSdkConsumerGroups().at(-1)!.selectors,...currentProgramSdkConsumerGroups().at(-1)!.sourceBindings])expect(sha(readTrackedSource(row.path))).toBe(row.sha256);
  expect(api.at(-1)!.sourceBindings).toBe(actualApi);
 });
 test('SDK54 complete current recipe rejects every absent or mixed mandatory role',()=>{

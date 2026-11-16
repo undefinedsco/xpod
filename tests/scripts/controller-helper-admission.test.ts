@@ -24,8 +24,10 @@ import {CURRENT_HELPER_GROUP_COUNTS, CURRENT_SOURCE_GROUP_COUNTS} from './source
 import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as api} from '../../scripts/lib/independent-admission/github-origin';
 import {QLEVER_SDK_EXECUTION_GROUPS as sdk, QLEVER_LINUX_EXECUTION_GROUPS as linux, QLEVER_SDK_CONSUMER_GROUPS as consumerSdk, QLEVER_LINUX_CONSUMER_GROUPS as consumerLinux} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import {CONSUMER_SOURCE_GROUPS as consumer, CI_CONSUMER_SOURCE_GROUPS as ci} from '../../scripts/lib/independent-admission/consumer-observer-policy';
+import {currentProgramSdkConsumerGroups, currentProgramLinuxConsumerGroups} from '../../scripts/lib/independent-admission/current-program-definition';
 import {CLI_SOURCE_VERSION_GROUPS as cli} from '../../scripts/lib/independent-admission/source-rules';
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
+import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 
 
 const ROOT = path.resolve(import.meta.dir, '../..');
@@ -34,7 +36,7 @@ const LIB = path.join(ROOT, 'scripts/lib/independent-admission');
 /** AST-evaluate a module-local const, the same reader the slice tests use. */
 function localConst(file: string, name: string): any {
   const p = path.join(LIB, file);
-  const src = readFileSync(p, 'utf8');
+  const src = readTrackedSource(p, 'utf8');
   const ast = ts.createSourceFile(p, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const cm = new Map<string, any>();
   for (const st of ast.statements) {
@@ -178,7 +180,7 @@ test('a conflicting final set is refused by the exact selector', () => {
  * catalog would be wrong and this would fail. */
 function productionCallCatalog(file: string, callee: string): {arg: string; catalog: any} {
   const p = path.join(LIB, file);
-  const src = readFileSync(p, 'utf8');
+  const src = readTrackedSource(p, 'utf8');
   const ast = ts.createSourceFile(p, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   let found: string | undefined;
   const visit = (node: any) => {
@@ -200,7 +202,7 @@ test('the PRODUCTION controller caller uses the name plan over CURRENT controlle
   expect(plan.catalog.length).toBe(CURRENT_HELPER_GROUP_COUNTS.controller);
   const exact = productionCallCatalog('qlever-sdk-generation.ts', 'selectSdkControllerHelperGroup');
   expect(exact.arg).toBe('REVIEWED_CONTROLLER_HELPER_GROUPS_CURRENT');
-  const src = readFileSync(path.join(LIB, 'qlever-sdk-generation.ts'), 'utf8');
+  const src = readTrackedSource(path.join(LIB, 'qlever-sdk-generation.ts'), 'utf8');
   // the loop must bind a STRING, because the plan returns names
   expect(src).toContain('for(const name of requiredSdkControllerHelperNames(');
 });
@@ -241,7 +243,7 @@ test('the declared VERSION bound is the explicit CURRENT maximum, enforced as a 
 });
 
 test('the REAL production-called catalogs admit end to end on actual helper bytes', () => {
-  const sha = (n: string) => createHash('sha256').update(readFileSync(path.join(ROOT, 'qlever/scripts', n))).digest('hex');
+  const sha = (n: string) => createHash('sha256').update(readTrackedSource(path.join(ROOT, 'qlever/scripts', n))).digest('hex');
   const cases: readonly [string, readonly string[], number][] = [
     ['qlever-sdk-generation.ts', ['sdk-zip-originals.py', 'sdk-generation-multiprocess-bindings.py', 'sdk-execution-originals-util.py', 'sdk-generated-source-originals.py', 'sdk-tool-provider-originals.py', 'sdk-generated-vma-originals.py', 'sdk-coordinated-wait.py', 'sdk-original-chunk-store.py', 'sdk-raw-wire-reader.py', 'sdk-executable-memory-policy.py'], CURRENT_HELPER_GROUP_COUNTS.controller],
     ['qlever-sdk-fetchcontent.ts', ['sdk-fetchcontent-source-observer.py', 'sdk-fetchcontent-source-bindings.py', 'sdk-zip-originals.py', 'sdk-git-source-bindings.py', 'sdk-debian-binary-originals.py', 'sdk-debian-index-bindings.py', 'sdk-generation-multiprocess-bindings.py', 'sdk-execution-originals-util.py', 'sdk-tool-provider-originals.py', 'sdk-generated-vma-originals.py', 'sdk-coordinated-wait.py', 'sdk-original-chunk-store.py', 'sdk-raw-wire-reader.py', 'sdk-executable-memory-policy.py'], CURRENT_HELPER_GROUP_COUNTS.fetch],
@@ -268,8 +270,11 @@ test('CURRENT source catalogue counts and actual declared bindings close indepen
     CURRENT_SOURCE_GROUP_COUNTS.linux, CURRENT_SOURCE_GROUP_COUNTS.cli,
     CURRENT_SOURCE_GROUP_COUNTS.current,
   ]);
-  const digest = (name: string) => createHash('sha256').update(readFileSync(path.join(ROOT, name))).digest('hex');
-  for (const rows of Object.values({api, sdk: consumerSdk, consumer, ci, linux: consumerLinux, cli})) {
+  const digest = (name: string) => createHash('sha256').update(readTrackedSource(path.join(ROOT, name))).digest('hex');
+  // The frozen axes above stay byte-exact history; live-disk verification follows
+  // the CURRENT program definition, whose only moving row is the workflow.
+  for (const rows of Object.values({api, sdk: currentProgramSdkConsumerGroups(), consumer, ci,
+    linux: currentProgramLinuxConsumerGroups(), cli})) {
     const group = rows[rows.length - 1]!;
     const g = group as any;
     for (const row of [...(g.selectors ?? []), ...(g.secondarySelectors ?? []),

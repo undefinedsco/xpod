@@ -20,20 +20,21 @@ import {
   observedGitHubRunStateAccepted,observedGitHubJobWindowAccepted,
   observeCandidateServiceImageGitHubOrigin,githubOriginFacts,
 } from '../../scripts/lib/independent-admission/github-origin';
-import {QLEVER_SDK_CONSUMER_GROUPS} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
+import {currentProgramSdkConsumerGroups} from '../../scripts/lib/independent-admission/current-program-definition';
 import {sourceBindingKey,selectGitHubSourceBindingGroup} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import {acquireCandidateServiceOriginals} from '../../scripts/acquire-independent-product-input';
+import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 
 const ROOT=path.resolve(import.meta.dir,'../..');
 const CANDIDATE='.github/workflows/candidate.yml';
-const candidateBytes=readFileSync(path.join(ROOT,CANDIDATE));
+const candidateBytes=readTrackedSource(path.join(ROOT,CANDIDATE));
 const sha=(bytes:Buffer)=>createHash('sha256').update(bytes).digest('hex');
 
 // Production resolves the CURRENT candidate workflow contract from the consumer
-// axis (`resolveCandidateWorkflowContract` -> QLEVER_SDK_CONSUMER_GROUPS). The frozen
-// SDK-execution axis stops at the published 93 groups and no longer carries the
-// current candidate workflow, so mirroring it here would never find one.
-const candidateGroups=QLEVER_SDK_CONSUMER_GROUPS.filter(group=>group.candidateServiceRelationship!==undefined);
+// axis through the current program definition (frozen history plus this
+// checkout's derived tail). The frozen SDK-execution axis stops at the published
+// 93 groups and no longer carries the current candidate workflow.
+const candidateGroups=currentProgramSdkConsumerGroups().filter(group=>group.candidateServiceRelationship!==undefined);
 
 /** The exact reviewed group the current repository bytes resolve to. Returns
  * undefined while the genuinely changed candidate workflow hash is not yet
@@ -156,7 +157,7 @@ function serve(g:ReturnType<typeof graph>,zip?:Buffer){
    const name=decodeURIComponent(relative.slice('contents/'.length).split('?')[0]!);
    if(!fs.existsSync(path.join(ROOT,name)))throw Error('unexpected contents fixture '+name);
    return new Response(JSON.stringify({type:'file',path:name,encoding:'base64',
-    content:readFileSync(path.join(ROOT,name)).toString('base64')}));
+    content:readTrackedSource(path.join(ROOT,name)).toString('base64')}));
   }
   throw Error('unexpected fixture request '+relative);
  }) as typeof fetch;
@@ -229,7 +230,7 @@ function zipFixture(){
  const file=path.join(root,'artifact.zip');
  const made=spawnSync('python3',['-c',`import sys,zipfile\nwith zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_DEFLATED) as z:\n i=zipfile.ZipInfo('products/app.tgz');i.create_system=3;i.external_attr=0o100644<<16;z.writestr(i,'tiny-original')`,file],{encoding:'utf8'});
  if(made.status!==0)throw Error(made.stderr);
- const bytes=readFileSync(file);rmSync(root,{recursive:true,force:true});return bytes;
+ const bytes=readTrackedSource(file);rmSync(root,{recursive:true,force:true});return bytes;
 }
 
 function runSection(header:string):string{

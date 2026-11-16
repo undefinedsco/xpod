@@ -1,3 +1,4 @@
+import {currentProgramSdkConsumerGroups} from '../../scripts/lib/independent-admission/current-program-definition';
 import {test,expect} from 'bun:test';
 import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
@@ -8,13 +9,14 @@ import {CONSUMER_SOURCE_GROUPS as consumer,CI_CONSUMER_SOURCE_GROUPS as ci} from
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
 import {sourceBindingKey as key,secondaryGitHubSourceBindingSelectors as secondary,selectGitHubSourceBindingGroup as select} from '../../scripts/lib/independent-admission/github-source-binding-groups'
 import {CURRENT_CANONICAL_SOURCE_ROWS,completeObserved,observedSecondaryBindings} from './source-binding-group.fixture';
+import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 const sha=(raw:Buffer|string)=>createHash('sha256').update(raw).digest('hex');
 test('Controller66 preserves all 271 exact Git4858 complete recipes and binds current canonical physical originals',()=>{
  expect(before.base).toBe('4858f38bcf231d40a4b7623a843656447831bafa');
  expect(Object.values(before.hashes).reduce((sum,rows)=>sum+rows.length,0)).toBe(271);
 
  for(const [name,values] of Object.entries({api,sdk,consumer,ci})){const old=before.hashes[name as keyof typeof before.hashes];expect(values.slice(0,old.length).map(row=>sha(JSON.stringify(row)))).toEqual(old);}
- for(const row of [...current,...actualApi,...consumerSdk.at(-1)!.selectors,...consumerSdk.at(-1)!.sourceBindings])expect(sha(readFileSync(row.path))).toBe(row.sha256);
+ for(const row of [...current,...actualApi,...currentProgramSdkConsumerGroups().at(-1)!.selectors,...currentProgramSdkConsumerGroups().at(-1)!.sourceBindings])expect(sha(readTrackedSource(row.path))).toBe(row.sha256);
  expect(api.at(-1)!.sourceBindings).toBe(actualApi);
 });
 test('Controller66 complete current recipe rejects every absent or mixed mandatory role',()=>{

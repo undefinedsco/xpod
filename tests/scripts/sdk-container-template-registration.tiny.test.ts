@@ -1,9 +1,11 @@
+import {currentProgramSdkConsumerGroups} from '../../scripts/lib/independent-admission/current-program-definition';
 import {test,expect} from 'bun:test';import {createHash} from 'node:crypto';import fs from 'node:fs';import path from 'node:path';
 import previous from '../fixtures/independent-admission/sdk26-pre-template-source-groups.original.json';
 import {QLEVER_SDK_EXECUTION_GROUPS as sdk,QLEVER_SDK_CONSUMER_GROUPS as consumerSdk} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import {CONSUMER_SOURCE_GROUPS as consumer,CI_CONSUMER_SOURCE_GROUPS as ci} from '../../scripts/lib/independent-admission/consumer-observer-policy';
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
 import {CURRENT_CANONICAL_SOURCE_ROWS} from './source-binding-group.fixture';
+import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 const hash=(x:unknown)=>createHash('sha256').update(JSON.stringify(x)).digest('hex');
 test('SDK26 preserves every old whole source recipe and promotes only its own mandatory originals',()=>{
  for(const[name,groups]of Object.entries({sdk,consumer,ci})){
@@ -13,6 +15,6 @@ test('SDK26 preserves every old whole source recipe and promotes only its own ma
    for(const role of g.secondarySelectors??[])if(!before.secondarySelectors.some(old=>JSON.stringify(old)===JSON.stringify(role)))expect([...g.selectors,...g.sourceBindings].some(row=>JSON.stringify(row)===JSON.stringify(role))).toBe(true);
   }
  }
- expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);for(const row of current)expect(createHash('sha256').update(fs.readFileSync(path.resolve(import.meta.dir,'../..',row.path))).digest('hex')).toBe(row.sha256);
- const latest=consumerSdk[consumerSdk.length-1]!;for(const row of [...latest.selectors,...latest.sourceBindings])expect(createHash('sha256').update(fs.readFileSync(path.resolve(import.meta.dir,'../..',row.path))).digest('hex')).toBe(row.sha256);
+ expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);for(const row of current)expect(createHash('sha256').update(readTrackedSource(path.resolve(import.meta.dir,'../..',row.path))).digest('hex')).toBe(row.sha256);
+ const latest=currentProgramSdkConsumerGroups().at(-1)!;for(const row of [...latest.selectors,...latest.sourceBindings])expect(createHash('sha256').update(readTrackedSource(path.resolve(import.meta.dir,'../..',row.path))).digest('hex')).toBe(row.sha256);
 });

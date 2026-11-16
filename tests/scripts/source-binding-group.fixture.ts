@@ -9,16 +9,19 @@ import {secondaryGitHubSourceBindingSelectors,sourceBindingKey,type GitHubSource
 export const CURRENT_CANONICAL_SUFFIX = Object.freeze([
   'qlever/scripts/sdk-service-runtime-stream.py',
   'patches/comunica-undici-entry.cjs',
+  // The CURRENT program definition helper is the single helper that derives the
+  // expected candidate-workflow bytes from this checkout, never a copied hash.
+  'scripts/lib/independent-admission/current-program-definition.ts',
 ]);
 export const CURRENT_CANONICAL_SOURCE_ROWS = 532 + CURRENT_CANONICAL_SUFFIX.length;
 /** The single explicit CURRENT registration expectation. Historical suites keep
  * their own frozen prefix/hash fixtures; only genuine current-source checks use
  * these values. A future append updates this ONE object, never 41 scattered
  * literals. */
-export const CURRENT_SOURCE_GROUP_COUNTS = Object.freeze({api:33,sdk:93,consumer:115,ci:234,linux:94,cli:17,
+export const CURRENT_SOURCE_GROUP_COUNTS = Object.freeze({api:33,sdk:93,consumer:117,ci:238,linux:94,cli:17,
   // CURRENT (moving) SDK/Linux consumer and normal-producer totals. Frozen
   // producer axes above (sdk 93 / linux 94) never move with an append.
-  sdkConsumer:118,linuxConsumer:119,normal:10,current:CURRENT_CANONICAL_SOURCE_ROWS});
+  sdkConsumer:119,linuxConsumer:120,normal:11,current:CURRENT_CANONICAL_SOURCE_ROWS});
 export const CURRENT_OBSERVER_GROUPS = 64;
 export const CURRENT_HELPER_GROUP_COUNTS = Object.freeze({controller:43,fetch:46,maximum:46});
 

@@ -941,7 +941,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "014432f112584b192669621e9576ec81b1493bf89508659a25dbd576e5afa3d3"
+    "sha256": "1af0af981798ce06995dc36384d7fe551ee6dd4581801a947e9500e478d381b1"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",
@@ -1221,11 +1221,11 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "397b5dd7f32f9010698ccde02c70af7476d27cfbf5e615e60a96e3d18e5880be"
+    "sha256": "2c8de344b2406b5d131a496139870fb12f5e2943a5ee6c0d0f680c3cddb55ca0"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
-    "sha256": "6f8af56e58970888c8b0fb535992a51798f100c2b22c2b4e75d045b2947f7144"
+    "sha256": "be83a38482572ac4f228f23e9fb6eebcf2881877512851dc56b6da571b0fcb2a"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-outer-authority.ts",
@@ -2134,5 +2134,9 @@
   {
     "path": "patches/comunica-undici-entry.cjs",
     "sha256": "d3e118347eef031adda164a503b0ba0eb1a709ff228c7c33f94e108b42767158"
+  },
+  {
+    "path": "scripts/lib/independent-admission/current-program-definition.ts",
+    "sha256": "ccdcce1968ace33bd0f43f04a16bd6f7c65bcaf6f4eef123b4907b968bae05b1"
   }
 ]

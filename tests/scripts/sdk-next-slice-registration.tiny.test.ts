@@ -75,6 +75,7 @@ import {
   CONSUMER_SOURCE_GROUPS as consumer,
   CI_CONSUMER_SOURCE_GROUPS as ci,
 } from '../../scripts/lib/independent-admission/consumer-observer-policy';
+import{currentProgramSdkConsumerGroups,currentProgramLinuxConsumerGroups}from'../../scripts/lib/independent-admission/current-program-definition';
 import {QLEVER_SDK_EXECUTION_GROUPS as sdk, QLEVER_SDK_CONSUMER_GROUPS as consumerSdk, QLEVER_LINUX_EXECUTION_GROUPS as linuxGroups, QLEVER_LINUX_CONSUMER_GROUPS as consumerLinux} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as api} from '../../scripts/lib/independent-admission/github-origin';
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
@@ -83,6 +84,7 @@ import {
   secondaryGitHubSourceBindingSelectors as secondary,
   sourceBindingKey as key,
 } from '../../scripts/lib/independent-admission/github-source-binding-groups';
+import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 
 const POLICY_OR_CANONICAL=new Set(['scripts/lib/independent-admission/consumer-observer-policy.ts','scripts/lib/independent-admission/consumer-execution-current.json']);
 
@@ -91,12 +93,12 @@ const LIB = 'scripts/lib/independent-admission';
 const BODY = 'qlever/scripts/sdk-ptrace-execution.py';
 const sha = (v: string | Buffer) => createHash('sha256').update(v).digest('hex');
 const hashValue = (v: unknown) => sha(JSON.stringify(v));
-const read = (p: string) => fs.readFileSync(path.join(ROOT, p));
+const read = (p: string) => readTrackedSource(path.join(ROOT, p));
 const rows = (g: any) => [...g.selectors, ...(g.secondarySelectors ?? []), ...((g.secondarySelectorStages ?? []).flat()), ...g.sourceBindings];
 
 /** AST-read a module-private reviewed tuple table, exactly like production. */
 function recipes(file: string, name: string): unknown[] {
-  const source = fs.readFileSync(path.join(ROOT, LIB, file), 'utf8');
+  const source = readTrackedSource(path.join(ROOT, LIB, file), 'utf8');
   const ast = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const constants = new Map<string, ts.Expression>();
   for (const statement of ast.statements) {
@@ -289,7 +291,7 @@ test('the appended groups bind the actual frozen body and real module bytes', ()
     // family bind today's disk bytes. CI has TWO existing current variants that
     // differ only in the run-head workflow selector, so both current SOURCE
     // closures are tested; the run-head rows themselves stay skipped.
-    const currentFamily = name === 'sdk' ? consumerSdk : name === 'linux' ? consumerLinux : groups;
+    const currentFamily = name === 'sdk' ? currentProgramSdkConsumerGroups() : name === 'linux' ? currentProgramLinuxConsumerGroups() : groups;
     const current = name === 'ci' ? currentFamily.slice(-2) : currentFamily.slice(-1);
     for (const group of current) {
       for (const row of rows(group)) {

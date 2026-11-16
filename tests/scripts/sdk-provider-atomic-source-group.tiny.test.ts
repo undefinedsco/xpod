@@ -1,3 +1,4 @@
+import {currentProgramSdkConsumerGroups} from '../../scripts/lib/independent-admission/current-program-definition';
 import {completeObserved} from './source-binding-group.fixture';
 import {test,expect} from 'bun:test';
 import {CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
@@ -7,6 +8,7 @@ import {createHash} from 'node:crypto';
 import {QLEVER_SDK_EXECUTION_GROUPS,QLEVER_SDK_CONSUMER_GROUPS} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import {CONSUMER_SOURCE_GROUPS,CI_CONSUMER_SOURCE_GROUPS} from '../../scripts/lib/independent-admission/consumer-observer-policy';
 import {selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
+import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 const root=path.resolve(import.meta.dir,'../..');
 const tuple=(group:(typeof QLEVER_SDK_EXECUTION_GROUPS)[number])=>new Map([...group.selectors,...(group.secondarySelectors??[])].map(row=>[sourceBindingKey(row),row.sha256]));
 /** Bounded target-candidate batches.
@@ -40,8 +42,8 @@ test('all twenty-two SDK whole recipes select uniquely and current runtime impor
  expect(QLEVER_SDK_EXECUTION_GROUPS).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.sdk);
  for(const group of QLEVER_SDK_EXECUTION_GROUPS)expect(selectGitHubSourceBindingGroup(QLEVER_SDK_EXECUTION_GROUPS,completeObserved(QLEVER_SDK_EXECUTION_GROUPS,group))).toBe(group);
  const current=QLEVER_SDK_EXECUTION_GROUPS.at(-1)!;
- const currentConsumer=QLEVER_SDK_CONSUMER_GROUPS.at(-1)!;
- for(const row of [...currentConsumer.selectors,...currentConsumer.sourceBindings])expect(createHash('sha256').update(fs.readFileSync(path.join(root,row.path))).digest('hex')).toBe(row.sha256);
+ const currentConsumer=currentProgramSdkConsumerGroups().at(-1)!;
+ for(const row of [...currentConsumer.selectors,...currentConsumer.sourceBindings])expect(createHash('sha256').update(readTrackedSource(path.join(root,row.path))).digest('hex')).toBe(row.sha256);
  expect(current.sourceBindings.some(row=>row.path==='qlever/scripts/sdk-tool-provider-originals.py')).toBe(true);
  const old=QLEVER_SDK_EXECUTION_GROUPS[17]!;
  expect([...old.selectors,...(old.secondarySelectors??[]),...old.sourceBindings].some(row=>row.path==='qlever/scripts/sdk-tool-provider-originals.py')).toBe(false);

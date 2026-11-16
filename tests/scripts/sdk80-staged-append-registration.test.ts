@@ -17,9 +17,10 @@ import {CLI_SOURCE_VERSION_GROUPS as CLI} from '../../scripts/lib/independent-ad
 import {selectGitHubSourceBindingGroup,acquireOwnedSecondaryBindings,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import {decodeCatalog} from './sdk-helper-catalog.fixture';
 import {CURRENT_CANONICAL_SOURCE_ROWS} from './source-binding-group.fixture';
+import { shaFrozenTracked } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 
 const ROOT=path.resolve(import.meta.dirname,'../..');
-const DISK=(p:string)=>createHash('sha256').update(readFileSync(path.join(ROOT,p))).digest('hex');
+const DISK=(p:string)=>shaFrozenTracked(ROOT, p);
 const whole=(g:unknown)=>createHash('sha256').update(JSON.stringify(g)).digest('hex');
 /** IMMUTABLE tracked copy of the published DCA whole catalogue. It is a
  * committed fixture, so this suite is portable on a clean CI checkout that has
@@ -142,7 +143,8 @@ it('keeps published RC398 canonical bindings frozen while the current tail follo
   const RC398_ACCEPT='3bcd2a9c254689fc26785556752347625bc6ca4f7ed367584b998562f9e3938b';
 
   // Published RC398 groups keep their reviewed literals even though the files moved.
-  for(const index of [CONSUMER.length-3, CONSUMER.length-2]){
+  // They are FIXED indices: 112/113 are RC398, 114 is published RC399, 115+ are appends.
+  for(const index of [112, 113]){
     const group=CONSUMER[index]!;
     expect(role(group,canonical)).toEqual([RC398_CANONICAL]);
     expect(role(group,accept)).toEqual([RC398_ACCEPT]);

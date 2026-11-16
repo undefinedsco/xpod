@@ -22,6 +22,7 @@ const DPOP_AUTH: AuthContext = {
   dpopProof: 'proof',
 };
 const KEY = 'sk-deployment-secret';
+const builtinId = 'xpod-builtin';
 
 function builtin(fetchImpl: typeof fetch, modelMap: Record<string, string> = {}): DeploymentBuiltinConnection {
   return new DeploymentBuiltinConnection(
@@ -125,6 +126,71 @@ describe('DeploymentBuiltinConnection', () => {
     expect(podDenied.route).not.toHaveBeenCalled();
   });
 
+  /**
+   * The provider pool advertises this built-in as `xpod-builtin`, so a client
+   * that follows the provider/model reference it was given sends the QUALIFIED
+   * form. That is the same model, and it must reach the deployment connection
+   * instead of falling through to the Pod router (which answers
+   * `service_access_missing` when no Pod key exists).
+   */
+  it('routes the OWN qualified namespace for both models on Chat without consulting the Pod router', async () => {
+    for (const [qualified, bare] of [['xpod-builtin/linx', 'linx'], ['xpod-builtin/linx-lite', 'linx-lite']] as const) {
+      const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body));
+        // The upstream must receive the BARE configured physical model, never
+        // the qualified namespace the caller used.
+        expect(body).toMatchObject({ model: bare, user: WEB_ID, stream: false });
+        expect(String(body.model)).not.toContain('xpod-builtin/');
+        return Response.json({ id: 'c1', object: 'chat.completion', model: bare, choices: [] });
+      });
+      const pod = podDenied;
+      const result = await service(builtin(fetchImpl as never), pod).complete({
+        auth: DPOP_AUTH,
+        protocol: 'chatCompletions',
+        body: { model: qualified, messages: [{ role: 'user', content: 'hi' }] },
+      });
+      expect(result.id).toBe('c1');
+      expect(String(fetchImpl.mock.calls[0][0])).toBe('http://ai-gateway/v1/chat/completions');
+      // The Pod resolver would throw service_access_missing; it must not be asked.
+      expect(pod.route).not.toHaveBeenCalled();
+    }
+  });
+
+  it('applies the deployment model map to the qualified reference on Chat and Responses', async () => {
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      // Qualified input -> bare canonical -> configured physical upstream id.
+      expect(body.model).toBe('platform-linx');
+      expect(JSON.stringify(body)).not.toContain('xpod-builtin/');
+      return Response.json({ id: 'c1', object: 'chat.completion', choices: [] });
+    });
+    const svc = service(builtin(fetchImpl as never, { linx: 'platform-linx' }), podDenied);
+    await svc.complete({ auth: DPOP_AUTH, protocol: 'chatCompletions',
+      body: { model: 'xpod-builtin/linx', messages: [{ role: 'user', content: 'hi' }] } });
+    await svc.complete({ auth: DPOP_AUTH, protocol: 'responses',
+      body: { model: 'xpod-builtin/linx', input: 'hi' } });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(String(fetchImpl.mock.calls[1][0])).toBe('http://ai-gateway/v1/responses');
+    expect(podDenied.route).not.toHaveBeenCalled();
+  });
+
+  it('keeps the bare ids working and never claims another provider or an unknown model', async () => {
+    const conn = builtin(vi.fn() as never);
+    expect(conn.canonicalModel('linx')).toBe('linx');
+    expect(conn.canonicalModel('linx-lite')).toBe('linx-lite');
+    expect(conn.canonicalModel(' xpod-builtin/linx '.trim())).toBe('linx');
+    // Its own namespace only, and only its own model ids.
+    expect(conn.canonicalModel('xpod-builtin/other')).toBeUndefined();
+    expect(conn.canonicalModel('custom/linx')).toBeUndefined();
+    expect(conn.canonicalModel('openai/linx')).toBeUndefined();
+    expect(conn.canonicalModel('gpt-5.4')).toBeUndefined();
+    expect(conn.canonicalModel('')).toBeUndefined();
+    expect(conn.canonicalModel(undefined)).toBeUndefined();
+    // The predicate agrees with the canonicalizer.
+    for (const owned of ['linx', 'linx-lite', 'xpod-builtin/linx']) expect(conn.owns(owned)).toBe(true);
+    for (const foreign of ['custom/linx', 'xpod-builtin/nope', 'other', 'linx/linx']) expect(conn.owns(foreign)).toBe(false);
+  });
+
   it('keeps the Pod router default when a chat stream omits the assistant role frames', async () => {
     const sse = 'data: {"id":"s1","choices":[{"delta":{"content":"hi"}}]}\n\n'
       + 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
@@ -160,7 +226,12 @@ describe('DeploymentBuiltinConnection', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('keeps an explicit credential id on the Pod router instead of the deployment key', async () => {
+  it.each([
+    // A bare Pod-looking reference and the built-in's OWN qualified reference must
+    // both respect the explicit-credential guard: the deployment key is never used.
+    ['linx', 'linx'],
+    ['xpod-builtin/linx', 'xpod-builtin/linx'],
+  ])('keeps an explicit credential id on the Pod router for reference %s', async (model) => {
     const fetchImpl = vi.fn(async () => {
       throw new Error('deployment built-in must not be used for explicit credentials');
     });
@@ -174,12 +245,34 @@ describe('DeploymentBuiltinConnection', () => {
       auth: DPOP_AUTH,
       protocol: 'chatCompletions',
       body: {
-        model: 'linx',
+        model,
         credential_id: 'pod-credential',
         messages: [{ role: 'user', content: 'hi' }],
       },
     })).rejects.toThrow('credential_unavailable');
     expect(router.route).toHaveBeenCalledWith(expect.objectContaining({ explicitCredentialId: 'pod-credential' }));
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('routes a foreign qualified namespace to the provided router with the original model preserved', async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error('deployment built-in must not serve a foreign provider namespace');
+    });
+    const router = {
+      listVisibleModels: vi.fn(async () => []),
+      route: vi.fn(async (input: { model?: string }) => {
+        // The caller's reference must reach the ORDINARY router unmodified: the
+        // built-in only strips its own namespace, never another provider's.
+        expect(input.model).toBe('custom/linx');
+        throw new Error('pod_route_reached');
+      }),
+    };
+    await expect(service(builtin(fetchImpl as never), router).complete({
+      auth: DPOP_AUTH,
+      protocol: 'chatCompletions',
+      body: { model: 'custom/linx', messages: [{ role: 'user', content: 'hi' }] },
+    })).rejects.toThrow('pod_route_reached');
+    expect(router.route).toHaveBeenCalled();
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -221,7 +314,11 @@ describe('DeploymentBuiltinConnection', () => {
     expect(JSON.stringify(failure)).not.toContain(KEY);
   });
 
-  it('decodes a real Responses SSE transcript (text, usage, completed) on the deployment route', async () => {
+  it.each([
+    ['linx', 'linx'],
+    ['xpod-builtin/linx', 'linx'],
+    ['xpod-builtin/linx-lite', 'linx-lite'],
+  ])('decodes a real Responses SSE transcript for model reference %s', async (requested, canonical) => {
     const sse = [
       'event: response.created',
       'data: {"type":"response.created","response":{"id":"resp_real"}}',
@@ -237,12 +334,15 @@ describe('DeploymentBuiltinConnection', () => {
       '',
       '',
     ].join('\n');
+    // A NON-identity map proves the qualified reference is normalized to the
+    // bare canonical id BEFORE the deployment map, and the upstream receives the
+    // configured physical model rather than `xpod-builtin/...`.
     const fetchImpl = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
       new Response(sse, { headers: { 'content-type': 'text/event-stream' } }));
-    const execution = await service(builtin(fetchImpl as never), podDenied).execute({
+    const execution = await service(builtin(fetchImpl as never, { [canonical]: `upstream-${canonical}` }), podDenied).execute({
       auth: DPOP_AUTH,
       protocol: 'responses',
-      body: { model: 'linx', stream: true, input: 'hi' },
+      body: { model: requested, stream: true, input: 'hi' },
     });
     const events = [];
     for await (const event of execution.events) events.push(event);
@@ -253,7 +353,18 @@ describe('DeploymentBuiltinConnection', () => {
       { type: 'usage', usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 } },
       { type: 'response.completed', finishReason: 'completed' },
     ]);
+    // Route EVIDENCE carries the bare canonical model and the builtin provider.
+    expect(execution.route.model).toBe(canonical);
+    expect(execution.route.provider.id).toBe(builtinId);
+    // Upstream body follows the non-identity map and never leaks the namespace.
+    const init = fetchImpl.mock.calls[0][1] as RequestInit;
+    const body = JSON.parse(String(init.body));
+    expect(body.model).toBe(`upstream-${canonical}`);
+    expect(JSON.stringify(body)).not.toContain('xpod-builtin/');
+    expect(body.user).toBe(WEB_ID);
+    expect(new Headers(init.headers).get('authorization')).toBe(`Bearer ${KEY}`);
     expect(String(fetchImpl.mock.calls[0][0])).toBe('http://ai-gateway/v1/responses');
+    expect(podDenied.route).not.toHaveBeenCalled();
   });
 
   it('fails a real Responses error event opaquely and never leaks the deployment key', async () => {
@@ -322,21 +433,32 @@ describe('DeploymentBuiltinConnection', () => {
     expect(`${failure.stack}${String(failure.cause ?? '')}`).not.toContain(secret);
   });
 
-  it('streams linx-lite and never forwards the caller DPoP token upstream', async () => {
+  it.each([
+    ['linx-lite', 'linx-lite'],
+    ['xpod-builtin/linx', 'linx'],
+    ['xpod-builtin/linx-lite', 'linx-lite'],
+  ])('streams Chat for model reference %s and never forwards the caller DPoP token upstream', async (requested, canonical) => {
     const sse = 'data: {"id":"s1","choices":[{"delta":{"content":"hi"}}]}\n\n'
       + 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
     const fetchImpl = vi.fn(async () => new Response(sse, { headers: { 'content-type': 'text/event-stream' } }));
-    const execution = await service(builtin(fetchImpl as never), podDenied).execute({
+    const execution = await service(builtin(fetchImpl as never, { [canonical]: `upstream-${canonical}` }), podDenied).execute({
       auth: DPOP_AUTH,
       protocol: 'chatCompletions',
-      body: { model: 'linx-lite', stream: true, messages: [{ role: 'user', content: 'hi' }] },
+      body: { model: requested, stream: true, messages: [{ role: 'user', content: 'hi' }] },
     });
     const events = [];
     for await (const event of execution.events) events.push(event);
     expect(events.some((event) => event.type === 'text.delta')).toBe(true);
+    expect(execution.route.model).toBe(canonical);
+    expect(execution.route.provider.id).toBe(builtinId);
     const init = (fetchImpl.mock.calls[0] as unknown[])[1] as RequestInit;
+    const body = JSON.parse(String(init.body));
+    expect(body.model).toBe(`upstream-${canonical}`);
+    expect(JSON.stringify(body)).not.toContain('xpod-builtin/');
+    expect(body.user).toBe(WEB_ID);
     expect(new Headers(init.headers).get('authorization')).toBe(`Bearer ${KEY}`);
     expect(init.redirect).toBe('error');
     expect(String(init.body)).not.toContain('dpop-token');
+    expect(podDenied.route).not.toHaveBeenCalled();
   });
 });

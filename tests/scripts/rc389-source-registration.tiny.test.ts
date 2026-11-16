@@ -11,11 +11,14 @@ import * as g from '../../scripts/lib/independent-admission/github-origin';
 import {CLI_SOURCE_VERSION_GROUPS} from '../../scripts/lib/independent-admission/source-rules';
 import {sourceBindingKey,selectGitHubSourceBindingGroup}
   from '../../scripts/lib/independent-admission/github-source-binding-groups';
-import {CURRENT_SOURCE_GROUP_COUNTS,completeObserved}
+import {CURRENT_CANONICAL_SOURCE_ROWS,CURRENT_SOURCE_GROUP_COUNTS,completeObserved}
   from './source-binding-group.fixture';
+import {currentProgramSdkConsumerGroups,currentProgramLinuxConsumerGroups}
+  from '../../scripts/lib/independent-admission/current-program-definition';
+import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 
 const hash=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
-const disk=(p:string)=>createHash('sha256').update(readFileSync(p)).digest('hex');
+const disk=(p:string)=>createHash('sha256').update(readTrackedSource(p)).digest('hex');
 
 /** dd7 whole-array hashes and their base counts (captured before any metadata edit). */
 const BASE_COUNTS:Record<string,number>={consumer:105,ci:214,sdkConsumer:109,linuxConsumer:110,
@@ -150,8 +153,13 @@ test('RC389: only the NEW CURRENT generation binds live disk and self-selects',(
  // Post-dd7 groups are history now: their self rows are FROZEN to the bytes they shipped
  // with, so they are covered by the whole-prefix hash proof above, not by a disk compare.
  // The live-disk check applies only to the newest appended generation per axis.
+ // The static arrays are frozen published history. The live-disk check runs over
+ // the CURRENT program definition, which appends one derived tail whose only
+ // moving row is the candidate-workflow declaration.
+ const liveFamilies:Record<string,readonly any[]>={consumer:families.consumer!,ci:families.ci!,
+  sdkConsumer:currentProgramSdkConsumerGroups() as any,linuxConsumer:currentProgramLinuxConsumerGroups() as any};
  for(const name of ['consumer','ci','sdkConsumer','linuxConsumer']){
-  const groups=families[name]!;
+  const groups=liveFamilies[name]!;
   const newest=name==='ci'?[groups.length-2,groups.length-1]:[groups.length-1];
   for(const index of newest){
    const grp=groups[index]!;
@@ -198,13 +206,16 @@ test('RC389: the promoted collector discriminator rejects a mixed predecessor',(
 });
 
 test('current canonical preserves the published order and appends the Undici patch once',()=>{
- const canonical=JSON.parse(readFileSync(
+ const canonical=JSON.parse(readTrackedSource(
   'scripts/lib/independent-admission/consumer-execution-current.json','utf8')) as any[];
- expect(canonical).toHaveLength(534);
- expect(new Set(canonical.map(x=>x.path)).size).toBe(534);
- expect(hash(canonical.map(x=>x.path)))
+ // The published 534-row prefix keeps its reviewed order and path identity; the
+ // CURRENT program-definition helper is appended once after it.
+ expect(canonical).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
+ expect(new Set(canonical.map(x=>x.path)).size).toBe(CURRENT_CANONICAL_SOURCE_ROWS);
+ expect(hash(canonical.slice(0,534).map(x=>x.path)))
   .toBe('7077fc3c6af7c0b6b24a48308924546a63c5bacc51736e06040646b763bd7d50');
- expect(canonical.at(-1).path).toBe('patches/comunica-undici-entry.cjs');
+ expect(canonical.at(-1).path).toBe('scripts/lib/independent-admission/current-program-definition.ts');
+ expect(canonical.at(-2).path).toBe('patches/comunica-undici-entry.cjs');
  for(const row of canonical){
   expect(Object.keys(row).sort()).toEqual(['path','sha256']);
   expect(row.sha256).toBe(disk(row.path));

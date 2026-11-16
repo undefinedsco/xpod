@@ -83,9 +83,28 @@ export class DeploymentBuiltinConnection {
     return DEPLOYMENT_BUILTIN_MODEL_IDS;
   }
 
+  /**
+   * Bare canonical id for a model this connection owns, else undefined.
+   *
+   * The provider pool advertises this built-in as `xpod-builtin`, so a client
+   * following that provider/model reference sends `xpod-builtin/linx`. Its OWN
+   * prefix is stripped once; a bare declared id is returned as-is. Anything
+   * else (another provider's prefix, `custom/linx`, an undeclared id, empty)
+   * yields undefined so callers leave the reference untouched.
+   */
+  public canonicalModel(model: string | undefined): string | undefined {
+    if (typeof model !== 'string') return undefined;
+    const trimmed = model.trim();
+    if (!trimmed) return undefined;
+    const prefix = `${this.id}/`;
+    // Only declared ids qualify; `xpod-builtin/other` must not become `other`.
+    const bare = trimmed.startsWith(prefix) ? trimmed.slice(prefix.length) : trimmed;
+    return (DEPLOYMENT_BUILTIN_MODEL_IDS as readonly string[]).includes(bare) ? bare : undefined;
+  }
+
+  /** True only for this connection's bare ids or its own qualified namespace. */
   public owns(model: string | undefined): boolean {
-    return typeof model === 'string'
-      && (DEPLOYMENT_BUILTIN_MODEL_IDS as readonly string[]).includes(model.trim());
+    return this.canonicalModel(model) !== undefined;
   }
 
   /** Static projection: listing never depends on upstream reachability or the caller's Pod. */
@@ -110,7 +129,11 @@ export class DeploymentBuiltinConnection {
   private rewrite(body: unknown, auth: AuthContext): unknown {
     if (!body || typeof body !== 'object' || Array.isArray(body)) return body;
     const record = { ...(body as Record<string, unknown>) };
-    const model = typeof record.model === 'string' ? record.model.trim() : '';
+    // Normalize the caller's own-qualified reference to the bare canonical id
+    // BEFORE the deployment model map, so the upstream receives the configured
+    // physical model and never `xpod-builtin/linx`.
+    const model = this.canonicalModel(typeof record.model === 'string' ? record.model : undefined)
+      ?? (typeof record.model === 'string' ? record.model.trim() : '');
     record.model = this.modelMap[model] ?? model;
     // Attribution for the ai-gateway (LiteLLM treats `user` as the end user): the verified WebID.
     const webId = getWebId(auth);

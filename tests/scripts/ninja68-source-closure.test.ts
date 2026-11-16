@@ -1,3 +1,4 @@
+import {currentProgramSdkConsumerGroups} from '../../scripts/lib/independent-admission/current-program-definition';
 /** Current SDK consumer load-bearing import closure, exercised ONLY through the
  * generic production selector used by the SDK issuer. No bespoke validator, no
  * parallel API: if any new helper is missing or changed, the current consumer
@@ -7,11 +8,12 @@ import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import path from 'node:path';
 import {
-  QLEVER_SDK_CONSUMER_GROUPS, QLEVER_SDK_NINJA_SOURCE_BINDINGS,
+  QLEVER_SDK_NINJA_SOURCE_BINDINGS,
 } from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import {
   selectGitHubSourceBindingGroup, sourceBindingKey,
 } from '../../scripts/lib/independent-admission/github-source-binding-groups';
+import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 
 const ROOT = path.resolve(import.meta.dir, '../..');
 const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex');
@@ -20,12 +22,12 @@ const NEW_ROLES = [
   'qlever/scripts/link_command_adapter.py',
   'qlever/scripts/link_command_origin.py',
 ] as const;
-const current = () => QLEVER_SDK_CONSUMER_GROUPS.at(-1)!;
+const current = () => currentProgramSdkConsumerGroups().at(-1)!;
 /** observed map built from ACTUAL bytes on disk for every member of the slice */
 const observedFromDisk = () => {
   const g = current();
   const rows = [...g.selectors, ...(g.secondarySelectors ?? []), ...g.sourceBindings];
-  return new Map(rows.map(r => [sourceBindingKey(r), sha(readFileSync(path.join(ROOT, r.path)))]));
+  return new Map(rows.map(r => [sourceBindingKey(r), sha(readTrackedSource(path.join(ROOT, r.path)))]));
 };
 
 /** The immutable e4 declaration pins HISTORICAL bytes. It must keep the exact
@@ -50,7 +52,7 @@ test('the CURRENT slice binds the same three paths to the real bytes today', () 
   for (const row of QLEVER_SDK_NINJA_SOURCE_BINDINGS) {
     const live = rows.find(r => r.path === row.path);
     expect(live).toBeDefined();
-    expect(live!.sha256).toBe(sha(readFileSync(path.join(ROOT, row.path))));
+    expect(live!.sha256).toBe(sha(readTrackedSource(path.join(ROOT, row.path))));
     expect(live!.sha256).not.toBe(row.sha256);
   }
 });
@@ -64,7 +66,8 @@ test('the new helpers are declared in BOTH secondarySelectors and sourceBindings
 });
 
 test('the generic selector selects the current consumer group from real current bytes', () => {
-  expect(selectGitHubSourceBindingGroup(QLEVER_SDK_CONSUMER_GROUPS, observedFromDisk())).toBe(current());
+  const groups=currentProgramSdkConsumerGroups();
+  expect(selectGitHubSourceBindingGroup(groups, observedFromDisk())).toBe(groups.at(-1)!);
 });
 
 test('a mutated new-helper digest makes the current consumer group unselectable (generic selector)', () => {
@@ -73,7 +76,7 @@ test('a mutated new-helper digest makes the current consumer group unselectable 
     for (const r of [...(current().secondarySelectors ?? []), ...current().sourceBindings]) {
       if (r.path === role) observed.set(sourceBindingKey(r), 'f'.repeat(64));
     }
-    expect(() => selectGitHubSourceBindingGroup(QLEVER_SDK_CONSUMER_GROUPS, observed))
+    expect(() => selectGitHubSourceBindingGroup(currentProgramSdkConsumerGroups(), observed))
       .toThrow(/exact workflow\/source group not reviewed/u);
   }
 });
@@ -86,7 +89,7 @@ test('a suppressed new-helper role makes the current consumer group unselectable
     }
     // A role suppressed BEFORE the staged walk completes is reported by the
     // explicit staged-ownership category; the refusal itself is unchanged.
-    expect(() => selectGitHubSourceBindingGroup(QLEVER_SDK_CONSUMER_GROUPS, observed))
+    expect(() => selectGitHubSourceBindingGroup(currentProgramSdkConsumerGroups(), observed))
       .toThrow(/staged secondary observation incomplete/u);
   }
 });
