@@ -297,7 +297,7 @@
     }
   },
   "optionalDependencies": {
-    "@undefineds.co/xpod-darwin-arm64": "0.4.32"
+    "@undefineds.co/xpod-darwin-arm64": "0.4.33"
   },
   "resolutions": {
     "@inrupt/solid-client-authn-browser": "^3.1.1",
