@@ -135,6 +135,8 @@ export interface ApiContainerConfig {
   /** CSS Token 端点 */
   cssTokenEndpoint: string;
   solidBaseUrl?: string;
+  /** Published API endpoint from XPOD_API_BASE_URL; distinct from the Solid identity origin. */
+  apiBaseUrl?: string;
   /** Captured CSS filesystem root for this runtime, independent of later process.env changes. */
   solidRootFilePath?: string;
 

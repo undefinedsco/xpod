@@ -56,10 +56,33 @@ export type PlatformProviderReason =
   | 'cleanup'
   | 'unexpected';
 
+/**
+ * The ONE finite authority for transport kinds. The union below and the runtime
+ * guard are derived from this list, so no second table can drift from it.
+ */
+export const PLATFORM_TRANSPORT_KINDS = [
+  'timeout',
+  'aborted',
+  'redirect',
+  'tls',
+  'dns',
+  'refused',
+  'reset',
+  'network',
+] as const;
+
+export type PlatformTransportKind = typeof PLATFORM_TRANSPORT_KINDS[number];
+
+/** Runtime guard: a tampered or foreign value can never pass as a kind. */
+export function isPlatformTransportKind(value: unknown): value is PlatformTransportKind {
+  return typeof value === 'string' && (PLATFORM_TRANSPORT_KINDS as readonly string[]).includes(value);
+}
+
 export class PlatformProviderError extends Error {
   public constructor(
     public readonly reason: PlatformProviderReason,
     public readonly status?: number,
+    public readonly transport?: PlatformTransportKind,
   ) {
     super(reason);
     this.name = 'PlatformProviderError';
@@ -79,6 +102,7 @@ export interface PlatformProviderSummary {
   ok: boolean;
   reason: PlatformProviderReason | 'issued' | 'revoked' | 'already-revoked';
   status?: number;
+  transport?: PlatformTransportKind;
 }
 
 interface PlatformProviderReceipt {
@@ -784,6 +808,55 @@ function accountHeaders(authorization: string): Record<string, string> {
   return { accept: 'application/json', authorization: `CSS-Account-Token ${authorization}` };
 }
 
+/**
+ * Bound one transport failure to a closed token. The owned AbortSignal is the
+ * only authority for timeout vs caller abort; everything after that reads
+ * `code`/`name` first and only falls back to a narrow substring for the two
+ * runtimes that expose no code. Raw text never leaves this function.
+ */
+export function classifyTransportKind(error: unknown, signal: AbortSignal): PlatformTransportKind {
+  const signalReasonName = signal.aborted && signal.reason && typeof signal.reason === 'object'
+    ? Reflect.get(signal.reason, 'name') : undefined;
+  const errorName = error && typeof error === 'object' ? Reflect.get(error, 'name') : undefined;
+  // Only the owned AbortSignal.timeout() flips this reason name; any other
+  // abort (caller cancellation, foreign signal) is not a timeout.
+  if (signal.aborted) {
+    if (signalReasonName === 'TimeoutError' || errorName === 'TimeoutError') return 'timeout';
+    return 'aborted';
+  }
+  const codes = new Set<string>();
+  const names = new Set<string>();
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current && typeof current === 'object'; depth += 1) {
+    const code = Reflect.get(current, 'code');
+    const name = Reflect.get(current, 'name');
+    if (typeof code === 'string' && code.length > 0) codes.add(code);
+    if (typeof name === 'string' && name.length > 0) names.add(name);
+    current = Reflect.get(current, 'cause');
+  }
+  const hasCode = (...values: string[]): boolean => values.some(value => codes.has(value));
+  if (errorName === 'TimeoutError' || names.has('TimeoutError')
+    || hasCode('UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'ETIMEDOUT')) {
+    return 'timeout';
+  }
+  if (errorName === 'AbortError' || names.has('AbortError')) return 'aborted';
+  if (hasCode('UnexpectedRedirect', 'UND_ERR_MAX_REDIRECT')) return 'redirect';
+  if (hasCode('CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+    'SELF_SIGNED_CERT_IN_CHAIN', 'ERR_TLS_CERT_ALTNAME_INVALID', 'CERT_NOT_YET_VALID')) {
+    return 'tls';
+  }
+  if (hasCode('ENOTFOUND', 'EAI_AGAIN', 'EAI_NONAME')) return 'dns';
+  if (hasCode('ECONNREFUSED', 'ConnectionRefused')) return 'refused';
+  if (hasCode('ECONNRESET', 'EPIPE', 'UND_ERR_SOCKET', 'UND_ERR_CLOSED')) return 'reset';
+  // Node's undici exposes no code for a rejected redirect; its cause message is
+  // the only signal, and is matched here without being forwarded anywhere.
+  const causeMessage = error && typeof error === 'object' && Reflect.get(error, 'cause') &&
+    typeof Reflect.get(error, 'cause') === 'object'
+    ? Reflect.get(Reflect.get(error, 'cause'), 'message') : undefined;
+  if (typeof causeMessage === 'string' && causeMessage === 'unexpected redirect') return 'redirect';
+  return 'network';
+}
+
 async function boundedFetch(
   fetchImpl: typeof fetch,
   input: string | URL,
@@ -793,8 +866,8 @@ async function boundedFetch(
   const signal = AbortSignal.timeout(timeoutMs);
   try {
     return await fetchImpl(input, { ...init, redirect: 'error', signal });
-  } catch {
-    throw new PlatformProviderError('unexpected');
+  } catch (error) {
+    throw new PlatformProviderError('unexpected', undefined, classifyTransportKind(error, signal));
   }
 }
 
@@ -849,6 +922,8 @@ export function safeSummary(error: unknown, phase: PlatformProviderPhase): Platf
       ok: false,
       reason: error.reason,
       ...(Number.isInteger(error.status) ? { status: error.status } : {}),
+      // Runtime-validated: a tampered/aliased value never leaves the process.
+      ...(isPlatformTransportKind(error.transport) ? { transport: error.transport } : {}),
     };
   }
   return { phase, ok: false, reason: 'unexpected' };

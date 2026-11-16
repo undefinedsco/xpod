@@ -12,6 +12,7 @@ import {
 } from 'jose';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { SolidTokenAuthenticator } from '../../../src/api/auth/SolidTokenAuthenticator';
+import type { AuthResult } from '../../../src/api/auth/Authenticator';
 import { GatewayProxy, getFreePort } from '../../../src/runtime';
 import { Supervisor } from '../../../src/supervisor/Supervisor';
 
@@ -21,6 +22,9 @@ const profileUrl = 'http://127.0.0.1:3000/test/profile/card';
 const internalOrigin = 'http://127.0.0.1:5737';
 const canonicalIssuer = 'https://acceptance-local.nodes.acceptance.test/';
 const canonicalWebId = `${canonicalIssuer}test/profile/card#me`;
+const canonicalApiOrigin = 'https://api.acceptance-local.nodes.acceptance.test';
+const canonicalApiUrl = `${canonicalApiOrigin}/v1/models`;
+const insecureApiOrigin = canonicalApiOrigin.replace('https:', 'http:');
 
 let privateKey: KeyLike;
 let publicJwk: JWK;
@@ -652,6 +656,102 @@ describe('SolidTokenAuthenticator internal dereference', () => {
     }
   });
 
+  it('accepts a proof signed for the configured API origin arriving through an alias host', async() => {
+    const result = await authenticateApiOriginCase({ htu: canonicalApiUrl });
+    expect(result).toMatchObject({ success: true, context: { tokenType: 'DPoP', webId: canonicalWebId } });
+  });
+
+  it('keeps the identity origin as a fallback when an API origin is also configured', async() => {
+    const result = await authenticateApiOriginCase({
+      htu: `${canonicalIssuer}v1/models`,
+      headers: loopbackRequestHeaders(),
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects an API-origin proof when no API origin is configured', async() => {
+    const result = await authenticateApiOriginCase({ htu: canonicalApiUrl, apiBaseUrl: null });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an API-origin proof signed for a different method', async() => {
+    const result = await authenticateApiOriginCase({ htu: canonicalApiUrl, htm: 'POST' });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an API-origin proof signed for a different path', async() => {
+    const result = await authenticateApiOriginCase({ htu: `${canonicalApiOrigin}/v1/other` });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an API-origin proof signed for a foreign origin', async() => {
+    const result = await authenticateApiOriginCase({ htu: 'https://foreign.example/v1/models' });
+    expect(result.success).toBe(false);
+  });
+
+  it('preserves the request path and query through the API-origin fallback', async() => {
+    // DPoP htu never carries the query; the fallback still rebuilds the live request.
+    const result = await authenticateApiOriginCase({ htu: canonicalApiUrl, url: '/v1/models?limit=1' });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects an API-origin proof whose htu keeps a query string', async() => {
+    const result = await authenticateApiOriginCase({
+      htu: `${canonicalApiUrl}?limit=1`,
+      url: '/v1/models?limit=1',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('does not let local-route hint headers authorize the configured API origin', async() => {
+    const result = await authenticateApiOriginCase({
+      htu: canonicalApiUrl,
+      headers: {
+        host: '128.0.0.1:5173',
+        'x-forwarded-host': '128.0.0.1:5173',
+        'x-forwarded-proto': 'http',
+        'x-xpod-canonical-url': canonicalApiUrl,
+        'x-xpod-canonical-origin': canonicalApiOrigin,
+        'x-xpod-canonical-host': 'api.sealosgzg.example',
+        'x-xpod-local-route-url': 'http://128.0.0.1:5173/v1/models',
+      },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('does not trust a non-HTTPS API origin even when the proof names it exactly', async() => {
+    // Same origin AND path as the configured (insecure) value: only an
+    // incorrectly trusted http fallback could verify it, because the request
+    // itself arrives over https at a different host.
+    const result = await authenticateApiOriginCase({
+      htu: `${insecureApiOrigin}/v1/models`,
+      apiBaseUrl: insecureApiOrigin,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('keeps identity-origin proofs working when the API origin repeats it', async() => {
+    const result = await authenticateApiOriginCase({
+      htu: `${canonicalIssuer}v1/models`,
+      apiBaseUrl: canonicalIssuer.slice(0, -1),
+      headers: loopbackRequestHeaders(),
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('uses only the origin of a configured API endpoint that includes a path', async() => {
+    const result = await authenticateApiOriginCase({
+      htu: canonicalApiUrl,
+      apiBaseUrl: `${canonicalApiOrigin}/ignored/prefix`,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects malformed configured API endpoints without widening the fallback', async() => {
+    const result = await authenticateApiOriginCase({ htu: canonicalApiUrl, apiBaseUrl: 'not a url' });
+    expect(result.success).toBe(false);
+  });
+
   it('retains the primary ath failure when the canonical retry also fails', async() => {
     // The canonical retry re-verifies the same proof against the configured origin.
     // Its htu mismatch must not replace the real reason the caller failed.
@@ -883,6 +983,60 @@ async function signedCanonicalRequest(method: string, htu: string): Promise<{ ac
     privateKey: proofKeys.privateKey,
   });
   return { accessToken, proof };
+}
+
+/** No-hint request from the API alias host: the proxy lost the canonical Host. */
+function aliasRequestHeaders(): Record<string, string> {
+  return {
+    host: 'api.sealosgzg.example',
+    'x-forwarded-host': 'api.sealosgzg.example',
+    'x-forwarded-proto': 'https',
+  };
+}
+
+function loopbackRequestHeaders(): Record<string, string> {
+  return {
+    host: '127.0.0.1:5173',
+    'x-forwarded-host': '127.0.0.1:5173',
+    'x-forwarded-proto': 'http',
+  };
+}
+
+/**
+ * One real-signed DPoP request against an authenticator configured with the
+ * identity origin plus (by default) the published API origin.
+ *
+ * Each caller keeps its distinct proof/config/header inputs and assertion
+ * visible; only the token signing, request assembly and global cleanup live here.
+ */
+async function authenticateApiOriginCase(input: {
+  htu: string;
+  htm?: string;
+  url?: string;
+  /** `null` omits the API origin entirely. */
+  apiBaseUrl?: string | null;
+  headers?: Record<string, string>;
+}): Promise<AuthResult> {
+  stubCanonicalFetch();
+  const { accessToken, proof } = await signedCanonicalRequest(input.htm ?? 'GET', input.htu);
+  try {
+    const authenticator = new SolidTokenAuthenticator({
+      publicBaseUrl: canonicalIssuer,
+      ...(input.apiBaseUrl === null ? {} : { apiBaseUrl: input.apiBaseUrl ?? canonicalApiOrigin }),
+      internalBaseUrl: `${internalOrigin}/.oidc/token`,
+    });
+    return await authenticator.authenticate({
+      method: 'GET',
+      url: input.url ?? '/v1/models',
+      headers: {
+        authorization: `DPoP ${accessToken}`,
+        dpop: proof,
+        ...(input.headers ?? aliasRequestHeaders()),
+      },
+    } as never);
+  } finally {
+    vi.unstubAllGlobals();
+  }
 }
 
 function canonicalRouteHeaders(input: {
