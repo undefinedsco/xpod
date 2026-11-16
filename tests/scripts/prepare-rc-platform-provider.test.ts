@@ -5,9 +5,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   PlatformProviderError,
   assertOwnedCredentialResource,
+  classifyTransportKind,
   cleanupPlatformProvider,
   createPlatformProvider,
   createPlatformProviderForAccount,
+  isPlatformTransportKind,
   requirePlatformOrigin,
   requireRcBaseUrl,
   safeSummary,
@@ -207,6 +209,40 @@ describe('prepare RC platform provider', () => {
       baseUrl: `${RC}/`, seedConfigPath: files.seed, keyFile: files.keyFile, receiptFile: files.receiptFile,
       fetchImpl: baseFetch(state), nonce: 'rc-platform-provider-failmodels',
     })).rejects.toMatchObject({ reason: 'models', status: 404 });
+    expect(state.deletes).toEqual([`/.account/account/alice/client-credentials/${STORAGE_ID}/`]);
+    await expect(stat(files.keyFile)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(stat(files.receiptFile)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('projects a real /v1/models transport rejection as a closed TLS token and still revokes exactly once', async () => {
+    const files = await paths();
+    const state = newFixture();
+    const secretLike = 'Bearer sk-live-9f2c1d4b8a7e6f5c at https://id-rc.undefineds.cn/v1/models?token=abc';
+    const tlsRejection = ((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
+      if ((init?.method ?? 'GET') === 'GET' && url.pathname === '/v1/models') {
+        // A real Node/undici TLS rejection: no code on the outer error, the
+        // certificate code on the cause. The message carries hostile text that
+        // must never survive into any summary.
+        return Promise.reject(new TypeError(secretLike,
+          { cause: Object.assign(new Error(secretLike), { code: 'DEPTH_ZERO_SELF_SIGNED_CERT' }) }));
+      }
+      return baseFetch(state)(input, init);
+    }) as typeof fetch;
+    const error = await createPlatformProvider({
+      baseUrl: `${RC}/`, seedConfigPath: files.seed, keyFile: files.keyFile, receiptFile: files.receiptFile,
+      fetchImpl: tlsRejection, nonce: 'rc-platform-provider-transport-tls',
+    }).catch((failure: unknown) => failure);
+
+    expect(error).toBeInstanceOf(PlatformProviderError);
+    expect(error).toMatchObject({ reason: 'unexpected', transport: 'tls' });
+    // The public projection names the class and nothing else.
+    expect(safeSummary(error, 'create')).toEqual({ phase: 'create', ok: false, reason: 'unexpected', transport: 'tls' });
+    expect(JSON.stringify(safeSummary(error, 'create'))).not.toContain('sk-live');
+    expect(JSON.stringify(safeSummary(error, 'create'))).not.toContain('id-rc');
+    expect(JSON.stringify(safeSummary(error, 'create'))).not.toContain('token=');
+    // The identity was already proven, so the owned credential is revoked once
+    // and no key/receipt is left behind.
     expect(state.deletes).toEqual([`/.account/account/alice/client-credentials/${STORAGE_ID}/`]);
     await expect(stat(files.keyFile)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(stat(files.receiptFile)).rejects.toMatchObject({ code: 'ENOENT' });
@@ -473,7 +509,111 @@ describe('prepare RC platform provider', () => {
       .toEqual({ phase: 'create', ok: false, reason: 'models', status: 404 });
     expect(safeSummary(new Error('Bearer sk-secret at alice@rc.example'), 'create'))
       .toEqual({ phase: 'create', ok: false, reason: 'unexpected' });
+    // A transport token is additive: the pre-existing closed reason is kept.
+    expect(safeSummary(new PlatformProviderError('unexpected', undefined, 'tls'), 'create'))
+      .toEqual({ phase: 'create', ok: false, reason: 'unexpected', transport: 'tls' });
   });
+
+  it('keeps the non-200 reason and status untouched, and still refuses redirects', async () => {
+    const files = await paths();
+    const state = newFixture({ modelsStatus: 404, modelsBody: { error: 'not found' } });
+    const non200 = createPlatformProvider({
+      baseUrl: `${RC}/`, seedConfigPath: files.seed, keyFile: files.keyFile, receiptFile: files.receiptFile,
+      fetchImpl: baseFetch(state), nonce: 'rc-platform-provider-failmodels',
+    });
+    const non200Error = await non200.catch(error => error);
+    expect(non200Error).toBeInstanceOf(PlatformProviderError);
+    expect({ reason: non200Error.reason, status: non200Error.status, transport: non200Error.transport })
+      .toEqual({ reason: 'models', status: 404, transport: undefined });
+
+    const redirectState = newFixture({ redirect: true });
+    const redirect = createPlatformProvider({
+      baseUrl: `${RC}/`, seedConfigPath: files.seed, keyFile: files.keyFile, receiptFile: files.receiptFile,
+      fetchImpl: baseFetch(redirectState),
+    });
+    // This fixture returns a 302 Response (from the first Account step) instead
+    // of rejecting, so it proves the redirect is NEVER followed and is surfaced
+    // as a closed reason; a real transport-level redirect rejection is covered
+    // by the classifier tests above.
+    const redirectError = await redirect.catch(error => error);
+    expect(redirectError).toBeInstanceOf(PlatformProviderError);
+    expect(redirectError.reason).toBe('account-login');
+    expect(redirectState.issuedBodies).toEqual([]);
+    expect(JSON.stringify(safeSummary(redirectError, 'create')))
+      .toBe(JSON.stringify({ phase: 'create', ok: false, reason: 'account-login', status: 302 }));
+  });
+});
+
+describe('closed transport classification for a rejected bounded fetch', () => {
+  const live = () => AbortSignal.timeout(60_000);
+  const failure = (fields: Record<string, unknown>): TypeError => Object.assign(new TypeError('fetch failed'), fields);
+  const caused = (code: string): TypeError => failure({ cause: Object.assign(new Error('cause'), { code }) });
+
+  it('separates a fired owned timeout from a caller abort', async () => {
+    const timeoutSignal = AbortSignal.timeout(20);
+    await new Promise(resolve => setTimeout(resolve, 60));
+    expect(timeoutSignal.aborted).toBe(true);
+    expect(classifyTransportKind(new TypeError('fetch failed'), timeoutSignal)).toBe('timeout');
+    // Before the deadline fires the same error is not yet a timeout.
+    expect(classifyTransportKind(new TypeError('fetch failed'), live())).toBe('network');
+    // An AbortError-shaped error alone must NOT be labelled a timeout; only the
+    // owned signal's reason name can do that.
+    expect(classifyTransportKind(Object.assign(new Error('aborted'), { name: 'AbortError' }), live()))
+      .toBe('aborted');
+    const controller = new AbortController();
+    controller.abort(new Error('caller cancel'));
+    expect(classifyTransportKind(new TypeError('fetch failed'), controller.signal)).toBe('aborted');
+  });
+
+  it('classifies Node cause codes for tls, dns, refused and reset', () => {
+    expect(classifyTransportKind(caused('DEPTH_ZERO_SELF_SIGNED_CERT'), live())).toBe('tls');
+    expect(classifyTransportKind(caused('CERT_HAS_EXPIRED'), live())).toBe('tls');
+    expect(classifyTransportKind(caused('ENOTFOUND'), live())).toBe('dns');
+    expect(classifyTransportKind(caused('EAI_AGAIN'), live())).toBe('dns');
+    expect(classifyTransportKind(caused('ECONNREFUSED'), live())).toBe('refused');
+    expect(classifyTransportKind(caused('ECONNRESET'), live())).toBe('reset');
+    expect(classifyTransportKind(caused('UND_ERR_SOCKET'), live())).toBe('reset');
+    expect(classifyTransportKind(caused('UND_ERR_CONNECT_TIMEOUT'), live())).toBe('timeout');
+    expect(classifyTransportKind(caused('UND_ERR_BODY_TIMEOUT'), live())).toBe('timeout');
+  });
+
+  it('classifies Bun top-level codes and both runtimes\' redirect rejection', () => {
+    expect(classifyTransportKind(failure({ code: 'ConnectionRefused' }), live())).toBe('refused');
+    expect(classifyTransportKind(failure({ code: 'ECONNRESET' }), live())).toBe('reset');
+    expect(classifyTransportKind(failure({ code: 'DEPTH_ZERO_SELF_SIGNED_CERT' }), live())).toBe('tls');
+    expect(classifyTransportKind(failure({ code: 'UnexpectedRedirect' }), live())).toBe('redirect');
+    // Node/undici reports the redirect only as a cause message.
+    expect(classifyTransportKind(failure({ cause: new Error('unexpected redirect') }), live())).toBe('redirect');
+    expect(classifyTransportKind(failure({ name: 'TimeoutError' }), live())).toBe('timeout');
+  });
+
+  it('drops a tampered transport value instead of forwarding it', () => {
+    const tampered = new PlatformProviderError('unexpected');
+    // Simulates a caller that overwrites the readonly field at runtime.
+    Object.defineProperty(tampered, 'transport', { value: 'Bearer sk-live-TOKEN https://id.undefineds.co', enumerable: true });
+    const summary = safeSummary(tampered, 'create');
+    expect(summary).toEqual({ phase: 'create', ok: false, reason: 'unexpected' });
+    expect(JSON.stringify(summary)).not.toContain('sk-live');
+    expect(JSON.stringify(summary)).not.toContain('id.undefineds.co');
+    expect(isPlatformTransportKind('tls')).toBe(true);
+    expect(isPlatformTransportKind('Bearer secret')).toBe(false);
+    expect(isPlatformTransportKind(undefined)).toBe(false);
+  });
+
+  it('never forwards raw error text through the safe summary', () => {
+    const planted = 'Bearer sk-live-TOKEN123 at https://id.undefineds.co/v1/models?token=abc';
+    const error = new PlatformProviderError('unexpected', undefined, 'network');
+    error.message = planted;
+    error.stack = `Error: ${planted}`;
+    const summary = JSON.stringify(safeSummary(error, 'create'));
+    expect(summary).not.toContain('sk-live');
+    expect(summary).not.toContain('TOKEN123');
+    expect(summary).not.toContain('id.undefineds.co');
+    expect(summary).not.toContain('token=');
+    expect(JSON.parse(summary)).toEqual({ phase: 'create', ok: false, reason: 'unexpected', transport: 'network' });
+    expect(Object.keys(safeSummary(error, 'create')).sort()).toEqual(['ok', 'phase', 'reason', 'transport']);
+  });
+
 });
 
 describe('process-local platform provider for an already authenticated account', () => {

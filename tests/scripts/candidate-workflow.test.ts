@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module';
-import { readFile, mkdtemp, mkdir, writeFile, rm, chmod } from 'node:fs/promises';
+import { readFile, mkdtemp, mkdir, writeFile, rm, chmod, copyFile } from 'node:fs/promises';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -36,6 +36,80 @@ function jobRunText(workflow: Workflow, jobName: string): string {
 
 function allRuns(workflow: Workflow): string[] {
   return Object.values(workflow.jobs ?? {}).flatMap((job: any) => stepRuns(job));
+}
+
+/**
+ * The metadata step derives the target version from the checkout's package.json
+ * and asks `origin` whether that version is already released from another
+ * commit. Both facts must come from a controlled git fixture: the developer's
+ * working repo changes version line and published tags over time, and a fake
+ * SOURCE_SHA against the real `origin` correctly trips the admission guard.
+ *
+ * The fixture copies the ACTUAL entry script and its require closure, then runs
+ * the unchanged workflow shell with the fixture as cwd. `origin` is the fixture
+ * itself, so `git ls-remote` never touches GitHub; the peeled annotated-tag
+ * behaviour is real.
+ */
+async function createMetadataGitFixture(
+  directory: string,
+  version: string,
+  tagAt: 'none' | 'other' | 'accepted',
+): Promise<{
+  fixture: string;
+  acceptedSha: string;
+  otherSha: string;
+  output: string;
+}> {
+  const fixture = path.join(directory, 'fixture');
+  await mkdir(path.join(fixture, 'scripts'), { recursive: true });
+  for (const script of ['release-candidate.cjs', 'platform-binaries.cjs']) {
+    await copyFile(path.join(repoRoot, 'scripts', script), path.join(fixture, 'scripts', script));
+  }
+  await writeFile(path.join(fixture, 'package.json'),
+    `${JSON.stringify({ name: '@undefineds.co/xpod', version }, null, 2)}\n`);
+  const git = (...args: string[]) => execFileSync('git', args, {
+    cwd: fixture, encoding: 'utf8', stdio: 'pipe',
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: 'Candidate Fixture', GIT_AUTHOR_EMAIL: 'candidate-fixture@example.invalid',
+      GIT_AUTHOR_DATE: '2026-01-02T00:00:00Z',
+      GIT_COMMITTER_NAME: 'Candidate Fixture', GIT_COMMITTER_EMAIL: 'candidate-fixture@example.invalid',
+      GIT_COMMITTER_DATE: '2026-01-02T00:00:00Z',
+      GIT_CONFIG_NOSYSTEM: '1',
+      // Never inherit a developer's global signing/hooks config: fixture
+      // commits and tags must be deterministic.
+      GIT_CONFIG_GLOBAL: '/dev/null',
+    },
+  }).trim();
+  git('init', '--quiet', '--initial-branch=staging');
+  git('add', 'package.json', 'scripts/release-candidate.cjs', 'scripts/platform-binaries.cjs');
+  git('commit', '--quiet', '--message', 'fixture: released version at another commit');
+  const otherSha = git('rev-parse', 'HEAD');
+  await writeFile(path.join(fixture, 'accepted.txt'), `${version}\n`);
+  git('add', 'accepted.txt');
+  git('commit', '--quiet', '--message', 'fixture: accepted tag commit');
+  const acceptedSha = git('rev-parse', 'HEAD');
+  // Annotated tag: the workflow asks for both the tag object and its peeled
+  // commit, and takes the last line. Tagging is explicit per case so the
+  // "already released from another commit" branch stays real and observable.
+  if (tagAt !== 'none') {
+    git('tag', '--annotate', `v${version}`, '--message', `fixture release v${version}`,
+      tagAt === 'other' ? otherSha : acceptedSha);
+  }
+  git('remote', 'add', 'origin', fixture);
+  return { fixture, acceptedSha, otherSha, output: path.join(directory, 'metadata-output') };
+}
+
+function runMetadataStep(run: string, fixture: string, env: Record<string, string>): void {
+  execFileSync('bash', ['-euo', 'pipefail', '-c', run], {
+    cwd: fixture, stdio: 'pipe',
+    env: { ...process.env, ...env },
+  });
+}
+
+function readMetadataOutput(text: string): Record<string, string> {
+  return Object.fromEntries(text.trim().split('\n')
+    .map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
 }
 
 describe('release candidate workflow', () => {
@@ -287,21 +361,60 @@ esac
     await mkdir(parent, { recursive: true });
     const directory = await mkdtemp(path.join(parent, 'case-'));
     try {
+      const fixture = await createMetadataGitFixture(directory, '9.8.7', 'none');
       for (const branch of ['staging', 'rc', 'main', 'release/0.4.27', 'codex/feature']) {
-        const output = path.join(directory, 'output');
-        await writeFile(output, '');
-        const execute = () => execFileSync('bash', ['-euo', 'pipefail', '-c', run], {
-          cwd: repoRoot, stdio: 'pipe', env: { ...process.env, REF_NAME: branch,
-            RUN_NUMBER: '42', RUN_ATTEMPT: '1', SOURCE_SHA: 'a'.repeat(40), GITHUB_OUTPUT: output },
+        await writeFile(fixture.output, '');
+        const execute = () => runMetadataStep(run, fixture.fixture, {
+          REF_NAME: branch, RUN_NUMBER: '42', RUN_ATTEMPT: '1',
+          SOURCE_SHA: fixture.acceptedSha, GITHUB_OUTPUT: fixture.output,
         });
         if (branch === 'staging') {
           expect(execute).not.toThrow();
-          expect(await readFile(output, 'utf8')).toContain(`sourceSha=${'a'.repeat(40)}`);
+          expect(await readFile(fixture.output, 'utf8')).toContain(`sourceSha=${fixture.acceptedSha}`);
         } else {
           expect(execute).toThrow();
-          expect(await readFile(output, 'utf8')).toBe('');
+          expect(await readFile(fixture.output, 'utf8')).toBe('');
         }
       }
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
+  it('rejects a released target from another commit but revalidates the accepted tag commit', async () => {
+    const workflow = await loadWorkflow();
+    const run = workflow.jobs.metadata.steps.find((step: any) => step.id === 'candidate').run;
+    const parent = path.join(repoRoot, '.test-data', 'rc-released-version-admission');
+    await mkdir(parent, { recursive: true });
+    const directory = await mkdtemp(path.join(parent, 'case-'));
+    try {
+      // Same target version, annotated v9.8.7 published from `otherSha`.
+      const released = await createMetadataGitFixture(directory, '9.8.7', 'other');
+      await writeFile(released.output, '');
+      let rejection: any;
+      try {
+        runMetadataStep(run, released.fixture, {
+          REF_NAME: 'staging', RUN_NUMBER: '42', RUN_ATTEMPT: '1',
+          SOURCE_SHA: released.acceptedSha, GITHUB_OUTPUT: released.output,
+        });
+      } catch (error) { rejection = error; }
+      expect(rejection).toBeDefined();
+      expect(String(rejection.stdout)).toContain(
+        `::error::v9.8.7 is already released from ${released.otherSha}; bump the root package.json version`);
+      // The guard runs after metadata outputs are appended, so admission
+      // evidence exists but the step still fails.
+      expect(await readFile(released.output, 'utf8')).toContain(`sourceSha=${released.acceptedSha}`);
+
+      // The accepted tag commit is the legitimate re-qualification case.
+      const accepted = await createMetadataGitFixture(path.join(directory, 'accepted'), '9.8.7', 'accepted');
+      await writeFile(accepted.output, '');
+      expect(() => runMetadataStep(run, accepted.fixture, {
+        REF_NAME: 'staging', RUN_NUMBER: '42', RUN_ATTEMPT: '1',
+        SOURCE_SHA: accepted.acceptedSha, GITHUB_OUTPUT: accepted.output,
+      })).not.toThrow();
+      expect(readMetadataOutput(await readFile(accepted.output, 'utf8'))).toMatchObject({
+        target: '9.8.7',
+        candidate: '9.8.7-rc.42',
+        sourceSha: accepted.acceptedSha,
+      });
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
 
@@ -324,21 +437,23 @@ esac
     ['2', '2', '-rc.288.2'],
   ])('keeps metadata attempt %s authoritative when version jobs run in attempt %s', async (metadataAttempt, currentAttempt, expectedSuffix) => {
     const workflow = await loadWorkflow();
-    const targetVersion = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')).version;
+    const targetVersion = '9.8.7';
     const expectedVersion = `${targetVersion}${expectedSuffix}`;
     const parent = path.join(repoRoot, '.test-data', 'candidate-version-retry');
     await mkdir(parent, { recursive: true });
     const directory = await mkdtemp(path.join(parent, 'case-'));
     try {
-      const output = path.join(directory, 'metadata-output');
       const metadataStep = workflow.jobs.metadata.steps.find((step: any) => step.id === 'candidate');
-      execFileSync('bash', ['-euo', 'pipefail', '-c', metadataStep.run], {
-        cwd: repoRoot, stdio: 'pipe', env: { ...process.env,
-          REF_NAME: 'staging', RUN_NUMBER: '288', RUN_ATTEMPT: metadataAttempt,
-          SOURCE_SHA: '0123456789abcdef0123456789abcdef01234567', GITHUB_OUTPUT: output },
+      // Re-validating the exact commit the fixture published v9.8.7 from is
+      // allowed; the separate admission test covers rejection of any other SHA.
+      const fixture = await createMetadataGitFixture(directory, targetVersion, 'accepted');
+      await writeFile(fixture.output, '');
+      runMetadataStep(metadataStep.run, fixture.fixture, {
+        REF_NAME: 'staging', RUN_NUMBER: '288', RUN_ATTEMPT: metadataAttempt,
+        SOURCE_SHA: fixture.acceptedSha, GITHUB_OUTPUT: fixture.output,
       });
-      const metadata = Object.fromEntries((await readFile(output, 'utf8')).trim().split('\n')
-        .map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
+      const metadata = readMetadataOutput(await readFile(fixture.output, 'utf8'));
+      expect(metadata.sourceSha).toBe(fixture.acceptedSha);
       expect(metadata.candidate).toBe(expectedVersion);
       expect(metadata.runAttempt).toBe(metadataAttempt);
       const context: Record<string, string> = {

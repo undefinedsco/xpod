@@ -17,6 +17,7 @@ describe('loadConfigFromEnv cssTokenEndpoint', () => {
     'XPOD_TUNNEL_ACTIVE_PROFILE_ID',
     'XPOD_TUNNEL_PROVIDER',
     'CLOUDFLARE_TUNNEL_TOKEN',
+    'XPOD_API_BASE_URL',
   ] as const;
 
   const saved: Partial<Record<(typeof envKeys)[number], string | undefined>> = {};
@@ -150,5 +151,22 @@ describe('loadConfigFromEnv cssTokenEndpoint', () => {
     delete process.env[`${legacyPrefix}AUTHTOKEN`];
     delete process.env[`${legacyPrefix}URL`];
     delete process.env[`${legacyPrefix}BIN`];
+  });
+
+  it('captures the normalized published API endpoint from XPOD_API_BASE_URL', () => {
+    process.env.XPOD_API_BASE_URL = 'https://api.undefineds.co';
+
+    const config = loadConfigFromEnv();
+
+    expect(config.apiBaseUrl).toBe('https://api.undefineds.co/');
+  });
+
+  it('does not derive an API endpoint from the Solid identity base URL', () => {
+    process.env.CSS_BASE_URL = 'https://id.undefineds.co/';
+
+    const config = loadConfigFromEnv();
+
+    expect(config.solidBaseUrl).toBe('https://id.undefineds.co/');
+    expect(config.apiBaseUrl).toBeUndefined();
   });
 });

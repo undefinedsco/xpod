@@ -99,6 +99,19 @@ async function authenticatorFor(overrides: Partial<ApiContainerConfig>) {
 
 const canonicalResource = `${CANONICAL}${ENDPOINT}`;
 const loopbackResource = `${LOOPBACK}${ENDPOINT}`;
+const API_ORIGIN = 'https://api.example/';
+const apiResource = `${API_ORIGIN}${ENDPOINT}`;
+
+/** No-hint request: the API alias host reached the API server without local-route hints. */
+function aliasHeadersFor(token: string, proof: string) {
+  return {
+    authorization: `DPoP ${token}`,
+    dpop: proof,
+    host: 'api.alias.example',
+    'x-forwarded-host': 'api.alias.example',
+    'x-forwarded-proto': 'https',
+  };
+}
 
 describe('Local managed canonical auth authority', () => {
   it('accepts a canonical-resource DPoP proof once the Cloud-issued publicUrl is present', async () => {
@@ -158,6 +171,66 @@ describe('Local managed canonical auth authority', () => {
     const result = await authenticators.authenticate({
       method: 'GET', url: `/${ENDPOINT}`,
       headers: headersFor(token, proof, foreign, `${LOOPBACK}${ENDPOINT}`),
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts a configured-API-origin proof arriving through an alias host for Cloud', async () => {
+    stubMetadata();
+    const { token, proof } = await tokenAndProof(apiResource);
+    const authenticators = await authenticatorFor({
+      edition: 'cloud',
+      solidBaseUrl: CANONICAL,
+      publicUrl: CANONICAL,
+      apiBaseUrl: API_ORIGIN,
+    });
+    const result = await authenticators.authenticate({
+      method: 'GET', url: `/${ENDPOINT}`,
+      headers: aliasHeadersFor(token, proof),
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('does not adopt a Cloud API origin for the Local edition', async () => {
+    stubMetadata();
+    const { token, proof } = await tokenAndProof(apiResource);
+    const authenticators = await authenticatorFor({ edition: 'local', apiBaseUrl: API_ORIGIN });
+    const result = await authenticators.authenticate({
+      method: 'GET', url: `/${ENDPOINT}`,
+      headers: aliasHeadersFor(token, proof),
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('preserves the current API request path for the configured-origin fallback', async () => {
+    stubMetadata();
+    const { token, proof } = await tokenAndProof(apiResource);
+    const authenticators = await authenticatorFor({
+      edition: 'cloud',
+      solidBaseUrl: CANONICAL,
+      publicUrl: CANONICAL,
+      apiBaseUrl: API_ORIGIN,
+    });
+    const result = await authenticators.authenticate({
+      method: 'GET', url: `/v1/other`,
+      headers: aliasHeadersFor(token, proof),
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a foreign-origin proof even when a Cloud API origin is configured', async () => {
+    stubMetadata();
+    const foreign = `https://foreign.example/${ENDPOINT}`;
+    const { token, proof } = await tokenAndProof(foreign);
+    const authenticators = await authenticatorFor({
+      edition: 'cloud',
+      solidBaseUrl: CANONICAL,
+      publicUrl: CANONICAL,
+      apiBaseUrl: API_ORIGIN,
+    });
+    const result = await authenticators.authenticate({
+      method: 'GET', url: `/${ENDPOINT}`,
+      headers: aliasHeadersFor(token, proof),
     });
     expect(result.success).toBe(false);
   });

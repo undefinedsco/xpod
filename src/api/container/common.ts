@@ -668,6 +668,7 @@ export function registerCommonServices(
         publicBaseUrl: config.edition === 'local' && config.publicUrl
           ? resolveLocalStorageProviderBaseUrl(config)
           : config.solidBaseUrl,
+        apiBaseUrl: config.edition === 'cloud' ? config.apiBaseUrl : undefined,
         // Token discovery is a public OIDC concern. WebID/JWKS verification is
         // an internal service call and must not hairpin through public ingress.
         internalBaseUrl: resolveHostedPodCssBaseUrl(config),
