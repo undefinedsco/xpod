@@ -66,10 +66,10 @@ test('stable repeats both actual operations and self-update for its newly built 
   assert.match(combined.run, /--version "\$RELEASE_VERSION"/);
   assert.match(combined.run, /--source-sha "\$XPOD_ACCEPTED_SHA"/);
   assert.match(combined.run, /--expected-archive "\$new_zip"/);
-  const evidence = job.steps.find(step => step.with?.name === 'desktop-stable-acceptance-${{ github.sha }}');
+  const evidence = job.steps.find(step => step.with?.name === 'desktop-stable-acceptance-${{ needs.desktop_guard.outputs.source_sha }}');
   assert.equal(evidence.with['if-no-files-found'], 'error');
   assert.ok(!evidence.with.path.includes('private'));
-  const stableFailure = job.steps.find(step => step.with?.name === 'desktop-permission-failure-${{ github.sha }}');
+  const stableFailure = job.steps.find(step => step.with?.name === 'desktop-permission-failure-${{ needs.desktop_guard.outputs.source_sha }}');
   assert.ok(stableFailure);
   assert.equal(stableFailure.if, 'failure()');
   assert.equal(stableFailure.with.path, '${{ runner.temp }}/desktop-permission-private/failure-safe.json');
@@ -250,7 +250,7 @@ test('stable job consumes the ACCEPTED candidate run through the shared retainer
   const retain = job.steps.find(s => s.run?.includes('retain-qlever-materials.py'));
   assert.ok(retain, 'stable must use the shared retainer, not an ad-hoc download');
   assert.equal(retain.env.QLEVER_ARTIFACT_SOURCE_RUN_ID, '${{ needs.desktop_guard.outputs.candidate_run_id }}');
-  assert.equal(retain.env.QLEVER_SOURCE_SHA, '${{ github.sha }}');
+  assert.equal(retain.env.QLEVER_SOURCE_SHA, '${{ needs.desktop_guard.outputs.source_sha }}');
   // No artifact-id/digest inputs for the stable path: the accepted run + accepted
   // source define the identity breadth, and the helper selects the single match.
   assert.equal(retain.env.QLEVER_ARTIFACT_ID, undefined);
