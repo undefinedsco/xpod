@@ -212,6 +212,19 @@ jobs:
           test -x "$runtime"
           test -s "$app/Contents/Resources/runtime/qlever/manifest.json"
 
+      # Retain the verified build before acceptance so a later failure preserves
+      # its original bytes. Publication still requires this whole job to succeed.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xpod-desktop-macos-${{ needs.desktop_guard.outputs.version }}
+          path: |
+            desktop/release/*.dmg
+            desktop/release/*.zip
+            desktop/release/*.blockmap
+            desktop/release/latest-mac.yml
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Accept actual stable packaged desktop permissions and operations
         run: |
           set -euo pipefail
@@ -265,18 +278,6 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      # The archive ships an ad-hoc (linker) signature; `create_github_release` publishes
-      # these exact bytes after production deploys, so hand them over as one artifact.
-      - uses: actions/upload-artifact@v4
-        with:
-          name: xpod-desktop-macos-${{ needs.desktop_guard.outputs.version }}
-          path: |
-            desktop/release/*.dmg
-            desktop/release/*.zip
-            desktop/release/*.blockmap
-            desktop/release/latest-mac.yml
-          if-no-files-found: error
-          retention-days: 14
       - name: Upload stable desktop permission failure summary
         if: failure()
         uses: actions/upload-artifact@v4
