@@ -13,6 +13,7 @@
 export { AI_CONNECTIONS_PROVIDERS } from './client/types'
 export { PLATFORM_MODEL_ROLES, matchesPlatformModelRole } from './client/gateway-model-roles'
 export type {
+  AiBuiltinProviderSummary,
   AiConnectAttempt,
   AiConnectionBeginOptions,
   AiConnectionsClient,

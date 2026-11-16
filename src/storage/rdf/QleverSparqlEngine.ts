@@ -9,6 +9,7 @@ import type {
   SparqlVoidOptions,
 } from '../sparql/SubgraphQueryEngine';
 import type { RdfAccessScope } from './RdfAccessScope';
+import { METADATA_GRAPH_PREFIX } from './RdfAccessScope';
 import {
   assertServerOwnedNativeSparqlQuery,
   NativeSparqlExecutionError,
@@ -66,6 +67,57 @@ export class QleverSparqlEngine implements SparqlEngine {
       variables: variables.map((name) => rdfDataFactory.variable(name) as Variable),
     });
     return iterator;
+  }
+
+  /**
+   * Explicit metadata facet read.
+   *
+   * The native runtime derives BOTH its graph prefix and its source URI prefix
+   * from `basePath`. Metadata quads are written without a source attribution
+   * (`SolidRdfDataAccessor.replaceMetadata` -> `rdfEngine.put` with no source),
+   * so a `meta:` basePath would make the physical scan join `rdf_sources` and
+   * drop every metadata row. A metadata-only query therefore runs with no
+   * basePath (graph scope ALL) and a mandatory finite ACL scope whose
+   * `basePath` is `meta:{base}`; the backend applies that allowed-graph-prefix
+   * to every scan. Callers must supply the scope: this method throws rather
+   * than fall back to an unscoped read.
+   */
+  public async queryMetadataBindings(
+    query: string,
+    basePath: string,
+    accessScope?: RdfAccessScope,
+    options?: SparqlQueryOptions,
+  ): Promise<QleverBindingsStream> {
+    const metadataBase = `${METADATA_GRAPH_PREFIX}${basePath}`;
+    if (!accessScope?.basePath?.startsWith(metadataBase)) {
+      throw new UnsupportedSparqlQueryError('Native metadata reads require a finite meta: access scope.');
+    }
+    return this.queryBindings(query, '', {
+      ...accessScope,
+      basePath: metadataBase,
+      mode: 'read',
+    }, { ...options, defaultDataset: 'physical' });
+  }
+
+  public async listMetadataGraphs(basePath: string, accessScope?: RdfAccessScope): Promise<Set<string>> {
+    const metadataBase = `${METADATA_GRAPH_PREFIX}${basePath}`;
+    if (!accessScope?.basePath?.startsWith(metadataBase)) {
+      throw new UnsupportedSparqlQueryError('Native metadata reads require a finite meta: access scope.');
+    }
+    const stream = await this.queryBindings(
+      'SELECT DISTINCT ?g WHERE { GRAPH ?g { ?s ?p ?o } }',
+      '',
+      { ...accessScope, basePath: metadataBase, mode: 'read' },
+      { defaultDataset: 'physical' },
+    );
+    const graphs = new Set<string>();
+    for await (const binding of stream) {
+      const graph = binding.get('g');
+      if (graph?.termType === 'NamedNode' && graph.value.startsWith(metadataBase)) {
+        graphs.add(graph.value);
+      }
+    }
+    return graphs;
   }
 
   public async queryBoolean(

@@ -39,6 +39,7 @@ import { xpodProtocolEndpoints } from './gateway-endpoints'
 import { XPOD_AVATAR } from './provider-visuals'
 import { AiGatewayKeyRow } from './AiGatewayKeyRow'
 import { AiGatewayModelsSection, type GatewayModelSelection } from './AiGatewayModelsSection'
+import { AiBuiltinProvidersSection, type BuiltinDirectoryState } from './AiBuiltinProvidersSection'
 
 const DEFAULT_KEY_NAME = '我的 Xpod 密钥'
 const CREATED_NOTIFICATION = 'Xpod 密钥 已创建，请复制或应用到客户端。'
@@ -62,6 +63,7 @@ export function AiGatewayKeysSection({
   gatewayModels,
   modelSelection,
   liveRevision = 0,
+  builtinDirectory,
 }: {
   client: AiConnectionsClient
   onAuthorizeService?: () => Promise<void>
@@ -74,8 +76,26 @@ export function AiGatewayKeysSection({
    * client, a script); the Key list lives in that table and re-reads with it.
    */
   liveRevision?: number
+  /**
+   * The deployment's declared read-only directory, read by the caller on its own
+   * request. It is rendered next to the key surface precisely because it does
+   * not depend on the personal catalogue that the keys need.
+   */
+  /** The declared directory's explicit read state, owned by the caller. */
+  builtinDirectory?: BuiltinDirectoryState
 }) {
   const bridge = clientConfigurationBridge?.available === false ? undefined : clientConfigurationBridge
+  /**
+   * Whether this client can manage keys at all.
+   *
+   * A client built without the Account client-credentials capability declares
+   * `gatewayKeyManagement: false`; every key call it exposes throws
+   * `account_client_credentials_unavailable`. That is a declared absence of the
+   * surface, so the page says so instead of issuing a request it knows fails.
+   * `undefined` is a client that predates the declaration and is still probed,
+   * so an older host keeps its real behaviour.
+   */
+  const keyManagementUnsupported = client.gatewayKeyManagement === false
   const [busyKeyId, setBusyKeyId] = useState<string>()
   const operation = useRef(false)
   const verificationGeneration = useRef(0)
@@ -172,6 +192,17 @@ export function AiGatewayKeysSection({
     // The wrapper cache belongs to the session that created the keys; a new
     // client means a new session and no copy may survive it.
     plaintexts.current.clear()
+    // A declared-absent capability is not a failure to report: the page renders
+    // its own statement and there is no list to read.
+    if (keyManagementUnsupported) {
+      setKeys([])
+      setLoadError(undefined)
+      setLoading(false)
+      return () => {
+        active = false
+        if (notification.current) dismissToast(notification.current)
+      }
+    }
     void client.listGatewayKeys()
       .then((records) => {
         if (active) setKeys(adoptRecords(records))
@@ -186,7 +217,7 @@ export function AiGatewayKeysSection({
       active = false
       if (notification.current) dismissToast(notification.current)
     }
-  }, [client, notifyError, adoptRecords])
+  }, [client, notifyError, adoptRecords, keyManagementUnsupported])
 
   // The keys themselves are Account-owned and load without any Pod permission,
   // but a key is only usable while Xpod may read the Pod, so the page still
@@ -205,7 +236,7 @@ export function AiGatewayKeysSection({
   // A change made elsewhere only needs new rows: it must not drop the wrapper
   // copies this session is still showing, nor flash the loading state.
   useEffect(() => {
-    if (liveRevision === 0) return
+    if (liveRevision === 0 || keyManagementUnsupported) return
     let active = true
     void client.listGatewayKeys()
       .then((records) => {
@@ -215,7 +246,7 @@ export function AiGatewayKeysSection({
     return () => {
       active = false
     }
-  }, [client, liveRevision, adoptRecords])
+  }, [client, liveRevision, adoptRecords, keyManagementUnsupported])
 
   const authorize = async () => {
     if (!onAuthorizeService || authorizing) return
@@ -428,7 +459,7 @@ export function AiGatewayKeysSection({
             level={3}
             title={<><Settings2 aria-hidden="true" className="h-4 w-4 text-primary" />当前连接</>}
             titleClassName="flex items-center gap-2 font-medium text-foreground/90"
-            actions={(
+            actions={keyManagementUnsupported ? undefined : (
               <DialogTrigger asChild>
                 <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs" aria-label="新建 Xpod 密钥"
                   disabled={creating || loading} onClick={openCreate}>
@@ -437,6 +468,11 @@ export function AiGatewayKeysSection({
               </DialogTrigger>
             )}
           />
+          {keyManagementUnsupported ? (
+            <InlineNotice tone="info">
+              当前客户端没有 Account 客户端凭据能力，因此这里不提供 Xpod 密钥管理。已发布的模型仍然可用。
+            </InlineNotice>
+          ) : null}
           {loadError || serviceAccessMissing ? <InlineNotice
             tone="destructive"
             role="alert"
@@ -446,7 +482,7 @@ export function AiGatewayKeysSection({
           >
             {loadError ?? 'Xpod 尚未获准访问这个 Pod'}
           </InlineNotice> : null}
-          {loading ? (
+          {keyManagementUnsupported ? null : loading ? (
             <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
               <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />正在读取 Xpod 密钥
             </div>
@@ -484,6 +520,12 @@ export function AiGatewayKeysSection({
           )}
 
         </section>
+
+        <AiBuiltinProvidersSection
+          state={builtinDirectory ?? (typeof client.listBuiltinProviders === 'function'
+            ? { status: 'loading' }
+            : { status: 'unsupported' })}
+        />
 
         <AiGatewayModelsSection models={gatewayModels} selection={modelSelection} />
 
