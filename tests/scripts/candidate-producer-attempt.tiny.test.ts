@@ -20,7 +20,7 @@ import {
   observedGitHubRunStateAccepted,observedGitHubJobWindowAccepted,
   observeCandidateServiceImageGitHubOrigin,githubOriginFacts,
 } from '../../scripts/lib/independent-admission/github-origin';
-import {QLEVER_SDK_CONSUMER_GROUPS} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
+import {currentProgramSdkConsumerGroups} from '../../scripts/lib/independent-admission/current-program-definition';
 import {sourceBindingKey,selectGitHubSourceBindingGroup} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import {acquireCandidateServiceOriginals} from '../../scripts/acquire-independent-product-input';
 import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
@@ -31,10 +31,10 @@ const candidateBytes=readTrackedSource(path.join(ROOT,CANDIDATE));
 const sha=(bytes:Buffer)=>createHash('sha256').update(bytes).digest('hex');
 
 // Production resolves the CURRENT candidate workflow contract from the consumer
-// axis (`resolveCandidateWorkflowContract` -> QLEVER_SDK_CONSUMER_GROUPS). The frozen
-// SDK-execution axis stops at the published 93 groups and no longer carries the
-// current candidate workflow, so mirroring it here would never find one.
-const candidateGroups=QLEVER_SDK_CONSUMER_GROUPS.filter(group=>group.candidateServiceRelationship!==undefined);
+// axis through the current program definition (frozen history plus this
+// checkout's derived tail). The frozen SDK-execution axis stops at the published
+// 93 groups and no longer carries the current candidate workflow.
+const candidateGroups=currentProgramSdkConsumerGroups().filter(group=>group.candidateServiceRelationship!==undefined);
 
 /** The exact reviewed group the current repository bytes resolve to. Returns
  * undefined while the genuinely changed candidate workflow hash is not yet

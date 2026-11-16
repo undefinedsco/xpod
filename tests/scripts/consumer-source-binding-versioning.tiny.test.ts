@@ -11,6 +11,7 @@ import {
   QLEVER_NORMAL_SOURCE_GROUPS,
   QLEVER_SDK_NORMAL_SOURCE_BINDINGS,
 } from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
+import {currentProgramNormalSourceGroups,currentProgramSdkConsumerGroups} from '../../scripts/lib/independent-admission/current-program-definition';
 import {completeObserved,CURRENT_CANONICAL_SOURCE_ROWS,CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
 import {selectGitHubSourceBindingGroup,sourceBindingKey,type GitHubSourceBindingGroup} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import currentCanonical from '../../scripts/lib/independent-admission/consumer-execution-current.json';
@@ -83,9 +84,10 @@ const sdk107=QLEVER_SDK_CONSUMER_GROUPS[106]!;
 const sdk108=QLEVER_SDK_CONSUMER_GROUPS[107]!;
 // RC159 appended SDK109; SDK108 is now FROZEN history and SDK109 is the CURRENT tail.
 const sdk109=QLEVER_SDK_CONSUMER_GROUPS[108]!;
-// Live disk checks use the current reviewed tail; named historical generations
-// above keep their fixed published indexes.
-const currentSdkConsumer=QLEVER_SDK_CONSUMER_GROUPS.at(-1)!;
+// Live disk checks use the CURRENT program definition (frozen history plus this
+// checkout's derived tail). Named historical generations above keep their fixed
+// published indexes and never follow live bytes.
+const currentSdkConsumer=currentProgramSdkConsumerGroups().at(-1)!;
 // Whole-group aggregate of SDK105 as published (git-05cf baseline
 // families.sdkConsumer.aggregates[104]). Frozen history, never re-derived.
 const SDK105_FROZEN_WHOLE='6a2737d18a0b3fd4bee1250a818a80e4f65f2ab8609205a19bff40b92d097106';
@@ -548,10 +550,15 @@ test('normal producer keeps the frozen 23-row flat list and all earlier groups',
   // Group 9 is FROZEN published history: it keeps its reviewed RC399 bytes.
   expect(row(rc399Cleanup!,'.github/workflows/candidate.yml').map(value=>value.sha256))
     .toEqual([RC399_CANDIDATE]);
-  // Group 10 is the CURRENT reviewed version: the actual bytes in the tree.
+  // Group 10 is FROZEN history: it keeps its reviewed candidate bytes even though
+  // the workflow later changed.
   expect(row(currentCleanup!,'.github/workflows/candidate.yml').map(value=>value.sha256))
     .toEqual([REFERENCED_GRAPH_PG_CANDIDATE]);
-  expect(row(currentCleanup!,'.github/workflows/candidate.yml').map(value=>value.sha256))
+  // The CURRENT disk identity comes from the one program definition factory, which
+  // appends a derived tail; the frozen groups stay byte-identical.
+  const currentNormalGroups=currentProgramNormalSourceGroups();
+  expect(currentNormalGroups.slice(0,-1)).toEqual(QLEVER_NORMAL_SOURCE_GROUPS);
+  expect(row(currentNormalGroups[currentNormalGroups.length-1]!,'.github/workflows/candidate.yml').map(value=>value.sha256))
     .toEqual([disk('.github/workflows/candidate.yml')]);
   expect(row(activeNormal!,'.github/workflows/candidate.yml').map(value=>value.sha256))
     .toEqual([RC397_CANDIDATE]);

@@ -1,5 +1,6 @@
+import {currentProgramNormalSourceGroups, currentProgramSdkConsumerGroups, currentProgramLinuxConsumerGroups} from './current-program-definition';
 import {inspectReviewedSdkOuterExecutorOrigin,type QleverSdkOuterExecutorOriginAuthority} from './qlever-sdk-outer-authority';
-import {QLEVER_SDK_WORKFLOW,QLEVER_SDK_WORKFLOW_SHA,QLEVER_SDK_EXECUTION_GROUPS,QLEVER_SDK_CONSUMER_GROUPS,QLEVER_LINUX_CONSUMER_GROUPS,QLEVER_READONLY_SDK_WORKFLOW_SHA,QLEVER_SERVICE_SDK_WORKFLOW_SHA,QLEVER_CURRENT_SDK_WORKFLOW_SHA,QLEVER_SDK_NORMAL_CANDIDATE_WORKFLOW_SHA,QLEVER_NORMAL_SOURCE_GROUPS} from './qlever-sdk-origin-policy';
+import {QLEVER_SDK_WORKFLOW,QLEVER_SDK_WORKFLOW_SHA,QLEVER_SDK_EXECUTION_GROUPS,QLEVER_READONLY_SDK_WORKFLOW_SHA,QLEVER_SERVICE_SDK_WORKFLOW_SHA,QLEVER_CURRENT_SDK_WORKFLOW_SHA,QLEVER_SDK_NORMAL_CANDIDATE_WORKFLOW_SHA} from './qlever-sdk-origin-policy';
 import {acquireOwnedSecondaryBindings,selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey,type GitHubSourceBinding,type GitHubSourceBindingGroup} from './github-source-binding-groups';
 import {immutableGitContentsEndpoint,cachedGitContentsOriginal,retainGitContentsOriginal} from './github-immutable-original-cache';
 import {QLEVER_LINUX_SOURCE_BINDINGS} from './qlever-linux-origin-policy';
@@ -114,7 +115,7 @@ interface OriginPolicy {
 /** Same issuer, independently authenticated candidate image-artifact role.
  * A producer JSON selector cannot enroll a source tree in this role. */
 export async function observeCandidateServiceImageGitHubOrigin(input:ArtifactAcquisitionInput,options:{token?:string}={}):Promise<GitHubOriginObservation> {
- const groups=QLEVER_SDK_CONSUMER_GROUPS.filter(group=>group.candidateServiceRelationship!==undefined);
+ const groups=currentProgramSdkConsumerGroups().filter(group=>group.candidateServiceRelationship!==undefined);
  if(!groups.length)throw Error('Independent GitHub origin: candidate service source recipe not reviewed');
  const versions=[...new Set(groups.map(group=>group.candidateServiceRelationship!.workflowSha256))];
  const artifactNames=(value:ArtifactAcquisitionInput)=>['candidate-service-image-originals-'+value.sourceSha+'-'+value.runId+'-'+value.runAttempt];
@@ -130,7 +131,7 @@ export async function observeCandidateServiceImageGitHubOrigin(input:ArtifactAcq
 /** A separate original-byte role for the focused local-runtime producer. The
  * service image and SDK roles cannot substitute for this same-job artifact. */
 export async function observeCandidateServiceNativeRuntimeGitHubOrigin(input:ArtifactAcquisitionInput,options:{token?:string}={}):Promise<GitHubOriginObservation> {
- const groups=QLEVER_SDK_CONSUMER_GROUPS.filter(group=>group.candidateServiceRelationship!==undefined);
+ const groups=currentProgramSdkConsumerGroups().filter(group=>group.candidateServiceRelationship!==undefined);
  if(!groups.length)throw Error('Independent GitHub origin: candidate native runtime source recipe not reviewed');
  const versions=[...new Set(groups.map(group=>group.candidateServiceRelationship!.workflowSha256))];
  const steps=['Publish and resolve the immutable digest','Retain focused native runtime originals','Upload focused native runtime originals'];
@@ -1436,7 +1437,7 @@ export async function observeModuleProductGitHubOrigin(input: ArtifactAcquisitio
     jobName:()=>`targets (${target}) / products`,requiredStep:'Produce the normal CSS preview',requiredSteps:['Upload original preview and evidence'],
     // Only the actually executed target branch participates. Linux SDK changes
     // do not silently authorize Linux, or block a separately reviewed Mac run.
-    ...(target.startsWith('linux-')?{sourceBindingGroups:QLEVER_LINUX_CONSUMER_GROUPS}:{sourceBindingGroups:CSS_MAC_SOURCE_GROUPS}),
+    ...(target.startsWith('linux-')?{sourceBindingGroups:currentProgramLinuxConsumerGroups()}:{sourceBindingGroups:CSS_MAC_SOURCE_GROUPS}),
     ...(target.startsWith('linux-')?{sourceGroupAncestorJobs:(group:GitHubSourceBindingGroup|undefined)=>cssLinuxAncestors(group,target,true)}:{requiredAncestorJobs:[`targets (${target}) / native / macos / build`]})};
   const observation=await observeGitHubOrigin(input,options,module==='css'?(row.nativeSourceAvailable?[legacy,current]:current):legacy);
   normalModuleOrigins.add(observation);return observation;
@@ -1512,7 +1513,7 @@ export async function observeQleverNativeGitHubOrigin(input:ArtifactAcquisitionI
         requiredStep:'Bind fresh native material output identity',
         requiredSteps:['Produce native source and ABI original materials','Upload exact native build and test materials'],
         sourceGroupAncestorJobs:group=>cssLinuxAncestors(group,target,false),
-        sourceBindingGroups:QLEVER_LINUX_CONSUMER_GROUPS,
+        sourceBindingGroups:currentProgramLinuxConsumerGroups(),
       });nativeOrigins.add(observation);return observation;
     }
     if(!['darwin-arm64','darwin-x64'].includes(target))return fail('unsupported CSS native original target');
@@ -1622,7 +1623,7 @@ export function normalWorkflowVersionsFrom(groups:readonly GitHubSourceBindingGr
 /** The reviewed normal workflow versions. The published constant must stay an
  * accepted member so an older reviewed workflow keeps working. */
 export function normalWorkflowVersions():readonly string[]{
- const versions=normalWorkflowVersionsFrom(QLEVER_NORMAL_SOURCE_GROUPS);
+ const versions=normalWorkflowVersionsFrom(currentProgramNormalSourceGroups());
  if(!versions.includes(QLEVER_SDK_NORMAL_CANDIDATE_WORKFLOW_SHA))return fail('published normal workflow version missing from the normal axis');
  return versions;
 }
@@ -1636,6 +1637,7 @@ export async function observeQleverSdkNormalBuildGitHubOrigin(input:ArtifactAcqu
  if(target!=='linux-x64')return fail('normal SDK build target differs');
  const steps=['Resolve the QLever build inputs identity','Capture normal SDK build proof and originals','Upload the exact normal SDK build proof'];
  // Derive the reviewed versions ONCE and reuse the same array everywhere.
+ const groups=currentProgramNormalSourceGroups();
  const versions=normalWorkflowVersions();
  const normalJobName=()=> 'publish_qlever_runtime_sdk / publish';
  const observation=await observeGitHubOrigin(input,{token:options.token},{
@@ -1645,11 +1647,11 @@ export async function observeQleverSdkNormalBuildGitHubOrigin(input:ArtifactAcqu
   artifactNames:row=>[`qlever-sdk-originals-service-trixie-${target}-${row.sourceSha}-${row.runId}-${row.runAttempt}`],
   jobName:normalJobName,
   reviewedWorkflowVersions:versions.map(workflowSha256=>({
-    workflowSha256,jobName:normalJobName,sourceBindingGroups:QLEVER_NORMAL_SOURCE_GROUPS,
+    workflowSha256,jobName:normalJobName,sourceBindingGroups:groups,
   })),
   requiredStep:steps[2]!,requiredSteps:steps,
   ...(options.proofArtifact?{additionalArtifact:options.proofArtifact}:{}),
-  sourceBindingGroups:QLEVER_NORMAL_SOURCE_GROUPS,
+  sourceBindingGroups:groups,
  });
  nativeOrigins.add(observation);sdkOrigins.add(observation);return observation;
 }
