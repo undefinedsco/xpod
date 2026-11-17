@@ -13,6 +13,11 @@ on:
       candidate_run_id:
         type: string
         required: true
+      source_desktop_run_id:
+        description: 'Retained desktop media to re-accept instead of rebuilding'
+        type: string
+        required: false
+        default: ''
   workflow_dispatch:
     inputs:
       tag:
@@ -20,9 +25,14 @@ on:
         type: string
         required: true
       candidate_run_id:
-        description: 'Release Candidate run that accepted both the service and the desktop for the tag commit'
+        description: 'Release Candidate run that accepted the service for the tag commit'
         type: string
         required: true
+      source_desktop_run_id:
+        description: 'Optional: an existing run whose already-built desktop media is re-accepted instead of rebuilt'
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -93,6 +103,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       XPOD_QLEVER_LOCAL_RUNTIME_ARTIFACT: ${{ github.workspace }}/.test-data/qlever-runtime/qlever-local-runtime-darwin-arm64.tar.gz
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      REUSE_MEDIA: ${{ inputs.source_desktop_run_id != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -107,6 +118,67 @@ jobs:
         with:
           node-version: 22
 
+      # Acceptance-only redos reuse immutable media instead of rebuilding. The
+      # producer may have failed LATER acceptance steps; packaging, payload
+      # verification and the media upload must still have succeeded. Product
+      # source is always the stable tag commit, never the runner ref.
+      # The shared `bun install --frozen-lockfile` + `bun run build:packages`
+      # steps further below are UNCONDITIONAL and serve both paths, so acceptance
+      # resolves workspace `exports` -> dist on a cold runner. No second install
+      # and no second build:packages is performed for reuse.
+
+      # The retention helper + its verifier are reviewed CI repair code, not part
+      # of the accepted product tag. Check the runner ref out separately at the
+      # workflow's own SHA so the product checkout stays the tag commit.
+      - name: Check out reviewed retention tooling from the runner ref
+        if: env.REUSE_MEDIA == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .ci-repair
+
+      - name: Retain already-built desktop media for re-acceptance
+        if: env.REUSE_MEDIA == 'true'
+        env:
+          SOURCE_RUN_ID: ${{ inputs.source_desktop_run_id }}
+          EXPECTED_TAG: ${{ needs.desktop_guard.outputs.tag }}
+          EXPECTED_SHA: ${{ needs.desktop_guard.outputs.source_sha }}
+          EXPECTED_VERSION: ${{ needs.desktop_guard.outputs.version }}
+          DESTINATION: ${{ github.workspace }}/desktop/release
+          RECEIPT: ${{ runner.temp }}/desktop-media-retention.json
+          WORK_DIR: ${{ runner.temp }}/desktop-media-retention-work
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          helper="$GITHUB_WORKSPACE/.ci-repair/scripts/diagnostics/retain-desktop-release-media.py"
+          test -f "$helper"
+          python3 "$helper"
+          cp "$RECEIPT" "$RUNNER_TEMP/desktop-media-retention.receipt.json"
+
+      # Publish the EXACT retained bytes under the standard media artifact name in
+      # THIS run, so the unchanged release job consumes this run's own artifact.
+      # The release job keeps downloading by name from github.run_id and needs no
+      # cross-run lookup, no extra actions:read and no attempt ambiguity.
+      - uses: actions/upload-artifact@v4
+        if: env.REUSE_MEDIA == 'true'
+        with:
+          name: xpod-desktop-macos-${{ needs.desktop_guard.outputs.version }}
+          path: |
+            desktop/release/*.dmg
+            desktop/release/*.zip
+            desktop/release/*.blockmap
+            desktop/release/latest-mac.yml
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v4
+        if: env.REUSE_MEDIA == 'true'
+        with:
+          name: desktop-media-retention-${{ needs.desktop_guard.outputs.source_sha }}
+          path: ${{ runner.temp }}/desktop-media-retention.receipt.json
+          if-no-files-found: error
+          retention-days: 30
+
       # Retain the ORIGINAL accepted QLever artifact through the SAME shared
       # acquisition contract the RC and diagnostic paths use. The accepted
       # candidate RUN and the accepted SHA are the identity breadth: the helper
@@ -115,6 +187,7 @@ jobs:
       # validates metadata source/id/digest and the ZIP SHA before retaining the
       # untouched original. No latest-run lookup and no native recompile.
       - name: Retain the accepted original QLever artifact without rebuilding
+        if: env.REUSE_MEDIA != 'true'
         env:
           QLEVER_ARTIFACT_SOURCE_RUN_ID: ${{ needs.desktop_guard.outputs.candidate_run_id }}
           QLEVER_SOURCE_SHA: ${{ needs.desktop_guard.outputs.source_sha }}
@@ -131,11 +204,13 @@ jobs:
       # Same prerequisite as the RC desktop job: desktop contracts and the
       # staged native producer import workspace package SOURCE that resolves
       # @undefineds.co/xpod-client through `exports` -> dist/*, absent on a cold
-      # runner. Build packages BEFORE the native build; canonical order kept.
+      # runner. The acceptance path imports the same exported dist, so this build
+      # is UNCONDITIONAL and shared by both paths (exactly one install + one build).
       - name: Build workspace packages required by the desktop contracts
         run: bun run build:packages
 
       - name: Produce the API capability from clean source
+        if: env.REUSE_MEDIA != 'true'
         run: |
           set -euo pipefail
           XPOD_API_CAPABILITY_ROOT="$PWD/.test-data/api-capability-$(git rev-parse HEAD)"
@@ -146,11 +221,13 @@ jobs:
       # Restore root declarations after filtered API production, before stamping
       # or compiling the root package. The finalized API receipt/archive is retained.
       - name: Restore the normal full-frozen root dependency tree
+        if: env.REUSE_MEDIA != 'true'
         run: bun scripts/restore-root-dependencies.ts "$PWD"
       # Bun skips Electron's postinstall during the canonical root install, and the
       # restore above replaces node_modules, so the vendor binary is initialized
       # exactly once AFTER the final tree exists.
       - name: Bootstrap the Electron vendor binary
+        if: env.REUSE_MEDIA != 'true'
         run: node node_modules/electron/install.js
 
 
@@ -174,6 +251,7 @@ jobs:
       # it closes, apply the same allowed manifest transform used by RC builds.
       # The root manifest is authoritative; desktop/package.json is derived.
       - name: Apply and validate stable desktop version
+        if: env.REUSE_MEDIA != 'true'
         run: |
           node -e '
             const root = require("./package.json");
@@ -191,6 +269,7 @@ jobs:
       # native producer hard-requires dist/index.js + dist/components/
       # components.jsonld. Compile them explicitly BEFORE the DMG/ZIP build.
       - name: Compile root package outputs required by the desktop native producer
+        if: env.REUSE_MEDIA != 'true'
         run: |
           set -euo pipefail
           bun run build:ts
@@ -199,6 +278,7 @@ jobs:
           test -s dist/components/components.jsonld
 
       - name: Build DMG and ZIP
+        if: env.REUSE_MEDIA != 'true'
         working-directory: desktop
         run: |
           set -euo pipefail
@@ -211,6 +291,7 @@ jobs:
           test -s release/latest-mac.yml
 
       - name: Verify packaged version and native runtime payload
+        if: env.REUSE_MEDIA != 'true'
         run: |
           set -euo pipefail
           app="desktop/release/mac-arm64/Xpod.app"
@@ -223,6 +304,7 @@ jobs:
       # Retain the verified build before acceptance so a later failure preserves
       # its original bytes. Publication still requires this whole job to succeed.
       - uses: actions/upload-artifact@v4
+        if: env.REUSE_MEDIA != 'true'
         with:
           name: xpod-desktop-macos-${{ needs.desktop_guard.outputs.version }}
           path: |
@@ -283,6 +365,7 @@ jobs:
             ${{ runner.temp }}/desktop-self-update-evidence.json
             ${{ runner.temp }}/desktop-permission-evidence.json
             ${{ runner.temp }}/desktop-check.json
+            ${{ runner.temp }}/desktop-media-retention.receipt.json
           if-no-files-found: error
           retention-days: 30
 
