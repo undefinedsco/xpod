@@ -7,7 +7,11 @@ import { authorizeRcSession, describeRcAccountSurface, RC_ACCOUNT_DASHBOARD_HEAD
 
 const baseUrl = requiredEnv('XPOD_SETTINGS_E2E_BASE_URL');
 const statePaths = [requiredEnv('XPOD_SETTINGS_E2E_ALICE_STATE'), requiredEnv('XPOD_SETTINGS_E2E_BOB_STATE')];
-test.describe.configure({ mode: 'serial', timeout: 180_000 });
+// Playwright gives beforeAll its own project-level deadline; the two-owner setup
+// needs the same budget already declared for these acceptance tests.
+const RC_SUITE_TIMEOUT_MS = 180_000;
+
+test.describe.configure({ mode: 'serial', timeout: RC_SUITE_TIMEOUT_MS });
 
 test.describe('deployed Xpod lightweight Web acceptance (no desktop bridge)', () => {
   const owners: Array<{ context: BrowserContext; page: Page; session: RcSession }> = [];
@@ -22,6 +26,7 @@ test.describe('deployed Xpod lightweight Web acceptance (no desktop bridge)', ()
     } finally { await ownedRp?.close(); }
   };
   test.beforeAll(async ({ browser }) => {
+    test.setTimeout(RC_SUITE_TIMEOUT_MS);
     try {
       rp = await startBrowserExternalRp(baseUrl);
       for (const statePath of statePaths) {

@@ -2536,10 +2536,10 @@ jobs:
       KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
       SEALOS_NAMESPACE: ${{ vars.SEALOS_NAMESPACE }}
       XPOD_RC_SEED_SECRET_NAME: xpod-rc-seed-${{ github.run_id }}-${{ github.run_attempt }}
-      # A failed acceptance keeps its RC serving so the failure can be reproduced
-      # locally against it and the failed jobs re-run. The next candidate's
-      # deployment releases it (see "Release an RC retained by a failed candidate").
-      RETAIN_FOR_DIAGNOSIS: ${{ contains(needs.*.result, 'failure') && needs.deploy_and_accept.result == 'success' }}
+      # Only complete service and desktop acceptance permits teardown.
+      # Otherwise keep this run's owned RC for diagnosis; the next candidate
+      # releases it before deploying.
+      RETAIN_FOR_DIAGNOSIS: ${{ needs.finalize_acceptance.result != 'success' || needs.accept_desktop_rc.result != 'success' }}
     steps:
       - uses: actions/checkout@v4
       - name: Scale RC deployments to zero

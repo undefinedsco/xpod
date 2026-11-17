@@ -174,7 +174,7 @@ test('a failed acceptance retains its own RC for diagnosis and the next deployme
   const { jobs } = read('candidate.yml');
   const cleanup = jobs.cleanup_rc;
   assert.equal(cleanup.env.RETAIN_FOR_DIAGNOSIS,
-    "${{ contains(needs.*.result, 'failure') && needs.deploy_and_accept.result == 'success' }}");
+    "${{ needs.finalize_acceptance.result != 'success' || needs.accept_desktop_rc.result != 'success' }}");
   const scale = cleanup.steps.find(step => step.name === 'Scale RC deployments to zero').run;
   // Retaining is still gated by ownership, and re-run attempts resolve their run's seed.
   assert.match(scale, /rc-cleanup-ownership\.cjs run-seed "\$observation" "\$SEALOS_NAMESPACE" "\$GITHUB_RUN_ID"/);
