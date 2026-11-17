@@ -1305,6 +1305,11 @@ const API33_REBOUND:Readonly<Record<string,string>>=Object.freeze({
   // desktop/package.json (already an owned row of this CURRENT tuple) moved when
   // the desktop build gained the explicit Bun runtime descriptor initializer.
   'desktop/package.json':'a09bb65633addabdcd0ed8bd43e2dcbe8817949a21d6363f394007bf05e0057b',
+  // The runtime 0.1.5->0.1.6 / applet 0.1.6->0.1.7 release bump moved these two owned
+  // package manifests. Only THIS current tuple moves; package.json/bun.lock stay at
+  // the frozen accepted-419 capture used by the historical/current planner tests.
+  'packages/ai-connections-runtime/package.json':'d6af8eecb871be684616ddf691d0d0b38a4be66c741748afa9445d94a0f1b86a',
+  'packages/ai-connections/package.json':'6a48c4069f9291c08c987affe1d10eab2c8f96908b55a78b937effe47487265e',
   'scripts/check-dependency-state.ts':apiRc393DependencyStateHash,
   'scripts/lib/api-producer-graph.ts':apiRc393ProducerGraphHash,
   // The reviewed controlled-phase recipe and the CLI catalog split moved these

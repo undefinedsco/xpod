@@ -110,6 +110,18 @@ function mergeRdfQueryCacheScopes(
   return [existing, access];
 }
 
+/** Metadata facets are stored under the literal scheme prefix `meta:`. */
+export const METADATA_GRAPH_PREFIX = 'meta:';
+
+export function isMetadataGraphIri(graph: string): boolean {
+  return graph.startsWith(METADATA_GRAPH_PREFIX) && !graph.startsWith(`${METADATA_GRAPH_PREFIX}${METADATA_GRAPH_PREFIX}`);
+}
+
+/** The subject resource a metadata facet graph belongs to. */
+export function metadataResourceForGraph(graph: string): string | undefined {
+  return isMetadataGraphIri(graph) ? graph.slice(METADATA_GRAPH_PREFIX.length) : undefined;
+}
+
 export function filterRdfAccessGraphs(graphs: Iterable<string>, scope?: RdfAccessScope): Set<string> {
   if (!scope) {
     return new Set(graphs);
@@ -121,6 +133,52 @@ export function filterRdfAccessGraphs(graphs: Iterable<string>, scope?: RdfAcces
     }
   }
   return filtered;
+}
+
+/**
+ * Read-side graph permission. A metadata facet graph is readable exactly when
+ * its subject resource is readable; the alias never widens the subject ACL.
+ * This is deliberately separate from {@link rdfAccessGraphAllowed}, which stays
+ * the literal write guard.
+ */
+export function rdfReadGraphAllowed(graph: string, scope: RdfAccessScope): boolean {
+  const resource = metadataResourceForGraph(graph);
+  // A metadata-namespace scope is created ONLY by the explicit metadata read
+  // request (`queryMetadataBindings`/`listMetadataGraphs` prefix the base with
+  // `meta:`). Every ordinary read scope uses the data base, and there the
+  // `meta:` alias must stay invisible: widening it here would expose facets to
+  // ASK/CONSTRUCT/subqueries that never perform the per-subject authorization.
+  const metadataScope = scope.basePath.startsWith(METADATA_GRAPH_PREFIX);
+  const resourceBase = metadataScope
+    ? scope.basePath.slice(METADATA_GRAPH_PREFIX.length)
+    : scope.basePath;
+  // Canonical-equivalent aliasing: a scope expressed over `meta:<base>` and a
+  // scope expressed over `<base>` name the same subject resources, so an
+  // explicit deny of either form must win over the literal allow below.
+  const aliases = resource === undefined
+    ? [ graph, `${METADATA_GRAPH_PREFIX}${graph}` ]
+    : [ graph, resource ];
+  if ((scope.deniedGraphUrls ?? []).some((denied) => aliases.includes(denied))) {
+    return false;
+  }
+  if ((scope.deniedGraphPrefixes ?? []).some((prefix) =>
+    aliases.some((alias) => alias.startsWith(prefix))
+    || (prefix === METADATA_GRAPH_PREFIX && resource !== undefined)
+    || (prefix.startsWith(METADATA_GRAPH_PREFIX) && aliases.includes(prefix.slice(METADATA_GRAPH_PREFIX.length))))) {
+    return false;
+  }
+  if (rdfAccessGraphAllowed(graph, scope)) {
+    return true;
+  }
+  if (!metadataScope || resource === undefined || !resource.startsWith(resourceBase)) {
+    return false;
+  }
+  if (scope.allowedGraphUrls !== undefined
+    && !scope.allowedGraphUrls.includes(graph)
+    && !scope.allowedGraphUrls.includes(resource)) {
+    return false;
+  }
+  return true;
 }
 
 export function rdfAccessGraphAllowed(graph: string, scope: RdfAccessScope): boolean {
@@ -245,9 +303,13 @@ function scopePattern(
   // Resolving it here rather than inside one engine means every query path - the
   // public authority, the Pod endpoint, a direct engine query - reads the same
   // rule. See docs/rdf-graph-semantics.md.
+  // A metadata facet graph is always exact, even when its IRI ends in `/`
+  // because its subject is a container. Only data graph IRIs keep the
+  // container-prefix meaning.
   const containerPrefix = isTerm(requested as any)
     && (requested as Term).termType === 'NamedNode'
     && (requested as Term).value.endsWith('/')
+    && !isMetadataGraphIri((requested as Term).value)
     ? { $startsWith: (requested as Term).value }
     : undefined;
   const graph: RdfQueryTermPattern = containerPrefix
@@ -274,7 +336,7 @@ function scopePattern(
         }
         : { ...pattern, ...(defaultGraphSourceScope ? { sourceScope: defaultGraphSourceScope } : {}) };
     }
-    return rdfAccessGraphAllowed((graph as Term).value, scope)
+    return rdfReadGraphAllowed((graph as Term).value, scope)
       ? { ...pattern, ...(sourceScope ? { sourceScope } : {}) }
       : { ...pattern, graph: state.impossibleGraph, ...(sourceScope ? { sourceScope } : {}) };
   }
@@ -322,7 +384,7 @@ function scopeGraphOperators(
   }
   if (scope.allowedGraphUrls !== undefined) {
     const allowedTerms = scope.allowedGraphUrls
-      .filter((url) => rdfAccessGraphAllowed(url, scope) && graphOperatorsMayMatch(operators as RdfQueryTermPattern, url))
+      .filter((url) => rdfReadGraphAllowed(url, scope) && graphOperatorsMayMatch(operators as RdfQueryTermPattern, url))
       .map((url) => DataFactory.namedNode(url) as unknown as Term);
     if (allowedTerms.length === 0) {
       return impossibleGraph;

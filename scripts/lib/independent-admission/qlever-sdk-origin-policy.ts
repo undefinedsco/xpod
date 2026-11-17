@@ -3398,16 +3398,23 @@ const RC399_SDK117_GROUP:GitHubSourceBindingGroup=Object.freeze({...RC398_SDK116
  * sourceBinding, so it is rebound in place and the relationship follows. No path,
  * stage, role or release-input row is added: only the owned candidate row moves, so
  * the SDK393 source proofs keep resolving on their own earlier group. */
+/* Update the observer CLI in the CURRENT consumer tail. The current workflow
+ * is derived by current-program-definition; do not copy its checkout digest
+ * here. Published producer bindings and historical groups remain unchanged. */
+const SDK118_CURRENT_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
+  'scripts/check-candidate-service-sdk-source.ts':'65ea2f5aec1c07cfce6ca591b4941790c567ec790870d257095ae96577864f85',
+});
+const rebindSdk118CurrentRow=(row:GitHubSourceBinding):GitHubSourceBinding=>
+  Object.freeze({...row,sha256:row.path==='.github/workflows/candidate.yml'
+    ?QLEVER_REFERENCED_GRAPH_PG_CANDIDATE_WORKFLOW_HASH:SDK118_CURRENT_SOURCE_HASHES[row.path]??row.sha256});
 const REFERENCED_GRAPH_PG_SDK118_GROUP:GitHubSourceBindingGroup=Object.freeze({...RC399_SDK117_GROUP,
   candidateServiceRelationship:RC399_SDK117_GROUP.candidateServiceRelationship
     ?Object.freeze({...RC399_SDK117_GROUP.candidateServiceRelationship,
       workflowSha256:QLEVER_REFERENCED_GRAPH_PG_CANDIDATE_WORKFLOW_HASH})
     :undefined,
   secondarySelectorStages:Object.freeze((RC399_SDK117_GROUP.secondarySelectorStages??[]).map(stage=>
-    Object.freeze(stage.map(row=>Object.freeze({...row,
-      sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_REFERENCED_GRAPH_PG_CANDIDATE_WORKFLOW_HASH:row.sha256}))))),
-  sourceBindings:Object.freeze(RC399_SDK117_GROUP.sourceBindings.map(row=>
-    Object.freeze({...row,sha256:row.path==='.github/workflows/candidate.yml'?QLEVER_REFERENCED_GRAPH_PG_CANDIDATE_WORKFLOW_HASH:row.sha256}))),
+    Object.freeze(stage.map(rebindSdk118CurrentRow)))),
+  sourceBindings:Object.freeze(RC399_SDK117_GROUP.sourceBindings.map(rebindSdk118CurrentRow)),
 });
 export const QLEVER_SDK_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_SDK_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP,RC391_SDK110_GROUP,RC392_SDK111_GROUP,RC393_SDK112_GROUP,RC395_SDK113_GROUP,RC396_SDK114_GROUP,RC397_SDK115_GROUP,RC398_SDK116_GROUP,RC399_SDK117_GROUP,REFERENCED_GRAPH_PG_SDK118_GROUP]);
 export const QLEVER_LINUX_CONSUMER_GROUPS:readonly GitHubSourceBindingGroup[]=Object.freeze([...QLEVER_LINUX_EXECUTION_GROUPS,SDK94_GROUP,SDK95_GROUP,SDK96_GROUP,SDK97_GROUP,SDK98_GROUP,SDK99_GROUP,SDK100_GROUP,SDK101_GROUP,SDK102_GROUP,SDK103_GROUP,SDK104_GROUP,SDK105_GROUP,SDK106_GROUP,SDK107_GROUP,SDK108_GROUP,PR159_SDK109_GROUP,RC389_SDK109_GROUP,RC391_SDK110_GROUP,RC392_SDK111_GROUP,RC393_SDK112_GROUP,RC395_SDK113_GROUP,RC396_SDK114_GROUP,RC397_SDK115_GROUP,RC398_SDK116_GROUP,RC399_SDK117_GROUP,REFERENCED_GRAPH_PG_SDK118_GROUP]);

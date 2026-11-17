@@ -98,7 +98,7 @@
         "vitest": "^1.4.0",
       },
       "optionalDependencies": {
-        "@undefineds.co/xpod-darwin-arm64": "0.4.33",
+        "@undefineds.co/xpod-darwin-arm64": "0.4.34",
       },
       "peerDependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.2.39",
@@ -115,7 +115,7 @@
     },
     "desktop": {
       "name": "@undefineds.co/xpod-desktop",
-      "version": "0.4.32",
+      "version": "0.4.34",
       "devDependencies": {
         "@types/node": "^22.10.0",
         "@undefineds.co/solid-sdk": "workspace:*",
@@ -126,7 +126,7 @@
     },
     "packages/ai-connections": {
       "name": "@undefineds.co/ai-connections",
-      "version": "0.1.6",
+      "version": "0.1.7",
       "dependencies": {
         "@undefineds.co/ai-connections-runtime": "workspace:*",
         "@undefineds.co/extension-sdk": "workspace:*",
@@ -151,7 +151,7 @@
     },
     "packages/ai-connections-runtime": {
       "name": "@undefineds.co/ai-connections-runtime",
-      "version": "0.1.5",
+      "version": "0.1.6",
       "dependencies": {
         "@undefineds.co/extension-host-contracts": "workspace:*",
         "@undefineds.co/models": "0.2.63",

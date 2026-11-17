@@ -791,6 +791,164 @@ describe('AI Connection management client', () => {
     expect(JSON.stringify(models)).not.toContain('must-not-escape')
   })
 
+  /**
+   * The production deployment payload, verbatim: a `builtin:true, readOnly:true`
+   * `xpod-builtin` row whose selected models are owned by that same id, plus the
+   * matching `/v1/models` list. Root observed this shape on 0.4.33.
+   *
+   * The Pod vocabulary must keep rejecting that owner (it is not something a
+   * user can connect), while the declared directory must report it. Before the
+   * fix both calls returned `[]`, which is why the mounted model page rendered
+   * zero providers and zero models.
+   */
+  const PRODUCTION_BUILTIN_PROVIDERS = {
+    data: [{
+      id: 'xpod-builtin',
+      name: 'Xpod',
+      status: 'available',
+      builtin: true,
+      readOnly: true,
+      offerings: [],
+      credentials: [],
+      selectedModels: [
+        { id: 'linx', provider: 'xpod-builtin', displayName: 'linx', protocols: ['chatCompletions', 'responses'] },
+        { id: 'linx-lite', provider: 'xpod-builtin', displayName: 'linx-lite', protocols: ['chatCompletions', 'responses'] },
+      ],
+    }],
+  }
+  const PRODUCTION_GATEWAY_MODELS = {
+    object: 'list',
+    data: [
+      { id: 'linx', object: 'model', owned_by: 'xpod-builtin', display_name: 'linx', protocols: ['chatCompletions', 'responses'] },
+      { id: 'linx-lite', object: 'model', owned_by: 'xpod-builtin', display_name: 'linx-lite', protocols: ['chatCompletions', 'responses'] },
+    ],
+  }
+  const productionFetch = () => vi.fn(async (input: RequestInfo | URL) => new Response(
+    JSON.stringify(String(input).endsWith('/v1/models') ? PRODUCTION_GATEWAY_MODELS : PRODUCTION_BUILTIN_PROVIDERS),
+    {
+      status: 200,
+      headers: {
+        'content-type': 'application/json',
+        'X-Xpod-Builtin-Providers': 'xpod-builtin',
+        'Access-Control-Expose-Headers': 'X-Xpod-Builtin-Providers',
+      },
+    },
+  ))
+
+  it('reports the declared deployment built-in without admitting it to the Pod provider vocabulary', async () => {
+    const authenticatedFetch = productionFetch()
+    const client = createAiConnectionsClient({ webId: WEB_ID, podBaseUrl: POD_BASE, authenticatedFetch })
+
+    await expect(client.listBuiltinProviders!()).resolves.toEqual([{
+      id: 'xpod-builtin',
+      name: 'Xpod',
+      status: 'available',
+      models: [
+        { id: 'linx', displayName: 'linx', provider: 'xpod-builtin' },
+        { id: 'linx-lite', displayName: 'linx-lite', provider: 'xpod-builtin' },
+      ],
+    }])
+    // The Pod list keeps its own vocabulary: a deployment id is not connectable.
+    await expect(client.listProviders()).resolves.toEqual([])
+    await expect(client.listModels()).resolves.toEqual([])
+    // Everything a client may READ about the deployment is still projected.
+    await expect(client.listGatewayCatalogModels!()).resolves.toEqual([
+      { id: 'linx', displayName: 'linx', provider: 'xpod-builtin' },
+      { id: 'linx-lite', displayName: 'linx-lite', provider: 'xpod-builtin' },
+    ])
+  })
+
+  it('rejects a declared row whose credentials or offerings would contradict readOnly', async () => {
+    const client = (data: unknown[]) => createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch: vi.fn(async () => jsonResponse({ data })),
+    })
+    const declared = PRODUCTION_BUILTIN_PROVIDERS.data[0]!
+
+    await expect(client([{ ...declared, readOnly: false }]).listBuiltinProviders!()).resolves.toEqual([])
+    await expect(client([{ ...declared, builtin: false }]).listBuiltinProviders!()).resolves.toEqual([])
+    await expect(client([{ ...declared, credentials: [{ id: 'stolen' }] }]).listBuiltinProviders!()).resolves.toEqual([])
+    await expect(client([{ ...declared, offerings: [{ id: 'api-platform' }] }]).listBuiltinProviders!()).resolves.toEqual([])
+    // A model owned by somebody else is that owner's entry, not this provider's.
+    await expect(client([{
+      ...declared,
+      selectedModels: [
+        ...declared.selectedModels,
+        { id: 'gpt-5', provider: 'openai' },
+      ],
+    }]).listBuiltinProviders!()).resolves.toEqual([{
+      id: 'xpod-builtin',
+      name: 'Xpod',
+      status: 'available',
+      models: [
+        { id: 'linx', displayName: 'linx', provider: 'xpod-builtin' },
+        { id: 'linx-lite', displayName: 'linx-lite', provider: 'xpod-builtin' },
+      ],
+    }])
+  })
+
+  it('keeps a declared read-only row with a known provider id out of the mutable surface', async () => {
+    // The reviewer's objection was grounded only in the vocabulary allowlist, so
+    // the id here is a vocabulary id on purpose: the exclusion must come from the
+    // builtin+readOnly declaration, not from the id being unfamiliar.
+    const builtinRow = {
+      ...PRODUCTION_BUILTIN_PROVIDERS.data[0]!,
+      id: 'openai',
+      name: 'Deployment OpenAI',
+      readOnly: true,
+      builtin: true,
+      selectedModels: [
+        { id: 'linx', provider: 'openai', displayName: 'linx' },
+      ],
+    }
+    const personalRow = {
+      id: 'openai',
+      name: 'OpenAI',
+      status: 'available',
+      offerings: [],
+      credentials: [],
+      selectedModels: [{ id: 'gpt-5', provider: 'openai' }],
+    }
+    const client = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      // Same id, two rows: the declared one and the user's own connection.
+      authenticatedFetch: vi.fn(async () => jsonResponse({ data: [builtinRow, personalRow] })),
+    })
+
+    // Read-only: it is a directory entry, catalogued and nothing else.
+    await expect(client.listBuiltinProviders!()).resolves.toEqual([{
+      id: 'openai',
+      name: 'Deployment OpenAI',
+      status: 'available',
+      models: [{ id: 'linx', displayName: 'linx', provider: 'openai' }],
+    }])
+    // Mutable: only the ordinary personal row, so nothing declared read-only can
+    // be edited, credentialed, or selected through the provider surface.
+    const providers = await client.listProviders()
+    expect(providers.map((provider) => provider.id)).toEqual(['openai'])
+    expect(providers[0]?.selectedModels).toEqual([{ id: 'gpt-5', provider: 'openai' }])
+    expect(JSON.stringify(providers)).not.toContain('linx')
+  })
+
+  it('declares whether key management exists instead of only failing when probed', async () => {
+    const without = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch: productionFetch(),
+    })
+    expect(without.gatewayKeyManagement).toBe(false)
+
+    const withCapability = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: POD_BASE,
+      authenticatedFetch: productionFetch(),
+      clientCredentials: { list: vi.fn(async () => []), create: vi.fn(), revoke: vi.fn() } as never,
+    })
+    expect(withCapability.gatewayKeyManagement).toBe(true)
+  })
+
   it('binds provider operations to the fixed provider route and current identity fetch', async () => {
     const authenticatedFetch = vi.fn(async () => new Response(JSON.stringify({
       mode: 'browserAssistedApiKey',

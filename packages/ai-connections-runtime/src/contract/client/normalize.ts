@@ -4,6 +4,7 @@ import type { AiConnectionsOAuthCredential } from '@undefineds.co/extension-host
 import { AI_CONNECTIONS_PROVIDERS } from './types'
 import { PLATFORM_MODEL_ROLES, matchesPlatformModelRole } from './gateway-model-roles'
 import type {
+  AiBuiltinProviderSummary,
   AiConnectAttempt,
   AiConnectionsCredential,
   AiConnectionsMode,
@@ -162,8 +163,9 @@ export function parseGatewayModel(value: unknown): AiGatewayModel | undefined {
     ?? providerValue(value.providerId)
     ?? providerValue(value.owned_by)
   // Only WITHOUT such an owner is a platform-role id the Gateway's own routing
-  // entry (or a genuine `xpod-builtin` row, whose owner is not a Pod provider),
-  // and only then must it stay out of the Pod model list.
+  // entry, and only then must it stay out of the Pod model list. A row owned by
+  // a provider outside this list (a deployment built-in) is not a Pod model
+  // either; `parseBuiltinProviderSummaries` reads those from the declaration.
   if (!explicitProvider && isPlatformModelId(value.id)) return undefined
   const provider = explicitProvider ?? providerFromModelId(value.id)
   if (!provider) return undefined
@@ -269,7 +271,19 @@ export function parseProviderSummaries(values: unknown[]): AiProviderSummary[] {
 }
 
 function parseProviderSummary(value: unknown): AiProviderSummary | undefined {
+  // A row the server declares as a read-only directory entry is never a
+  // connectable personal connection, whatever id it happens to carry. This is
+  // the generic half of the invariant: the same declaration that makes
+  // `listBuiltinProviders` accept the row is what makes the mutable surface
+  // reject it, so an opaque deployment id that collides with a vocabulary id
+  // cannot smuggle itself in as an editable provider.
+  if (isDeclaredReadOnlyDirectoryRow(value)) return undefined
   return parseGroupedProviderSummary(value) ?? parseLegacyProviderSummary(value)
+}
+
+/** The declaration `builtin: true` + `readOnly: true`, or either half claiming it. */
+function isDeclaredReadOnlyDirectoryRow(value: unknown): boolean {
+  return isRecord(value) && (value.builtin === true || value.readOnly === true)
 }
 
 function parseLegacyProviderSummary(value: unknown): AiProviderSummary | undefined {
@@ -310,6 +324,69 @@ function parseGroupedProviderSummary(value: unknown): AiProviderSummary | undefi
     selectedModels,
     status: value.status,
   }
+}
+
+/**
+ * The deployment-owned providers the server declares about itself.
+ *
+ * This is the counterpart of `parseGatewayModel`'s Pod filter, not a widening of
+ * it: a row qualifies only when the server says `builtin: true` AND
+ * `readOnly: true`, and the id it carries is then trusted as a bare deployment
+ * id. Nothing here enters `AI_CONNECTIONS_PROVIDERS`, so a declared id cannot
+ * become a connectable provider, and a Pod row that merely names itself after
+ * one is still rejected by the Pod parsers above.
+ *
+ * The models are projected as catalog entries rather than `AiGatewayModel`s on
+ * purpose: their owner is a deployment id, which is not an `AiConnectionsProvider`,
+ * and mixing the two vocabularies is what made the row disappear.
+ */
+export function parseBuiltinProviderSummaries(values: unknown[]): AiBuiltinProviderSummary[] {
+  const providers: AiBuiltinProviderSummary[] = []
+  const seen = new Set<string>()
+  for (const value of values) {
+    const provider = parseBuiltinProviderSummary(value)
+    if (!provider || seen.has(provider.id)) continue
+    seen.add(provider.id)
+    providers.push(provider)
+  }
+  return providers
+}
+
+function parseBuiltinProviderSummary(value: unknown): AiBuiltinProviderSummary | undefined {
+  if (!isRecord(value)
+    || value.builtin !== true
+    || value.readOnly !== true
+    || typeof value.id !== 'string'
+    || !value.id.trim()
+    || !isProviderSummaryStatus(value.status)) {
+    return undefined
+  }
+  const id = value.id.trim()
+  // A declared directory is models only: credentials, offerings and write
+  // actions would contradict `readOnly`, so a row claiming them is malformed
+  // rather than partially accepted.
+  if (!Array.isArray(value.offerings) || !Array.isArray(value.credentials)) return undefined
+  if (value.offerings.length > 0 || value.credentials.length > 0) return undefined
+  const models = arrayValue(value.selectedModels, (item) => parseBuiltinProviderModel(item, id))
+  return {
+    id,
+    name: stringValue(value.name) ?? id,
+    status: value.status,
+    models,
+  }
+}
+
+function parseBuiltinProviderModel(value: unknown, providerId: string): AiGatewayCatalogModel | undefined {
+  if (!isRecord(value) || typeof value.id !== 'string' || !value.id.trim()) return undefined
+  const owner = stringValue(value.provider) ?? stringValue(value.providerId) ?? stringValue(value.owned_by)
+  // The declaration and the row must agree on who owns the model; a row naming
+  // another provider is that provider's entry, not this one's.
+  if (owner !== undefined && owner !== providerId) return undefined
+  return compactObject({
+    id: value.id.trim(),
+    displayName: stringValue(value.displayName) ?? stringValue(value.display_name) ?? stringValue(value.name),
+    provider: providerId,
+  }) as AiGatewayCatalogModel
 }
 
 function parseProviderOffering(value: unknown): AiProviderOffering | undefined {

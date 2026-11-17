@@ -166,6 +166,25 @@ export interface AiGatewayCatalogModel {
 }
 
 /**
+ * A deployment-owned, read-only provider the server declares about itself.
+ *
+ * The row says it is not a Pod connection (`builtin: true` + `readOnly: true`)
+ * and carries the deployment's own provider id. That id is deliberately NOT
+ * part of `AI_CONNECTIONS_PROVIDERS`: that list names what a user may connect,
+ * while this directory names what the deployment already runs. Keeping them
+ * apart is what lets an arbitrary deployment id be listed without widening
+ * every write path to accept it.
+ */
+export interface AiBuiltinProviderSummary {
+  /** Deployment-owned id, whatever the deployment calls itself. */
+  id: string
+  name: string
+  status: AiProviderSummary['status']
+  /** Models the deployment declares for this provider, under the same owner id. */
+  models: AiGatewayCatalogModel[]
+}
+
+/**
  * What the provider's own model list said a model is.
  *
  * Two values only, because that is the distinction the product acts on and the
@@ -355,6 +374,13 @@ export interface AiConnectionsClient {
   readonly podBaseUrl: string
   getServiceAccess(): Promise<unknown>
   listProviders(): Promise<AiProviderSummary[]>
+  /**
+   * Deployment-owned read-only providers declared by the server itself
+   * (`builtin: true` + `readOnly: true`), independent of the Pod provider
+   * catalogue. This is the only surface that carries those ids, which is why
+   * the credential and connect calls below never accept them.
+   */
+  listBuiltinProviders?(): Promise<AiBuiltinProviderSummary[]>
   listAuthorizationMethods?(): Promise<AiProviderAuthorizationMethodsSummary[]>
   listModels(): Promise<AiGatewayModel[]>
   /** Active Gateway routing projection, independent of a host's Pod catalog. */
@@ -369,7 +395,13 @@ export interface AiConnectionsClient {
    * There is deliberately no enable/disable call - the Account has no such
    * capability - and no reveal call: the `sk-` wrapper exists only in the create
    * response and in `plaintexts` for the session that issued it.
+   *
+   * `gatewayKeyManagement` declares whether this client was assembled with that
+   * capability. A client that says `false` will fail every one of these calls,
+   * so a surface must present the operation as unsupported instead of probing
+   * it.
    */
+  readonly gatewayKeyManagement?: boolean
   listGatewayKeys(): Promise<GatewayKeyRecord[]>
   createGatewayKey(input: {
     name: string

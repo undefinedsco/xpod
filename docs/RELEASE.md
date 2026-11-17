@@ -735,6 +735,8 @@ master，诊断附件不能作为发布通过的证据。
 
 服务镜像的逐文件 SOURCE/LEGAL/ABI 推导审计与上述 SDK/原生验证分开：仅在手动运行 candidate 时显式勾选 `service_source_diagnostics` 执行，结果作为独立诊断保留，不再作为共享 RC 部署或最终验收的前置。诊断失败仍记录失败，不授予 `wholeServiceSourceVerified`、`serviceAbiVerified` 或 `legalCoverageVerified`。最终验收单独披露这一范围；既有 SDK/原生验证、18 路兼容、不可变源码和镜像绑定，以及全部 28 项服务检查仍须通过（桌面另有独立凭证）。原生兼容测试不等价于完整镜像 ABI 推导审计。
 
+强制取证步骤独立生成 source/manifest/registry/pack/runtime 原件与规范 master。可选 ABI 诊断复用同一组不可变绑定参数，另取独立的 120 秒窗口和临时目录；只在该采集进程中设置 `RUNNER_TEMP`，满足原件采集器的目录归属约束。诊断采集和附件上传都设为 `continue-on-error`，不改变强制取证的输出或状态。诊断原件单独上传为 `candidate-service-abi-diagnostic-*`；可选观察 job 不传 `--require-qualification`，未完成的整镜像推导如实输出未验证状态及 pending 原因。
+
 **并行度按机器实测决定，不再手写**：
 
 | 作业 | runner | 实测 | 并行度 |

@@ -46,6 +46,10 @@ import {
   UnsupportedSparqlQueryError,
   sparqlCorrectionForCapability,
 } from '../storage/rdf/RdfSparqlBoundary';
+import {
+  METADATA_GRAPH_PREFIX,
+  isMetadataGraphIri,
+} from '../storage/rdf/RdfAccessScope';
 import type { SparqlCorrection } from '../storage/rdf/RdfSparqlBoundary';
 import type { RdfAccessScope } from '../storage/rdf/RdfAccessScope';
 import { getIdentityDatabase } from '../identity/drizzle/db';
@@ -105,6 +109,26 @@ interface QueryRequest {
   origin: string;
   method: string;
   ingressBytes: number;
+}
+
+/**
+ * A read that explicitly targets the metadata facets of this endpoint. Facets
+ * are the literal `meta:` graphs of resources under the same base; they are
+ * exact graphs and are authorized as their subject resource.
+ */
+interface MetadataReadPlan {
+  kind: 'explicit' | 'collection';
+  basePath: string;
+  graphIris: string[];
+  graphVariable?: string;
+  subjectVariable?: string;
+  /**
+   * Collection queries may aggregate and therefore not project the graph/subject
+   * variables (SPARQL forbids ungrouped projection). The query-level correlation
+   * filter plus the pinned authorized graph set remain mandatory either way; the
+   * per-row guard only runs when the variables are actually returned.
+   */
+  rowGuard: boolean;
 }
 
 interface SubgraphSparqlHttpHandlerOptions {
@@ -277,10 +301,27 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
       }
 
       const queryType = parsed.queryType ?? 'SELECT';
+      const metadataPlan = queryType === 'SELECT'
+        ? this.classifyMetadataRead(parsed, queryRequest.baseUrl)
+        : undefined;
+      // Only the explicit SELECT path authorizes each facet's subject resource.
+      // Every other shape (ASK/CONSTRUCT/DESCRIBE, or a SELECT the classifier did
+      // not accept) must fail closed instead of falling through to ordinary
+      // execution, where the metadata alias has no ACL decision behind it.
+      if (!metadataPlan) {
+        const unsupported = this.unsupportedMetadataSignal(parsed, queryRequest.baseUrl);
+        if (unsupported) {
+          throw new BadRequestHttpError(unsupported);
+        }
+      }
 
       switch (queryType) {
         case 'SELECT':
-          await this.executeSelect(request, queryRequest, response, context);
+          if (metadataPlan) {
+            await this.executeMetadataSelect(request, queryRequest, metadataPlan, response, context);
+          } else {
+            await this.executeSelect(request, queryRequest, response, context);
+          }
           break;
         case 'ASK':
           await this.executeAsk(request, queryRequest, response, context);
@@ -369,6 +410,475 @@ export class SubgraphSparqlHttpHandler extends HttpHandler {
     const accept = request.headers.accept;
     const values = Array.isArray(accept) ? accept : [ accept ];
     return values.some(value => typeof value === 'string' && /\bapplication\/json\b/i.test(value));
+  }
+
+  private classifyMetadataRead(parsed: any, baseUrl: string): MetadataReadPlan | undefined {
+    const metadataPrefix = `${METADATA_GRAPH_PREFIX}${baseUrl}`;
+    if ((parsed.from?.default?.length ?? 0) > 0 || (parsed.from?.named?.length ?? 0) > 0) {
+      return undefined;
+    }
+    const graphIris: string[] = [];
+    const graphVariables = new Set<string>();
+    const filters: any[] = [];
+    const topLevelFilters: any[] = [];
+    const graphTriples: Array<{ subject?: any; predicate?: any; object?: any; pattern: any }> = [];
+    let unNamed = false;
+    let unsupportedShape: string | undefined;
+
+    const visit = (patterns: any[] | undefined, insideGraph: boolean, branchDepth = 0): void => {
+      for (const pattern of patterns ?? []) {
+        if (!pattern || typeof pattern !== 'object') {
+          continue;
+        }
+        if (pattern.type === 'graph') {
+          if (insideGraph) {
+            unsupportedShape ??= 'Nested GRAPH patterns are not supported for metadata reads.';
+            continue;
+          }
+          if (pattern.name?.termType === 'NamedNode') {
+            graphIris.push(pattern.name.value);
+          } else if (pattern.name?.termType === 'Variable') {
+            graphVariables.add(pattern.name.value);
+          } else {
+            unsupportedShape ??= 'Metadata reads require a named or variable GRAPH.';
+            continue;
+          }
+          visit(pattern.patterns, true, branchDepth);
+          continue;
+        }
+        if (pattern.type === 'bgp') {
+          if (!insideGraph) {
+            unNamed = true;
+          } else if (pattern.triples) {
+            for (const triple of pattern.triples) {
+              graphTriples.push({ ...triple, pattern });
+            }
+          }
+          continue;
+        }
+        if (pattern.type === 'optional' || pattern.type === 'group' || pattern.type === 'union') {
+          if (!insideGraph) unNamed = true;
+          const nested = pattern.type === 'union'
+            ? (pattern.patterns ?? []).flatMap((branch: any) => branch.patterns ?? [branch])
+            : pattern.patterns;
+          // A filter inside a UNION/OPTIONAL branch constrains only that branch, so it
+          // cannot prove ownership for the other branches. Only a filter that applies
+          // to the whole pattern group (branchDepth 0) may satisfy the check.
+          visit(nested, insideGraph, pattern.type === 'group' ? branchDepth : branchDepth + 1);
+          continue;
+        }
+        if (pattern.type === 'filter') {
+          filters.push(pattern);
+          if (branchDepth === 0) {
+            topLevelFilters.push(pattern);
+          }
+          continue;
+        }
+        if (pattern.type === 'bind') {
+          // A top-level BIND computes a term; it does not read the data namespace.
+          continue;
+        }
+        if (!insideGraph && (pattern.type === 'minus' || pattern.type === 'exists' || pattern.type === 'values')) {
+          unNamed = true;
+        }
+      }
+    };
+
+    visit(parsed.where, false);
+
+    // Ordinary SELECTs (including ordinary GRAPH/?g data queries) never enter the
+    // metadata path. Shape errors are only reported after a metadata signal was found.
+    const namedMetadata = graphIris.filter((iri) => isMetadataGraphIri(iri) && iri.startsWith(metadataPrefix));
+    const graphVariable = graphVariables.size === 1 ? [ ...graphVariables ][0] : undefined;
+    const boundedVariable = graphVariable !== undefined
+      && this.hasBoundedMetadataGraphFilter(topLevelFilters, graphVariable, metadataPrefix);
+    const metadataSignal = namedMetadata.length > 0 || boundedVariable;
+    if (!metadataSignal) {
+      const outOfBaseMetadata = graphIris.find((iri) => isMetadataGraphIri(iri));
+      if (graphIris.length === 0 && graphVariables.size === 0) {
+        return undefined;
+      }
+      if (outOfBaseMetadata) {
+        throw new BadRequestHttpError(`Metadata graph ${outOfBaseMetadata} is outside ${metadataPrefix}.`);
+      }
+      return undefined;
+    }
+    if (unsupportedShape) {
+      throw new BadRequestHttpError(unsupportedShape);
+    }
+    const subjectVariable = graphVariable
+      ? this.resolveMetadataSubjectVariable(graphTriples, parsed.where, filters, graphVariable)
+      : undefined;
+    if (unNamed) {
+      throw new BadRequestHttpError('Metadata graph patterns cannot be mixed with un-named data patterns; issue a metadata-only query.');
+    }
+    if (graphIris.length > 0) {
+      if (graphVariables.size > 0) {
+        throw new BadRequestHttpError('Metadata reads cannot mix explicit graphs with a graph variable.');
+      }
+      for (const iri of graphIris) {
+        if (!isMetadataGraphIri(iri)) {
+          throw new BadRequestHttpError('Metadata graph reads cannot be mixed with data graph reads.');
+        }
+        if (!iri.startsWith(metadataPrefix)) {
+          throw new BadRequestHttpError(`Metadata graph ${iri} is outside ${metadataPrefix}.`);
+        }
+      }
+      return { kind: 'explicit', basePath: baseUrl, graphIris, rowGuard: false };
+    }
+    if (!graphVariable) {
+      throw new BadRequestHttpError('Metadata reads support at most one graph variable.');
+    }
+    if (!subjectVariable) {
+      throw new BadRequestHttpError('Metadata collection reads require a subject variable bound inside GRAPH.');
+    }
+    const projected = new Set<string>((parsed.variables ?? [])
+      .map((variable: any) => variable?.termType === 'Variable' ? variable.value : undefined)
+      .filter((value: unknown): value is string => typeof value === 'string'));
+    // Grouped/aggregate SELECTs legitimately project neither the graph nor the
+    // subject (SPARQL requires every projected variable to be grouped). The
+    // ownership correlation is required in the query text regardless, and the
+    // physical scope is pinned to the authorized graph snapshot, so an aggregate
+    // still only sees own facets.
+    const rowGuard = projected.has(graphVariable) && projected.has(subjectVariable);
+    if (!this.hasMetadataGraphSubjectBinding(topLevelFilters, graphVariable, subjectVariable)
+      && !this.hasMetadataGraphExpectedBind(parsed.where, topLevelFilters, graphVariable, subjectVariable)) {
+      throw new BadRequestHttpError(
+        'Metadata collection reads must bind graph to subject in the query: '
+        + `FILTER(STR(?${subjectVariable}) = STRAFTER(STR(?${graphVariable}), "meta:")) `
+        + 'or BIND(IRI(CONCAT("meta:", STR(?subject))) AS ?expected) + FILTER(?graph = ?expected) before ORDER/LIMIT.',
+      );
+    }
+    return { kind: 'collection', basePath: baseUrl, graphIris: [], graphVariable, subjectVariable, rowGuard };
+  }
+
+  /**
+   * Detect metadata access in a query shape that has no per-subject authorization
+   * (ASK/CONSTRUCT/DESCRIBE, or a SELECT the metadata classifier rejected).
+   * Returning a reason makes the request fail closed with an explicit 400 rather
+   * than silently evaluating against data graphs only.
+   */
+  private unsupportedMetadataSignal(parsed: any, baseUrl: string): string | undefined {
+    const metadataPrefix = `${METADATA_GRAPH_PREFIX}${baseUrl}`;
+    const graphVariables = new Set<string>();
+    const filters: any[] = [];
+    let explicit: string | undefined;
+
+    const visit = (patterns: any[] | undefined): void => {
+      for (const pattern of patterns ?? []) {
+        if (!pattern || typeof pattern !== 'object') {
+          continue;
+        }
+        if (pattern.type === 'graph') {
+          if (pattern.name?.termType === 'NamedNode' && isMetadataGraphIri(pattern.name.value)) {
+            explicit ??= pattern.name.value;
+          } else if (pattern.name?.termType === 'Variable') {
+            graphVariables.add(pattern.name.value);
+          }
+          visit(pattern.patterns);
+          continue;
+        }
+        if (pattern.type === 'bgp' || pattern.type === 'values' || pattern.type === 'bind') {
+          continue;
+        }
+        if (pattern.type === 'filter') {
+          filters.push(pattern);
+          continue;
+        }
+        if (pattern.type === 'union' || pattern.type === 'optional' || pattern.type === 'group') {
+          visit(pattern.patterns);
+          continue;
+        }
+        if (pattern.type === 'query') {
+          // A nested SELECT/ASK reads the same store; descend so a facet inside a
+          // subquery is rejected here instead of quietly evaluating to empty.
+          visit(pattern.where);
+          continue;
+        }
+        if (pattern.type === 'service') {
+          visit(pattern.patterns);
+          continue;
+        }
+      }
+    };
+    visit(parsed.where);
+
+    if (explicit) {
+      return `Metadata graph ${explicit} is only readable through an explicit metadata SELECT; `
+        + 'this query shape has no per-resource authorization.';
+    }
+    for (const graphVariable of graphVariables) {
+      if (this.hasBoundedMetadataGraphFilter(filters, graphVariable, metadataPrefix)) {
+        return 'Metadata collection reads are only supported as SELECT with the graph-to-subject binding; '
+          + 'this query shape has no per-resource authorization.';
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Derive the subject variable structurally: the first variable that appears in
+   * the subject slot of a triple inside the metadata GRAPH, preferring one that
+   * also occurs in the projected variables. Variable names carry no semantics.
+   */
+  private resolveMetadataSubjectVariable(
+    graphTriples: Array<{ subject?: any }>,
+    where: any[] | undefined,
+    filters: any[],
+    graphVariable: string,
+  ): string | undefined {
+    const subjects: string[] = [];
+    for (const triple of graphTriples) {
+      const subject = triple.subject;
+      if (subject?.termType === 'Variable'
+        && subject.value !== graphVariable
+        && !subjects.includes(subject.value)) {
+        subjects.push(subject.value);
+      }
+    }
+    // Prefer the subject the query explicitly ties to the graph.
+    const bound = subjects.find((candidate) => this.hasMetadataGraphSubjectBinding(filters, graphVariable, candidate));
+    if (bound) {
+      return bound;
+    }
+    if (subjects.length > 0) {
+      return subjects[0];
+    }
+    // A query may bind the metadata subject through IRI(CONCAT("meta:", STR(?s)))
+    // instead of a subject-slot triple; accept exactly one such structural bind.
+    const dynamicSubjects = new Set<string>();
+    for (const pattern of where ?? []) {
+      if (pattern?.type !== 'bind' || pattern.variable?.termType !== 'Variable') {
+        continue;
+      }
+      const expr = pattern.expression;
+      const boundExpr = expr?.type === 'operation' && expr.operator === 'iri' ? expr.args?.[0] : expr;
+      const concat = boundExpr?.type === 'operation' && boundExpr.operator === 'concat' ? boundExpr.args ?? [] : [];
+      for (const arg of concat) {
+        if (arg?.type === 'operation' && arg.operator === 'str' && arg.args?.[0]?.termType === 'Variable') {
+          dynamicSubjects.add(arg.args[0].value);
+        }
+      }
+    }
+    return dynamicSubjects.size === 1 ? [ ...dynamicSubjects ][0] : undefined;
+  }
+
+  /**
+   * Compatible query-level binding form: BIND(IRI(CONCAT("meta:", STR(?s))) AS
+   * ?expected) plus FILTER(?graph = ?expected), still evaluated before
+   * ORDER/LIMIT/OFFSET. Root's canonical form is the STRAFTER filter; this alias
+   * is accepted so an existing ORM builder does not have to rewrite first.
+   */
+  private hasMetadataGraphExpectedBind(
+    where: any[] | undefined,
+    filters: any[],
+    graphVariable: string,
+    subjectVariable: string,
+  ): boolean {
+    const expected = new Set<string>();
+    for (const pattern of where ?? []) {
+      if (pattern?.type !== 'bind' || pattern.variable?.termType !== 'Variable') {
+        continue;
+      }
+      const expr = pattern.expression;
+      const bound = expr?.type === 'operation' && expr.operator === 'iri' ? expr.args?.[0] : expr;
+      if (bound?.type !== 'operation' || bound.operator !== 'concat') {
+        continue;
+      }
+      const args = bound.args ?? [];
+      const prefix = args[0];
+      const strArg = args[1];
+      const inner = strArg?.type === 'operation' && strArg.operator === 'str' ? strArg.args?.[0] : undefined;
+      if (prefix?.termType === 'Literal'
+        && prefix.value === METADATA_GRAPH_PREFIX
+        && inner?.termType === 'Variable'
+        && inner.value === subjectVariable) {
+        expected.add(pattern.variable.value);
+      }
+    }
+    if (expected.size === 0) {
+      return false;
+    }
+    return filters.some((filter) => {
+      const expression = filter.expression;
+      if (expression?.type !== 'operation' || expression.operator !== '=') {
+        return false;
+      }
+      const [ left, right ] = expression.args ?? [];
+      const vars = [ left, right ].filter((arg: any) => arg?.termType === 'Variable').map((arg: any) => arg.value);
+      return vars.length === 2
+        && vars.includes(graphVariable)
+        && vars.some((name: string) => expected.has(name));
+    });
+  }
+
+  private hasBoundedMetadataGraphFilter(filters: any[], graphVariable: string, metadataPrefix: string): boolean {
+    return filters.some((filter) => {
+      const expression = filter.expression;
+      if (expression?.type !== 'operation' || expression.operator !== 'strstarts') {
+        return false;
+      }
+      const [ left, right ] = expression.args ?? [];
+      const inner = left?.type === 'operation' && left.operator === 'str' ? left.args?.[0] : undefined;
+      return inner?.termType === 'Variable'
+        && inner.value === graphVariable
+        && right?.termType === 'Literal'
+        && right.value === metadataPrefix;
+    });
+  }
+
+  /**
+   * Root requires graph<->subject binding to be enforced by the query before
+   * ORDER/LIMIT/OFFSET, not only by a post-filter. Accept the exact
+   * `FILTER(STR(?subject) = STRAFTER(STR(?metadataGraph), "meta:"))` form and
+   * fail closed if a collection query omits it.
+   */
+  private hasMetadataGraphSubjectBinding(
+    filters: any[],
+    graphVariable: string,
+    subjectVariable: string,
+  ): boolean {
+    return filters.some((filter) => {
+      const expression = filter.expression;
+      if (expression?.type !== 'operation' || expression.operator !== '=') {
+        return false;
+      }
+      const [ left, right ] = expression.args ?? [];
+      const isSubjectStr = left?.type === 'operation'
+        && left.operator === 'str'
+        && left.args?.[0]?.termType === 'Variable'
+        && left.args[0].value === subjectVariable;
+      const isStrafter = right?.type === 'operation'
+        && right.operator === 'strafter'
+        && right.args?.[0]?.type === 'operation'
+        && right.args[0].operator === 'str'
+        && right.args[0].args?.[0]?.termType === 'Variable'
+        && right.args[0].args[0].value === graphVariable
+        && right.args?.[1]?.termType === 'Literal'
+        && right.args[1].value === METADATA_GRAPH_PREFIX;
+      return isSubjectStr && isStrafter;
+    });
+  }
+
+  private async executeMetadataSelect(
+    request: HttpRequest,
+    queryRequest: QueryRequest,
+    plan: MetadataReadPlan,
+    response: HttpResponse,
+    context: UsageContext | undefined,
+  ): Promise<void> {
+    if (typeof this.engine.queryMetadataBindings !== 'function') {
+      throw new UnsupportedSparqlQueryError('This SPARQL engine does not expose metadata facet reads.');
+    }
+    const credentials = await this.credentialsExtractor.handleSafe(request);
+    const memo: AuthorizationMemo = new Map();
+    const allowed = new Map<string, boolean>();
+    const authorize = async (resource: string): Promise<void> => {
+      if (!allowed.has(resource)) {
+        allowed.set(resource, await this.canAuthorizeFor(resource, credentials, [ PERMISSIONS.Read ], memo));
+      }
+    };
+    let existingGraphs: Set<string> | undefined;
+    if (plan.kind === 'explicit') {
+      // A metadata graph that was never written is a valid empty range, not an
+      // error: only authorize (and later pin) graphs that the index actually has.
+      existingGraphs = await this.engine.listMetadataGraphs(queryRequest.baseUrl, {
+        basePath: `${METADATA_GRAPH_PREFIX}${queryRequest.baseUrl}`,
+        mode: 'read',
+      });
+      for (const graph of plan.graphIris) {
+        if (!existingGraphs.has(graph)) {
+          continue;
+        }
+        await authorize(this.metadataResourceForGraph(graph, plan.basePath));
+      }
+    } else {
+      const listed = await this.engine.listMetadataGraphs(queryRequest.baseUrl, {
+        basePath: `${METADATA_GRAPH_PREFIX}${queryRequest.baseUrl}`,
+        mode: 'read',
+      });
+      for (const graph of listed) {
+        let resource: string;
+        try {
+          resource = this.metadataResourceForGraph(graph, plan.basePath);
+        } catch {
+          continue;
+        }
+        await authorize(resource);
+      }
+    }
+
+    // Pin the physical graph scope to the snapshot that was actually authorized.
+    // A graph created after listing/authorization is therefore excluded by the
+    // engine before ORDER/LIMIT/aggregates, not merely by the row post-filter.
+    // An empty authorized snapshot fails closed without a query round trip.
+    const authorizedGraphs = [ ...allowed.entries() ]
+      .filter(([ , value ]) => value)
+      .map(([ resource ]) => `${METADATA_GRAPH_PREFIX}${resource}`)
+      .filter((graph) => plan.kind !== 'explicit' || (existingGraphs?.has(graph) ?? false))
+      .sort();
+    if (authorizedGraphs.length === 0) {
+      await this.sendPayload(
+        response,
+        JSON.stringify({ head: { vars: [] }, results: { bindings: [] } }),
+        'application/sparql-results+json; charset=utf-8',
+        context,
+      );
+      return;
+    }
+    const scope: RdfAccessScope = {
+      basePath: `${METADATA_GRAPH_PREFIX}${queryRequest.baseUrl}`,
+      mode: 'read',
+      ...(credentials.agent?.webId ? { principal: credentials.agent.webId } : {}),
+      allowedGraphUrls: authorizedGraphs,
+    };
+
+    const results: Record<string, unknown>[] = [];
+    const seenVars = new Set<string>();
+    const explicitDenied = plan.kind === 'explicit'
+      && [ ...allowed.values() ].some((value) => !value);
+    if (explicitDenied) {
+      await this.sendPayload(
+        response,
+        JSON.stringify({ head: { vars: [] }, results: { bindings: [] } }),
+        'application/sparql-results+json; charset=utf-8',
+        context,
+      );
+      return;
+    }
+    const stream = await this.engine.queryMetadataBindings(queryRequest.query, queryRequest.baseUrl, scope);
+    for await (const binding of stream as AsyncIterable<any>) {
+      if (plan.rowGuard && !this.metadataRowAllowed(binding, plan, allowed)) {
+        continue;
+      }
+      const row: Record<string, unknown> = {};
+      for (const [ variable, term ] of binding) {
+        const name = typeof variable === 'string' ? variable : variable.value;
+        row[name] = this.termToJson(term);
+        seenVars.add(name);
+      }
+      results.push(row);
+    }
+    const payload = { head: { vars: [ ...seenVars ] }, results: { bindings: results } };
+    await this.sendPayload(response, JSON.stringify(payload), 'application/sparql-results+json; charset=utf-8', context);
+  }
+
+  private metadataResourceForGraph(graph: string, baseUrl: string): string {
+    if (!isMetadataGraphIri(graph) || !graph.startsWith(`${METADATA_GRAPH_PREFIX}${baseUrl}`)) {
+      throw new BadRequestHttpError(`Metadata graph ${graph} is outside ${baseUrl}.`);
+    }
+    return graph.slice(METADATA_GRAPH_PREFIX.length);
+  }
+
+  private metadataRowAllowed(binding: any, plan: MetadataReadPlan, allowed: Map<string, boolean>): boolean {
+    const graphTerm = binding.get(plan.graphVariable);
+    const resourceTerm = binding.get(plan.subjectVariable);
+    if (graphTerm?.termType !== 'NamedNode' || resourceTerm?.termType !== 'NamedNode') {
+      return false;
+    }
+    return graphTerm.value === `${METADATA_GRAPH_PREFIX}${resourceTerm.value}`
+      && resourceTerm.value.startsWith(plan.basePath)
+      && allowed.get(resourceTerm.value) === true;
   }
 
   private async executeSelect(

@@ -16,6 +16,7 @@ import {
   isDefined,
   isRecord,
   parseAuthorizationMethodsSummary,
+  parseBuiltinProviderSummaries,
   parseConnectAttempt,
   parseCredential,
   parseCustomModelList,
@@ -161,6 +162,13 @@ export function createAiConnectionsClient({
     // the client stays a normal, extensible object (decoration and spies work).
     get podBaseUrl(): string { return podBinding },
 
+    /**
+     * Key management exists only when the host assembled this client with the
+     * Account capability. Declaring it is what lets the page say "unsupported"
+     * instead of issuing a request it already knows must fail.
+     */
+    gatewayKeyManagement: Boolean(clientCredentials),
+
     getServiceAccess() {
       return request<unknown>('/api/applets/service-access/ai-connections', 'GET')
     },
@@ -168,6 +176,19 @@ export function createAiConnectionsClient({
     async listProviders() {
       const payload = await request<{ data?: unknown[] }>('/api/ai/providers', 'GET')
       return Array.isArray(payload.data) ? parseProviderSummaries(payload.data) : []
+    },
+
+    /**
+     * The deployment's own read-only directory from the same response.
+     *
+     * `listProviders` must keep answering strictly in the Pod vocabulary, so the
+     * declared rows are read here, where a deployment id is expected. The two
+     * lists are independent on purpose: whichever one fails or is empty, the
+     * other still describes what it owns.
+     */
+    async listBuiltinProviders() {
+      const payload = await request<{ data?: unknown[] }>('/api/ai/providers', 'GET')
+      return Array.isArray(payload.data) ? parseBuiltinProviderSummaries(payload.data) : []
     },
 
     async listAuthorizationMethods() {

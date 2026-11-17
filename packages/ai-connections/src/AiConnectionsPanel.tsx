@@ -7,6 +7,7 @@ import type { AiConnectionsModelSelection } from '@undefineds.co/extension-sdk/w
 import {
   type AiConnectAttempt,
   type AiConnectionsClient,
+  type AiBuiltinProviderSummary,
   type AiGatewayModel,
   type AiConnectionsProvider,
   type AiProviderAuthorizationMethod,
@@ -40,6 +41,7 @@ import { AiGatewayKeysSection } from './AiGatewayKeysSection'
 import {
   type AiClientConfigurationBridge,
 } from './AiClientConfigurationSection'
+import type { BuiltinDirectoryState } from './AiBuiltinProvidersSection'
 import { credentialCarriers, withLiveCredentials, type CredentialRow } from './collections'
 import { modelCatalogId, withCatalogModelId } from './AiModelCatalog'
 import type { GatewayModelSelection } from './AiGatewayModelsSection'
@@ -240,6 +242,41 @@ export function AiConnectionsPanel({
       .catch(() => undefined)
     return () => { active = false }
   }, [client, gatewayCatalogVersion])
+
+  /**
+   * The deployment's declared read-only directory, on its own request.
+   *
+   * It must not share a promise with `listProviders`/`listModels`: a Pod read
+   * that fails (or a personal catalogue that is simply empty) says nothing about
+   * what the deployment itself offers, and coupling them is exactly how a real
+   * built-in row disappeared from the page. The four outcomes stay distinct —
+   * unsupported / loading / failed / ready — because a failed read must never be
+   * rendered as "there are none", and a personal failure must stay its own
+   * message.
+   */
+  const [builtinDirectory, setBuiltinDirectory] = useState<BuiltinDirectoryState>(() => (
+    typeof client.listBuiltinProviders === 'function' ? { status: 'loading' } : { status: 'unsupported' }
+  ))
+  useEffect(() => {
+    const read = client.listBuiltinProviders
+    if (!read) {
+      setBuiltinDirectory({ status: 'unsupported' })
+      return
+    }
+    let active = true
+    setBuiltinDirectory({ status: 'loading' })
+    void read.call(client)
+      .then((providers) => {
+        if (active) setBuiltinDirectory({ status: 'ready', providers })
+      })
+      .catch((cause: unknown) => {
+        if (active) setBuiltinDirectory({ status: 'failed', message: aiConnectionsErrorMessage(cause) })
+      })
+    // A response for a replaced client (or an unmounted page) is never adopted.
+    return () => { active = false }
+    // The directory is deployment-wide and static, so it follows the client
+    // only: a Pod write must not cost a second read of a fact it cannot change.
+  }, [client])
 
   // A result is only current for the client + catalog revision it was loaded for;
   // a stale response (or a not-yet-reloaded catalog) reads as undefined.
@@ -1047,6 +1084,7 @@ export function AiConnectionsPanel({
       gatewayModels={gatewayModels}
       modelSelection={gatewayModelSelection}
       liveRevision={liveRevision}
+      builtinDirectory={builtinDirectory}
     />
   )
 
