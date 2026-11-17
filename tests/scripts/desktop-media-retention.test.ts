@@ -391,16 +391,16 @@ describe('exactly two authoritative producer shapes', () => {
 
   it.each([
     // Shape/event mismatches must stay fail-closed in BOTH directions.
-    ['release.yml with a dispatch event', { path: '.github/workflows/release.yml', event: 'workflow_dispatch' }],
-    ['release-desktop.yml with a push event', { path: '.github/workflows/release-desktop.yml', event: 'push' }],
-    ['an unrelated workflow', { path: '.github/workflows/candidate.yml', event: 'push' }],
-    ['a pull_request event on the caller', { path: '.github/workflows/release.yml', event: 'pull_request' }],
-  ])('refuses %s', (_label, run) => {
+    ['release.yml with a dispatch event', { path: '.github/workflows/release.yml', event: 'workflow_dispatch' }, 'producer_wrong_origin'],
+    ['release-desktop.yml with a push event', { path: '.github/workflows/release-desktop.yml', event: 'push' }, 'producer_wrong_origin'],
+    ['an unrelated workflow', { path: '.github/workflows/candidate.yml', event: 'push' }, 'producer_wrong_workflow'],
+    ['a pull_request event on the caller', { path: '.github/workflows/release.yml', event: 'pull_request' }, 'producer_wrong_origin'],
+  ] as const)('refuses %s', (_label, producerRun, reason) => {
     const train = box({
-      run: { ...run, head_branch: TAG, head_sha: SHA, status: 'completed' },
+      run: { ...producerRun, head_branch: TAG, head_sha: SHA, status: 'completed' },
       jobName: 'Release macOS desktop / Build macOS desktop release',
     })
-    expect(() => run(train)).toThrow()
+    expect(() => run(train)).toThrow(reason)
   })
 
   it('refuses the caller workflow with the UNPREFIXED job name (no fuzzy match)', () => {
