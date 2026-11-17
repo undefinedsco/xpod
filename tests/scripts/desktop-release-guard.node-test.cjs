@@ -114,8 +114,36 @@ test('every build, artifact, and native source binding uses the verified tag com
   assert.ok(build.steps.some(step => step.with?.name
     === 'xpod-desktop-macos-${{ needs.desktop_guard.outputs.version }}'));
 
-  // The build and publishing jobs must never fall back to the runner commit.
-  assert.equal(JSON.stringify(release).includes('github.sha'), false);
+  // Product checkout is ALWAYS the accepted tag commit. A repair tooling
+  // checkout is allowed, but it must be a SEPARATE, explicitly named and gated
+  // step writing under the existing ignored .test-data/ tree - never a product
+  // fallback. The path must stay inside .test-data/ because the exact-source
+  // guard rejects any other untracked path, and this path is NOT added to
+  // .gitignore.
+  const tooling = build.steps.filter(step => JSON.stringify(step).includes('github.sha'));
+  assert.equal(tooling.length, 1, 'exactly one runner-ref checkout is allowed');
+  const repair = tooling[0];
+  assert.equal(repair.uses, 'actions/checkout@v4');
+  assert.deepEqual(repair.with, { ref: '${{ github.sha }}', path: '.test-data/desktop-retention-tooling' });
+  assert.equal(repair.if, "env.REUSE_MEDIA == 'true'", 'tooling checkout is reuse-only');
+
+  // The primary product checkout stays the tag commit and is not the tooling one.
+  const product = build.steps.filter(step => step.uses === 'actions/checkout@v4');
+  assert.equal(product.length, 2, 'product checkout plus the gated tooling checkout');
+  assert.deepEqual(product[0].with, {
+    ref: '${{ needs.desktop_guard.outputs.source_sha }}', 'fetch-depth': 0,
+  });
+  assert.equal(product[0].if, undefined, 'product checkout must run on both paths');
+
+  // No OTHER runner-ref use anywhere: media, acceptance and upload bindings all
+  // stay on the verified tag commit or the verified version input.
+  const runnerShaOccurrences = JSON.stringify(release).match(/github\.sha/g) || [];
+  assert.equal(runnerShaOccurrences.length, 1, 'runner SHA appears only in the tooling checkout');
+  for (const step of build.steps) {
+    if (step === repair) continue;
+    assert.equal(JSON.stringify(step).includes('github.sha'), false,
+      'runner SHA must not leak into ' + (step.name ?? step.uses));
+  }
 });
 
 test('the desktop never releases without its own acceptance, ahead of production, or for another commit', () => {

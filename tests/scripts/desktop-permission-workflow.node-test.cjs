@@ -75,35 +75,76 @@ test('stable repeats both actual operations and self-update for its newly built 
   assert.equal(stableFailure.with.path, '${{ runner.temp }}/desktop-permission-private/failure-safe.json');
 });
 
-test('stable retains verified packages before acceptance and publishes only after acceptance succeeds', () => {
+test('each path retains verified packages exactly once before mandatory acceptance, then publishes', () => {
   const workflow = read('release-desktop.yml');
   const steps = workflow.jobs.build_desktop_macos.steps;
   const name = 'xpod-desktop-macos-${{ needs.desktop_guard.outputs.version }}';
-  const uploads = steps.filter(step => step.uses === 'actions/upload-artifact@v4' && step.with?.name === name);
-  assert.equal(uploads.length, 1, 'product archive must be uploaded exactly once');
-  const archiveAt = steps.findIndex(step =>
-    step.uses === 'actions/upload-artifact@v4' && step.with?.name === name);
-  const verifyAt = steps.findIndex(step => step.name === 'Verify packaged version and native runtime payload');
-  assert.ok(verifyAt >= 0 && archiveAt > verifyAt, 'only verified packages may be retained');
-  const archive = steps[archiveAt];
-  assert.deepEqual(String(archive.with.path).trim().split('\n').map(line => line.trim()),
-    ['desktop/release/*.dmg', 'desktop/release/*.zip', 'desktop/release/*.blockmap', 'desktop/release/latest-mac.yml']);
-  assert.equal(archive.with['if-no-files-found'], 'error');
-  assert.equal(archive.if, undefined, 'retention must not depend on later acceptance');
-  assert.equal(archive['continue-on-error'], undefined);
+  const MEDIA = ['desktop/release/*.dmg', 'desktop/release/*.zip',
+    'desktop/release/*.blockmap', 'desktop/release/latest-mac.yml'];
+
+  // Two mutually exclusive producers of the SAME artifact: a full build and a
+  // reuse of already-built media. This is one upload per path, not two.
+  const mediaUploads = steps.filter(step => step.uses === 'actions/upload-artifact@v4' && step.with?.name === name);
+  assert.equal(mediaUploads.length, 2, 'one full-build upload and one reuse upload');
+  assert.deepEqual(mediaUploads.map(step => step.if).sort(),
+    ['env.REUSE_MEDIA != \'true\'', 'env.REUSE_MEDIA == \'true\''], 'the two uploads must be mutually exclusive');
+
+  const executes = (step, reuseMedia) => {
+    if (step.if === undefined) return true;
+    if (step.if === "env.REUSE_MEDIA == 'true'") return reuseMedia;
+    if (step.if === "env.REUSE_MEDIA != 'true'") return !reuseMedia;
+    throw new Error('unexpected condition: ' + step.if);
+  };
+
   const permissionAt = steps.findIndex(step => step.run?.includes('bun scripts/accept-packaged-desktop-permissions.ts'));
   const selfUpdateAt = steps.findIndex(step => step.run?.includes('node desktop/scripts/packaged-update-acceptance.mjs'));
-  assert.ok(permissionAt > archiveAt, 'permission acceptance must run after custody');
-  assert.ok(selfUpdateAt > permissionAt, 'self-update acceptance must follow permissions');
+  assert.ok(permissionAt >= 0 && selfUpdateAt > permissionAt, 'self-update acceptance must follow permissions');
   assert.ok(steps[selfUpdateAt].run.includes('node scripts/desktop-acceptance.cjs'));
+  const verifyAt = steps.findIndex(step => step.name === 'Verify packaged version and native runtime payload');
+  const retentionAt = steps.findIndex(step => step.run?.includes('retain-desktop-release-media.py'));
+
+  for (const reuseMedia of [false, true]) {
+    const path = reuseMedia ? 'reuse' : 'build';
+    const uploads = steps.filter(step =>
+      step.uses === 'actions/upload-artifact@v4' && step.with?.name === name && executes(step, reuseMedia));
+    assert.equal(uploads.length, 1, path + ' path must upload the artifact exactly once');
+    const upload = uploads[0];
+    assert.equal(upload['continue-on-error'], undefined, path + ' upload must not tolerate failure');
+    assert.equal(upload.with['if-no-files-found'], 'error');
+    assert.deepEqual(String(upload.with.path).trim().split('\n').map(line => line.trim()), MEDIA,
+      path + ' path must ship the same four media patterns');
+    const uploadAt = steps.indexOf(upload);
+    assert.ok(uploadAt < permissionAt, path + ' custody must precede permission acceptance');
+    // Each path is guarded by its OWN verified input immediately before custody.
+    if (reuseMedia) {
+      assert.ok(retentionAt >= 0 && retentionAt < uploadAt, 'reuse custody must follow its own retention step');
+    } else {
+      assert.ok(verifyAt >= 0 && verifyAt < uploadAt, 'only verified packages may be retained');
+    }
+    // Acceptance is mandatory on BOTH paths.
+    assert.ok(executes(steps[permissionAt], reuseMedia), path + ' path must run permission acceptance');
+    assert.ok(executes(steps[selfUpdateAt], reuseMedia), path + ' path must run self-update acceptance');
+  }
+
   assert.equal(steps[permissionAt]['continue-on-error'], undefined);
   assert.equal(steps[selfUpdateAt]['continue-on-error'], undefined);
+
+  const evidence = steps.find(step => step.with?.name === 'desktop-stable-acceptance-${{ needs.desktop_guard.outputs.source_sha }}');
+  assert.equal(evidence.with['if-no-files-found'], 'error');
+  assert.ok(!evidence.with.path.includes('private'));
+  const stableFailure = steps.find(step => step.with?.name === 'desktop-permission-failure-${{ needs.desktop_guard.outputs.source_sha }}');
+  assert.ok(stableFailure);
+  assert.equal(stableFailure.if, 'failure()');
+  assert.equal(stableFailure.with.path, '${{ runner.temp }}/desktop-permission-private/failure-safe.json');
+
   const publish = workflow.jobs.create_github_release;
   assert.ok(publish.needs.includes('build_desktop_macos'), 'publication must depend on the build job succeeding');
   assert.equal(publish.if, undefined, 'publication must not bypass a failed desktop job');
   assert.equal(publish['continue-on-error'], undefined);
   const download = publish.steps.find(step => step.uses === 'actions/download-artifact@v4');
   assert.equal(download.with?.name, name, 'publication must download the exact retained artifact');
+  // Same-run consumption: no cross-run selection that could pick another attempt.
+  assert.equal(download.with?.['run-id'], undefined, 'publication must consume this run\'s artifact');
   assert.ok(!publish.steps.some(step => String(step.if ?? '').includes('always()')));
 });
 
@@ -133,7 +174,7 @@ test('a failed acceptance retains its own RC for diagnosis and the next deployme
   const { jobs } = read('candidate.yml');
   const cleanup = jobs.cleanup_rc;
   assert.equal(cleanup.env.RETAIN_FOR_DIAGNOSIS,
-    "${{ contains(needs.*.result, 'failure') && needs.deploy_and_accept.result == 'success' }}");
+    "${{ needs.finalize_acceptance.result != 'success' || needs.accept_desktop_rc.result != 'success' }}");
   const scale = cleanup.steps.find(step => step.name === 'Scale RC deployments to zero').run;
   // Retaining is still gated by ownership, and re-run attempts resolve their run's seed.
   assert.match(scale, /rc-cleanup-ownership\.cjs run-seed "\$observation" "\$SEALOS_NAMESPACE" "\$GITHUB_RUN_ID"/);
