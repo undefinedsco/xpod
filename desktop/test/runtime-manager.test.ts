@@ -842,3 +842,316 @@ describe('acceptance startup diagnostic file', () => {
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
 });
+
+describe('cold owned runtime recovery (same child, no respawn)', () => {
+  /** Probe whose health is controlled per call, so "fails, then becomes healthy" is exact. */
+  const controllableProbe = () => {
+    const state = { healthy: false, statusCalls: 0 };
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/service/status')) {
+        state.statusCalls += 1;
+        if (!state.healthy) throw new Error('not ready');
+        return Response.json([{ name: 'css', status: 'running' }, { name: 'api', status: 'running' }]);
+      }
+      if (!state.healthy) throw new Error('not ready');
+      return new Response('', { status: 200 });
+    }) as typeof fetch;
+    return { state, fetchImpl };
+  };
+
+  const managerFor = (fetchImpl: typeof fetch, child: RuntimeChild) => {
+    let spawns = 0;
+    const manager = new RuntimeManager({
+      targetOrigin: 'http://127.0.0.1:3000',
+      fetchImpl,
+      startupTimeoutMs: 40,
+      pollIntervalMs: 5,
+      resolveLaunch: () => ({ command: 'xpod', args: ['start'] }),
+      spawnImpl: () => { spawns += 1; return child; },
+    });
+    return { manager, spawns: () => spawns };
+  };
+
+  it('promotes a LATE healthy readiness from the SAME owned child after the initial timeout', async () => {
+    const { state, fetchImpl } = controllableProbe();
+    const child = new FakeChild();
+    const { manager, spawns } = managerFor(fetchImpl, child);
+
+    // Initial launch outlives the 40ms budget: failed, but the child is retained.
+    await expect(manager.ensureRunning()).rejects.toThrow();
+    expect(manager.snapshot()).toMatchObject({ state: 'failed', ownership: 'desktop', pid: child.pid });
+    expect(spawns()).toBe(1);
+
+    // The SAME still-live child becomes healthy: recovery must NOT respawn.
+    state.healthy = true;
+    await expect(manager.waitUntilReachable(200)).resolves.toBe(true);
+    expect(manager.snapshot()).toMatchObject({ state: 'running', ownership: 'desktop', pid: child.pid });
+    expect(spawns()).toBe(1);
+  });
+
+  it('keeps owned identity (never "external") for a healthy current owned child', async () => {
+    const { state, fetchImpl } = controllableProbe();
+    const child = new FakeChild();
+    const { manager, spawns } = managerFor(fetchImpl, child);
+    await expect(manager.ensureRunning()).rejects.toThrow();
+    state.healthy = true;
+    const snapshot = await manager.ensureRunning();
+    expect(snapshot).toMatchObject({ state: 'running', ownership: 'desktop', pid: child.pid });
+    expect(spawns()).toBe(1);
+  });
+
+  it('waits on a child that is STILL booting when ensureRunning is called', async () => {
+    // The probe must stay unhealthy until ensureRunning is actually pending, so the
+    // awaitOwnedReadiness path is genuinely exercised (not short-circuited by a
+    // pre-set healthy flag).
+    const gate = { healthy: false, pending: false, statusCalls: 0 };
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/service/status')) {
+        gate.statusCalls += 1;
+        gate.pending = true;
+        if (!gate.healthy) throw new Error('not ready');
+        return Response.json([{ name: 'css', status: 'running' }, { name: 'api', status: 'running' }]);
+      }
+      if (!gate.healthy) throw new Error('not ready');
+      return new Response('', { status: 200 });
+    }) as typeof fetch;
+    const child = new FakeChild();
+    const { manager, spawns } = managerFor(fetchImpl, child);
+    await expect(manager.ensureRunning()).rejects.toThrow();
+    expect(spawns()).toBe(1);
+
+    // ensureRunning is now genuinely pending on the SAME booting child.
+    const pending = manager.ensureRunning();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(gate.pending).toBe(true);
+    expect(manager.snapshot().state).not.toBe('running');
+    gate.healthy = true;
+    const snapshot = await pending;
+    expect(snapshot).toMatchObject({ state: 'running', ownership: 'desktop', pid: child.pid });
+    expect(spawns()).toBe(1);
+  });
+
+  it('does not promote an IN-FLIGHT healthy result when the child exits meanwhile', async () => {
+    // Deferred probe barrier: waitUntilReachable starts while the child is alive,
+    // the child then exits, and only afterwards does the healthy result resolve.
+    const barrier = { release: undefined as undefined | ((ok: boolean) => void) };
+    let blocked = false;
+    let capture = false;
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/service/status')) {
+        if (capture && !blocked) { blocked = true; return await new Promise<Response>((resolve, reject) => {
+          barrier.release = (ok: boolean) => ok
+            ? resolve(Response.json([{ name: 'css', status: 'running' }, { name: 'api', status: 'running' }]))
+            : reject(new Error('not ready'));
+        }); }
+        throw new Error('not ready');
+      }
+      return new Response('', { status: 200 });
+    }) as typeof fetch;
+    const child = new FakeChild();
+    const { manager, spawns } = managerFor(fetchImpl, child);
+    await expect(manager.ensureRunning()).rejects.toThrow();
+    expect(manager.snapshot()).toMatchObject({ state: 'failed', pid: child.pid });
+
+    capture = true;
+    const inFlight = manager.waitUntilReachable(2_000);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    child.emit('exit', 0, 'SIGTERM');
+    barrier.release?.(true);
+    await inFlight;
+    expect(manager.snapshot().state).toBe('failed');
+    expect(manager.snapshot()).not.toHaveProperty('pid', child.pid);
+    expect(spawns()).toBe(1);
+  });
+
+  it('does not promote an in-flight result after stopOwned cancels the generation', async () => {
+    const barrier = { release: undefined as undefined | ((ok: boolean) => void) };
+    let blocked = false;
+    let capture = false;
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/service/status')) {
+        if (capture && !blocked) { blocked = true; return await new Promise<Response>((resolve) => {
+          barrier.release = (ok: boolean) => ok
+            ? resolve(Response.json([{ name: 'css', status: 'running' }, { name: 'api', status: 'running' }]))
+            : resolve(new Response('', { status: 503 }));
+        }); }
+        throw new Error('not ready');
+      }
+      return new Response('', { status: 200 });
+    }) as typeof fetch;
+    const child = new FakeChild();
+    const { manager } = managerFor(fetchImpl, child);
+    await expect(manager.ensureRunning()).rejects.toThrow();
+    capture = true;
+    const inFlight = manager.waitUntilReachable(2_000);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    await manager.stopOwned();
+    barrier.release?.(true);
+    await inFlight;
+    expect(manager.snapshot().state).not.toBe('running');
+  });
+
+  it('does not promote a REPLACEMENT generation child', async () => {
+    const children: FakeChild[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/service/status')) throw new Error('not ready');
+      return new Response('', { status: 200 });
+    }) as typeof fetch;
+    const spawnImpl = () => { const c = new FakeChild(); children.push(c); return c; };
+    const manager = new RuntimeManager({
+      targetOrigin: 'http://127.0.0.1:3000', fetchImpl, startupTimeoutMs: 30, pollIntervalMs: 5,
+      resolveLaunch: () => ({ command: 'xpod', args: ['start'] }), spawnImpl,
+    });
+    await expect(manager.ensureRunning()).rejects.toThrow();
+    const fresh = Object.assign(new FakeChild(), { pid: 9999 });
+    (manager as unknown as { child: unknown }).child = fresh;
+    (manager as unknown as { ownedGeneration: number }).ownedGeneration += 1;
+    const promoted = (manager as unknown as {
+      reconcileOwnedReady(c: unknown, g: number): boolean;
+    }).reconcileOwnedReady(children[0], 1);
+    expect(promoted).toBe(false);
+  });
+
+  it('promotes late owned readiness when recovery STARTED before any child existed', async () => {
+    // R1: window recovery begins on the first failed load, which can precede the
+    // spawn. A wait begun with no child must still restore the late owned state.
+    let healthy = false;
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/service/status')) {
+        if (!healthy) throw new Error('not ready');
+        return Response.json([{ name: 'css', status: 'running' }, { name: 'api', status: 'running' }]);
+      }
+      if (!healthy) throw new Error('not ready');
+      return new Response('', { status: 200 });
+    }) as typeof fetch;
+    const child = new FakeChild();
+    const { manager, spawns } = managerFor(fetchImpl, child);
+
+    // Wait starts while this.child is still undefined.
+    const early = manager.waitUntilReachable(2_000);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(manager.snapshot().state).not.toBe('running');
+    await expect(manager.ensureRunning()).rejects.toThrow();
+    healthy = true;
+    await expect(early).resolves.toBe(true);
+    expect(manager.snapshot()).toMatchObject({ state: 'running', ownership: 'desktop', pid: child.pid });
+    expect(spawns()).toBe(1);
+  });
+
+  it('keeps late readiness when the launch deadline rejects after recovery', async () => {
+    const { state, fetchImpl } = controllableProbe();
+    const child = new FakeChild();
+    const { manager, spawns } = managerFor(fetchImpl, child);
+    // Control the deadline boundary while exercising the public recovery probe.
+    (manager as unknown as { waitUntilReady(): Promise<void> }).waitUntilReady = async () => {
+      state.healthy = true;
+      await manager.waitUntilReachable(100);
+      throw new Error('launch deadline expired');
+    };
+    await expect(manager.ensureRunning()).resolves.toMatchObject({
+      state: 'running', ownership: 'desktop', pid: child.pid,
+    });
+    expect(spawns()).toBe(1);
+  });
+
+  it('does not let a stale old-child error mark a replacement generation failed', async () => {
+    const children: FakeChild[] = [];
+    const fetchImpl = (async () => { throw new Error('not ready'); }) as typeof fetch;
+    const manager = new RuntimeManager({
+      targetOrigin: 'http://127.0.0.1:3000', fetchImpl, startupTimeoutMs: 30, pollIntervalMs: 5,
+      resolveLaunch: () => ({ command: 'xpod', args: ['start'] }),
+      spawnImpl: () => { const c = new FakeChild(); children.push(c); return c; },
+    });
+    await expect(manager.ensureRunning()).rejects.toThrow();
+    const old = children[0]!;
+    // Simulate a replacement generation, then error the OLD child.
+    const fresh = Object.assign(new FakeChild(), { pid: 4242 });
+    children.push(fresh);
+    (manager as unknown as { child: unknown }).child = fresh;
+    (manager as unknown as { current: unknown }).current =
+      { state: 'starting', ownership: 'desktop', pid: fresh.pid };
+    old.emit('error', new Error('stale spawn error'));
+    expect(manager.snapshot()).not.toMatchObject({ state: 'failed' });
+  });
+
+  it('starts a NEW flight when ensureRunning follows a stop during the cold probe', async () => {
+    let release: undefined | ((ok: boolean) => void);
+    let blocked = false;
+    let healthy = false;
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/service/status')) {
+        if (!blocked) {
+          blocked = true;
+          return await new Promise<Response>((resolve, reject) => {
+            release = (ok: boolean) => ok
+              ? resolve(Response.json([{ name: 'css', status: 'running' }, { name: 'api', status: 'running' }]))
+              : reject(new Error('not ready'));
+          });
+        }
+        if (!healthy) throw new Error('not ready');
+        return Response.json([{ name: 'css', status: 'running' }, { name: 'api', status: 'running' }]);
+      }
+      if (!healthy) throw new Error('not ready');
+      return new Response('', { status: 200 });
+    }) as typeof fetch;
+    const child = new FakeChild();
+    const { manager, spawns } = managerFor(fetchImpl, child);
+
+    const first = manager.ensureRunning().catch(() => undefined);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    await manager.stopOwned();
+    // Start again while the obsolete probe is still blocked. Joining that old
+    // flight would hang; a new flight can already adopt the reachable service.
+    healthy = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const snapshot = await Promise.race([
+        manager.ensureRunning(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('new start joined the cancelled flight')), 1_000);
+        }),
+      ]);
+      expect(snapshot).toMatchObject({ state: 'running', ownership: 'external' });
+      expect(spawns()).toBe(0);
+    } finally {
+      clearTimeout(timer);
+      release?.(false);
+      await first;
+    }
+  });
+
+  it('still adopts a genuinely foreign external service when no owned child exists', async () => {
+    const { state, fetchImpl } = controllableProbe();
+    state.healthy = true;
+    let spawns = 0;
+    const manager = new RuntimeManager({
+      targetOrigin: 'http://127.0.0.1:3000', fetchImpl,
+      resolveLaunch: () => ({ command: 'xpod', args: ['start'] }),
+      spawnImpl: () => { spawns += 1; return new FakeChild(); },
+    });
+    await manager.ensureRunning();
+    expect(manager.snapshot()).toMatchObject({ state: 'running', ownership: 'external' });
+    expect(spawns).toBe(0);
+  });
+
+  it('single-flights concurrent ensure callers onto one spawn', async () => {
+    const { state, fetchImpl } = controllableProbe();
+    const child = new FakeChild();
+    const { manager, spawns } = managerFor(fetchImpl, child);
+    const first = manager.ensureRunning().catch(() => undefined);
+    const second = manager.ensureRunning().catch(() => undefined);
+    await Promise.all([first, second]);
+    // Both callers joined one flight; the late-recovery path never double-spawns.
+    expect(spawns()).toBe(1);
+    state.healthy = true;
+    await manager.waitUntilReachable(100);
+    expect(spawns()).toBe(1);
+  });
+});

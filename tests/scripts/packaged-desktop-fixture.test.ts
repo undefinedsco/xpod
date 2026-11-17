@@ -10,6 +10,7 @@ import { assertBundledRuntimeProcess, createPackagedFixtureEnvironment,
   SNAPSHOT_OBSERVATION_MS, readStartupDiagnostic, readModulePresence } from '../../scripts/helpers/packaged-desktop-fixture';
 import { STARTUP_DIAGNOSTIC_FILE } from '../../desktop/src/runtime-manager';
 import { desktopDataDirectory } from '../../desktop/src/user-env';
+import { NORMAL_WINDOW_RECOVERY_BUDGET_MS } from '../../desktop/src/window-recovery';
 
 describe('owned packaged desktop permission fixture', () => {
   it('uses the captured OS process when close disposes the Electron channel', async () => {
@@ -280,23 +281,43 @@ describe('launch subphase boundary placement', () => {
 
   it('waits for the REAL bridge readiness helper and rejects terminal or foreign states at once', async () => {
     // Drives the exported production helper, not a local copy of its conditions.
-    const sequence = (states: Array<{ state: string; ownership?: string }>) => {
+    // `pid` models the product snapshot: a live owned child keeps its pid, a dead
+    // one has none, so failed+livepid is PENDING while failed+nopid is terminal.
+    const sequence = (states: Array<{ state: string; ownership?: string; pid?: number }>) => {
       let index = 0;
       return async () => {
         const value = states[Math.min(index++, states.length - 1)]!;
-        return { state: value.state, ownership: value.ownership ?? 'desktop', pid: 7 };
+        return { state: value.state, ownership: value.ownership ?? 'desktop', pid: value.pid };
       };
     };
-    await expect(waitForOwnedRuntime(sequence([{ state: 'starting' }, { state: 'running' }]), Date.now() + 60_000))
+    await expect(waitForOwnedRuntime(sequence([{ state: 'starting', pid: 7 }, { state: 'running', pid: 7 }]), Date.now() + 60_000))
+      .resolves.toMatchObject({ state: 'running', pid: 7 });
+    await expect(waitForOwnedRuntime(sequence([{ state: 'running', pid: 7 }]), Date.now() + 60_000))
       .resolves.toMatchObject({ state: 'running' });
-    await expect(waitForOwnedRuntime(sequence([{ state: 'running' }]), Date.now() + 60_000))
-      .resolves.toMatchObject({ state: 'running' });
+    // A live but still-recovering child (failed WITH pid) is pending, then succeeds.
+    await expect(waitForOwnedRuntime(
+      sequence([{ state: 'failed', pid: 7 }, { state: 'failed', pid: 7 }, { state: 'running', pid: 7 }]),
+      Date.now() + 60_000)).resolves.toMatchObject({ state: 'running', pid: 7 });
+    // A DEAD child (failed, no pid) is terminal immediately.
     await expect(waitForOwnedRuntime(sequence([{ state: 'failed' }]), Date.now() + 60_000))
       .rejects.toThrow(/failed before it became ready/u);
     await expect(waitForOwnedRuntime(sequence([{ state: 'stopped' }]), Date.now() + 60_000))
       .rejects.toThrow(/stopped before it became ready/u);
     await expect(waitForOwnedRuntime(sequence([{ state: 'running', ownership: 'external' }]), Date.now() + 60_000))
       .rejects.toThrow(/not owned by the installed desktop/u);
+  });
+
+  it('keeps a live-but-recovering child pending until the shared recovery deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      const foreverFailed = async () => ({ state: 'failed', ownership: 'desktop', pid: 7 });
+      const pending = waitForOwnedRuntime(foreverFailed, Date.now() + NORMAL_WINDOW_RECOVERY_BUDGET_MS);
+      const settled = pending.catch((error: Error) => error);
+      await vi.advanceTimersByTimeAsync(NORMAL_WINDOW_RECOVERY_BUDGET_MS + 1_000);
+      const outcome = await settled;
+      expect(outcome).toBeInstanceOf(Error);
+      expect(String(outcome)).toMatch(/did not reach the running state/u);
+    } finally { vi.useRealTimers(); }
   });
 
   it('expires at the CALLER deadline instead of granting a fresh 60s', async () => {

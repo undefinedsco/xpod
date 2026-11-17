@@ -38,6 +38,7 @@ import { canCancelDesktopLogin, cancelDesktopLogin, shouldCancelDesktopLoginOnCl
 import { navigateDesktopProduct } from './product-navigation.js'
 import { desktopProtocolRoute, desktopProtocolRouteFromArgv, resumeDesktopProtocolNavigation, XPOD_DESKTOP_PROTOCOL } from './product-protocol.js'
 import { desktopDataDirectory, ensureDesktopEnvFile, loadDesktopEnvFile } from './user-env.js'
+import { NORMAL_WINDOW_RECOVERY_BUDGET_MS } from './window-recovery.js'
 import { isTrustedOidcNavigation, resolveDesktopOidcIssuer, isOidcAuthorizationRequest, isSameOriginProductUrl } from './navigation-policy.js'
 import {
   installCompactWindowDevToolsGuard,
@@ -449,8 +450,8 @@ function safeNavigationTarget(value: string): string {
 
 // A cold runtime start can outlive the launch timeout while the window is
 // already loading. Keep waiting long enough to cover it instead of leaving the
-// failed page on screen permanently.
-const WINDOW_RECOVERY_TIMEOUT_MS = 10 * 60_000
+// failed page on screen permanently. Packaged acceptance shares this budget.
+const WINDOW_RECOVERY_TIMEOUT_MS = NORMAL_WINDOW_RECOVERY_BUDGET_MS
 
 /**
  * Reloads the retained window once the gateway answers again.

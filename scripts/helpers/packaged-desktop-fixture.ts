@@ -1,4 +1,5 @@
 import { installOwnedDesktop } from './packaged-desktop-installation';
+import { NORMAL_WINDOW_RECOVERY_BUDGET_MS } from '../../desktop/src/window-recovery';
 import { execFile, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
 import { createRequire } from 'node:module';
@@ -141,11 +142,20 @@ export async function waitForOwnedRuntime(
 ): Promise<OwnedRuntimeSnapshot> {
   return await waitFor(async () => {
     const snapshot = await readRuntime();
-    if (snapshot.state === 'failed' || snapshot.state === 'stopped') {
-      throw new Error(`Packaged runtime reported ${snapshot.state} before it became ready`);
-    }
     if (snapshot.ownership !== 'desktop') {
       throw new Error('Packaged runtime is not owned by the installed desktop');
+    }
+    // A `stopped` runtime is terminal: waiting cannot make it correct.
+    if (snapshot.state === 'stopped') {
+      throw new Error('Packaged runtime reported stopped before it became ready');
+    }
+    if (snapshot.state === 'failed') {
+      // A dead owned child is terminal; a retained booting child can still recover.
+      if (snapshot.pid === undefined) {
+        throw new Error('Packaged runtime reported failed before it became ready');
+      }
+      // Keep waiting for the product to report its real running state.
+      return undefined;
     }
     return snapshot.state === 'running' ? snapshot : undefined;
   }, 'Packaged runtime did not reach the running state', deadline);
@@ -751,10 +761,9 @@ export async function launchOwnedPackagedDesktop(options: {
     emitSubphase(options, 'window');
     const page = await app.firstWindow({ timeout: 60_000 });
     emitSubphase(options, 'gateway');
-    // ONE startup deadline created here and shared by the gateway poll and the
-    // bridge-readiness poll, so the two together consume the historical single
-    // 60s budget instead of adding a second one.
-    const startupDeadline = Date.now() + 60_000;
+    // Gateway and bridge readiness share the normal product recovery deadline.
+    // The initial 60s launch decision can expire while the same child still boots.
+    const startupDeadline = Date.now() + NORMAL_WINDOW_RECOVERY_BUDGET_MS;
     // The product bridge may already be exposed by the initial window's preload.
     // Probe it at most ONCE, bounded to 100ms inside this same deadline; if it is
     // not available yet the observation is explicitly absent (never faked), and
@@ -773,7 +782,7 @@ export async function launchOwnedPackagedDesktop(options: {
     emitSubphase(options, 'bridge');
     // Gateway 200 proves the runtime answers, not that the manager has finished
     // its own transition to running. Poll the product's real snapshot inside the
-    // SAME 60s startup deadline; a terminal or foreign state fails immediately.
+    // shared recovery deadline; a terminal or foreign state fails immediately.
     const readRuntime = async () => await page.evaluate(async () => {
       const bridge = (window as unknown as { xpodDesktop?: { deviceRuntime?: {
         getRuntimeSettings(): Promise<{ state: string; ownership: string; pid?: number; error?: unknown }>;

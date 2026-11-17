@@ -244,6 +244,14 @@ export class RuntimeManager {
   private desiredRunning = false
   private restartTimer?: ReturnType<typeof setTimeout>
   private diagnosticSequence = 0
+  /** Monotonic id of the current owned child generation; bumped on spawn/stop so
+   * a stale probe can never promote a replaced or stopped child. */
+  private ownedGeneration = 0
+  /** Advanced by stopOwned(). A flight or probe that captured an older value is
+   * stale and must neither adopt a service nor spawn a child. */
+  private intentEpoch = 0
+  /** Epoch the in-flight startup belongs to, so a stop obsoletes it. */
+  private startingEpoch: number | undefined
 
   public constructor(private readonly options: RuntimeManagerOptions) {
     this.autoRestart = options.autoRestart ?? false
@@ -275,13 +283,44 @@ export class RuntimeManager {
   public async ensureRunning(): Promise<RuntimeSnapshot> {
     this.desiredRunning = true
     if (this.current.state === 'running') return this.snapshot()
-    if (this.starting) return this.starting
+    // Share one flight for the current intent; a stop invalidates the old flight.
+    if (!this.starting || this.startingEpoch !== this.intentEpoch) {
+      const epoch = this.intentEpoch
+      const flight = this.ensureRunningFlight(epoch)
+      this.startingEpoch = epoch
+      this.starting = flight.finally(() => {
+        // Conditional finalizer: an obsolete flight cannot clear a newer one.
+        if (this.startingEpoch === epoch) {
+          this.starting = undefined
+          this.startingEpoch = undefined
+        }
+      })
+    }
+    return this.starting
+  }
+
+  /** Reuse a retained owned child; adopt an external service only when none is owned. */
+  private async ensureRunningFlight(epoch: number): Promise<RuntimeSnapshot> {
+    const owned = this.child
+    const generation = this.ownedGeneration
+    if (this.isCurrentOwned(owned, generation, epoch)) {
+      if (await this.probe()) {
+        this.reconcileOwnedReady(owned, generation)
+        return this.snapshot()
+      }
+      if (!this.desiredRunning) return this.snapshot()
+      return await this.awaitOwnedReadiness(owned, generation)
+    }
+
     if (await this.probe()) {
+      // A stop() during this probe makes the request stale: never adopt.
+      if (!this.desiredRunning || this.intentEpoch !== epoch) return this.snapshot()
       this.current = { state: 'running', ownership: 'external' }
       return this.snapshot()
     }
 
-    if (!this.desiredRunning) return this.snapshot()
+    // Same guard before spawning: a stale request must not start a child.
+    if (!this.desiredRunning || this.intentEpoch !== epoch) return this.snapshot()
     const launch = this.resolveLaunch()
     if (!launch) {
       const message = 'Xpod runtime is not installed. Install the xpod CLI or set XPOD_RUNTIME_COMMAND.'
@@ -290,10 +329,7 @@ export class RuntimeManager {
     }
 
     this.current = { state: 'starting', ownership: 'desktop' }
-    this.starting = this.launchAndWait(launch).finally(() => {
-      this.starting = undefined
-    })
-    return this.starting
+    return await this.launchAndWait(launch)
   }
 
   public async restart(): Promise<RuntimeSnapshot> {
@@ -328,14 +364,64 @@ export class RuntimeManager {
   public async waitUntilReachable(timeoutMs = this.startupTimeoutMs): Promise<boolean> {
     const deadline = Date.now() + timeoutMs
     while (Date.now() <= deadline) {
-      if (await this.probe()) return true
+      // Capture the identity this probe is proving, immediately before awaiting.
+      const child = this.child
+      const generation = this.ownedGeneration
+      const epoch = this.intentEpoch
+      const owned = this.current.ownership === 'desktop'
+      if (await this.probe()) {
+        if (owned) {
+          this.reconcileOwnedReady(child, generation, epoch)
+          return true
+        }
+        // If an owned child appeared while this probe was in flight, the result
+        // proves reachability but not THAT child: probe again so the next
+        // iteration captures and can promote the current identity.
+        if (this.child && this.current.ownership === 'desktop') continue
+        return true
+      }
       await delay(this.pollIntervalMs)
     }
     return false
   }
 
+  /** Promote a still-live owned child that became reachable after the timeout. */
+  private async awaitOwnedReadiness(child: RuntimeChild, generation: number): Promise<RuntimeSnapshot> {
+    const deadline = Date.now() + this.startupTimeoutMs
+    while (Date.now() <= deadline) {
+      if (!this.isCurrentOwned(child, generation)) return this.snapshot()
+      if (await this.probe()) {
+        this.reconcileOwnedReady(child, generation)
+        return this.snapshot()
+      }
+      await delay(this.pollIntervalMs)
+    }
+    return this.snapshot()
+  }
+
+  /** True while `child` is still the current, live, desired owned generation. */
+  private isCurrentOwned(child: RuntimeChild | undefined, generation: number,
+    epoch: number = this.intentEpoch): child is RuntimeChild {
+    if (!child || !this.desiredRunning) return false
+    if (this.intentEpoch !== epoch) return false
+    if (this.child !== child || this.ownedGeneration !== generation) return false
+    return this.current.ownership === 'desktop' && this.current.pid === child.pid
+  }
+
+  private reconcileOwnedReady(child: RuntimeChild | undefined, generation: number,
+    epoch: number = this.intentEpoch): boolean {
+    if (!this.isCurrentOwned(child, generation, epoch)) return false
+    const state = this.current.state
+    if (state !== 'failed' && state !== 'starting') return false
+    this.current = { state: 'running', ownership: 'desktop', pid: child.pid }
+    this.emitStartupDiagnostic('ready')
+    return true
+  }
+
   public async stopOwned(): Promise<void> {
     this.desiredRunning = false
+    this.intentEpoch += 1
+    this.ownedGeneration += 1
     if (this.restartTimer) { clearTimeout(this.restartTimer); this.restartTimer = undefined }
     const child = this.child
     if (this.current.ownership !== 'desktop') return
@@ -354,6 +440,9 @@ export class RuntimeManager {
   }
 
   private async launchAndWait(launch: RuntimeLaunchCommand): Promise<RuntimeSnapshot> {
+    const epoch = this.intentEpoch
+    let launchedChild: RuntimeChild | undefined
+    let generation = this.ownedGeneration
     try {
       // Resolved before anything is spawned so a packaged context problem is fatal
       // rather than a silently degraded (HOME or online) child.
@@ -382,6 +471,9 @@ export class RuntimeManager {
         stdio: diagnosticStreams ? ['ignore', 'pipe', 'pipe'] : 'ignore',
       })
       this.child = child
+      this.ownedGeneration += 1
+      launchedChild = child
+      generation = this.ownedGeneration
       this.current = { state: 'starting', ownership: 'desktop', pid: child.pid }
       const output = createChildOutputClassifier()
       if (diagnosticStreams) {
@@ -394,7 +486,14 @@ export class RuntimeManager {
       this.emitStartupDiagnostic('spawned')
       const childFailure = new Promise<never>((_resolve, reject) => {
         child.once('error', (error) => {
-          this.markChildFailure(error.message)
+          // A spawn error means this child never became usable: invalidate it so
+          // no stale readiness can promote it later.
+          if (this.child === child) {
+            this.child = undefined
+            this.ownedGeneration += 1
+            this.current = { state: 'failed', ownership: 'none', error: error.message }
+          }
+          // A stale child from a previous generation must not touch current state.
           this.emitStartupDiagnostic('spawn-error', {
             ...(readErrorCode(error) === 'ENOENT' ? { errorClass: 'enoent' as const } : {}),
             ...(readErrorCode(error) === 'EACCES' ? { errorClass: 'eacces' as const } : {}),
@@ -408,6 +507,9 @@ export class RuntimeManager {
             const shouldRestart = this.current.state === 'running' && this.desiredRunning && this.autoRestart
             const error = new Error(`Xpod runtime exited (${signal ?? code ?? 'unknown'})`)
             this.markChildFailure(error.message)
+            // The child is gone: retract the pid so the snapshot never advertises a
+            // live pid for a dead process, and no late probe can promote it.
+            this.current = { state: 'failed', ownership: 'desktop', error: this.current.error }
             this.child = undefined
             try {
               this.emitStartupDiagnostic('exited', {
@@ -427,7 +529,17 @@ export class RuntimeManager {
       this.emitStartupDiagnostic('ready')
       return this.snapshot()
     } catch (error) {
-      if (!this.desiredRunning) return this.snapshot()
+      if (!this.desiredRunning || this.intentEpoch !== epoch) return this.snapshot()
+      if (launchedChild && (this.child !== launchedChild || this.ownedGeneration !== generation)) {
+        if (!this.child && this.current.state === 'failed') this.emitStartupDiagnostic('failed')
+        throw error
+      }
+      // A recovery probe may have promoted this same generation to running just as
+      // waitUntilReady gave up. Keep that genuine state instead of clobbering it.
+      if (this.current.state === 'running' && this.current.ownership === 'desktop'
+        && launchedChild && this.child === launchedChild && this.current.pid === launchedChild.pid) {
+        return this.snapshot()
+      }
       const message = error instanceof Error ? error.message : String(error)
       this.current = { state: 'failed', ownership: this.child ? 'desktop' : 'none', pid: this.child?.pid, error: message }
       this.emitStartupDiagnostic('failed')
