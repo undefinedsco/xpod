@@ -102,3 +102,30 @@ Provider confirmation compares collection descriptor keys and provider resource 
 
 旧 Run 的跨 Pod 续跑检查必须携带首个真实审批的 IRI，先通过请求验证，再确认 `route_run_read` 返回 Run 不存在。
 空审批体得到的 `route_validation` 错误不能作为跨 Pod 隔离证据；审批 IRI 仅保留在私有验收记录，不进入公开摘要。
+
+### 2026-11-17：验收专用重跑复用已构建的桌面媒体
+
+发布失败在 acceptance（例如某个 provider 请求超时）时，安装包本身已经构建、校验并上传，
+重跑不该再付一次 API 构建（约 24–26 分钟）与打包（约 14 分钟）。`release-desktop.yml` 因此增加
+**可选**输入 `source_desktop_run_id`：
+
+- 默认留空，仍走原有完整构建路径。
+- 仅当显式提供时，`retain-desktop-release-media.py` 从该 run 取回媒体，然后**照常**运行
+  permission、self-update 与 combined acceptance，并上传 `desktop-stable-acceptance-<sha>`。
+- 跳过的是产出安装包的步骤（API capability 生产、vendor 引导、root 编译、打包与 payload 校验）；
+  `bun install --frozen-lockfile` 与 `bun run build:packages` 仍执行，因为验收代码从源码导入
+  workspace 包。
+
+复用不是"信任某个 run 名"，而是绑定以下不可变事实：producer workflow 路径、`head_branch` 等于
+stable tag、`head_sha` 等于 tag commit、run `completed`、producer job 名称与 attempt、
+`Build DMG and ZIP` 与 `Verify packaged version and native runtime payload` 两步成功、上传步骤成功、
+以及唯一且未过期的 `xpod-desktop-macos-<version>` 工件的 API id + digest。按工件 ID 下载原始归档，
+先核对归档 SHA256，再检查成员并解压。ZIP/DMG 的 SHA256 写入 `desktop-media-retention-<sha>`
+回执；`latest-mac.yml` 的版本、两个文件各自的大小与 SHA512，以及顶层 ZIP 引用均须匹配。
+producer 可以失败在**后续 acceptance**，但打包与上传必须已成功；其他
+workflow、PR、别的 commit 或过期/改名工件一律拒绝。
+
+复用后把已核对的同一批媒体上传为**当前运行**的标准工件，发布 job 沿用当前运行的下载路径，
+不再次跨运行查找。`gh release create --verify-tag`、资产集合与 `latest-mac.yml` 检查保持不变，
+不引入新的覆盖语义。
+产品源码始终是 `refs/tags/<tag>^{commit}`，runner ref 只承载 CI 修复代码。

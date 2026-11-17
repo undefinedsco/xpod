@@ -558,7 +558,15 @@ class _CallerAttributionChecks(unittest.TestCase):
 _CALLER_ATTRIBUTION_CHECK_NAMES = ('check_exact_parent_buckets_split_other_native_and_sum', 'check_body_native_is_not_double_counted_as_parent_residual', 'check_unknown_parent_names_never_grow_or_leak', 'check_crossed_window_is_separate_from_parent_buckets', 'check_invalid_binding_does_not_attach_parent', 'check_parent_rows_saturate_and_remain_bounded', 'check_new_field_overflow_returns_the_old_summary', 'check_published_payload_contains_parent_split_and_stays_mainline_bounded', 'check_failure_sidecar_keeps_new_field_and_6144_bound', 'check_parent_attribution_adds_no_clock_or_io', 'check_parent_native_error_keeps_primary_and_counts_failure', 'check_parent_failure_does_not_swallow_control_and_cleanup_stays')
 
 
-class NativeAuditSites(common.Base):
+class _NativeAuditFixture(common.Base):
+    """Shared native fixture. Holds NO test cases.
+
+    `owned_window_seconds` is the ONLY window knob: a subclass that tests real
+    timer expiry names a short value; every other native case keeps the default,
+    which clamps one second inside the existing 120s parent deadline so real
+    fsync / lease work is never starved by a near-expiry window.
+    """
+    owned_window_seconds=None
     def setUp(self):
         super().setUp();o=self.o
         o.initialize_capture_state();o.raw=io.BytesIO();o.logical_raw_bytes=0;o.raw_logical_limit=64*1024*1024
@@ -567,7 +575,10 @@ class NativeAuditSites(common.Base):
         o.domain_lock=threading.RLock();o.domain_bytes=0;o.chunk_reserved=0;o.maximum_bytes=64*1024*1024;o.claim_bytes={'capture-body':0}
         o._phase_progress=core.PhaseProgress(o.current_phase,o.deadline)
         o.waiter=core.owned_wait.BlockingOwnedWait(o.deadline);o.waiter.__enter__();self.addCleanup(o.waiter.__exit__,None,None,None)
-        self.token=o.waiter.clamp(time.monotonic()+0.9) # __exit__ cancels even an expired clamp; restore must refuse expiry
+        # An intentionally short window is chosen ONLY by the subclass attribute;
+        # the default stays real work-sized and strictly inside the parent bound.
+        local=o.deadline-1.0 if self.owned_window_seconds is None else time.monotonic()+self.owned_window_seconds
+        self.token=o.waiter.clamp(local) # __exit__ cancels even an expired clamp; restore must refuse expiry
         o.window_arm(int(o.waiter.deadline*1e9));o.open_outer_lease_window();self.addCleanup(o.close_outer_lease_window)
         self.events=[];actual=self.leases.check
         def native(*a,**k):self.events.append('lease');return actual(*a,**k)
@@ -590,6 +601,10 @@ class NativeAuditSites(common.Base):
         if self.o._audit_sites is not None:
             self.assertIsNone(self.o._audit_sites.tag);self.assertIsNone(self.o._audit_sites.active)
         self.assertFalse(list(self.o.capture_dir.glob('.txn-*')));self.assertEqual(self.o.chunk_reserved,0)
+
+class NativeAuditSites(_NativeAuditFixture):
+    """All ordinary native cases: real window, no intentional expiry."""
+    owned_window_seconds=None
     def test_real_c_read_counts_order_and_result_identical_off_on(self):
         out=[]
         for enabled in [False,True]:
@@ -689,6 +704,9 @@ class NativeAuditSites(common.Base):
         def body():fcntl.fcntl(self.leases.fds[0],fcntl.F_SETLEASE,fcntl.F_UNLCK);raise primary
         with self.assertRaises(OSError) as caught:self.body(body,'snapshot_raw')
         self.assertIs(caught.exception,primary);self.assertEqual(self.events.count('lease'),1)
+class NativeAuditTimer(_NativeAuditFixture):
+    """Real owned-timer expiry. The ONLY class that shortens the owned window."""
+    owned_window_seconds=0.9
     def test_real_owned_timer_keeps_primary_and_nonlease_closing(self):
         # Use the already-owned 0.9s fixture window; no 25ms pre-entry race or
         # attempted restore of an expired owned deadline. Product bounds unchanged.

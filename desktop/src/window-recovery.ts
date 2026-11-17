@@ -1,3 +1,6 @@
+/** Existing cold-start recovery budget, shared by the window and packaged acceptance. */
+export const NORMAL_WINDOW_RECOVERY_BUDGET_MS = 10 * 60_000
+
 export interface WindowRecoveryWebContents {
   isCrashed(): boolean
 }
