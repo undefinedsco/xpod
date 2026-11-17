@@ -30,6 +30,9 @@ export interface SparqlEngine {
   queryVoid(query: string, basePath: string, accessScope?: RdfAccessScope, options?: SparqlVoidOptions): Promise<void>;
   constructGraph(graph: string, basePath: string, accessScope?: RdfAccessScope): Promise<AsyncIterator<Quad>>;
   listGraphs(basePath: string, accessScope?: RdfAccessScope): Promise<Set<string>>;
+  /** Optional: explicit metadata facet read. Absent means the engine cannot serve it. */
+  queryMetadataBindings?(query: string, basePath: string, accessScope?: RdfAccessScope, options?: SparqlQueryOptions): Promise<any>;
+  listMetadataGraphs?(basePath: string, accessScope?: RdfAccessScope): Promise<Set<string>>;
   close(): Promise<void>;
 }
 
@@ -72,6 +75,17 @@ export class SubgraphQueryEngine {
 
   public async listGraphs(basePath: string, accessScope?: RdfAccessScope): Promise<Set<string>> {
     return this.impl.listGraphs(basePath, accessScope);
+  }
+
+  public async queryMetadataBindings(query: string, basePath: string, accessScope?: RdfAccessScope, options?: SparqlQueryOptions): Promise<any> {
+    if (!this.impl.queryMetadataBindings) {
+      throw new Error('This SPARQL engine does not expose metadata facet reads.');
+    }
+    return this.impl.queryMetadataBindings(query, basePath, accessScope, options);
+  }
+
+  public async listMetadataGraphs(basePath: string, accessScope?: RdfAccessScope): Promise<Set<string>> {
+    return this.impl.listMetadataGraphs ? this.impl.listMetadataGraphs(basePath, accessScope) : new Set();
   }
 
   public async close(): Promise<void> {

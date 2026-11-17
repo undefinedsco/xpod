@@ -47,11 +47,15 @@ export {
 export { RdfShadowComparator, canonicalQuadKey, diffQuads } from './RdfShadowComparator';
 export { RdfQueryExecutor, variable as rdfVar } from './RdfQueryExecutor';
 export {
+  METADATA_GRAPH_PREFIX,
   applyRdfAccessScope,
   filterRdfAccessGraphs,
+  isMetadataGraphIri,
   isRestrictiveRdfAccessScope,
+  metadataResourceForGraph,
   rdfAccessCacheScope,
   rdfAccessGraphAllowed,
+  rdfReadGraphAllowed,
   type RdfAccessMode,
   type RdfAccessScope,
 } from './RdfAccessScope';

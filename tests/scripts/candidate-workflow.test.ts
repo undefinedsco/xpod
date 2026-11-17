@@ -751,7 +751,9 @@ esac
     expect(diagnosticObserver.name).toContain('diagnostic');
     expect(diagnosticObserver.if).toContain('inputs.service_source_diagnostics == true');
     expect(diagnosticObserver['continue-on-error']).toBe(true);
-    expect(jobRunText(workflow, 'observe_service_sdk_source')).toContain('--require-qualification');
+    // The optional observer reports real pending state instead of asserting a
+    // whole-service qualification the split intentionally no longer produces.
+    expect(jobRunText(workflow, 'observe_service_sdk_source')).not.toContain('--require-qualification');
     expect(deploy.env.KUBE_CONFIG_DATA).toBe('${{ secrets.KUBE_CONFIG_DATA }}');
     expect(deploy.env.APP_ENV_FILE).toBe('${{ secrets.APP_ENV_FILE }}');
     expect(deploy.env.SEALOS_NAMESPACE).toBe('${{ vars.SEALOS_NAMESPACE }}');
@@ -1346,11 +1348,20 @@ esac
     const workflow = await loadWorkflow();
     const text = await readFile(workflowPath, 'utf8');
 
-    expect(text.match(/continue-on-error/g)).toHaveLength(1);
-    expect(workflow.jobs.observe_service_sdk_source['continue-on-error']).toBe(true);
-    for (const [ name, job ] of Object.entries(workflow.jobs)) {
-      if (name !== 'observe_service_sdk_source') expect((job as any)['continue-on-error'], name).not.toBe(true);
+    // Only the independent diagnostic job and its capture/upload steps tolerate failure.
+    const toleratedJobs: string[] = [];
+    const toleratedSteps: string[] = [];
+    for (const [name, job] of Object.entries(workflow.jobs)) {
+      if ((job as any)['continue-on-error'] === true) toleratedJobs.push(name);
+      for (const step of (job as any).steps ?? []) {
+        if (step?.['continue-on-error'] === true) toleratedSteps.push(name + ':' + String(step.id));
+      }
     }
+    expect(toleratedJobs).toEqual(['observe_service_sdk_source']);
+    expect(toleratedSteps.sort()).toEqual([
+      'build_image:service_abi_diagnostic',
+      'build_image:service_abi_diagnostic_upload',
+    ]);
     expect(text).not.toMatch(/:latest\b|value=latest/);
     expect(text).not.toContain('deploy/sealos/cloud');
     expect(text).not.toContain('environment: production');
@@ -1653,10 +1664,15 @@ describe('service-image audit scope change', () => {
       required: false,
       default: false,
     });
+    // B2: the optional observer consumes the mandatory canonical master, which
+    // by design has no whole-image ABI inference. It must therefore report the
+    // real pending/unverified state (the CLI's diagnostic branch) instead of
+    // demanding a qualification the split no longer produces.
+    expect(jobRunText(workflow, 'observe_service_sdk_source')).not.toContain('--require-qualification');
     expect(observer.name).toBe('Full service-image audit (diagnostic)');
     expect(observer.if).toBe("${{ github.event_name == 'workflow_dispatch' && inputs.service_source_diagnostics == true }}");
     expect(observer['continue-on-error']).toBe(true);
-    expect(jobRunText(workflow, 'observe_service_sdk_source')).toContain('--require-qualification');
+    expect(jobRunText(workflow, 'observe_service_sdk_source')).not.toContain('--require-qualification');
     const observerUpload = observer.steps.find((step: any) => step.uses === 'actions/upload-artifact@v4');
     expect(observerUpload.with['if-no-files-found']).toBe('warn');
 

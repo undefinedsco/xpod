@@ -6,12 +6,21 @@ import { Toaster } from '@undefineds.co/shared-ui'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AiGatewayKeysSection } from '../src/AiGatewayKeysSection'
 import { AiConnectionsPanel } from '../src/AiConnectionsPanel'
-import { createAiConnectionsClient } from '../src/contract/ai-connections-client'
+import { AiConnectionsRequestError, createAiConnectionsClient } from '../src/contract/ai-connections-client'
 import type { AiConnectionsClient, AiGatewayModel, GatewayKeyRecord } from '../src/contract/ai-connections-client'
 import type {
   AiClientConfigurationBridge,
   AiConnectionsClientId,
 } from '../src/AiClientConfigurationSection'
+
+// Every block in this file renders a panel; a single file-level teardown is what
+// keeps an accessible name from matching the previous test's tree too.
+afterEach(() => {
+  for (const close of screen.queryAllByRole('button', { name: '关闭通知', hidden: true })) fireEvent.click(close)
+  cleanup()
+  vi.useRealTimers()
+  vi.restoreAllMocks()
+})
 
 const WEB_ID = 'https://pod.example/alice/profile/card#me'
 const APPLIED: GatewayKeyRecord = {
@@ -47,13 +56,6 @@ describe('Xpod Xpod 密钥', () => {
       configurable: true,
       value: { writeText: vi.fn(async () => undefined) },
     })
-  })
-
-  afterEach(() => {
-    for (const close of screen.queryAllByRole('button', { name: '关闭通知', hidden: true })) fireEvent.click(close)
-    cleanup()
-    vi.useRealTimers()
-    vi.restoreAllMocks()
   })
 
   it('reports missing Pod service access next to the keys and repairs it once', async () => {
@@ -795,5 +797,184 @@ describe('Xpod model list selection', () => {
       'openai',
       [{ id: 'gpt-5', resourceId: 'openai.ttl#gpt-5' }],
     ))
+  })
+})
+
+/**
+ * Root's 0.4.33 observation, reproduced through the real client: a deployment
+ * that advertises `xpod-builtin` (read-only) plus `linx`/`linx-lite`, while the
+ * personal provider read fails with the very error the production page showed.
+ *
+ * The personal failure must stay visible for personal operations, and the
+ * declared directory must still render. Before the fix the page had zero
+ * providers and showed only "AI Connection request failed".
+ */
+describe('deployment built-in directory beside a failing personal catalogue', () => {
+  const PRODUCTION_PROVIDERS = {
+    data: [{
+      id: 'xpod-builtin',
+      name: 'Xpod',
+      status: 'available',
+      builtin: true,
+      readOnly: true,
+      offerings: [],
+      credentials: [],
+      selectedModels: [
+        { id: 'linx', provider: 'xpod-builtin', displayName: 'linx', protocols: ['chatCompletions', 'responses'] },
+        { id: 'linx-lite', provider: 'xpod-builtin', displayName: 'linx-lite', protocols: ['chatCompletions', 'responses'] },
+      ],
+    }],
+  }
+  const PRODUCTION_MODELS = {
+    object: 'list',
+    data: [
+      { id: 'linx', object: 'model', owned_by: 'xpod-builtin', display_name: 'linx', protocols: ['chatCompletions', 'responses'] },
+      { id: 'linx-lite', object: 'model', owned_by: 'xpod-builtin', display_name: 'linx-lite', protocols: ['chatCompletions', 'responses'] },
+    ],
+  }
+
+  function productionClient(options: {
+    personalFails?: boolean
+    clientCredentials?: unknown
+  } = {}): { client: AiConnectionsClient; fetches: string[] } {
+    const fetches: string[] = []
+    const authenticatedFetch = (async (input: RequestInfo | URL) => {
+      const url = String(input)
+      fetches.push(new URL(url).pathname)
+      if (url.endsWith('/v1/models')) {
+        return new Response(JSON.stringify(PRODUCTION_MODELS), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })
+      }
+      // The deployment's own row and the personal failure are independent facts:
+      // the same request carries both, exactly as the production route answers.
+      return new Response(JSON.stringify(PRODUCTION_PROVIDERS), {
+        status: 200,
+        headers: {
+          'content-type': 'application/json',
+          'X-Xpod-Builtin-Providers': 'xpod-builtin',
+          'Access-Control-Expose-Headers': 'X-Xpod-Builtin-Providers',
+        },
+      })
+    }) as unknown as typeof fetch
+    const real = createAiConnectionsClient({
+      webId: WEB_ID,
+      podBaseUrl: 'https://pod.example',
+      authenticatedFetch,
+      ...(options.clientCredentials ? { clientCredentials: options.clientCredentials as never } : {}),
+    })
+    const client = options.personalFails
+      ? {
+          ...real,
+          // The published 0.1.0 parser's failure: a personal read rejects while
+          // the declared directory is a separate read that still succeeds.
+          listProviders: vi.fn(async () => {
+            throw new Error('AI Connection request failed (HTTP 404)')
+          }),
+          listModels: vi.fn(async () => {
+            throw new Error('AI Connection request failed (HTTP 404)')
+          }),
+        }
+      : real
+    return { client: client as AiConnectionsClient, fetches }
+  }
+
+  it('renders the declared models while the personal catalogue fails', async () => {
+    const { client: current } = productionClient({ personalFails: true })
+    render(<AiConnectionsPanel client={current} selectedSection="keys" />)
+
+    const builtin = await screen.findByRole('region', { name: '部署内置模型' })
+    expect(within(builtin).getByText('Xpod')).toBeTruthy()
+    expect(within(builtin).getByText('共 1 个提供商 · 2 个模型')).toBeTruthy()
+    expect(within(builtin).getByText('linx', { selector: 'span' })).toBeTruthy()
+    expect(within(builtin).getByText('linx-lite', { selector: 'span' })).toBeTruthy()
+    // Read-only: no switching, no edit, no delete, and no personal credential row.
+    expect(within(builtin).queryByRole('button', { name: /^(启用|停用|编辑|删除) / })).toBeNull()
+    expect(within(builtin).queryByText('只读')).toBeTruthy()
+  })
+
+  it('keeps the declared directory when the host has no key-management capability', async () => {
+    const { client: current } = productionClient()
+    render(<AiConnectionsPanel client={current} selectedSection="keys" />)
+
+    const builtin = await screen.findByRole('region', { name: '部署内置模型' })
+    expect(within(builtin).getByText('linx-lite', { selector: 'span' })).toBeTruthy()
+    // The missing capability is a declared absence, not a request failure.
+    const notices = screen.queryAllByText(/当前客户端没有 Account 客户端凭据能力/)
+    expect(notices).toHaveLength(1)
+    expect(screen.queryByRole('button', { name: '新建 Xpod 密钥' })).toBeNull()
+    expect(screen.queryByText(/AI Connection request failed/)).toBeNull()
+  })
+
+  it('renders a failed directory read as a failure, not as an empty deployment', async () => {
+    const { client: base } = productionClient()
+    const failing = {
+      ...base,
+      listBuiltinProviders: vi.fn(async () => {
+        throw new AiConnectionsRequestError({ error: 'pod_read_failed' }, 500)
+      }),
+      // The personal catalogue is fine: the two reads stay independent.
+      listModels: vi.fn(async () => [{ id: 'gpt-5', provider: 'openai' as const }]),
+    } as unknown as AiConnectionsClient
+    render(<AiConnectionsPanel client={failing} selectedSection="keys" />)
+
+    const notice = await screen.findByText(/部署内置模型目录读取失败/)
+    expect(notice.closest('[role="alert"]')).not.toBeNull()
+    // "We could not read it" must never be shown as "there are none".
+    expect(screen.queryByText('当前部署没有内置模型')).toBeNull()
+    expect(screen.queryByText('这个客户端无法读取部署内置模型目录')).toBeNull()
+    // The personal read still ran on its own and is not reported as broken by
+    // this failure; only the directory's own state is an error.
+    expect(vi.mocked(failing.listModels!).mock.calls).toHaveLength(1)
+    // The directory's error is scoped to its own section: the key surface above
+    // it reports no failure, because nothing personal failed.
+    const keysSection = screen.getByRole('region', { name: '当前连接' })
+    expect(keysSection.querySelector('[role="alert"]')).toBeNull()
+    // Once per client: the failing read is not retried by the failure itself.
+    expect(vi.mocked(failing.listBuiltinProviders!).mock.calls).toHaveLength(1)
+  })
+
+  it('separates a successful empty directory from a failed one', async () => {
+    const { client: base } = productionClient()
+    const empty = {
+      ...base,
+      listBuiltinProviders: vi.fn(async () => []),
+    } as unknown as AiConnectionsClient
+    render(<AiConnectionsPanel client={empty} selectedSection="keys" />)
+
+    expect(await screen.findByText('当前部署没有内置模型')).toBeTruthy()
+    expect(screen.queryByText(/部署内置模型目录读取失败/)).toBeNull()
+    expect(screen.queryByText('这个客户端无法读取部署内置模型目录')).toBeNull()
+  })
+
+  it('does not present a client without the directory surface as an empty directory', async () => {
+    const { client: base } = productionClient()
+    const legacy = { ...base, listBuiltinProviders: undefined } as unknown as AiConnectionsClient
+    render(<AiConnectionsPanel client={legacy} selectedSection="keys" />)
+
+    expect(await screen.findByText('这个客户端无法读取部署内置模型目录')).toBeTruthy()
+    // Silence from a client that cannot ask is not an answer that nothing exists.
+    expect(screen.queryByText('当前部署没有内置模型')).toBeNull()
+  })
+
+  it('still reports a genuine personal key failure when the capability exists', async () => {
+    const { client: base } = productionClient({
+      clientCredentials: { list: vi.fn(), create: vi.fn(), revoke: vi.fn() },
+    })
+    const current = {
+      ...base,
+      listGatewayKeys: vi.fn(async () => {
+        // The real client throws the classified request error; the page must
+        // render its sentence and must not call it an unsupported surface.
+        throw new AiConnectionsRequestError({ error: 'service_access_missing' }, 403)
+      }),
+    } as unknown as AiConnectionsClient
+    render(<AiConnectionsPanel client={current} selectedSection="keys" />)
+
+    expect(await screen.findByText(/Xpod 尚未获准访问这个 Pod/)).toBeTruthy()
+    expect(screen.queryByText(/当前客户端没有 Account 客户端凭据能力/)).toBeNull()
+    // The declared directory is unaffected by the personal key failure.
+    const builtin = await screen.findByRole('region', { name: '部署内置模型' })
+    expect(within(builtin).getByText('linx-lite', { selector: 'span' })).toBeTruthy()
   })
 })

@@ -49,11 +49,11 @@
   },
   {
     "path": "packages/ai-connections-runtime/package.json",
-    "sha256": "f9c72637124b3510120a20c3b6b93ff33eebcf7796d314eeee3374e5cbfbfd20"
+    "sha256": "d6af8eecb871be684616ddf691d0d0b38a4be66c741748afa9445d94a0f1b86a"
   },
   {
     "path": "packages/ai-connections/package.json",
-    "sha256": "33bae7d03ba80c0d976ad1b2e66e932baeb71036de2ce15195b8267a192ad4c7"
+    "sha256": "6a48c4069f9291c08c987affe1d10eab2c8f96908b55a78b937effe47487265e"
   },
   {
     "path": "packages/extension-host-contracts/package.json",
@@ -689,7 +689,7 @@
   },
   {
     "path": "scripts/check-candidate-service-sdk-source.ts",
-    "sha256": "1b94be53c32dba156c37ffabbe6589eeddd9f0706c52bc7e1978df19215e39c7"
+    "sha256": "65ea2f5aec1c07cfce6ca591b4941790c567ec790870d257095ae96577864f85"
   },
   {
     "path": "scripts/check-cli-package.cjs",
@@ -941,7 +941,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "1af0af981798ce06995dc36384d7fe551ee6dd4581801a947e9500e478d381b1"
+    "sha256": "0ec24c131c8bed015eb1ebd11dd388370432ba495f2efbbf22f0cd5e435b5864"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",
@@ -1221,7 +1221,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "2c8de344b2406b5d131a496139870fb12f5e2943a5ee6c0d0f680c3cddb55ca0"
+    "sha256": "015c2b20cdb71137dc4e2e7781b6aed8226ceb651aecff34ddf510d6b39e7c73"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",

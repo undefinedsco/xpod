@@ -1,5 +1,5 @@
 import { XpodTestStack } from '../tests/helpers/XpodTestStack';
-import { createFakeQleverRuntimeCommand } from '../tests/helpers/qleverRuntime';
+import { createFakeQleverRuntimeCommand, nativeQleverRuntimeEnv } from '../tests/helpers/qleverRuntime';
 import { spawn } from 'child_process';
 import path from 'node:path';
 
@@ -65,6 +65,9 @@ async function main() {
       CSS_BASE_URL: stack.baseUrl,
       XPOD_GATEWAY_SOCKET_PATH: stack.socketPath ?? '',
       XPOD_RUN_INTEGRATION_TESTS: 'true',
+      // The native-fresh suite must run on a real runtime in this gate: an
+      // explicit binding wins, otherwise Linux uses the current immutable image.
+      ...nativeQleverRuntimeEnv(),
       SOLID_ENV_FILE: path.resolve('.test-data', 'integration', 'lite.env'),
     };
 

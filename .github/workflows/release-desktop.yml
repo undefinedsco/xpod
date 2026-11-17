@@ -170,9 +170,17 @@ jobs:
           retention-days: 30
 
 
-      - name: Validate desktop version
+      # API production above requires the exact clean tag checkout. Only after
+      # it closes, apply the same allowed manifest transform used by RC builds.
+      # The root manifest is authoritative; desktop/package.json is derived.
+      - name: Apply and validate stable desktop version
         run: |
           node -e '
+            const root = require("./package.json");
+            if (root.version !== process.env.RELEASE_VERSION) {
+              throw new Error(`root version ${root.version} does not match ${process.env.RELEASE_VERSION}`);
+            }
+            require("./scripts/release-candidate.cjs").applyRootVersion(process.cwd(), root.version);
             const desktop = require("./desktop/package.json");
             if (desktop.version !== process.env.RELEASE_VERSION) {
               throw new Error(`desktop version ${desktop.version} does not match ${process.env.RELEASE_VERSION}`);
