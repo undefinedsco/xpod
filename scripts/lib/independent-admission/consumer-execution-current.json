@@ -689,7 +689,7 @@
   },
   {
     "path": "scripts/check-candidate-service-sdk-source.ts",
-    "sha256": "1b94be53c32dba156c37ffabbe6589eeddd9f0706c52bc7e1978df19215e39c7"
+    "sha256": "65ea2f5aec1c07cfce6ca591b4941790c567ec790870d257095ae96577864f85"
   },
   {
     "path": "scripts/check-cli-package.cjs",
@@ -1221,7 +1221,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "2c8de344b2406b5d131a496139870fb12f5e2943a5ee6c0d0f680c3cddb55ca0"
+    "sha256": "015c2b20cdb71137dc4e2e7781b6aed8226ceb651aecff34ddf510d6b39e7c73"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
