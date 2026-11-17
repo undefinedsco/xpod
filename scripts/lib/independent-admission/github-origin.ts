@@ -1830,7 +1830,16 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
       // publication route and all parent permissions remain unchanged.
       {workflowSha256:'1ed635dc234c374b1304bde07c2daeab03832794ddad698db1ce4200e767af87',
       jobName:()=>callerNames[0]!,
-      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],requiredBranch:'staging',
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // APPEND-ONLY: CI214 moved one pinned native timer test into its own
+      // fixture class (NativeAuditTimer); same case, same assertions, same
+      // jobs/permissions/branch/event. A NEW reviewed identity is appended so
+      // every earlier reviewed version above stays byte-exact and selectable;
+      // unknown or mixed versions are still refused.
+      {workflowSha256:'c0ed4cd1069c3a11765a677b7d115b31f31df9927f02ee681cbff0c877aa2aa6',
+      jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],
+    requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,
     sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS,
   };
