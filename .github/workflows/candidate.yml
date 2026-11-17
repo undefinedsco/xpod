@@ -328,25 +328,36 @@ jobs:
           NATIVE_RUNTIME_MASTER_SHA256: ${{ needs.publish_qlever_local_runtime.outputs.native_runtime_master_sha256 }}
         run: |
           set -euo pipefail
+          # TWO INVOCATIONS, ONE CANONICAL ARGV. This mandatory step always
+          # captures the source/manifest/registry/pack/runtime bindings and
+          # always writes the canonical master consumed by deploy_and_accept.
+          # It NEVER receives the whole-image inferred SOURCE/LEGAL/ABI switch:
+          # that inference is a diagnostic with its own step, directory and
+          # artifact below, so its failure cannot reach these outputs. The argv
+          # is persisted so the diagnostic step reuses it verbatim instead of
+          # duplicating (and silently diverging from) the binding list.
           metadata="$RUNNER_TEMP/service-build-metadata.original.json"
           python3 -I -S -B -c 'import os,pathlib; b=os.environ["BUILD_METADATA"].encode(); assert 0<len(b)<=4*1024**2; pathlib.Path(os.environ["RUNNER_TEMP"],"service-build-metadata.original.json").write_bytes(b)'
+          capture_args=(
+            --source "$GITHUB_WORKSPACE" --source-sha "$GITHUB_SHA"
+            --service-image "ghcr.io/undefinedsco/xpod@${BUILD_DIGEST}"
+            --local-runtime-image "$LOCAL_RUNTIME_IMAGE" --sdk-image "$SDK_IMAGE"
+            --sdk-artifact-id "$SDK_ARTIFACT_ID" --sdk-artifact-digest "$SDK_ARTIFACT_DIGEST"
+            --sdk-master-bytes "$SDK_MASTER_BYTES" --sdk-master-sha256 "$SDK_MASTER_SHA256"
+            --sdk-source-sha "$SDK_SOURCE_SHA" --sdk-run-head-sha "$SDK_RUN_HEAD_SHA"
+            --sdk-run-id "$SDK_RUN_ID" --sdk-run-attempt "$SDK_RUN_ATTEMPT" --sdk-build-model "$SDK_BUILD_MODEL"
+            --native-runtime-artifact-id "$NATIVE_RUNTIME_ARTIFACT_ID" --native-runtime-artifact-digest "$NATIVE_RUNTIME_ARTIFACT_DIGEST"
+            --native-runtime-master-bytes "$NATIVE_RUNTIME_MASTER_BYTES" --native-runtime-master-sha256 "$NATIVE_RUNTIME_MASTER_SHA256"
+            --root-manifest-before "$RUNNER_TEMP/service-source-manifests/before/package.json"
+            --root-manifest-after "$RUNNER_TEMP/service-source-manifests/after/package.json"
+            --capture-service-pack-originals
+            --capture-service-runtime-members
+            --build-metadata "$metadata"
+          )
+          printf '%s\0' "${capture_args[@]}" > "$RUNNER_TEMP/service-image-originals.mandatory.argv"
           python3 -I -S -B qlever/scripts/sdk-service-image-originals.py \
-            --out "$RUNNER_TEMP/service-image-originals" \
-            --source "$GITHUB_WORKSPACE" --source-sha "$GITHUB_SHA" \
-            --service-image "ghcr.io/undefinedsco/xpod@${BUILD_DIGEST}" \
-            --local-runtime-image "$LOCAL_RUNTIME_IMAGE" --sdk-image "$SDK_IMAGE" \
-            --sdk-artifact-id "$SDK_ARTIFACT_ID" --sdk-artifact-digest "$SDK_ARTIFACT_DIGEST" \
-            --sdk-master-bytes "$SDK_MASTER_BYTES" --sdk-master-sha256 "$SDK_MASTER_SHA256" \
-            --sdk-source-sha "$SDK_SOURCE_SHA" --sdk-run-head-sha "$SDK_RUN_HEAD_SHA" \
-            --sdk-run-id "$SDK_RUN_ID" --sdk-run-attempt "$SDK_RUN_ATTEMPT" --sdk-build-model "$SDK_BUILD_MODEL" \
-            --native-runtime-artifact-id "$NATIVE_RUNTIME_ARTIFACT_ID" --native-runtime-artifact-digest "$NATIVE_RUNTIME_ARTIFACT_DIGEST" \
-            --native-runtime-master-bytes "$NATIVE_RUNTIME_MASTER_BYTES" --native-runtime-master-sha256 "$NATIVE_RUNTIME_MASTER_SHA256" \
-            --root-manifest-before "$RUNNER_TEMP/service-source-manifests/before/package.json" \
-            --root-manifest-after "$RUNNER_TEMP/service-source-manifests/after/package.json" \
-            --capture-service-pack-originals \
-            --capture-service-runtime-members \
-            --capture-service-abi-originals \
-            --build-metadata "$metadata" --deadline "$(( $(date +%s) + 120 ))"
+            --out "$RUNNER_TEMP/service-image-originals" "${capture_args[@]}" \
+            --deadline "$(( $(date +%s) + 120 ))"
 
       - name: Upload candidate service image originals
         id: service_originals_upload
@@ -357,6 +368,41 @@ jobs:
           path: ${{ runner.temp }}/service-image-originals
           include-hidden-files: true
           if-no-files-found: error
+
+      # APPROVED SCOPE SPLIT. The whole-image file-by-file SOURCE/LEGAL/ABI
+      # inference is an INDEPENDENT OPTIONAL DIAGNOSTIC: it has its own step id,
+      # its own fixed-basename output directory (the producer requires the
+      # basename `service-image-originals`), its own artifact name, and
+      # continue-on-error. It reuses the immutable binding arguments with its
+      # own output root and operation deadline. Its evidence is comparable;
+      # failure is recorded and can never alter the canonical master, the
+      # mandatory artifact, or deploy_and_accept.
+      - name: Capture whole-image ABI inference (diagnostic)
+        id: service_abi_diagnostic
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.service_source_diagnostics == true }}
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          diagnostic_root="${{ runner.temp }}/service-abi-diagnostic"
+          mkdir -m 700 -p "$diagnostic_root"
+          capture_args=()
+          while IFS= read -r -d '' arg; do capture_args+=("$arg"); done < "${{ runner.temp }}/service-image-originals.mandatory.argv"
+          # Output ownership and the 120s budget belong to this invocation.
+          RUNNER_TEMP="$diagnostic_root" python3 -I -S -B qlever/scripts/sdk-service-image-originals.py \
+            --out "$diagnostic_root/service-image-originals" \
+            "${capture_args[@]}" --capture-service-abi-originals \
+            --deadline "$(( $(date +%s) + 120 ))"
+
+      - name: Upload whole-image ABI diagnostic originals
+        id: service_abi_diagnostic_upload
+        if: ${{ always() && steps.service_abi_diagnostic.outcome != 'skipped' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-service-abi-diagnostic-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/service-abi-diagnostic/service-image-originals
+          include-hidden-files: true
+          if-no-files-found: warn
 
 
   observe_service_sdk_source:
@@ -405,7 +451,7 @@ jobs:
             --source-sha "$SOURCE_SHA" --run-id "$GITHUB_RUN_ID" --run-attempt "$PRODUCER_ATTEMPT" \
             --service-artifact-id "$SERVICE_ARTIFACT_ID" --service-artifact-digest "$SERVICE_ARTIFACT_DIGEST" \
             --service-master-bytes "$SERVICE_MASTER_BYTES" --service-master-sha256 "$SERVICE_MASTER_SHA256" \
-            --checkout "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/service-sdk-source-observation" --require-qualification
+            --checkout "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/service-sdk-source-observation"
       - name: Upload service SDK source observation
         if: always()
         uses: actions/upload-artifact@v4

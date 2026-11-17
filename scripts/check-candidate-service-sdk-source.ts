@@ -129,15 +129,47 @@ export async function observeCandidateServiceSdkSource(argv:readonly string[],re
    throw Error('Candidate service qualification pending: SDK source admission is not verified with zero pending: '
     +String(admissionView.pending.join(',')||'pending'));
   budget.check();admissionView.assertCurrent();
-  aggregate=await observeCandidateServiceWholeQualification(aggregateInput);
-  // V2-2 fix: SEAL, then RESOLVE through the sealed private getter, then run the
-  // release assert — ALL BEFORE the report is constructed or written. The report
-  // below is derived from that one authoritative sealed view (plus the genuine
-  // SDK admission), never from duplicated literals that precede the gate.
-  if(!sealWholeServiceQualification(aggregate))throw Error('Whole-service aggregate did not seal');
-  const sealed=candidateServiceWholeQualificationView(aggregate,aggregateInput);
-  if(!sealed)throw Error('Sealed whole-service aggregate did not resolve through its private getter');
-  if(requireQualification)requireCandidateServiceWholeQualification(aggregate,aggregateInput);
+  // DIAGNOSTIC MODE (no --require-qualification) must still produce the
+  // observation JSON, and it must do so truthfully. The whole-service aggregate
+  // requires the ABI axis, which the publication master intentionally no longer
+  // carries (approved scope split). In diagnostic mode we therefore record the
+  // aggregate failure as an explicit PENDING prerequisite instead of silently
+  // claiming a qualified result. The release path keeps the hard throw.
+  let sealed:ReturnType<typeof candidateServiceWholeQualificationView>;
+  try{
+   aggregate=await observeCandidateServiceWholeQualification(aggregateInput);
+   // V2-2 fix: SEAL, then RESOLVE through the sealed private getter, then run the
+   // release assert — ALL BEFORE the report is constructed or written. The report
+   // below is derived from that one authoritative sealed view (plus the genuine
+   // SDK admission), never from duplicated literals that precede the gate.
+   if(!sealWholeServiceQualification(aggregate))throw Error('Whole-service aggregate did not seal');
+   sealed=candidateServiceWholeQualificationView(aggregate,aggregateInput);
+   if(!sealed)throw Error('Sealed whole-service aggregate did not resolve through its private getter');
+   if(requireQualification)requireCandidateServiceWholeQualification(aggregate,aggregateInput);
+  }catch(error){
+   if(requireQualification)throw error;
+   // Never a pass: the report is written with every qualification flag false and
+   // the concrete reason in `pending`. A failed aggregate is never sealed.
+   const reason='whole-service-qualification-pending: '+String((error as Error)?.message??error).slice(0,1024);
+   const pendingReport=Object.freeze({schemaVersion:1,sourceSha:args.input.sourceSha,runId:args.input.runId,runAttempt:args.input.runAttempt,
+    serviceArtifactId:args.input.artifactId,observationCompleted:true,releaseAccepted:false,
+    wholeServiceSourceVerified:false,serviceAbiVerified:false,legalCoverageVerified:false,
+    wholeServiceQualificationVerified:false,
+    serviceImageReferenceByDigest:relationship.master.serviceImageReferenceByDigest,
+    serviceConfigDigest:relationship.master.images.service.configDigest,sdkImageReferenceByDigest:relationship.sdkImage,
+    sdkSourceSha:(sdk as any).originFacts?.sourceSha,appSdkSameSourceSha:(source as any).sourceSha===(sdk as any).originFacts?.sourceSha,
+    sdkSourceAdmissionVerified:observation.verified===true
+     &&Array.isArray(observation.pending)&&observation.pending.length===0,
+    sdkProvenanceModel:String(observation.facts.sdkBuildExecutionModel??'controller-readonly-v1'),
+    sdkSyscallProvenanceVerified:observation.facts.sdkSyscallSourceReadInventoryVerified===true,
+    qualificationRequired:false,
+    pending:Object.freeze([...((observation.pending as unknown[])??[]).map((row:unknown)=>String(row)),reason]),
+    rootMutationObservation:{facts:rootMutation.facts,pending:rootMutation.pending},
+    packOutputObservation:{facts:pack.facts,pending:pack.pending},
+    sdkSourceObservation:{verified:observation.verified,facts:observation.facts,pending:observation.pending}});
+   fs.writeFileSync(path.join(output,'service-source-observation.json'),JSON.stringify(pendingReport,null,2)+'\n',{flag:'wx',mode:0o600});
+   return pendingReport;
+  }
   // The SDK admission must be genuinely verified through the actual SOURCE
   // native-binding contract; a pending admission may not be reported as success
   // and may not be pruned away.
@@ -147,7 +179,7 @@ export async function observeCandidateServiceSdkSource(argv:readonly string[],re
   const reportPending=[...sdkPending];
   if(!sdkVerified)reportPending.push('qlever-sdk-source-admission-not-verified');
   const report=Object.freeze({schemaVersion:1,sourceSha:args.input.sourceSha,runId:args.input.runId,runAttempt:args.input.runAttempt,
-   serviceArtifactId:args.input.artifactId,observationCompleted:true,releaseAccepted:false,
+   serviceArtifactId:args.input.artifactId,observationCompleted:true,releaseAccepted:false,qualificationRequired:requireQualification,
    // Derived from the sealed aggregate view, which only exists when all three
    // axes passed their own current gates.
    wholeServiceSourceVerified:sealed.wholeServiceSourceVerified===true,
