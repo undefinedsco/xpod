@@ -116,12 +116,15 @@ test('every build, artifact, and native source binding uses the verified tag com
 
   // Product checkout is ALWAYS the accepted tag commit. A repair tooling
   // checkout is allowed, but it must be a SEPARATE, explicitly named and gated
-  // step writing to .ci-repair - never a product fallback.
+  // step writing under the existing ignored .test-data/ tree - never a product
+  // fallback. The path must stay inside .test-data/ because the exact-source
+  // guard rejects any other untracked path, and this path is NOT added to
+  // .gitignore.
   const tooling = build.steps.filter(step => JSON.stringify(step).includes('github.sha'));
   assert.equal(tooling.length, 1, 'exactly one runner-ref checkout is allowed');
   const repair = tooling[0];
   assert.equal(repair.uses, 'actions/checkout@v4');
-  assert.deepEqual(repair.with, { ref: '${{ github.sha }}', path: '.ci-repair' });
+  assert.deepEqual(repair.with, { ref: '${{ github.sha }}', path: '.test-data/desktop-retention-tooling' });
   assert.equal(repair.if, "env.REUSE_MEDIA == 'true'", 'tooling checkout is reuse-only');
 
   // The primary product checkout stays the tag commit and is not the tooling one.
