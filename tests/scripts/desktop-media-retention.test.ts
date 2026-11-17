@@ -131,6 +131,7 @@ function mediaZip(members?: Member[], feedText?: string): Buffer {
 type Options = {
   run?: Record<string, unknown>
   jobs?: unknown[]
+  jobName?: string
   artifacts?: unknown[]
   zipBytes?: Buffer
   artifactDigestOverride?: string
@@ -150,7 +151,7 @@ function box(options: Options = {}) {
     run_attempt: ATTEMPT, status: 'completed', event: 'workflow_dispatch', ...options.run,
   }
   const jobs = options.jobs ?? [{
-    id: 133916323832, name: 'Build macOS desktop release', conclusion: 'failure',
+    id: 133916323832, name: options.jobName ?? 'Build macOS desktop release', conclusion: 'failure',
     steps: [
       // Real source ordering: build 14, verify 15, upload 16 (09:14:08 -> 09:15:03),
       // acceptance 17. Numbers below are the fixture's 1-4 equivalent.
@@ -354,6 +355,101 @@ describe('desktop media retention (real archive)', () => {
     ['digest-less artifact', [{ id: ARTIFACT_ID, name: `xpod-desktop-macos-${VERSION}`, size_in_bytes: 1, expired: false }]],
   ])('refuses a %s', (_label, artifacts) => {
     const train = box({ artifacts: artifacts as never })
+    expect(() => run(train)).toThrow()
+  })
+})
+
+describe('exactly two authoritative producer shapes', () => {
+  // Shape 1: direct dispatch/call of release-desktop.yml, unprefixed job name.
+  it('accepts a direct release-desktop.yml producer (workflow_dispatch)', () => {
+    const train = box({ run: {
+      path: '.github/workflows/release-desktop.yml', event: 'workflow_dispatch',
+      head_branch: TAG, head_sha: SHA, status: 'completed',
+    } })
+    run(train)
+    const receipt = JSON.parse(fs.readFileSync(train.receipt, 'utf8'))
+    expect(receipt.producerWorkflow).toBe('.github/workflows/release-desktop.yml')
+    expect(receipt.producerEvent).toBe('workflow_dispatch')
+    expect(receipt.producerJob).toBe('Build macOS desktop release')
+  })
+
+  // Shape 2: release.yml calling it for a stable tag push, caller-prefixed job.
+  it('accepts the release.yml caller producer for a tag push and keeps real path/event', () => {
+    const train = box({
+      run: {
+        path: '.github/workflows/release.yml', event: 'push',
+        head_branch: TAG, head_sha: SHA, status: 'completed',
+      },
+      jobName: 'Release macOS desktop / Build macOS desktop release',
+    })
+    run(train)
+    const receipt = JSON.parse(fs.readFileSync(train.receipt, 'utf8'))
+    expect(receipt.producerWorkflow).toBe('.github/workflows/release.yml')
+    expect(receipt.producerEvent).toBe('push')
+    expect(receipt.producerJob).toBe('Release macOS desktop / Build macOS desktop release')
+  })
+
+  it.each([
+    // Shape/event mismatches must stay fail-closed in BOTH directions.
+    ['release.yml with a dispatch event', { path: '.github/workflows/release.yml', event: 'workflow_dispatch' }],
+    ['release-desktop.yml with a push event', { path: '.github/workflows/release-desktop.yml', event: 'push' }],
+    ['an unrelated workflow', { path: '.github/workflows/candidate.yml', event: 'push' }],
+    ['a pull_request event on the caller', { path: '.github/workflows/release.yml', event: 'pull_request' }],
+  ])('refuses %s', (_label, run) => {
+    const train = box({
+      run: { ...run, head_branch: TAG, head_sha: SHA, status: 'completed' },
+      jobName: 'Release macOS desktop / Build macOS desktop release',
+    })
+    expect(() => run(train)).toThrow()
+  })
+
+  it('refuses the caller workflow with the UNPREFIXED job name (no fuzzy match)', () => {
+    const train = box({
+      run: { path: '.github/workflows/release.yml', event: 'push', head_branch: TAG, head_sha: SHA, status: 'completed' },
+      jobName: 'Build macOS desktop release',
+    })
+    expect(() => run(train)).toThrow()
+  })
+
+  it('refuses the direct workflow with the PREFIXED job name (no fuzzy match)', () => {
+    const train = box({
+      run: { path: '.github/workflows/release-desktop.yml', event: 'workflow_dispatch', head_branch: TAG, head_sha: SHA, status: 'completed' },
+      jobName: 'Release macOS desktop / Build macOS desktop release',
+    })
+    expect(() => run(train)).toThrow()
+  })
+
+  it('refuses a failed packaging step even on the accepted caller shape', () => {
+    const train = box({
+      run: { path: '.github/workflows/release.yml', event: 'push', head_branch: TAG, head_sha: SHA, status: 'completed' },
+      jobName: 'Release macOS desktop / Build macOS desktop release',
+      jobs: [{
+        id: 1, name: 'Release macOS desktop / Build macOS desktop release', conclusion: 'failure',
+        steps: [
+          { number: 1, name: 'Build DMG and ZIP', conclusion: 'failure' },
+          { number: 2, name: 'Verify packaged version and native runtime payload', conclusion: 'success' },
+          { number: 3, name: 'Run actions/upload-artifact@v4', conclusion: 'success' },
+          { number: 4, name: 'Accept actual stable packaged desktop permissions and operations', conclusion: 'failure' },
+        ],
+      }],
+    })
+    expect(() => run(train)).toThrow()
+  })
+
+  it('refuses a failed media upload even on the accepted caller shape', () => {
+    const train = box({
+      run: { path: '.github/workflows/release.yml', event: 'push', head_branch: TAG, head_sha: SHA, status: 'completed' },
+      jobName: 'Release macOS desktop / Build macOS desktop release',
+      jobs: [{
+        id: 1, name: 'Release macOS desktop / Build macOS desktop release', conclusion: 'failure',
+        steps: [
+          { number: 1, name: 'Build DMG and ZIP', conclusion: 'success' },
+          { number: 2, name: 'Verify packaged version and native runtime payload', conclusion: 'success' },
+          { number: 3, name: 'Run actions/upload-artifact@v4', conclusion: 'failure' },
+          { number: 4, name: 'Accept actual stable packaged desktop permissions and operations', conclusion: 'failure' },
+        ],
+      }],
+    })
     expect(() => run(train)).toThrow()
   })
 })

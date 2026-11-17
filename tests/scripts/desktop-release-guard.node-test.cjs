@@ -121,15 +121,28 @@ test('every build, artifact, and native source binding uses the verified tag com
   // guard rejects any other untracked path, and this path is NOT added to
   // .gitignore.
   const tooling = build.steps.filter(step => JSON.stringify(step).includes('github.sha'));
-  assert.equal(tooling.length, 1, 'exactly one runner-ref checkout is allowed');
-  const repair = tooling[0];
-  assert.equal(repair.uses, 'actions/checkout@v4');
-  assert.deepEqual(repair.with, { ref: '${{ github.sha }}', path: '.test-data/desktop-retention-tooling' });
-  assert.equal(repair.if, "env.REUSE_MEDIA == 'true'", 'tooling checkout is reuse-only');
+  // Two reviewed repair-tooling checkouts are allowed: the retention helper
+  // (reuse-only) and the failure-diagnostics wrapper (always, because it must
+  // exist before the self-update step can fail). Both are separate from the
+  // product checkout and both land under the ignored .test-data/ tree.
+  assert.equal(tooling.length, 2, 'exactly two runner-ref tooling checkouts are allowed');
+  for (const repair of tooling) {
+    assert.equal(repair.uses, 'actions/checkout@v4');
+    assert.equal(String(repair.with.ref), '${{ github.sha }}');
+    assert.ok(String(repair.with.path).startsWith('.test-data/'), 'tooling must stay under .test-data/');
+    assert.notEqual(String(repair.with.path).includes('node_modules'), true);
+  }
+  const [retention, diagnostics] = tooling;
+  assert.deepEqual(retention.with, { ref: '${{ github.sha }}', path: '.test-data/desktop-retention-tooling' });
+  assert.equal(retention.if, "env.REUSE_MEDIA == 'true'", 'retention tooling checkout is reuse-only');
+  assert.deepEqual(diagnostics.with, {
+    ref: '${{ github.sha }}', path: '.test-data/ci-diagnostics', 'persist-credentials': false,
+  });
+  assert.equal(diagnostics.if, undefined, 'diagnostics tooling must exist before the self-update step can fail');
 
   // The primary product checkout stays the tag commit and is not the tooling one.
   const product = build.steps.filter(step => step.uses === 'actions/checkout@v4');
-  assert.equal(product.length, 2, 'product checkout plus the gated tooling checkout');
+  assert.equal(product.length, 3, 'product checkout plus the two reviewed tooling checkouts');
   assert.deepEqual(product[0].with, {
     ref: '${{ needs.desktop_guard.outputs.source_sha }}', 'fetch-depth': 0,
   });
@@ -138,9 +151,10 @@ test('every build, artifact, and native source binding uses the verified tag com
   // No OTHER runner-ref use anywhere: media, acceptance and upload bindings all
   // stay on the verified tag commit or the verified version input.
   const runnerShaOccurrences = JSON.stringify(release).match(/github\.sha/g) || [];
-  assert.equal(runnerShaOccurrences.length, 1, 'runner SHA appears only in the tooling checkout');
+  assert.equal(runnerShaOccurrences.length, 2, 'runner SHA appears only in the two tooling checkouts');
+  const toolingSteps = new Set(tooling);
   for (const step of build.steps) {
-    if (step === repair) continue;
+    if (toolingSteps.has(step)) continue;
     assert.equal(JSON.stringify(step).includes('github.sha'), false,
       'runner SHA must not leak into ' + (step.name ?? step.uses));
   }

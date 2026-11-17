@@ -143,6 +143,18 @@ jobs:
           ref: ${{ github.sha }}
           path: .test-data/desktop-retention-tooling
 
+      # Failure diagnostics live in reviewed CI code, never in the accepted tag:
+      # the product checkout stays the immutable tag commit, and this small tree
+      # lands under the already ignored .test-data/ so the exact-source guard is
+      # unaffected. It is always present because it must exist BEFORE the
+      # self-update step runs (the failure is only known afterwards).
+      - name: Check out reviewed CI diagnostics from the runner ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .test-data/ci-diagnostics
+          persist-credentials: false
+
       - name: Retain already-built desktop media for re-acceptance
         if: env.REUSE_MEDIA == 'true'
         env:
@@ -352,7 +364,13 @@ jobs:
           new_zip="$(find "$PWD/desktop/release" -maxdepth 1 -type f -name '*-mac.zip' -print -quit)"
           test -n "$old_app"
           test -n "$new_zip"
-          node desktop/scripts/packaged-update-acceptance.mjs \
+          # The real helper is unchanged and still owns its private userData
+          # cleanup; the wrapper only snapshots four small allowlisted facts
+          # (events, version marker, install marker, installer log) while it runs,
+          # so a failure names its stage instead of a bare compound timeout.
+          node "$GITHUB_WORKSPACE/.test-data/ci-diagnostics/scripts/diagnostics/capture-self-update-diagnostics.mjs" \
+            --snapshot-dir "${RUNNER_TEMP}/desktop-selfupdate-diagnostics" \
+            -- desktop/scripts/packaged-update-acceptance.mjs \
             --old "$old_app" --old-zip "$old_zip" --old-release-tag "$old_tag" \
             --new-zip "$new_zip" --version "$RELEASE_VERSION" \
             --source-sha "$XPOD_ACCEPTED_SHA" --timeout 180000 \
@@ -390,7 +408,17 @@ jobs:
         run: |
           node scripts/sealed-diagnostics.cjs seal \
             --in "${RUNNER_TEMP}/desktop-permission-private" \
+            --in "${RUNNER_TEMP}/desktop-selfupdate-diagnostics" \
             --out "${RUNNER_TEMP}/desktop-permission-sealed/diagnostics.sealed"
+      - name: Remove the private self-update snapshot
+        # ALWAYS: the snapshot is this run's own private temp data, and it must be
+        # removed even when the job succeeded or when sealing was skipped (for
+        # example a cancelled or timed-out run). Cleanup never gates the artifact.
+        if: always()
+        run: |
+          set -euo pipefail
+          chmod -R u+w "${RUNNER_TEMP}/desktop-selfupdate-diagnostics" 2>/dev/null || true
+          rm -rf "${RUNNER_TEMP}/desktop-selfupdate-diagnostics"
       - name: Upload sealed desktop permission diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
