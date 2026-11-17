@@ -7,7 +7,7 @@ on:
         description: 'Explicit route: publication control, or the manual session diagnostic'
         required: true
         type: choice
-        options: [independent-publication, session-diagnostic, session-matrix-diagnostic, desktop-launch-diagnostic]
+        options: [independent-publication, session-diagnostic, session-matrix-diagnostic, desktop-launch-diagnostic, desktop-retained-startup-diagnostic]
       diagnostic_image:
         description: 'Session diagnostic only: immutable repo@sha256 app image'
         required: false
@@ -1011,3 +1011,142 @@ jobs:
             ${{ runner.temp }}/diagnostic-not-qualification.txt
             ${{ github.workspace }}/desktop/release/*-mac.zip
             ${{ github.workspace }}/desktop/release/*-arm64.dmg
+
+  # ISOLATED DIAGNOSTIC (NOT release acceptance, NOT a gate). Answers ONE question:
+  # what do the packaged App's own CLI child stdout/stderr say when the retained
+  # M34 App's gateway fails to become ready inside the real 60s budget?
+  #
+  # It reuses the retained, already-verified M34 media, so it never rebuilds the
+  # App, the SDK or native artifacts. The existing desktop-launch-diagnostic job
+  # above is intentionally left byte-identical: it cold-builds a different App.
+  desktop-retained-startup-diagnostic:
+    name: desktop-retained-startup-diagnostic (NOT release acceptance)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.operation == 'desktop-retained-startup-diagnostic' }}
+    runs-on: macos-15
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DIAGNOSTIC_VERSION: '0.4.34'
+      DIAGNOSTIC_SOURCE_SHA: '1147fecfec4aea4b75cacbe779713f09e92dafac'
+      DIAGNOSTIC_SOURCE_RUN_ID: '44047310435'
+      DIAGNOSTIC_ARTIFACT_ID: '14315326869'
+      DIAGNOSTIC_ARTIFACT_SHA256: 'sha256:db746bf7f0f023afd0382e7bdf74eb8d77a00be81a0200d7b897713398f1d591'
+      DIAGNOSTIC_ZIP_SHA256: 'aad5f8ddf6027f6333b676b07c8aec2378d53b9108d3527b4f4e60e03fd8a0cb'
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - name: Check out the immutable accepted product tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DIAGNOSTIC_SOURCE_SHA }}
+          persist-credentials: false
+      # Repair tooling is NOT product source: it lands under the already ignored
+      # .test-data/ tree so the exact-source guard never sees it as dirty.
+      - name: Check out diagnostic tooling from the runner ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .test-data/retained-startup-tools
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install frozen dependencies for the diagnostic harness
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          bun install --frozen-lockfile
+          bun run build:packages
+      - name: Retain the verified M34 media
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/retained-startup-diagnostic"
+          mkdir -p "$out/media" && chmod 700 "$out"
+          GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
+          SOURCE_RUN_ID="$DIAGNOSTIC_SOURCE_RUN_ID" \
+          EXPECTED_TAG="v${DIAGNOSTIC_VERSION}" \
+          EXPECTED_SHA="$DIAGNOSTIC_SOURCE_SHA" \
+          EXPECTED_VERSION="$DIAGNOSTIC_VERSION" \
+          DESTINATION="$out/media" \
+          RECEIPT="$out/receipt.json" \
+          WORK_DIR="$out/retention-work" \
+          python3 .test-data/retained-startup-tools/scripts/diagnostics/retain-desktop-release-media.py
+          # Verify the receipt then delete ONLY this task's raw download (1.6G).
+          python3 - "$out" "$DIAGNOSTIC_ZIP_SHA256" <<'PY'
+          import json, os, sys
+          out, want = sys.argv[1], sys.argv[2]
+          receipt = json.load(open(os.path.join(out, 'receipt.json')))
+          assert receipt['archiveVerifiedBeforeExtraction'] is True
+          assert receipt['media']['zip']['sha256'] == want, 'retained ZIP is not the expected M34 bytes'
+          assert len(receipt['media']) == 5, 'expected five retained media members'
+          work = os.path.join(out, 'retention-work')
+          for name in os.listdir(work):
+              if name.startswith('desktop-media-'):
+                  os.unlink(os.path.join(work, name))
+          print('retained media verified; raw download removed')
+          PY
+      - name: Observe the packaged runtime child
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/retained-startup-diagnostic"
+          status=0
+          bun .test-data/retained-startup-tools/scripts/diagnostics/observe-packaged-runtime-child.ts \
+            --archive "$out/media/Xpod-${DIAGNOSTIC_VERSION}-arm64-mac.zip" \
+            --version "$DIAGNOSTIC_VERSION" \
+            --source-sha "${{ github.sha }}" \
+            --output "$out" \
+            --issuer https://id.undefineds.co/ \
+            --archive-source-sha "$DIAGNOSTIC_SOURCE_SHA" \
+            --artifact-id "$DIAGNOSTIC_ARTIFACT_ID" \
+            --artifact-run "$DIAGNOSTIC_SOURCE_RUN_ID" \
+            --member-sha256 "$DIAGNOSTIC_ZIP_SHA256" \
+            > "$out/harness.stdout.private.log" 2> "$out/harness.stderr.private.log" || status=$?
+          # Do not report a successful observation when the hook captured nothing.
+          if [[ "$status" -eq 0 ]]; then
+            python3 - "$out/child-observer-safe.json" <<'PY_CAPTURE'
+          import json, sys
+          record = json.load(open(sys.argv[1]))
+          assert record.get('classification') == 'NOT_QUALIFICATION'
+          assert record.get('rawCaptured') is True, 'owned child output was not captured'
+          PY_CAPTURE
+          fi
+          # A normal diagnostic failure stays a WORKFLOW FAILURE; it is not a gate
+          # and it is not an acceptance claim.
+          exit "$status"
+      - name: Seal the private diagnostic files
+        if: always()
+        env:
+          XPOD_DIAGNOSTICS_PUBLIC_KEY: ${{ vars.XPOD_DIAGNOSTICS_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/retained-startup-diagnostic"
+          stage="${RUNNER_TEMP}/retained-startup-diagnostic-sealed"
+          mkdir -p "$stage/allowlisted" && chmod 700 "$stage"
+          # ONLY the small allowlisted files: never the ~1.2G profile/App/modules.
+          for file in "$out/child-private/runtime-child.private.log" \
+                      "$out/child-observer-safe.json" \
+                      "$out/harness.stdout.private.log" "$out/harness.stderr.private.log" \
+                      "$out/private/failure-private.json"; do
+            [ -f "$file" ] && cp "$file" "$stage/allowlisted/$(basename "$file")" || true
+          done
+          node scripts/sealed-diagnostics.cjs seal --in "$stage/allowlisted" \
+            --out "$stage/diagnostics.sealed"
+      - name: Upload sealed diagnostics and the safe record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-retained-startup-diagnostic-${{ github.sha }}-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/retained-startup-diagnostic-sealed/diagnostics.sealed
+            ${{ runner.temp }}/retained-startup-diagnostic/child-observer-safe.json
+            ${{ runner.temp }}/retained-startup-diagnostic/diagnostic-safe.json
