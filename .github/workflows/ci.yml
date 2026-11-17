@@ -404,7 +404,7 @@ jobs:
               'qlever.tests.test_qlever_audit_site_diagnostic.NativeAuditSites.test_real_chunk_transaction_seven_sites_native_and_fsync_unchanged',
               'qlever.tests.test_qlever_audit_site_diagnostic.NativeAuditSites.test_real_c_lease_loss_closing_refuses_and_records_partial_site',
               'qlever.tests.test_qlever_audit_site_diagnostic.NativeAuditSites.test_real_c_closing_loss_keeps_body_primary_object',
-              'qlever.tests.test_qlever_audit_site_diagnostic.NativeAuditSites.test_real_owned_timer_keeps_primary_and_nonlease_closing',
+              'qlever.tests.test_qlever_audit_site_diagnostic.NativeAuditTimer.test_real_owned_timer_keeps_primary_and_nonlease_closing',
           })
 
 
