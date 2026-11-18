@@ -3,10 +3,15 @@ import {
   OkResponseDescription,
   BadRequestHttpError,
   OperationHttpHandler,
+  RedirectHttpError,
   RepresentationMetadata,
   SOLID_HTTP,
   WEBID_STORAGE_TYPE,
   createErrorMessage,
+  cleanPreferences,
+  getTypeWeight,
+  APPLICATION_JSON,
+  TEXT_HTML,
   type InteractionHandler,
   type OperationHttpHandlerInput,
   type ProviderFactory,
@@ -103,20 +108,22 @@ export class ValidatingIdentityProviderHttpHandler extends OperationHttpHandler 
       throw new BadRequestHttpError('Invalid OIDC interaction');
     }
     let oidcInteraction;
+    let issuer: string | undefined;
     try {
       const provider = await this.providerFactory.getProvider();
+      issuer = provider.issuer;
       oidcInteraction = await provider.interactionDetails(request, response);
       this.logger.debug('Found an active OIDC interaction.');
     } catch (error: unknown) {
       if (scoped) {
-        throw new BadRequestHttpError('Invalid OIDC interaction');
+        this.rejectInvalidInteraction(operation, issuer);
       }
       this.logger.debug(`No active OIDC interaction found: ${createErrorMessage(error)}`);
     }
 
     if (scoped) {
       if (oidcInteraction?.uid !== scoped[2]) {
-        throw new BadRequestHttpError('Invalid OIDC interaction');
+        this.rejectInvalidInteraction(operation, issuer);
       }
       // Reuse CSS Account routing after the provider has checked the cookie,
       // interaction lifetime and session principal. Keep the raw request URL.
@@ -145,6 +152,26 @@ export class ValidatingIdentityProviderHttpHandler extends OperationHttpHandler 
     }
 
     return new OkResponseDescription(representation.metadata, representation.data);
+  }
+
+  private rejectInvalidInteraction(operation: OperationHttpHandlerInput['operation'], issuer?: string): never {
+    // Match CSS HTML views: a fetch with no Accept header, a wildcard, or a
+    // JSON/HTML tie remains an API request and must still fail closed.
+    const preferences = cleanPreferences(operation.preferences.type);
+    if (issuer && operation.method === 'GET'
+      && getTypeWeight(TEXT_HTML, preferences) > getTypeWeight(APPLICATION_JSON, preferences)) {
+      // The provider's configured issuer is authoritative. Neither the expired
+      // UID, request Host, returnTo nor a callback query determines this exit.
+      const accountIndex = new URL(issuer);
+      if (['http:', 'https:'].includes(accountIndex.protocol) && !accountIndex.username && !accountIndex.password) {
+        accountIndex.pathname = `${accountIndex.pathname.replace(/\/?$/u, '/')}.account/`;
+        accountIndex.search = '';
+        accountIndex.hash = '';
+        throw new RedirectHttpError(303, 'SeeOtherHttpError', accountIndex.href,
+          'The authorization request has expired. Return to your application to start a new login.');
+      }
+    }
+    throw new BadRequestHttpError('Invalid OIDC interaction');
   }
 
   private findAccountCookies(

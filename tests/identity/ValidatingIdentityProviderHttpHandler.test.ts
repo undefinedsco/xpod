@@ -1,9 +1,12 @@
 import { Readable } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  APPLICATION_JSON,
   BasicRepresentation,
+  RedirectingErrorHandler,
   RepresentationMetadata,
   SOLID_HTTP,
+  TEXT_HTML,
   guardStream,
   type Operation,
 } from '@solid/community-server';
@@ -35,6 +38,29 @@ const createBasicRepresentationOperation = (...cookies: string[]): Operation => 
   return operation;
 };
 
+const htmlOnly = { type: { [TEXT_HTML]: 1 } };
+const jsonOnly = { type: { [APPLICATION_JSON]: 1 } };
+
+const createScopedOperation = (uid: string, subpath = 'oidc/consent/'): Operation => {
+  const operation = createOperation();
+  operation.target.path = `http://example.test/.account/interaction/${uid}/${subpath}`;
+  return operation;
+};
+
+/** Capture a rejection so its HTTP semantics can be inspected without a server. */
+const captureRejection = async (promise: Promise<unknown>): Promise<{
+  statusCode?: number;
+  location?: string;
+  message?: string;
+}> => {
+  try {
+    await promise;
+  } catch (error: unknown) {
+    return error as { statusCode?: number; location?: string; message?: string };
+  }
+  throw new Error('Expected the handler to reject');
+};
+
 const createHandler = ({
   cookieAccountId,
   cookieAccountIds,
@@ -45,6 +71,7 @@ const createHandler = ({
   sessionError,
   webIdLinks,
   hostClientIds,
+  issuer = 'https://id.example.test/',
 }: {
   cookieAccountId?: string;
   cookieAccountIds?: Record<string, string | undefined>;
@@ -58,9 +85,12 @@ const createHandler = ({
   /** WebID to Account links the account storage knows. */
   webIdLinks?: Record<string, string>;
   hostClientIds?: string[];
+  /** Provider issuer used as the trusted Account authority. */
+  issuer?: string;
 } = {}) => {
   const providerFactory = {
     getProvider: vi.fn(async () => ({
+      issuer,
       interactionDetails: vi.fn(async () => {
         throw new Error('No active interaction');
       }),
@@ -155,6 +185,286 @@ describe('ValidatingIdentityProviderHttpHandler', () => {
     await expect(handler.handle({ operation, request: { headers: {} } as any, response: {} as any }))
       .rejects.toThrow('Invalid OIDC interaction');
     expect(interactionHandler.handleSafe).not.toHaveBeenCalled();
+  });
+
+  it('sends an expired scoped HTML document to the provider Account index without inner processing', async () => {
+    const { handler, providerFactory, interactionHandler, cookieStore, accountStorage } = createHandler({
+      issuer: 'https://id.example.test/',
+    });
+    providerFactory.getProvider.mockResolvedValue({
+      issuer: 'https://id.example.test/',
+      interactionDetails: vi.fn().mockRejectedValue(new Error('expired interaction')),
+    } as any);
+    const operation = createScopedOperation('expired-transaction');
+    operation.preferences = htmlOnly;
+    operation.target.path += '?returnTo=https://attacker.example/callback&uid=forged';
+    const request = {
+      headers: { cookie: 'css-account=stale-cookie', host: 'attacker.example' },
+    } as any;
+
+    const error = await captureRejection(handler.handle({ operation, request, response: {} as any }));
+
+    expect(error).toMatchObject({
+      statusCode: 303,
+      location: 'https://id.example.test/.account/',
+      name: 'SeeOtherHttpError',
+    });
+    expect(error.message).not.toContain('attacker');
+    expect(interactionHandler.handleSafe).not.toHaveBeenCalled();
+    expect(cookieStore.get).not.toHaveBeenCalled();
+    expect(cookieStore.delete).not.toHaveBeenCalled();
+    expect(accountStorage.has).not.toHaveBeenCalled();
+    expect(accountStorage.find).not.toHaveBeenCalled();
+  });
+
+  it('never trusts the request Host, expired UID, callback or query as the recovery destination', async () => {
+    const { handler, providerFactory } = createHandler({ issuer: 'https://id.example.test/' });
+    providerFactory.getProvider.mockResolvedValue({
+      issuer: 'https://id.example.test/',
+      interactionDetails: vi.fn().mockRejectedValue(new Error('expired interaction')),
+    } as any);
+    const operation = createScopedOperation('forged-uid');
+    operation.preferences = htmlOnly;
+    operation.target.path = 'https://attacker.example/.account/interaction/forged-uid/oidc/consent/'
+      + '?returnTo=https://attacker.example/steal&redirect_uri=https://attacker.example/callback';
+    const request = { headers: { host: 'attacker.example' } } as any;
+
+    const error = await captureRejection(handler.handle({ operation, request, response: {} as any }));
+
+    expect(error.statusCode).toBe(303);
+    expect(error.location).toBe('https://id.example.test/.account/');
+  });
+
+  it.each([
+    ['mismatched uid', async (providerFactory: any): Promise<void> => {
+      providerFactory.getProvider.mockResolvedValue({
+        issuer: 'https://id.example.test/',
+        interactionDetails: vi.fn().mockResolvedValue({ uid: 'another-transaction' }),
+      });
+    }],
+    ['native verification failure', async (providerFactory: any): Promise<void> => {
+      providerFactory.getProvider.mockResolvedValue({
+        issuer: 'https://id.example.test/',
+        interactionDetails: vi.fn().mockRejectedValue(new Error('bad signature')),
+      });
+    }],
+  ])('recovers only HTML document GETs when the scoped interaction is invalid: %s', async (_label, setup) => {
+    const { handler, providerFactory, interactionHandler } = createHandler();
+    await setup(providerFactory);
+    const operation = createScopedOperation('transaction-a');
+    operation.preferences = htmlOnly;
+
+    const error = await captureRejection(handler.handle({
+      operation,
+      request: { headers: {} } as any,
+      response: {} as any,
+    }));
+
+    expect(error).toMatchObject({ statusCode: 303, location: 'https://id.example.test/.account/' });
+    expect(interactionHandler.handleSafe).not.toHaveBeenCalled();
+  });
+
+  it.each(['POST', 'PUT', 'PATCH', 'DELETE'])(
+    'keeps unsafe scoped HTML %s requests failing closed with 400', async (method) => {
+      const { handler, providerFactory, interactionHandler } = createHandler();
+      providerFactory.getProvider.mockResolvedValue({
+        issuer: 'https://id.example.test/',
+        interactionDetails: vi.fn().mockRejectedValue(new Error('expired interaction')),
+      } as any);
+      const operation = createScopedOperation('transaction-a');
+      operation.method = method;
+      operation.preferences = htmlOnly;
+
+      const error = await captureRejection(handler.handle({
+        operation,
+        request: { headers: {} } as any,
+        response: {} as any,
+      }));
+
+      expect(error).toMatchObject({ statusCode: 400, message: 'Invalid OIDC interaction' });
+      expect(error.location).toBeUndefined();
+      expect(interactionHandler.handleSafe).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['JSON Accept', jsonOnly],
+    ['wildcard Accept', { type: { '*/*': 1 } }],
+    ['HTML/JSON tie', { type: { [TEXT_HTML]: 1, [APPLICATION_JSON]: 1 } }],
+    ['absent Accept', {}],
+  ])('keeps API scoped GETs failing closed with 400 for %s', async (_label, preferences) => {
+    const { handler, providerFactory, interactionHandler } = createHandler();
+    providerFactory.getProvider.mockResolvedValue({
+      issuer: 'https://id.example.test/',
+      interactionDetails: vi.fn().mockRejectedValue(new Error('expired interaction')),
+    } as any);
+    const operation = createScopedOperation('transaction-a');
+    operation.preferences = preferences;
+
+    const error = await captureRejection(handler.handle({
+      operation,
+      request: { headers: {} } as any,
+      response: {} as any,
+    }));
+
+    expect(error).toMatchObject({ statusCode: 400, message: 'Invalid OIDC interaction' });
+    expect(interactionHandler.handleSafe).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['HTML weighted above JSON', { type: { [TEXT_HTML]: 1, [APPLICATION_JSON]: 0.5 } }, 303],
+    ['JSON weighted above HTML', { type: { [APPLICATION_JSON]: 1, [TEXT_HTML]: 0.5 } }, 400],
+  ])('honours the negotiated preference order for scoped invalid GETs: %s', async (_label, preferences, status) => {
+    const { handler, providerFactory, interactionHandler } = createHandler();
+    providerFactory.getProvider.mockResolvedValue({
+      issuer: 'https://id.example.test/',
+      interactionDetails: vi.fn().mockRejectedValue(new Error('expired interaction')),
+    } as any);
+    const operation = createScopedOperation('transaction-a');
+    operation.preferences = preferences as Operation['preferences'];
+
+    const error = await captureRejection(handler.handle({
+      operation,
+      request: { headers: {} } as any,
+      response: {} as any,
+    }));
+
+    expect(error.statusCode).toBe(status);
+    if (status === 303) {
+      expect(error.location).toBe('https://id.example.test/.account/');
+    } else {
+      expect(error.message).toBe('Invalid OIDC interaction');
+    }
+    expect(interactionHandler.handleSafe).not.toHaveBeenCalled();
+  });
+
+  it('keeps malformed scoped paths failing closed even when HTML is requested', async () => {
+    const { handler, providerFactory, interactionHandler } = createHandler();
+    providerFactory.getProvider.mockResolvedValue({
+      issuer: 'https://id.example.test/',
+      interactionDetails: vi.fn().mockRejectedValue(new Error('expired interaction')),
+    } as any);
+    const operation = createOperation();
+    operation.target.path = 'http://example.test/.account/interaction/not-scoped';
+    operation.preferences = htmlOnly;
+
+    const error = await captureRejection(handler.handle({
+      operation,
+      request: { headers: {} } as any,
+      response: {} as any,
+    }));
+
+    expect(error).toMatchObject({ statusCode: 400, message: 'Invalid OIDC interaction' });
+    expect(interactionHandler.handleSafe).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['issuer with a path prefix', 'https://id.example.test/tenant-a/', 'https://id.example.test/tenant-a/.account/'],
+    ['issuer with a port', 'https://id.example.test:8443/', 'https://id.example.test:8443/.account/'],
+  ])('derives the Account index from the configured issuer: %s', async (_label, issuer, expected) => {
+    const { handler, providerFactory } = createHandler({ issuer });
+    providerFactory.getProvider.mockResolvedValue({
+      issuer,
+      interactionDetails: vi.fn().mockRejectedValue(new Error('expired interaction')),
+    } as any);
+    const operation = createScopedOperation('transaction-a');
+    operation.preferences = htmlOnly;
+
+    const error = await captureRejection(handler.handle({
+      operation,
+      request: { headers: {} } as any,
+      response: {} as any,
+    }));
+
+    expect(error.statusCode).toBe(303);
+    expect(error.location).toBe(expected);
+  });
+
+  it.each([
+    ['HTTP issuer', 'http://id.example.test/', 303],
+    ['non-HTTP issuer', 'mailto:accounts@example.test', 400],
+  ])('only redirects to a usable HTTP Account authority: %s', async (_label, issuer, status) => {
+    const { handler, providerFactory } = createHandler({ issuer });
+    providerFactory.getProvider.mockResolvedValue({
+      issuer,
+      interactionDetails: vi.fn().mockRejectedValue(new Error('expired interaction')),
+    } as any);
+    const operation = createScopedOperation('transaction-a');
+    operation.preferences = htmlOnly;
+
+    const error = await captureRejection(handler.handle({
+      operation,
+      request: { headers: {} } as any,
+      response: {} as any,
+    }));
+
+    expect(error.statusCode).toBe(status);
+    if (status === 400) {
+      expect(error.message).toBe('Invalid OIDC interaction');
+    }
+  });
+
+  it('keeps failing closed when the provider cannot supply an issuer at all', async () => {
+    const { handler, providerFactory, interactionHandler } = createHandler();
+    providerFactory.getProvider.mockResolvedValue({
+      interactionDetails: vi.fn().mockRejectedValue(new Error('expired interaction')),
+    } as any);
+    const operation = createScopedOperation('transaction-a');
+    operation.preferences = htmlOnly;
+
+    const error = await captureRejection(handler.handle({
+      operation,
+      request: { headers: {} } as any,
+      response: {} as any,
+    }));
+
+    expect(error).toMatchObject({ statusCode: 400, message: 'Invalid OIDC interaction' });
+    expect(interactionHandler.handleSafe).not.toHaveBeenCalled();
+  });
+
+  it('still lets a valid native interaction render its HTML document', async () => {
+    const { handler, providerFactory, interactionHandler } = createHandler({ issuer: 'https://id.example.test/' });
+    const interactionDetails = vi.fn().mockResolvedValue({ uid: 'transaction-a' });
+    providerFactory.getProvider.mockResolvedValue({ issuer: 'https://id.example.test/', interactionDetails } as any);
+    const operation = createScopedOperation('transaction-a');
+    operation.preferences = htmlOnly;
+
+    const response = await handler.handle({
+      operation,
+      request: { headers: { cookie: '_interaction=transaction-a' } } as any,
+      response: {} as any,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(interactionDetails).toHaveBeenCalled();
+    expect(interactionHandler.handleSafe).toHaveBeenCalledWith(expect.objectContaining({
+      operation: expect.objectContaining({ target: { path: 'http://example.test/.account/oidc/consent/' } }),
+      oidcInteraction: { uid: 'transaction-a' },
+    }));
+  });
+
+  it('throws a CSS redirect error that the real RedirectingErrorHandler converts to 303 with Location', async () => {
+    const { handler, providerFactory } = createHandler({ issuer: 'https://id.example.test/' });
+    providerFactory.getProvider.mockResolvedValue({
+      issuer: 'https://id.example.test/',
+      interactionDetails: vi.fn().mockRejectedValue(new Error('expired interaction')),
+    } as any);
+    const operation = createScopedOperation('expired-transaction');
+    operation.preferences = htmlOnly;
+
+    const error = await captureRejection(handler.handle({
+      operation,
+      request: { headers: {} } as any,
+      response: {} as any,
+    }));
+
+    const conversion = await new RedirectingErrorHandler().handleSafe({
+      error: error as any,
+      request: {} as any,
+    });
+    expect(conversion.statusCode).toBe(303);
+    expect(conversion.metadata?.get(SOLID_HTTP.terms.location)?.value)
+      .toBe('https://id.example.test/.account/');
   });
 
   it('passes through anonymous requests without validating account storage', async () => {
