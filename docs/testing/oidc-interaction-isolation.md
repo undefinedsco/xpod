@@ -34,6 +34,8 @@ XPOD_PLAYWRIGHT_SYSTEM_CHROME=1 bun run test:integration:auth
 
 `tests/identity/ValidatingIdentityProviderHttpHandler.test.ts` 另以组件测试覆盖缺签名、失效、principal变化及UID不匹配时禁止进入Account handler；这部分使用mock，不替代上述真实浏览器校验。
 
+过期 scoped interaction 的 HTML 文档恢复另由同一测试文件锁定：只有 HTML 权重严格高于 JSON 的 GET 才 303 到 provider issuer 的 `/.account/`；POST/PUT/PATCH/DELETE、JSON GET、通配/缺失 Accept、HTML/JSON 同权重与畸形 scoped 路径均保持 400。该重定向不得调用内部 handler、读取或删除 Account Cookie、查询 Account 存储，目标不得采用请求 Host、旧 UID、`returnTo` 或回调查询；有效 interaction 仍正常渲染。真实 CSS `RedirectingErrorHandler` 的 303/Location 转换由组件测试使用真实上游类验证，仍需真实浏览器确认最终页面与可点击退出口。
+
 `bun run test:integration` 仍是既有后台混合集成套件；浏览器认证套件有独立入口，不能把后台套件通过当作浏览器链路通过。
 
 ## 干净安装中的补丁校验
