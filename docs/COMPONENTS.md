@@ -78,6 +78,8 @@ Account 授权入口使用 `/.account/interaction/<uid>/`。现有 CSS 包补丁
 
 `ValidatingIdentityProviderHttpHandler` 必须先调用 `provider.interactionDetails` 并检查返回 UID 与路径一致，才把内部 operation target 规范化到原有 `/.account/` 路由。缺失/无效 Cookie、失效 interaction、UID 不符必须拒绝，不能降级成普通 Account 写操作，也不能通过 `Interaction.find(客户端 UID)` 绕过原生校验。不要恢复跨页面登录锁。
 
+失效/缺失的 scoped interaction 只对**严格偏好 HTML 的 GET 文档**（CSS `cleanPreferences`/`getTypeWeight`，HTML 权重必须大于 JSON）返回 303 到 provider 配置 issuer 下的 `/.account/`。这样浏览器刷新过期授权页可以回到既有 Account 入口；目标只来自 `provider.issuer`，不读取 path uid、`returnTo`、查询参数或 Host。JSON/API、通配或无 Accept、HTML/JSON 权重相同以及全部非 GET 请求仍返回 400 `Invalid OIDC interaction`。重定向不调用内部 InteractionHandler、不读取/删除 Account Cookie、不创建 token、不重放旧交易；有效 interaction 与其他并存的交易不受影响。
+
 Account Cookie 之外，该组件还接受**宿主自己的 Solid 会话**作为 Account 来源：只有当 CSS 的 `DPoPWebIdExtractor` 校验通过（签名、有效期、`cnf.jkt` 与 DPoP proof 配对、`htu/htm` 匹配）、token 的 `client_id` 属于 `hostClientIds`（默认 `XPOD_DESKTOP_CLIENT_ID`），且该 WebID 确实已链到某个 Account 时才生效。Cookie 优先，会话只做补充；未链接的 WebID、第三方客户端与不可校验的会话一律保持匿名，不得报错或猜测 Account。
 
 ## Table of Contents
