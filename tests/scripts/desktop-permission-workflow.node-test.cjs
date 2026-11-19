@@ -60,7 +60,24 @@ test('RC requires real permission producer and source-bound artifact in the comb
 test('stable repeats both actual operations and self-update for its newly built exact archive', () => {
   const job = read('release-desktop.yml').jobs.build_desktop_macos;
   assert.ok(job.steps.some(step => step.run?.includes('bun scripts/accept-packaged-desktop-permissions.ts')));
-  assert.ok(job.steps.some(step => step.run?.includes('node desktop/scripts/packaged-update-acceptance.mjs')));
+  // The stable path runs the UNCHANGED helper through the runner-ref diagnostic
+  // wrapper, so the assertion must describe that real shape instead of a bare
+  // direct invocation. Both paths still pass the same canonical helper file.
+  const selfUpdate = job.steps.find(step => step.run?.includes('capture-self-update-diagnostics.mjs'));
+  assert.ok(selfUpdate, 'the stable self-update step must use the diagnostic wrapper');
+  assert.match(selfUpdate.run, /^\s*node "\$GITHUB_WORKSPACE\/\.test-data\/ci-diagnostics\/scripts\/diagnostics\/capture-self-update-diagnostics\.mjs" \\/mu);
+  assert.match(selfUpdate.run, /--snapshot-dir "\$\{RUNNER_TEMP\}\/desktop-selfupdate-diagnostics"/);
+  assert.match(selfUpdate.run, /-- desktop\/scripts\/packaged-update-acceptance\.mjs/u,
+    'the REAL unchanged helper must still be the program the wrapper runs');
+  // Required helper arguments survive the wrapping.
+  assert.match(selfUpdate.run, /--old "\$old_app"/);
+  assert.match(selfUpdate.run, /--old-zip "\$old_zip"/);
+  assert.match(selfUpdate.run, /--old-release-tag "\$old_tag"/);
+  assert.match(selfUpdate.run, /--new-zip "\$new_zip"/);
+  assert.match(selfUpdate.run, /--version "\$RELEASE_VERSION"/);
+  assert.match(selfUpdate.run, /--source-sha "\$XPOD_ACCEPTED_SHA"/);
+  assert.match(selfUpdate.run, /--timeout 180000/);
+  assert.match(selfUpdate.run, /--evidence-out "\$\{RUNNER_TEMP\}\/desktop-self-update-evidence\.json"/);
   const combined = job.steps.find(step => step.run?.includes('node scripts/desktop-acceptance.cjs'));
   assert.ok(combined);
   assert.match(combined.run, /--version "\$RELEASE_VERSION"/);
@@ -97,9 +114,16 @@ test('each path retains verified packages exactly once before mandatory acceptan
   };
 
   const permissionAt = steps.findIndex(step => step.run?.includes('bun scripts/accept-packaged-desktop-permissions.ts'));
-  const selfUpdateAt = steps.findIndex(step => step.run?.includes('node desktop/scripts/packaged-update-acceptance.mjs'));
+  // The step is found by the wrapper it runs; the helper path alone is nested
+  // inside the wrapper's argv and must not be used as the step identity.
+  const selfUpdateAt = steps.findIndex(step =>
+    step.run?.includes('capture-self-update-diagnostics.mjs')
+    && step.run?.includes('-- desktop/scripts/packaged-update-acceptance.mjs'));
   assert.ok(permissionAt >= 0 && selfUpdateAt > permissionAt, 'self-update acceptance must follow permissions');
   assert.ok(steps[selfUpdateAt].run.includes('node scripts/desktop-acceptance.cjs'));
+  assert.ok(steps[selfUpdateAt].run.indexOf('-- desktop/scripts/packaged-update-acceptance.mjs')
+    < steps[selfUpdateAt].run.indexOf('node scripts/desktop-acceptance.cjs'),
+  'the real self-update helper must finish before the combined gate');
   const verifyAt = steps.findIndex(step => step.name === 'Verify packaged version and native runtime payload');
   const retentionAt = steps.findIndex(step => step.run?.includes('retain-desktop-release-media.py'));
 
