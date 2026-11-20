@@ -46,6 +46,8 @@ import {
   setDesktopDevToolsMenuEnabled,
 } from './window-devtools.js'
 import { desktopConsole } from './desktop-console.js'
+import { requestDesktopProvision } from './provision-transport.js'
+import { canRequestDesktopProvision } from './provision-transport-policy.js'
 
 let desktopOidcIssuer: string | undefined
 let issuerDiscovery: Promise<string | undefined> | undefined
@@ -706,6 +708,17 @@ function trustedShellSender(event: Electron.IpcMainEvent | Electron.IpcMainInvok
 function assertDeviceSender(event: Electron.IpcMainInvokeEvent): void {
   if (!trustedShellSender(event)) throw new Error('Device settings require the trusted product shell')
 }
+ipcMain.handle('xpod:provision-request', async (event, input: unknown) => {
+  const window = windowLifecycle.currentWindow()
+  if (!canRequestDesktopProvision({
+    isCurrentWindow: Boolean(window && !window.isDestroyed() && window.webContents === event.sender),
+    isMainFrame: event.senderFrame === event.sender.mainFrame,
+    committedUrl: committedDocumentUrls.get(event.sender) ?? '',
+    frameUrl: event.senderFrame?.url ?? '',
+    contentsUrl: event.sender.getURL(),
+  }, targetOrigin, desktopOidcIssuer)) throw new Error('Local onboarding requires the trusted main document')
+  return requestDesktopProvision(input, { productOrigin: targetOrigin, issuer: desktopOidcIssuer })
+})
 ipcMain.handle('xpod:get-runtime-settings', (event) => {
   assertDeviceSender(event)
   return { ...runtimeManager.snapshot(), launchAtLogin: app.getLoginItemSettings().openAtLogin, autoRestart: runtimePreferences.read().autoRestart, dataDirectory: readRuntimeDataEnvironment(process.env.XPOD_ENV_FILE).CSS_ROOT_FILE_PATH ?? process.env.CSS_ROOT_FILE_PATH }

@@ -27,6 +27,8 @@ export interface ProvisionScope {
   /** Canonical RDF storage identity, derived from the Cloud-issued spDomain when present. */
   storageRoot: string;
   serviceToken: string;
+  /** Original operation for a host transport that verifies same-device scope. */
+  provisionCode?: string;
 }
 
 export interface ProvisionStorageTarget {
@@ -118,6 +120,7 @@ export function resolveProvisionScope(provisionCode: string | undefined | null):
     lookupUrl: storageRoot,
     storageRoot,
     serviceToken: payload.serviceToken,
+    provisionCode: provisionCode!,
   };
 }
 
@@ -169,16 +172,7 @@ export async function prepareProvisionedPod(
     throw new Error('Cloud profile preparation did not return a valid WebID');
   }
 
-  const response = await fetchImpl(new URL('/provision/pods', resolveProvisionApiBaseUrl(scope)).toString(), {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${scope.serviceToken}`,
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    credentials: 'include',
-    body: JSON.stringify({ podName, webId }),
-  } as RequestInit);
+  const response = await postProvisionRequest(fetchImpl, scope, '/provision/pods', { podName, webId });
 
   if (!response.ok) {
     throw new Error(await readResponseMessage(response) ?? 'Failed to prepare Local Pod');
@@ -224,16 +218,7 @@ export async function queryProvisionScopedWebIds(
     return [];
   }
 
-  const lookupUrl = resolveProvisionApiBaseUrl(scope);
-  const response = await fetchImpl(new URL('/provision/webids', lookupUrl).toString(), {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${scope.serviceToken}`,
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    body: JSON.stringify({ webIds: candidates }),
-  });
+  const response = await postProvisionRequest(fetchImpl, scope, '/provision/webids', { webIds: candidates });
   if (!response.ok) {
     throw new Error(`Local storage bindings request failed (${response.status})`);
   }
@@ -256,6 +241,27 @@ export function resolveProvisionApiBaseUrl(scope: Pick<ProvisionScope, 'lookupUr
   // Loopback is an address, not a service role: a local Cloud IdP must still
   // send provisioning to the SP named by the original interaction.
   return (isManagedLocalProvisionHost() ? currentLoopbackLookupUrl() : undefined) ?? scope.lookupUrl;
+}
+
+async function postProvisionRequest(
+  fetchImpl: typeof fetch,
+  scope: ProvisionScope,
+  path: '/provision/pods' | '/provision/webids',
+  body: Record<string, unknown>,
+): Promise<Response> {
+  const host = typeof window !== 'undefined' ? window.xpodDesktop?.provisioning : undefined;
+  if (host) {
+    if (!scope.provisionCode) throw new Error('Local pairing information is unavailable');
+    const result = await host.request({ provisionCode: scope.provisionCode, path, body });
+    return new Response(JSON.stringify(result.body), {
+      status: result.status, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  return fetchImpl(new URL(path, resolveProvisionApiBaseUrl(scope)).toString(), {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${scope.serviceToken}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+    credentials: 'include', body: JSON.stringify(body),
+  });
 }
 
 function currentLoopbackLookupUrl(): string | undefined {

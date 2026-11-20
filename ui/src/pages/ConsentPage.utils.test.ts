@@ -1,5 +1,23 @@
 import { describe, expect, test } from 'vitest';
-import { resolveConsentStorageBindings } from './ConsentPage.utils';
+import { consentResponseError, resolveConsentStorageBindings } from './ConsentPage.utils';
+import { xpodConsentErrors } from '../auth/xpod-account-copy';
+
+describe('Local pairing failure recovery', () => {
+  const body = { errorCode: 'H400', message: 'Invalid or expired provisionCode.' };
+
+  test('recognizes the rejected Local operation without exposing raw server text', () => {
+    expect(consentResponseError(body, 'fallback', 400).message).toBe(xpodConsentErrors.invalidProvisionScope);
+  });
+
+  test.each([
+    [body, 503],
+    [body, 401],
+    [{ message: body.message }, 400],
+    [{ ...body, message: `${body.message} untrusted detail` }, 400],
+  ])('keeps unrelated failures retryable (%j, HTTP %s)', (responseBody, status) => {
+    expect(consentResponseError(responseBody, 'fallback', status as number).message).toBe('fallback');
+  });
+});
 
 describe('ConsentPage storage binding normalization', () => {
   test('preserves exact-pair metadata so duplicate conflicts reach selection reconciliation', () => {

@@ -38,6 +38,7 @@ import {
 import { xpodStorageLocationKind } from '../auth/xpod-storage-location';
 import {
   consentResponseError,
+  isConsentLoginRecoveryMessage,
   fetchOidcCancelRedirectLocation,
   resolveConsentDisplayWebIds,
   resolveConsentStorageBindings,
@@ -91,9 +92,9 @@ function consentClientHost(client: ConsentClientInfo | null): string {
 
 function safeConsentError(value: unknown, fallback: string): string {
   const message = value instanceof Error ? value.message : '';
+  if (isConsentLoginRecoveryMessage(message)) return message;
   if (message === 'Invalid OIDC interaction'
-    || message === 'This action can only be performed as part of an OIDC authentication flow.'
-    || message === xpodConsentErrors.expiredInteraction) {
+    || message === 'This action can only be performed as part of an OIDC authentication flow.') {
     return xpodConsentErrors.expiredInteraction;
   }
   if (
@@ -204,7 +205,7 @@ export function ConsentPage() {
     });
     const consentJson = await consentRes.json().catch(() => ({})) as ConsentResponse & { message?: string };
     if (!consentRes.ok) {
-      throw consentResponseError(consentJson, xpodConsentErrors.authorizationFailed);
+      throw consentResponseError(consentJson, xpodConsentErrors.authorizationFailed, consentRes.status);
     }
     const redirectUrl = consentJson.location || consentRes.headers.get('Location');
     if (!redirectUrl) {
@@ -245,7 +246,7 @@ export function ConsentPage() {
       return [];
     }
     if (!consentRes.ok) {
-      throw consentResponseError(await consentRes.json().catch(() => ({})), xpodConsentErrors.loadFailed);
+      throw consentResponseError(await consentRes.json().catch(() => ({})), xpodConsentErrors.loadFailed, consentRes.status);
     }
 
     const consentData = await consentRes.json().catch(() => ({})) as ConsentResponse;
@@ -261,8 +262,8 @@ export function ConsentPage() {
       credentials: 'include',
     });
     if (!pickRes.ok) {
-      const pickError = consentResponseError(await pickRes.json().catch(() => ({})), xpodConsentErrors.bindingsFailed);
-      if (pickError.message === xpodConsentErrors.expiredInteraction) throw pickError;
+      const pickError = consentResponseError(await pickRes.json().catch(() => ({})), xpodConsentErrors.bindingsFailed, pickRes.status);
+      if (isConsentLoginRecoveryMessage(pickError.message)) throw pickError;
       if ([401, 403, 404].includes(pickRes.status)) {
         const account = await refetchControls().catch(() => undefined);
         if (account?.status === 'anonymous') {
@@ -359,7 +360,7 @@ export function ConsentPage() {
           body: JSON.stringify({ webId: pickData.resumeWebId, remember: true }),
         });
         const result = await response.json().catch(() => ({})) as PickWebIdResponse;
-        if (!response.ok) throw consentResponseError(result, xpodConsentErrors.webIdSelectionFailed);
+        if (!response.ok) throw consentResponseError(result, xpodConsentErrors.webIdSelectionFailed, response.status);
         const location = typeof result.location === 'string' ? result.location.trim() : '';
         if (!location) throw new Error(xpodConsentErrors.missingRedirect);
         // Resume at the top level: the IdP may return a code immediately, or
@@ -412,12 +413,13 @@ export function ConsentPage() {
           body: JSON.stringify({ webId: soleBinding.webId, remember: rememberAccount }),
         });
         const result = await response.json().catch(() => ({})) as PickWebIdResponse;
-        if (!response.ok) throw new Error(xpodConsentErrors.webIdSelectionFailed);
+        if (!response.ok) throw consentResponseError(result, xpodConsentErrors.webIdSelectionFailed, response.status);
         const location = typeof result.location === 'string' ? result.location.trim() : '';
         if (!location) throw new Error(xpodConsentErrors.missingRedirect);
         window.location.assign(scopeAccountUrl(location));
         return ids;
-      } catch {
+      } catch (err: unknown) {
+        if (err instanceof Error && isConsentLoginRecoveryMessage(err.message)) throw err;
         // No retry loop: the failure view offers an explicit reload. A reloaded
         // page does not pre-bind again, so the user recovers through the
         // ordinary approval (and explicit identity choice) path.
@@ -494,7 +496,7 @@ export function ConsentPage() {
         await window.xpodDesktop.cancelLogin();
       } catch {
         setFailedAction('return');
-        setError(error === xpodConsentErrors.expiredInteraction ? error : xpodConsentErrors.returnFailed);
+        setError(isConsentLoginRecoveryMessage(error) ? error : xpodConsentErrors.returnFailed);
       } finally {
         setIsReturning(false);
       }
@@ -590,7 +592,7 @@ export function ConsentPage() {
         });
         const pickJson = await pickRes.json().catch(() => ({})) as PickWebIdResponse;
         if (!pickRes.ok) {
-          throw consentResponseError(pickJson, xpodConsentErrors.webIdSelectionFailed);
+          throw consentResponseError(pickJson, xpodConsentErrors.webIdSelectionFailed, pickRes.status);
         }
         const location = typeof pickJson.location === 'string' ? pickJson.location.trim() : '';
         if (!location) throw new Error(xpodConsentErrors.missingRedirect);
@@ -698,15 +700,15 @@ export function ConsentPage() {
     navigate(scopeAccountUrl('/.account/account/'));
   };
 
-  const interactionExpired = error === xpodConsentErrors.expiredInteraction;
+  const requiresFreshLogin = isConsentLoginRecoveryMessage(error);
   useEffect(() => {
-    if (interactionExpired) clearConsentContinuation();
-  }, [interactionExpired]);
+    if (requiresFreshLogin) clearConsentContinuation();
+  }, [requiresFreshLogin]);
   const needsSignIn = !isLoggedIn || error === xpodConsentErrors.signInRequired;
   const showFailure = Boolean(error && (
-    interactionExpired || failedAction !== 'load' || resumeState === 'failed' || prebindState === 'failed' || !clientInfo
+    requiresFreshLogin || failedAction !== 'load' || resumeState === 'failed' || prebindState === 'failed' || !clientInfo
   ));
-  const canReturnToConsent = Boolean(clientInfo && displayOptions.length > 0 && !interactionExpired && !needsSignIn);
+  const canReturnToConsent = Boolean(clientInfo && displayOptions.length > 0 && !requiresFreshLogin && !needsSignIn);
   const returnLabel = window.xpodDesktop?.cancelLogin ? '返回应用' : '返回账号';
   const retryFailure = () => {
     if (failedAction === 'cancel') void handleCancelConsent();
@@ -716,7 +718,7 @@ export function ConsentPage() {
   };
 
   const waiting = isLoading || resumeState === 'pending' || prebindState === 'pending';
-  const contentAvailable = !needsSignIn && !interactionExpired && !waiting;
+  const contentAvailable = !needsSignIn && !requiresFreshLogin && !waiting;
   const noPodVisible = contentAvailable && showNoPodStorage;
   const consentVisible = contentAvailable && !showNoPodStorage && !showFailure && !showStorageBootstrap;
   const clientName = clientInfo?.client_name || consentClientHost(clientInfo) || xpodConsentCopy.applicationFallback;
@@ -744,9 +746,9 @@ export function ConsentPage() {
       bare={noPodVisible || consentVisible}
     >
       <div className="flex min-h-0 flex-1 flex-col gap-4">
-      {interactionExpired ? (
+      {requiresFreshLogin ? (
         <WebAccountFailureView
-          title="授权请求已失效"
+          title={error === xpodConsentErrors.invalidProvisionScope ? '本机配对已失效' : '授权请求已失效'}
           description={error}
           primaryLabel={failedAction === 'return' ? '重试返回' : returnLabel}
           onPrimary={() => void handleReturn()}
@@ -775,7 +777,7 @@ export function ConsentPage() {
       ) : error && !showStorageBootstrap ? (
         <WebAccountErrorBanner error={error} onDismiss={() => setError(null)} dismissLabel={xpodConsentCopy.dismiss} />
       ) : null}
-      {(showFailure || needsSignIn) && !interactionExpired ? (
+      {(showFailure || needsSignIn) && !requiresFreshLogin ? (
         <div className="flex flex-wrap justify-center gap-2">
           <Button type="button" variant="ghost" disabled={isSubmitting || isLoading}
             onClick={() => void handleCancelConsent()}>
@@ -791,7 +793,7 @@ export function ConsentPage() {
           ) : null}
         </div>
       ) : null}
-      {!needsSignIn && !interactionExpired ? (waiting ? (
+      {!needsSignIn && !requiresFreshLogin ? (waiting ? (
         <WebAccountRestoringView label={xpodConsentCopy.restoring} />
       ) : showNoPodStorage ? (
         // WebID 和 Pod 绑定：授权页"缺 Pod"就是账号还没有任何 WebID。这里可以起名并创建，

@@ -191,6 +191,7 @@ export function safeXpodConsentMessage(fallback = '授权失败，请重试。')
 export const xpodConsentErrors = {
   invalidTransaction: '登录状态无效。',
   expiredInteraction: '本次授权请求已失效，请返回应用重新发起登录。',
+  invalidProvisionScope: '本次本机配对信息已失效，请返回应用重新发起登录。',
   bindingUnavailable: '应用选择的身份与存储空间已不可用，请返回应用重新选择。',
   returnFailed: '无法返回应用，请重试。',
   signInRequired: '请先登录，再继续授权。',

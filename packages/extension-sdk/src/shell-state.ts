@@ -59,3 +59,19 @@ export interface DesktopRuntimeBridge {
   showDataDirectory(): Promise<void>;
   selectDataDirectory(): Promise<string | undefined>;
 }
+
+/** An active Local onboarding operation; the host supplies its own transport. */
+export interface DesktopProvisionRequest {
+  provisionCode: string;
+  path: '/provision/pods' | '/provision/webids';
+  body: Record<string, unknown>;
+}
+
+export interface DesktopProvisionResponse {
+  status: number;
+  body: unknown;
+}
+
+export interface DesktopProvisionBridge {
+  request(input: DesktopProvisionRequest): Promise<DesktopProvisionResponse>;
+}
