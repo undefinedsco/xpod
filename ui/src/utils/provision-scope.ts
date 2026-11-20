@@ -260,7 +260,10 @@ async function postProvisionRequest(
   return fetchImpl(new URL(path, resolveProvisionApiBaseUrl(scope)).toString(), {
     method: 'POST',
     headers: { Authorization: `Bearer ${scope.serviceToken}`, 'Content-Type': 'application/json', Accept: 'application/json' },
-    credentials: 'include', body: JSON.stringify(body),
+    // Preserve the two existing browser endpoint contracts: only Pod creation
+    // includes cookies; the ownership lookup uses its scoped service token.
+    ...(path === '/provision/pods' ? { credentials: 'include' as const } : {}),
+    body: JSON.stringify(body),
   });
 }
 

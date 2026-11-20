@@ -24,6 +24,7 @@ describe('provision scope utilities', () => {
       spDomain: 'node-0000.undefineds.co',
     });
     expect(resolveProvisionScope(provisionCode)).toEqual({
+      provisionCode,
       lookupUrl: 'https://node-0000.undefineds.co/',
       storageRoot: 'https://node-0000.undefineds.co/',
       serviceToken: 'service-token',
@@ -46,6 +47,7 @@ describe('provision scope utilities', () => {
       spDomain: 'node-0000.nodes.undefineds.co',
     });
     expect(resolveProvisionScope(provisionCode)).toEqual({
+      provisionCode,
       lookupUrl: 'https://node-0000.nodes.undefineds.co/',
       storageRoot: 'https://node-0000.nodes.undefineds.co/',
       serviceToken: 'sat-short-lived',
