@@ -380,6 +380,39 @@ it.each([{ message: 'Invalid OIDC interaction' }, { errorCode: 'E0002' }])('leav
   expect(fetchMock).toHaveBeenCalledTimes(requests);
 });
 
+it.each(['read', 'select', 'prebind', 'resume'])('returns to the native app instead of retrying a rejected Local scope during %s', async (stage) => {
+  const cancelLogin = vi.fn().mockRejectedValueOnce(new Error('desktop unavailable')).mockResolvedValueOnce(undefined);
+  window.xpodDesktop = { cancelLogin } as NonNullable<Window['xpodDesktop']>;
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === consentUrl && !init?.method) return json({
+      client: { client_id: 'desktop', client_name: 'Xpod Desktop' },
+      ...(stage === 'prebind' ? {} : { webId: 'https://pod.example/other/profile/card#me' }),
+    });
+    if (String(input) === pickUrl && !init?.method && stage !== 'read') return json({
+      entries: [binding], ...(stage === 'resume' ? { resumeWebId: binding.webId } : {}),
+    });
+    if (String(input) === pickUrl) return json({ errorCode: 'H400', message: 'Invalid or expired provisionCode.' }, 400);
+    throw new Error('Unexpected request');
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  renderConsent();
+  if (stage === 'select') fireEvent.click(await screen.findByRole('button', { name: '允许' }));
+  const leave = await screen.findByRole('button', { name: '返回应用' });
+  expect(screen.getByText(xpodConsentErrors.invalidProvisionScope)).toBeTruthy();
+  expect(screen.queryByRole('button', { name: '重试' })).toBeNull();
+  expect(screen.queryByRole('button', { name: '允许' })).toBeNull();
+  expect(screen.queryByRole('button', { name: '创建并继续' })).toBeNull();
+  expect(screen.queryByRole('button', { name: '前往 Pod 管理' })).toBeNull();
+  expect(screen.queryByRole('button', { name: '取消授权' })).toBeNull();
+  const requests = fetchMock.mock.calls.length;
+  fireEvent.click(leave);
+  fireEvent.click(await screen.findByRole('button', { name: '重试返回' }));
+  await waitFor(() => expect(cancelLogin).toHaveBeenCalledTimes(2));
+  expect(fetchMock).toHaveBeenCalledTimes(requests);
+  expect(posts(fetchMock, consentUrl)).toHaveLength(0);
+  expect(assign).not.toHaveBeenCalled();
+});
+
 it('offers real cancellation and a safe Account return when initial consent loading fails', async () => {
   const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => json({ message: 'unavailable' }, init?.method === 'POST' ? 500 : 503));
   vi.stubGlobal('fetch', fetchMock);
