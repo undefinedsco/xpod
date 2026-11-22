@@ -65,6 +65,8 @@ export const BROWSER_LOGIN_METHOD: AiProviderAuthorizationMethod = {
 /** Both ways a key arrives, for an offering whose provider has a console. */
 const API_KEY_METHODS: AiProviderAuthorizationMethod[] = [API_KEY_METHOD, BROWSER_LOGIN_METHOD];
 
+export const OPENCODE_GO_USAGE_URL = 'https://opencode.ai/inference/go/v1/usage';
+
 export const CUSTOM_DEFAULT_OFFERINGS: AiProviderOffering[] = [
   {
     id: 'openai-compatible',
@@ -93,6 +95,21 @@ export const CUSTOM_DEFAULT_OFFERINGS: AiProviderOffering[] = [
     endpoints: [{ protocol: 'anthropic', baseUrl: 'https://example.invalid/v1' }],
     modelDiscovery: { strategy: 'anthropic', path: '/models', endpointProtocol: 'anthropic' },
     quota: { strategy: 'unsupported', url: 'https://undefineds.co' },
+  },
+  {
+    id: 'opencode-go',
+    credentialMigrationFrom: ['openai-compatible'],
+    label: 'OpenCode Go',
+    kind: 'token-plan',
+    lifecycle: 'active',
+    authModes: ['apiKey'],
+    authorizationMethods: [API_KEY_METHOD],
+    runtimeProviderIds: ['custom'],
+    consoleUrl: 'https://opencode.ai/console/',
+    subscriptionUrl: 'https://opencode.ai/console/go',
+    endpoints: [{ protocol: 'chatCompletions', baseUrl: 'https://opencode.ai/inference/go/openai/v1' }],
+    modelDiscovery: { strategy: 'openaiCompatible', baseUrl: 'https://opencode.ai/inference/go/v1', path: '/models', endpointProtocol: 'chatCompletions' },
+    quota: { strategy: 'subscription', url: 'https://opencode.ai/console/go' },
   },
 ];
 
@@ -408,7 +425,7 @@ export function providerOfferings(
   provider: AiConnectionsProvider,
   openAiSubscriptionImportAvailable = false,
 ): AiProviderOffering[] {
-  return (PROVIDER_OFFERINGS[provider] ?? DEFAULT_PROVIDER_OFFERINGS).map((offering) => {
+  return builtinOfferings(provider).map((offering) => {
     if (
       provider === 'openai'
       && offering.id === 'official-subscription'
@@ -538,4 +555,10 @@ export function credentialOfferingMetadata(input: {
     health: input.health ?? 'unknown',
     ...(input.baseUrl ? { baseUrl: input.baseUrl } : {}),
   };
+}
+
+/** Offering transitions are opt-in catalog content, never inferred from endpoint URLs. */
+export function canChangeCredentialOffering(provider: AiConnectionsProvider, from: string, to: string): boolean {
+  const target = builtinOfferings(provider).find((offering) => offering.id === to);
+  return Boolean(target?.authModes?.includes('apiKey') && (from === to || target.credentialMigrationFrom?.includes(from)));
 }

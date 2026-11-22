@@ -1472,3 +1472,12 @@ describe('AiGatewayManagementHandler models routes', () => {
     expect(JSON.parse(res.body)).toEqual({ error: 'AI provider models service is not configured' });
   });
 });
+
+it('uses the declared Go models address instead of appending models to the Chat endpoint', async () => {
+  const transport = new ProviderHttpTransport();
+  const getJson = vi.spyOn(transport, 'getJson').mockResolvedValue({ data: [{ id: 'deepseek-v4.1-flash' }] });
+  const adapter = new OpenAiCompatibleModelsAdapter({ registry: createDefaultProviderRegistry(), transport });
+  const models = await adapter.fetch({ credential: { provider: 'custom', offeringId: 'opencode-go', authMode: 'apiKey', baseUrl: 'https://opencode.ai/inference/go/openai/v1' } as ModelsCredentialRecord, secret: { type: 'apiKey', apiKey: 'test-go-key' } });
+  expect(models.map((model) => model.id)).toEqual(['deepseek-v4.1-flash']);
+  expect(getJson).toHaveBeenCalledWith(expect.objectContaining({ url: 'https://opencode.ai/inference/go/v1/models' }));
+});

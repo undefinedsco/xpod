@@ -1117,6 +1117,7 @@ function normalizeCustomModelInput(body: Record<string, unknown>): {
 }
 
 function normalizeCredentialPatch(body: Record<string, unknown>): {
+  offeringId?: string;
   apiKey?: string;
   label?: string;
   enabled?: boolean;
@@ -1125,6 +1126,7 @@ function normalizeCredentialPatch(body: Record<string, unknown>): {
   proxyUrl?: string;
 } | undefined {
   const patch: {
+    offeringId?: string;
     apiKey?: string;
     label?: string;
     enabled?: boolean;
@@ -1132,6 +1134,11 @@ function normalizeCredentialPatch(body: Record<string, unknown>): {
     baseUrl?: string;
     proxyUrl?: string;
   } = {};
+  if (body.offeringId !== undefined) {
+    const offeringId = normalizeOptionalString(body.offeringId);
+    if (!offeringId) return undefined;
+    patch.offeringId = offeringId;
+  }
   if (Object.prototype.hasOwnProperty.call(body, 'apiKey')) {
     if (typeof body.apiKey !== 'string' || !body.apiKey.trim()) return undefined;
     patch.apiKey = body.apiKey.trim();

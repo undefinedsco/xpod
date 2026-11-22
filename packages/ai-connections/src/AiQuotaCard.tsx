@@ -38,7 +38,7 @@ export function AiQuotaCard({
             {busy ? <span role="status">正在查询额度…</span>
               : error ? <span role="alert" title={error} className="text-destructive">{error}</span>
                 : !quota ? <span>{credentialLabel ? '尚未检查' : `连接${offeringName}后可查询`}</span>
-                  : quota.status === 'unsupported' ? <span>官方额度接口不支持</span>
+                  : quota.status === 'unsupported' ? <span>当前连接尚未接入额度查询</span>
                     : quota.status === 'error' ? <span role="alert" className="text-destructive">额度查询失败</span>
                       : <QuotaSummary quota={quota} />}
             {available && quota.stale ? <span>数据可能已过期</span> : null}
@@ -99,7 +99,7 @@ export function AiQuotaCard({
         <p className="text-xs text-muted-foreground">{credentialLabel ? '尚未检查' : `连接${offeringName}后可查询`}</p>
       ) : quota.status === 'unsupported' ? (
         <>
-          <p className="text-sm">官方额度接口不支持</p>
+          <p className="text-sm">当前连接尚未接入额度查询</p>
           <p className="text-xs text-muted-foreground">来源：{quota.source}</p>
         </>
       ) : quota.status === 'error' ? (

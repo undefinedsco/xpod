@@ -1,3 +1,5 @@
+import { canChangeCredentialOffering } from '@undefineds.co/ai-connections-runtime/provider-catalog';
+import type { AiConnectionsProvider } from '@undefineds.co/ai-connections-runtime/client';
 import type { GatewayCredentialHealthRecord } from '../AiGatewayService';
 import {
   createHash,
@@ -2921,6 +2923,7 @@ export class ProviderConnectService {
     credentialId: string;
     expectedVersion: number;
     patch: {
+      offeringId?: string;
       apiKey?: string;
       label?: string;
       enabled?: boolean;
@@ -2942,6 +2945,15 @@ export class ProviderConnectService {
     const existing = await this.credentialRepository.getCredentialById(input);
     if (!existing) return undefined;
     if (input.expectedVersion !== (existing.version ?? 0)) throw new Error('credential_version_conflict');
+    if (input.patch.offeringId !== undefined && existing.authMode !== 'apiKey') {
+      throw new Error('credential_auth_mode_mismatch');
+    }
+    const offeringId = input.patch.offeringId === undefined ? undefined
+      : requireApiKeyOffering(input.provider, input.patch.offeringId);
+    if (offeringId && !canChangeCredentialOffering(normalizeProvider(input.provider) as AiConnectionsProvider,
+      credentialOfferingId(existing) ?? '', offeringId)) {
+      throw new GatewayProtocolError('Credential offering transition is not declared', { code: 'invalid_request', status: 400 });
+    }
     const replacingKey = Object.prototype.hasOwnProperty.call(input.patch, 'apiKey');
     let replacement: Partial<ConnectCredentialRecord> = {};
     if (replacingKey) {
@@ -2960,6 +2972,7 @@ export class ProviderConnectService {
     const updated = await this.credentialRepository.updateCredential({
       ...input,
       patch: { ...metadataWithoutUndefined({
+        offeringId,
         accountLabel: input.patch.label,
         enabled: input.patch.enabled,
         priority: input.patch.priority,
@@ -2969,6 +2982,7 @@ export class ProviderConnectService {
         health: input.patch.enabled === false ? 'disabled' : undefined,
         metadata: metadataWithoutUndefined({
           ...metadata,
+          ...(offeringId ? { offeringId } : {}),
           baseUrl: input.patch.baseUrl ?? metadata.baseUrl,
           proxyUrl: input.patch.proxyUrl === undefined
             ? metadata.proxyUrl

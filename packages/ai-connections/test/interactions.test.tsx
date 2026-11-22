@@ -226,7 +226,7 @@ describe('AI Connection settings', () => {
       await waitFor(() => expect(current.quota).toHaveBeenCalledWith(definition.id, true, {
         offeringId, credentialId, credentialIri: credentialId,
       }))
-      expect(await screen.findByText('官方额度接口不支持')).toBeTruthy()
+      expect(await screen.findByText('当前连接尚未接入额度查询')).toBeTruthy()
       fireEvent.click(screen.getByRole('button', { name: /额度详情$/ }))
       expect(screen.getByText(`来源：${definition.id}:console-only`)).toBeTruthy()
     },
@@ -2275,7 +2275,7 @@ describe('AI Connection settings', () => {
     await waitFor(() => expect(current.quota).toHaveBeenCalledWith('openai', true, {
       offeringId: 'official-subscription', credentialId: 'imported-account', credentialIri: 'imported-account',
     }))
-    expect(screen.getByText('官方额度接口不支持')).toBeTruthy()
+    expect(screen.getByText('当前连接尚未接入额度查询')).toBeTruthy()
   })
 
   it('states unsupported quota honestly', async () => {
@@ -2291,7 +2291,7 @@ describe('AI Connection settings', () => {
       credentialId: 'openai-api-key',
       credentialIri: 'openai-api-key',
     }))
-    expect(screen.getByText('官方额度接口不支持')).toBeTruthy()
+    expect(screen.getByText('当前连接尚未接入额度查询')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: /额度详情$/ }))
     expect(screen.getByText('来源：openai:console-only')).toBeTruthy()
   })
@@ -2674,4 +2674,16 @@ it('keeps account import beside New and shows import failures without opening a 
   expect(importButton).toHaveProperty('disabled', true)
   fireEvent.click(importButton)
   expect(onCreateLocalCredential).toHaveBeenCalledTimes(1)
+})
+
+it('exposes the declared Go transition in the actual custom connection edit dialog', async () => {
+  const credential = { id: 'custom-go-existing', offeringId: 'openai-compatible', authMode: 'apiKey' as const, label: 'Go existing', enabled: true, priority: 7, health: 'healthy' as const, version: 4, baseUrl: 'https://opencode.ai/inference/go/openai/v1' }
+  const product: AiProviderSummary = { ...createDefaultProviderRegistry().requireProduct('custom'), status: 'available', credentials: [credential], selectedModels: [] }
+  const current = client({ updateProviderCredential: vi.fn(async (_provider, _id, patch) => ({ ...credential, ...patch, version: 5 })) })
+  render(<AiConnectionsPanel client={current} selectedProvider="custom" selectedCredentialId={credential.id} providerProducts={{ custom: product }} />)
+  fireEvent.click(await screen.findByRole('button', { name: '编辑 Go existing' }))
+  fireEvent.change(screen.getByRole('combobox', { name: 'Custom 套餐 / 区域' }), { target: { value: 'opencode-go' } })
+  fireEvent.click(screen.getByRole('button', { name: '保存凭证' }))
+  await waitFor(() => expect(current.updateProviderCredential).toHaveBeenCalledWith('custom', credential.id, { expectedVersion: 4, offeringId: 'opencode-go', label: credential.label, baseUrl: credential.baseUrl }))
+  expect(current.createApiKeyCredential).not.toHaveBeenCalled()
 })

@@ -120,6 +120,7 @@ export function AiCredentialPoolSection({
   onCreateLocalCredential?: (offering: AiProviderOffering, method?: AiProviderAuthorizationMethod) => Promise<void>
   onUpdateCredential?: (credential: AiProviderCredentialSummary, patch: {
     apiKey?: string
+    offeringId?: string
     label?: string
     enabled?: boolean
     priority?: number

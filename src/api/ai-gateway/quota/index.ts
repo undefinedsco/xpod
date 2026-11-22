@@ -29,3 +29,5 @@ export {
   CodexSubscriptionQuotaAdapter,
   KimiCodeSubscriptionQuotaAdapter,
 } from './SubscriptionQuotaAdapters';
+
+export * from './DeclaredUsageQuotaAdapter';

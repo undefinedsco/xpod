@@ -112,6 +112,7 @@ export interface AiConnectionsPodStore {
     input: AiConnectionsOAuthCredential,
   ): Promise<unknown>;
   updateProviderCredential?(provider: string, credentialId: string, input: {
+    offeringId?: string;
     apiKey?: string;
     expectedVersion: number;
     label?: string;

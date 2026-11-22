@@ -5531,3 +5531,19 @@ describe('ProviderConnectService + AiGatewayService integrated session renewal',
     expect(fixture.forwarded).toEqual([NEW_ACCESS]);
   });
 });
+
+describe('declared API-key offering migration', () => {
+  it('opts a custom connection into Go without replacing its identity, secret or endpoint', async () => {
+    const repository = new RecordingCredentialRepository();
+    const credentialVault = vault();
+    const service = new ProviderConnectService({ registry: createDefaultProviderRegistry(), credentialRepository: repository, vault: credentialVault, adapters: [] });
+    const before = await service.createApiKeyCredential({ webId: WEB_ID, deployment: 'local', provider: 'custom', offeringId: 'openai-compatible', apiKey: 'private-go-key', label: 'My connection', baseUrl: 'https://opencode.ai/inference/go/openai/v1', priority: 3 });
+    const row = structuredClone(repository.rows[0]);
+    const query = { webId: WEB_ID, deployment: 'local' as const, provider: 'custom', credentialId: before.id, expectedVersion: before.version!, patch: { offeringId: 'opencode-go' } };
+    const updated = await service.updateCredential(query);
+    expect(updated).toMatchObject({ id: before.id, offeringId: 'opencode-go', label: 'My connection', priority: 3, baseUrl: before.baseUrl });
+    expect(repository.rows[0]).toMatchObject({ encryptedSecret: row.encryptedSecret, credentialIri: row.credentialIri, health: row.health, metadata: { offeringId: 'opencode-go', baseUrl: before.baseUrl } });
+    await expect(service.updateCredential({ ...query, expectedVersion: updated!.version!, patch: { offeringId: 'anthropic-compatible' } })).rejects.toThrow('Credential offering transition is not declared');
+    expect(repository.rows[0].offeringId).toBe('opencode-go');
+  });
+});

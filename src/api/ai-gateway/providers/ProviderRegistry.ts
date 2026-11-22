@@ -3,6 +3,7 @@ import { DEFAULT_EMBEDDING_MODEL_ID } from '../../../ai/service/defaultEmbedding
 import {
   API_KEY_METHOD,
   CUSTOM_DEFAULT_OFFERINGS,
+  OPENCODE_GO_USAGE_URL,
   DEFAULT_PROVIDER_OFFERINGS,
   PROVIDER_OFFERINGS,
   PROVIDER_LABELS,
@@ -62,6 +63,7 @@ export type ProviderQuotaStrategy = 'providerApi' | 'subscription' | 'console' |
 export interface ProviderOfferingModelDiscoveryDescriptor {
   strategy: ProviderModelDiscoveryStrategy;
   path: string;
+  baseUrl?: string;
   endpointProtocol: GatewayProtocol;
 }
 
@@ -72,6 +74,7 @@ export interface ProviderOfferingQuotaDescriptor {
 
 export interface ProviderOfferingDescriptor {
   id: string;
+  credentialMigrationFrom?: string[];
   runtimeProviderIds: string[];
   label: string;
   productLabel: string;
@@ -624,6 +627,17 @@ function defaultUpstreamCapabilities(
 // the runtime capability descriptors below stay server-side - they describe how
 // Xpod talks to an upstream, which is behaviour rather than shared content.
 const PROVIDER_UPSTREAM_OVERRIDES: Partial<Record<string, Record<string, ProviderUpstreamCapabilityDescriptor[]>>> = {
+  custom: {
+    'opencode-go': [
+      { capability: 'models', protocol: 'openai-models' },
+      { capability: 'inference', protocol: 'chatCompletions' },
+      { capability: 'quota', protocol: 'usage-percent-windows', options: {
+        url: OPENCODE_GO_USAGE_URL,
+        windows: { rolling: 'five-hour', weekly: 'weekly', monthly: 'monthly' },
+        credentialAuthModes: ['apiKey'],
+      } },
+    ],
+  },
   openai: {
     'official-subscription': [
       { capability: 'models', protocol: 'codex-models' },

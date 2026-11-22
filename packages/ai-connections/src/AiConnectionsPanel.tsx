@@ -669,6 +669,7 @@ export function AiConnectionsPanel({
     credential: AiProviderCredentialSummary,
     patch: {
       apiKey?: string
+      offeringId?: string
       label?: string
       enabled?: boolean
       priority?: number
