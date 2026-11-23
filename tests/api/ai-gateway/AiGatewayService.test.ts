@@ -122,7 +122,7 @@ function serviceWith(
       registry,
       router: new ModelRouter({
         registry,
-        affinityStore: new InMemorySessionAffinityStore({ secret: '0123456789abcdef0123456789abcdef' }),
+        affinityStore: new InMemorySessionAffinityStore({ secret: '0123456789abcdef0123456789abcdef', now: () => now }),
         credentials: store.listCredentials,
         now: () => now,
       }),
@@ -1036,6 +1036,90 @@ describe('AiGatewayService', () => {
     expect(attempts).toEqual(['sk-primary', 'sk-backup']);
     expect(fixture.store.listCredentials).toHaveBeenNthCalledWith(1, expect.objectContaining({ auth: AUTH }));
     expect(fixture.store.listCredentials).toHaveBeenNthCalledWith(2, expect.objectContaining({ auth: AUTH }));
+  });
+
+  it.each([
+    ['600', 600_000], ['9', 9_000], ['0', 0],
+    ['Thu, 23 Jul 2026 00:10:00 GMT', 600_000],
+    ['Wed, 22 Jul 2026 23:00:00 GMT', 0], ['bad', 60_000], [undefined, 60_000],
+  ])('honors Retry-After %s while failing over, persists recovery and excludes the cooled connection', async(retryAfter, delay) => {
+    const now = new Date('2026-07-23T00:00:00.000Z');
+    const attempts: string[] = [];
+    const fixture = serviceWith([
+      credential({ id: 'primary', provider: 'openai', models: ['gpt-5'], priority: 1 }),
+      credential({ id: 'backup', provider: 'openai', models: ['gpt-5'], priority: 2 }),
+    ], now, { execute: async function* (input) {
+      attempts.push(input.apiKey!);
+      if (attempts.length === 1) {
+        throw new GatewayProtocolError('Limited', { code: 'provider_error', status: 429,
+          details: { classification: 'rate_limited', retryAfter } });
+      }
+      yield { type: 'text.delta', text: 'ok' };
+      yield { type: 'response.completed', finishReason: 'stop' };
+    } });
+    const request = { auth: AUTH, protocol: 'chatCompletions' as const,
+      body: { model: 'gpt-5', messages: [{ role: 'user', content: 'hi' }] } };
+    await fixture.service.complete(request);
+    expect(attempts).toEqual(['sk-primary', 'sk-backup']);
+    expect(vi.mocked(fixture.store.recordFailure!).mock.calls[0][0].rateLimitResetAt?.getTime())
+      .toBe(now.getTime() + delay);
+    if (delay > 0) {
+      now.setTime(now.getTime() + delay - 1);
+      await fixture.service.complete(request);
+      expect(attempts[attempts.length - 1]).toBe('sk-backup');
+      now.setTime(now.getTime() + 1);
+    }
+    await fixture.service.complete(request);
+    expect(attempts[attempts.length - 1]).toBe('sk-primary');
+  });
+
+  it('honors headers on untyped HTTP 429 errors', async() => {
+    const fixture = serviceWith([
+      credential({ id: 'primary', provider: 'openai', models: ['gpt-5'], priority: 1 }),
+      credential({ id: 'backup', provider: 'openai', models: ['gpt-5'], priority: 2 }),
+    ], undefined, { execute: async function* (input) {
+      if (input.apiKey === 'sk-primary') {
+        throw Object.assign(new Error('Limited'), { status: 429, headers: new Headers({ 'Retry-After': '600' }) });
+      }
+      yield { type: 'text.delta', text: 'ok' };
+      yield { type: 'response.completed', finishReason: 'stop' };
+    } });
+    await fixture.service.complete({ auth: AUTH, protocol: 'chatCompletions',
+      body: { model: 'gpt-5', messages: [{ role: 'user', content: 'hi' }] } });
+    const recorded = vi.mocked(fixture.store.recordFailure!).mock.calls[0][0];
+    expect(recorded.rateLimitResetAt!.getTime() - recorded.occurredAt!.getTime()).toBe(600_000);
+  });
+
+  it('falls through an invalid details Retry-After to a valid header hint', async() => {
+    const now = new Date('2026-07-23T00:00:00.000Z');
+    const attempts: string[] = [];
+    const fixture = serviceWith([
+      credential({ id: 'primary', provider: 'openai', models: ['gpt-5'], priority: 1 }),
+      credential({ id: 'backup', provider: 'openai', models: ['gpt-5'], priority: 2 }),
+    ], now, { execute: async function* (input) {
+      attempts.push(input.apiKey!);
+      if (attempts.length === 1) {
+        throw Object.assign(new GatewayProtocolError('Limited', { code: 'provider_error', status: 429,
+          details: { classification: 'rate_limited', retryAfter: 'invalid' } }),
+        { headers: new Headers({ 'Retry-After': '600' }) });
+      }
+      yield { type: 'text.delta', text: 'ok' };
+      yield { type: 'response.completed', finishReason: 'stop' };
+    } });
+    const request = { auth: AUTH, protocol: 'chatCompletions' as const,
+      body: { model: 'gpt-5', messages: [{ role: 'user', content: 'hi' }] } };
+
+    await fixture.service.complete(request);
+
+    expect(attempts).toEqual(['sk-primary', 'sk-backup']);
+    const recorded = vi.mocked(fixture.store.recordFailure!).mock.calls[0][0];
+    expect(recorded.rateLimitResetAt!.getTime()).toBe(now.getTime() + 600_000);
+    now.setTime(now.getTime() + 599_999);
+    await fixture.service.complete(request);
+    expect(attempts[attempts.length - 1]).toBe('sk-backup');
+    now.setTime(now.getTime() + 1);
+    await fixture.service.complete(request);
+    expect(attempts[attempts.length - 1]).toBe('sk-primary');
   });
 
   it('fails over before client events when a runtime preserves an untyped HTTP 429', async() => {

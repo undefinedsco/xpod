@@ -2,6 +2,7 @@ import type { GatewayInvocationMetadata } from './InvocationMetadata';
 import { createHash } from 'node:crypto';
 import { getLoggerFor } from 'global-logger-factory';
 import { GatewayProtocolError, normalizeGatewayError } from './errors';
+import { parseRetryAfter, retryAfterFromError } from '../service/provider-retry-after';
 import type { AuthContext } from '../auth/AuthContext';
 import { getWebId } from '../auth/AuthContext';
 import type { DeploymentBuiltinConnection } from './builtin/DeploymentBuiltinConnection';
@@ -818,7 +819,12 @@ export class AiGatewayService {
     const occurredAt = this.now();
     const normalized = normalizeGatewayError(error);
     const failureCode = stringMetadata(normalized.error.details, 'classification') ?? classifyProviderStatus(status ?? 502);
-    const rateLimitResetAt = failureCode === 'rate_limited' ? new Date(occurredAt.getTime() + 60_000) : undefined;
+    // Parse each hint independently: an invalid details value must not mask a valid header.
+    const rateLimitResetAt = failureCode === 'rate_limited'
+      ? parseRetryAfter(stringMetadata(normalized.error.details, 'retryAfter'), occurredAt)
+        ?? parseRetryAfter(retryAfterFromError(error), occurredAt)
+        ?? new Date(occurredAt.getTime() + 60_000)
+      : undefined;
     if (rateLimitResetAt) {
       await this.router.recordCooldown({
         webId,

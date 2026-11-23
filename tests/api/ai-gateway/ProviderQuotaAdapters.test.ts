@@ -509,6 +509,32 @@ describe('ProviderQuotaAdapters', () => {
     expect(JSON.stringify(snapshot)).not.toContain('provider-secret');
   });
 
+  it('normalizes a 429 HTTP-date Retry-After against the injected clock', async () => {
+    const fetch = jsonFetch(() => ({
+      status: 429,
+      headers: { 'retry-after': 'Thu, 23 Jul 2026 00:10:00 GMT' },
+      body: { error: { message: 'slow down' } },
+    }));
+    const now = new Date('2026-07-23T00:00:00.000Z');
+
+    const snapshot = await new KimiQuotaAdapter({ fetch }).fetch({
+      credential: await credential('kimi'),
+      secret: { type: 'apiKey', apiKey: 'provider-secret' },
+      now,
+    });
+
+    expect(snapshot).toMatchObject({
+      status: 'error',
+      observedAt: now.toISOString(),
+      metadata: {
+        cooldown: {
+          reason: 'rate_limited',
+          retryAfterSeconds: 600,
+        },
+      },
+    });
+  });
+
   it('caches available, unsupported and error snapshots in the Pod-scoped repository', async () => {
     const repository = new InMemoryQuotaSnapshotRepository();
     const vault = createVault();

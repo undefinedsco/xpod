@@ -153,6 +153,8 @@ export class ModelRouter {
   private readonly defaultModel?: string;
   private readonly embeddingModelPolicy: EmbeddingModelPolicy;
   private readonly now: () => Date;
+  /** Bounded, process-local cursors; no prompts, credentials or keys are persisted. */
+  private readonly lastSelectedCredentials = new Map<string, string>();
 
   public constructor(options: ModelRouterOptions) {
     this.registry = options.registry;
@@ -685,7 +687,22 @@ export class ModelRouter {
       }
     }
 
-    return usable[0];
+    if (usable.length === 0) {
+      return undefined;
+    }
+    // Priority still defines fallback tiers. Rotate only within the best available tier.
+    const priority = usable[0].priority ?? 100;
+    const pool = usable.filter((candidate) => (candidate.priority ?? 100) === priority);
+    const key = JSON.stringify([input.deployment, input.webId, target.providerId, target.model, priority]);
+    const lastId = this.lastSelectedCredentials.get(key);
+    const selected = (lastId ? pool.find((candidate) => candidate.id.localeCompare(lastId) > 0) : undefined) ?? pool[0];
+    // Synchronous selection/update after eligibility checks also serializes concurrent requests.
+    this.lastSelectedCredentials.delete(key);
+    this.lastSelectedCredentials.set(key, selected.id);
+    if (this.lastSelectedCredentials.size > 1024) {
+      this.lastSelectedCredentials.delete(this.lastSelectedCredentials.keys().next().value!);
+    }
+    return selected;
   }
 
   private async isCredentialUsable(

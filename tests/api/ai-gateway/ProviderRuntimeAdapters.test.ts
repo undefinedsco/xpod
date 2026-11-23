@@ -1277,6 +1277,8 @@ describe('Provider runtime adapters', () => {
       { status: 401, classification: 'authentication' },
       { status: 403, classification: 'authorization' },
       { status: 429, classification: 'rate_limited' },
+      { status: 429, classification: 'rate_limited', retryAfter: '600' },
+      { status: 429, classification: 'rate_limited', retryAfter: 'Thu, 23 Jul 2026 00:10:00 GMT' },
       { status: 503, classification: 'upstream_unavailable', retryAfter: '9' },
     ];
 
