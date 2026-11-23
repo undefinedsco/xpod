@@ -312,3 +312,21 @@ for (const replacement of ['file', 'directory']) test('retention failure preserv
     assert.equal(injected,true);assert.equal(fs.readFileSync(target,'utf8'),'replacement must survive');assert.deepEqual(fs.readFileSync(source),bytes);
   }finally{fs.fsyncSync=original;fs.rmSync(root,{recursive:true,force:true});}
 });
+
+test('pull requests plan the Linux lanes only; candidate and main keep every lane', () => {
+  const workflow = fs.readFileSync(path.join(__dirname, '../../.github/workflows/legacy-root-compat.yml'), 'utf8');
+  const command = /node -e '([^']+)'/.exec(workflow)[1];
+  const root = path.join(__dirname, '../..');
+  const tmp = fs.mkdtempSync(path.join(root, '.test-data', 'compat-plan-'));
+  const plan = (event) => {
+    const out = path.join(tmp, `${event}.out`);
+    execFileSync(process.execPath, ['-e', command], { cwd: root, env: { ...process.env, EVENT_NAME: event, GITHUB_OUTPUT: out } });
+    return JSON.parse(fs.readFileSync(out, 'utf8').replace(/^matrix=/, '')).include;
+  };
+  try {
+    const pr = plan('pull_request');
+    assert.ok(pr.length > 0 && pr.every(lane => lane.os === 'ubuntu-latest'));
+    assert.deepEqual(plan('push'), rootCompatLanes());
+    assert.match(workflow, /if \[ "\$EVENT_NAME" = pull_request \]; then/);
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+});
