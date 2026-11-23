@@ -147,8 +147,8 @@ test('actual YAML keeps standalone triggers, strict matrix, parallel SDK/compat 
   // The read-only RC preflight and SDK lookup/build must not wait for the 18 compatibility lanes.
   for(const job of ['rc_prerequisites','publish_qlever_runtime_sdk','publish_qlever_local_runtime','build_qlever_macos_runtime','build_image','observe_service_sdk_source'])
     assert.equal(depends(job,'legacy_root_compat'),false,job);
-  // The shared-RC mutation entry is the explicit mandatory compatibility join; no conditional bypass.
-  assert.equal(directNeeds('deploy_and_accept').filter(name=>name==='legacy_root_compat').length,1);
+  // Deployment reads nothing from the lanes, so it no longer waits for them; finalize below is their join.
+  assert.equal(depends('deploy_and_accept','legacy_root_compat'),false);
   assert.equal(candidate.jobs.deploy_and_accept.if,undefined);
   assert.equal(candidate.jobs.deploy_and_accept['continue-on-error'],undefined);
   assert.equal(candidate.jobs.legacy_root_compat.if,undefined);
