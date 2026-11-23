@@ -1593,6 +1593,9 @@ jobs:
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
       - uses: actions/checkout@v4
+      - name: Retry transient GitHub API failures in this job
+        # Only when the checked-out source ships the shim (older stable tags do not).
+        run: if [ -f scripts/install-gh-retry.sh ]; then bash scripts/install-gh-retry.sh; fi
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
@@ -2155,6 +2158,9 @@ jobs:
       REF_NAME: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+      - name: Retry transient GitHub API failures in this job
+        # Only when the checked-out source ships the shim (older stable tags do not).
+        run: if [ -f scripts/install-gh-retry.sh ]; then bash scripts/install-gh-retry.sh; fi
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
