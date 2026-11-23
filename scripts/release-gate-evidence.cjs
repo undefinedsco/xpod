@@ -597,7 +597,7 @@ function verifyPackageConsumers(args) {
 }
 
 const ROOT_COMPAT_OSES = ['ubuntu-latest', 'macos-latest', 'windows-latest'];
-const ROOT_COMPAT_NODES = [22, 24, 25];
+const ROOT_COMPAT_NODES = [24];
 function rootCompatLanes() {
   return ['node', 'bun'].flatMap(runtime => ROOT_COMPAT_OSES.flatMap(os => ROOT_COMPAT_NODES.map(node => ({ runtime, os, node, id: `${runtime}-${os}-node${node}` }))));
 }

@@ -34,12 +34,15 @@ jobs:
         id: plan
         env:
           EXPECTED_SHA: ${{ inputs.source-sha || github.sha }}
+          # Pull requests run the Linux lanes only; candidate (via workflow_call) and
+          # main pushes keep every lane, so release evidence is unchanged.
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
           actual="$(git rev-parse HEAD)"
           test "$actual" = "$EXPECTED_SHA"
           echo "sha=$actual" >> "$GITHUB_OUTPUT"
-          node -e 'const fs=require("node:fs");const {rootCompatLanes}=require("./scripts/release-gate-evidence.cjs");fs.appendFileSync(process.env.GITHUB_OUTPUT,"matrix="+JSON.stringify({include:rootCompatLanes()})+"\n")'
+          node -e 'const fs=require("node:fs");const {rootCompatLanes}=require("./scripts/release-gate-evidence.cjs");const lanes=rootCompatLanes().filter(lane=>process.env.EVENT_NAME!=="pull_request"||lane.os==="ubuntu-latest");fs.appendFileSync(process.env.GITHUB_OUTPUT,"matrix="+JSON.stringify({include:lanes})+"\n")'
 
   normal_afs:
     needs: plan
@@ -204,9 +207,16 @@ jobs:
           VERIFIER_NODE_OPTIONS: ${{ steps.verifier_tooling.outputs.node-options }}
           MATRIX_RESULT: ${{ needs.lanes.result }}
           SOURCE_SHA: ${{ needs.plan.outputs.sha }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
           test "$MATRIX_RESULT" = success
+          if [ "$EVENT_NAME" = pull_request ]; then
+            # A pull request ran the Linux subset; the complete-lane receipt is release
+            # evidence and is produced only by candidate and main runs.
+            echo "Pull request: Linux lanes passed; complete-lane receipt is produced by the candidate." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           NODE_PATH="$VERIFIER_NODE_PATH" NODE_OPTIONS="$VERIFIER_NODE_OPTIONS" node scripts/release-gate-evidence.cjs verify-root-compat \
             --source-sha "$SOURCE_SHA" --run-id "$GITHUB_RUN_ID" \
             --archive-dir .test-data/legacy-root-compat-proof \

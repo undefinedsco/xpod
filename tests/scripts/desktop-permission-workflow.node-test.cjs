@@ -207,7 +207,7 @@ test('staging candidates retain a fixed workflow RC lock through desktop and cle
 test('PR CI runs all Node release and tooling suites before the unit suite', () => {
   const steps = read('ci.yml').jobs.test.steps;
   const nodeTests = steps.findIndex(step => step.run === 'node --test tests/scripts/*.node-test.cjs tests/scripts/*.node-test.mjs');
-  const unitTests = steps.findIndex(step => step.run === 'bun run test:run');
+  const unitTests = steps.findIndex(step => step.run === 'bash scripts/ci-unit-tests.sh main');
   assert.ok(nodeTests >= 0);
   assert.ok(unitTests > nodeTests);
 });
