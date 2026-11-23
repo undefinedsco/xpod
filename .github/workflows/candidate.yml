@@ -493,9 +493,10 @@ jobs:
             --pg-image "$NATIVE_PG_IMAGE" --request-id "xpod-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
   deploy_and_accept:
-    # Mandatory shared-RC mutation join: the 18 compatibility lanes must pass
-    # before this job can mutate the shared RC. SDK lookup/build stays parallel.
-    needs: [metadata, build_image, legacy_root_compat, private17_admission]
+    # The compatibility lanes only qualify the npm package; deployment reads none
+    # of their outputs. They run in parallel and finalize_acceptance still requires
+    # them, so a macOS runner queue no longer holds the shared RC deployment back.
+    needs: [metadata, build_image, private17_admission]
     runs-on: ubuntu-latest
     environment: rc
     concurrency:
