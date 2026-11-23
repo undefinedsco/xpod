@@ -16,6 +16,7 @@ export interface ProviderTargetResolution {
 }
 
 export const DEFAULT_PROVIDER_HTTP_TIMEOUT_MS = 30_000;
+export const DEFAULT_PROVIDER_STREAM_IDLE_TIMEOUT_MS = 5 * 60_000;
 export const PROVIDER_ERROR_BODY_LIMIT_BYTES = 64 * 1024;
 
 const LOCALHOST_NAMES = new Set(['localhost', 'localhost.localdomain']);

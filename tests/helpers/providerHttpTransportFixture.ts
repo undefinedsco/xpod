@@ -59,6 +59,18 @@ async function verify(): Promise<void> {
       response.write('data: first\n\n');
       const timer = setTimeout(() => response.end('data: second\n\n'), 30);
       response.on('close', () => clearTimeout(timer));
+    } else if (request.url === '/active-stream') {
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.flushHeaders();
+      let index = 0;
+      const timer = setInterval(() => {
+        response.write(index++ % 2 ? ': heartbeat\n\n' : 'data: token\n\n');
+        if (index === 12) {
+          clearInterval(timer);
+          response.end();
+        }
+      }, 40);
+      response.on('close', () => clearInterval(timer));
     } else if (request.url === '/error') {
       response.writeHead(429, { 'content-type': 'text/plain', 'x-fixture': 'error' });
       response.end('x'.repeat(70 * 1024));
@@ -200,6 +212,19 @@ async function verify(): Promise<void> {
     const direct = new ProviderHttpTransport({ resolver, allowedPrivateOrigins: [origin], timeoutMs: 1_000 });
     assert.deepEqual(await direct.getJson({ url: `${origin}/json` }), { ok: true, method: 'GET' });
     assert.equal(tunnels, before - proxyRequests);
+    // Exercise the real Bun/undici body lifetime. Activity, including SSE
+    // heartbeats, must extend the deadline across multiple timeout periods.
+    const streaming = new ProviderHttpTransport({ resolver, allowedPrivateOrigins: [origin], timeoutMs: 200 });
+    const activeEvents = [];
+    for await (const event of streaming.postSse({ url: `${origin}/active-stream`, body: {} })) activeEvents.push(event.data);
+    assert.deepEqual(activeEvents, Array(6).fill('token'));
+    const activeRaw = await streaming.postStream({ url: `${origin}/active-stream`, apiKey: 'fixture', body: {} });
+    assert.equal((await activeRaw.text()).match(/data: token/gu)?.length, 6);
+    const stalled = streaming.postSse({ url: `${origin}/abort`, body: {} })[Symbol.asyncIterator]();
+    assert.equal((await stalled.next()).value?.data, 'first');
+    await assert.rejects(stalled.next(), /provider_request_timeout/u);
+    const stalledRaw = await streaming.postStream({ url: `${origin}/abort`, apiKey: 'fixture', body: {} });
+    await assert.rejects(stalledRaw.text(), /provider_request_timeout/u);
     process.stdout.write('native provider transport verified\n');
   } finally {
     for (const socket of sockets) socket.destroy();

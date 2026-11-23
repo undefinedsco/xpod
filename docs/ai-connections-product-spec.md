@@ -359,6 +359,20 @@ the user from the first moment, including the flow where the user enters their o
   the submitted `DEFAULT_API_KEY`), and the client never follows a redirect while that key is on
   the request.
 
+### Provider transport deadlines
+
+Buffered JSON and raw HTTP requests retain a 30-second total deadline. Streaming
+requests (`postSse` and `postStream`) allow five minutes until response headers,
+then a five-minute idle deadline renewed by each nonempty body chunk. SSE comments
+and partial events count as activity, so an active generation may run longer than
+five minutes, including reasoning pauses longer than 30 seconds. A stalled stream still aborts, and caller cancellation remains active
+through body consumption. Completion, early consumer exit, and cancellation release
+the timer, abort listener, and per-request dispatcher on both Node and Bun.
+
+Regression coverage lives in `tests/api/service/provider-stream-timeout.test.ts`
+and the real Bun/TLS/proxy fixture used by
+`tests/runtime/provider-http-transport.test.ts`.
+
 ## Login And Session Model
 
 AI Connections has one login entry: the host-owned WebID login through the
