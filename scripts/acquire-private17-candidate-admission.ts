@@ -2,28 +2,27 @@
 /**
  * Obtain the Private17 exact-pair joint admission for one candidate without a person in the loop.
  *
- * The candidate dispatches the private producer workflow in `undefinedsco/xpod-pro` for its own
+ * The candidate dispatches the private producer workflow (repository given by the workflow) for its own
  * source SHA and service image, waits for that run, checks where the proof came from, and then
  * publishes the sanitized proof as the `private17-<sha>-<digest>` Release the deploy gate already
  * downloads. The digest of those bytes is handed to the deploy gate as its admission authority, in
  * place of the repository variable a person used to set by hand.
  *
  * Authority: the proof must come from a successful `workflow_dispatch` run of the pinned workflow
- * file on xpod-pro's `main`, found by the request id this candidate gave it. The deploy gate still
+ * file on the producer repository's `main`, found by the request id this candidate gave it. The deploy gate still
  * verifies the proof's full contents (source, images, runner, fixtures, cleanup) independently.
  */
 import { createHash } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
-export const PRIVATE_REPO = 'undefinedsco/xpod-pro';
 export const PUBLIC_REPO = 'undefinedsco/xpod';
 export const PRODUCER_WORKFLOW = 'qlever-installed-image-conformance.yml';
 export const PRODUCER_WORKFLOW_PATH = `.github/workflows/${PRODUCER_WORKFLOW}`;
 export const PRODUCER_RUN_NAME = 'QLever Installed Image Conformance';
 export const PROOF_ASSET = 'private17-admission.json';
 const PROOF_MAX_BYTES = 64 * 1024;
-const RUN_MARKER = /^xpod-pro run: (\d{1,20})$/m;
+const RUN_MARKER = /^producer run: (\d{1,20})$/m;
 
 export class StepError extends Error {
   constructor(readonly stage: string, readonly errorClass: string) {
@@ -32,6 +31,8 @@ export class StepError extends Error {
 }
 
 export interface Candidate {
+  /** owner/name of the private producer repository, supplied by the workflow. */
+  producerRepo: string;
   sourceSha: string;
   installedImage: string;
   pgImage: string;
@@ -92,13 +93,16 @@ export function validateCandidate(candidate: Candidate): Candidate {
     throw new StepError('private17-input', 'invalid-pg-image');
   }
   if (!/^[A-Za-z0-9._-]{1,80}$/.test(candidate.requestId)) throw new StepError('private17-input', 'invalid-request-id');
+  if (!/^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/.test(candidate.producerRepo) || candidate.producerRepo === PUBLIC_REPO) {
+    throw new StepError('private17-input', 'invalid-producer-repo');
+  }
   return candidate;
 }
 
-/** The run must be the pinned producer on xpod-pro main, started by this candidate, and green. */
-export function assertProducerRun(run: WorkflowRun, requestId: string): void {
-  const expectedTitle = `${PRODUCER_RUN_NAME} ${requestId}`;
-  if (run.repository?.full_name !== PRIVATE_REPO || run.path !== PRODUCER_WORKFLOW_PATH
+/** The run must be the pinned producer workflow on main, started by this candidate, and green. */
+export function assertProducerRun(run: WorkflowRun, candidate: Pick<Candidate, 'producerRepo' | 'requestId'>): void {
+  const expectedTitle = `${PRODUCER_RUN_NAME} ${candidate.requestId}`;
+  if (run.repository?.full_name !== candidate.producerRepo || run.path !== PRODUCER_WORKFLOW_PATH
     || run.head_branch !== 'main' || run.event !== 'workflow_dispatch' || run.display_title !== expectedTitle) {
     throw new StepError('private17-provenance', 'unexpected-producer-run');
   }
@@ -134,11 +138,11 @@ export function assertProofIdentity(proof: Buffer, summary: Buffer, candidate: C
 }
 
 async function producerProof(deps: Dependencies, runId: number, candidate: Candidate): Promise<{ proof: Buffer; digest: string }> {
-  const run = await deps.github.json<WorkflowRun>(deps.privateToken, 'GET', `/repos/${PRIVATE_REPO}/actions/runs/${runId}`);
+  const run = await deps.github.json<WorkflowRun>(deps.privateToken, 'GET', `/repos/${candidate.producerRepo}/actions/runs/${runId}`);
   if (!run) throw new StepError('private17-provenance', 'producer-run-missing');
-  assertProducerRun(run, candidate.requestId);
+  assertProducerRun(run, candidate);
   const artifacts = await deps.github.json<{ artifacts: { id: number; name: string; expired: boolean; archive_download_url: string }[] }>(
-    deps.privateToken, 'GET', `/repos/${PRIVATE_REPO}/actions/runs/${runId}/artifacts?per_page=100`);
+    deps.privateToken, 'GET', `/repos/${candidate.producerRepo}/actions/runs/${runId}/artifacts?per_page=100`);
   const artifact = artifacts?.artifacts.find(entry => entry.name === `private17-joint-admission-${runId}` && !entry.expired);
   if (!artifact) throw new StepError('private17-producer', 'proof-artifact-missing');
   const zip = await deps.github.bytes(deps.privateToken, artifact.archive_download_url, 'application/vnd.github+json');
@@ -148,7 +152,7 @@ async function producerProof(deps: Dependencies, runId: number, candidate: Candi
 }
 
 async function dispatchProducer(deps: Dependencies, candidate: Candidate): Promise<number> {
-  const runsPath = `/repos/${PRIVATE_REPO}/actions/workflows/${PRODUCER_WORKFLOW}/runs?event=workflow_dispatch&branch=main&per_page=30`;
+  const runsPath = `/repos/${candidate.producerRepo}/actions/workflows/${PRODUCER_WORKFLOW}/runs?event=workflow_dispatch&branch=main&per_page=30`;
   const title = `${PRODUCER_RUN_NAME} ${candidate.requestId}`;
   const find = async (): Promise<WorkflowRun | undefined> =>
     (await deps.github.json<{ workflow_runs: WorkflowRun[] }>(deps.privateToken, 'GET', runsPath))
@@ -156,7 +160,7 @@ async function dispatchProducer(deps: Dependencies, candidate: Candidate): Promi
   // A retried job keeps its request id, so it resumes the run it already started.
   let found = await find();
   if (!found) {
-    await deps.github.json(deps.privateToken, 'POST', `/repos/${PRIVATE_REPO}/actions/workflows/${PRODUCER_WORKFLOW}/dispatches`, {
+    await deps.github.json(deps.privateToken, 'POST', `/repos/${candidate.producerRepo}/actions/workflows/${PRODUCER_WORKFLOW}/dispatches`, {
       ref: 'main',
       inputs: {
         xpod_ref: candidate.sourceSha,
@@ -179,7 +183,7 @@ async function dispatchProducer(deps: Dependencies, candidate: Candidate): Promi
     if (deps.now() > completeBy) throw new StepError('private17-producer', 'producer-run-timeout');
     await deps.sleep(pollMs);
     const latest: WorkflowRun | undefined = await deps.github.json<WorkflowRun>(
-      deps.privateToken, 'GET', `/repos/${PRIVATE_REPO}/actions/runs/${run.id}`);
+      deps.privateToken, 'GET', `/repos/${candidate.producerRepo}/actions/runs/${run.id}`);
     if (!latest) throw new StepError('private17-provenance', 'producer-run-missing');
     run = latest;
   }
@@ -217,7 +221,7 @@ export async function acquireCandidateAdmission(candidate: Candidate, deps: Depe
       tag_name: tag,
       target_commitish: candidate.sourceSha,
       name: tag,
-      body: `Sanitized exact-pair native admission transport. Not RC acceptance.\n\nxpod-pro run: ${runId}`,
+      body: `Sanitized exact-pair native admission transport. Not RC acceptance.\n\nproducer run: ${runId}`,
       prerelease: true,
     });
   } catch (error) {
@@ -287,6 +291,7 @@ async function cli(): Promise<void> {
   if (!publicToken) throw new StepError('private17-input', 'missing-public-token');
   const result = await acquireCandidateAdmission({
     sourceSha: argValue('--source-sha'),
+    producerRepo: argValue('--producer-repo'),
     installedImage: argValue('--installed-image'),
     pgImage: argValue('--pg-image'),
     requestId: argValue('--request-id'),

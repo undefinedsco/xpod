@@ -10,6 +10,7 @@ import {
 } from '../../scripts/acquire-private17-candidate-admission';
 
 const candidate: Candidate = {
+  producerRepo: 'example/private-producer',
   sourceSha: 'c'.repeat(40),
   installedImage: `ghcr.io/undefinedsco/xpod@sha256:${'b'.repeat(64)}`,
   pgImage: `ccr.ccs.tencentyun.com/undefineds/xpod-rdf-postgres@sha256:${'d'.repeat(64)}`,
@@ -43,7 +44,7 @@ function producerRun(id: number, overrides: Record<string, unknown> = {}): Recor
   return {
     id, display_title: `QLever Installed Image Conformance ${candidate.requestId}`, path: PRODUCER_WORKFLOW_PATH,
     head_branch: 'main', event: 'workflow_dispatch', status: 'completed', conclusion: 'success',
-    repository: { full_name: 'undefinedsco/xpod-pro' }, ...overrides,
+    repository: { full_name: 'example/private-producer' }, ...overrides,
   };
 }
 
@@ -134,7 +135,7 @@ describe('candidate Private17 admission without a person in the loop', () => {
     } }]);
     expect(state.createdReleases).toEqual([expect.objectContaining({
       tag_name: tag, target_commitish: candidate.sourceSha, prerelease: true,
-      body: expect.stringContaining('xpod-pro run: 77'),
+      body: expect.stringContaining('producer run: 77'),
     })]);
     expect(state.uploads).toEqual([proof]);
   });
@@ -158,7 +159,7 @@ describe('candidate Private17 admission without a person in the loop', () => {
     state.runs[8] = producerRun(8);
     state.zips[8] = zipFor(proof);
     publishedBytes = proof;
-    state.release = { id: 1, body: 'transport\n\nxpod-pro run: 8', upload_url: '', assets: [{ name: 'private17-admission.json', url: 'asset:published' }] };
+    state.release = { id: 1, body: 'transport\n\nproducer run: 8', upload_url: '', assets: [{ name: 'private17-admission.json', url: 'asset:published' }] };
 
     await expect(acquireCandidateAdmission(candidate, fake(state))).resolves.toEqual({ digest: sha256(proof), runId: 8, reused: true });
 
@@ -177,7 +178,7 @@ describe('candidate Private17 admission without a person in the loop', () => {
   it.each([
     ['another workflow file', { path: '.github/workflows/other.yml' }, 'unexpected-producer-run'],
     ['a non-main branch', { head_branch: 'feature' }, 'unexpected-producer-run'],
-    ['another repository', { repository: { full_name: 'someone/xpod-pro' } }, 'unexpected-producer-run'],
+    ['another repository', { repository: { full_name: 'someone/private-producer' } }, 'unexpected-producer-run'],
     ['a failed producer', { conclusion: 'failure' }, 'producer-run-failed'],
   ])('rejects a proof from %s', async (_label, overrides, errorClass) => {
     const state = baseState();

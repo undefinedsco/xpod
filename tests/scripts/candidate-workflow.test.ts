@@ -1631,6 +1631,7 @@ describe('candidate-owned Private17 admission', () => {
     expect(step.env.XPOD_PRO_ACTIONS_TOKEN).toBe('${{ secrets.XPOD_PRO_ACTIONS_TOKEN }}');
     expect(step.env.NATIVE_SERVICE_IMAGE).toBe('ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}');
     expect(step.run).toContain('bun scripts/acquire-private17-candidate-admission.ts');
+    expect(step.run).toContain('--producer-repo undefinedsco/xpod-pro');
     expect(step.run).toContain('--pg-image "$NATIVE_PG_IMAGE"');
     expect(step.run).toContain('--request-id "xpod-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"');
     expect(JSON.stringify(workflow)).not.toContain('vars.XPOD_PRIVATE17_ADMISSION_SHA256');

@@ -488,7 +488,7 @@ jobs:
           NATIVE_SERVICE_IMAGE: ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}
         run: |
           set -euo pipefail
-          bun scripts/acquire-private17-candidate-admission.ts \
+          bun scripts/acquire-private17-candidate-admission.ts --producer-repo undefinedsco/xpod-pro \
             --source-sha "$NATIVE_SOURCE_SHA" --installed-image "$NATIVE_SERVICE_IMAGE" \
             --pg-image "$NATIVE_PG_IMAGE" --request-id "xpod-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 

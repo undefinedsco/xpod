@@ -133,7 +133,7 @@ as `build_image` finishes and runs alongside the compatibility lanes:
    exact workflow file on xpod-pro `main` with the matching name, and the proof
    names the same source, service image and PostgreSQL image;
 4. publish the proof as the `private17-<sha>-<digest>` Release with
-   `xpod-pro run: <id>` in its notes, and hand the proof digest to
+   `producer run: <id>` in its notes, and hand the proof digest to
    `deploy_and_accept` as `PRIVATE17_ADMISSION_SHA256`.
 
 The authority is now that verified producer run instead of a hand-set
