@@ -798,7 +798,9 @@ bun run test:integration
 RC 使用专用 `statefulset/xpod-rc-rdf-postgres`（独立 PVC、Service 与 administrator Secret），
 共享生产 `xpod-rdf-postgres` 及其数据永不重置、升级或删除。任何 RC 变更前必须先通过
 17 semantic + 6 wire 的 installed-image conformance、同 PG17 full integration、Private17
-admission 和 namespace pull preflight；然后 fail-closed quiescence 通过才允许 bootstrap Job
+admission（由候选自己的 `private17_admission` 作业在镜像构建后自动触发 xpod-pro 私有生产器并取回，
+不再人工设置仓库变量，需要仓库密钥 `XPOD_PRO_ACTIONS_TOKEN`，见 `docs/testing/joint-installed-admission.md`）
+和 namespace pull preflight；然后 fail-closed quiescence 通过才允许 bootstrap Job
 DROP/CREATE 专用实例上的逻辑库 `xpod_rc`。bootstrap Job 名为
 `xpod-rc-postgres-bootstrap-<run>-<attempt>`，只在 ownership 注解与 live UID 同时匹配时用
 `DeleteOptions.preconditions.uid` 删除；清理同样保留 RC StatefulSet、PVC 和 administrator Secret。

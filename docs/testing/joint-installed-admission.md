@@ -117,8 +117,34 @@ Private17 proof and is not the case claimed here. Only the failed
 A **partial** rerun that rebuilds only `build_image` (or only the SDK) at
 attempt 2 is **not** claimed: the deploy path requires both the service and SDK
 producers to be the original attempt. Source/tree identity is never substituted
-for digest identity. Refresh timing of `XPOD_PRIVATE17_ADMISSION_SHA256` remains
-unknown; no race or new configuration is relied upon.
+for digest identity.
+
+## Candidate-owned dispatch (2026-11-22)
+
+The candidate no longer waits for a person to run the private producer and set
+`XPOD_PRIVATE17_ADMISSION_SHA256`. Its `private17_admission` job starts as soon
+as `build_image` finishes and runs alongside the compatibility lanes:
+
+1. dispatch xpod-pro's `qlever-installed-image-conformance.yml` on `main` with
+   the candidate's source SHA, service image, `NATIVE_PG_IMAGE` and the request
+   id `xpod-<run>-<attempt>`, which xpod-pro shows in the run name;
+2. wait for that run (it finds and resumes a run a retried job already started);
+3. accept its proof only if the run is a successful `workflow_dispatch` of that
+   exact workflow file on xpod-pro `main` with the matching name, and the proof
+   names the same source, service image and PostgreSQL image;
+4. publish the proof as the `private17-<sha>-<digest>` Release with
+   `producer run: <id>` in its notes, and hand the proof digest to
+   `deploy_and_accept` as `PRIVATE17_ADMISSION_SHA256`.
+
+The authority is now that verified producer run instead of a hand-set
+repository variable. A Release that already exists is reused only when its
+named producer run still verifies and yields the same bytes; a Release with no
+producer run (the hand-made ones) is refused. The deploy gate still runs the
+full public validator on the downloaded bytes. The job needs the repository
+secret `XPOD_PRO_ACTIONS_TOKEN`: a fine-grained token limited to
+`undefinedsco/xpod-pro` with Actions read/write and Contents read.
+`scripts/acquire-private17-candidate-admission.ts` implements it; its tests are
+`tests/scripts/acquire-private17-candidate-admission.test.ts`.
 
 Focused public regression:
 
