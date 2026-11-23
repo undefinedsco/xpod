@@ -1509,7 +1509,7 @@
   },
   {
     "path": "scripts/release-gate-evidence.cjs",
-    "sha256": "a6dce9f194f04130d51beca0d800d4a9ac90921707a168e99ec10495e58c6b85"
+    "sha256": "c79a56eff2b641e753cd723b23ff7eb992d8e0e7dd69805c4e7d8c7a19378de4"
   },
   {
     "path": "scripts/run-independent-publication.ts",

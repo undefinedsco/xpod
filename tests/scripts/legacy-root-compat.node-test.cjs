@@ -64,8 +64,8 @@ function fixture(operation) {
   try { operation({ root, receipts, args, add }); }
   finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
-test('one authority defines all18 lanes and the original complete-package commands', () => {
-  assert.equal(rootCompatLanes().length, 18); assert.equal(new Set(rootCompatLanes().map(row => row.id)).size, 18);
+test('one authority defines all six lanes and the original complete-package commands', () => {
+  assert.equal(rootCompatLanes().length, 6); assert.equal(new Set(rootCompatLanes().map(row => row.id)).size, 6);
   assert.deepEqual(rootCompatCommands('node', '/consumer'), [
     ['bun','install','--frozen-lockfile'], ['bun','run','check:platform-package-version'], ['bun','run','build'],
     ['node','scripts/run-npm-pack.cjs','.test-data/npm-pack','.test-data/npm-cache'],
@@ -77,7 +77,7 @@ test('one authority defines all18 lanes and the original complete-package comman
 });
 test('synthetic complete receipts bind all raw hashes and survive same accepted-directory readback', () => fixture(({root,args}) => {
   const evidence = path.join(root, 'compat.receipt.json'); const checks = path.join(root, 'checks.json');
-  const result = verifyRootCompat({...args,out:evidence,checksOut:checks}); assert.equal(result.lanes.length,18);
+  const result = verifyRootCompat({...args,out:evidence,checksOut:checks}); assert.equal(result.lanes.length,6);
   assert.deepEqual(JSON.parse(fs.readFileSync(checks,'utf8')),{'legacy-root-compat':'passed'});
   assert.deepEqual(verifyRootCompat({...args,evidence}),result);
 }));
@@ -119,7 +119,7 @@ test('original Windows UNC path is preserved in commands and accepted by the POS
     const commands=rootCompatCommands(row.receipt.runtime,row.receipt.consumerRoot);
     row.receipt.steps.forEach((step,index)=>{step.command=commands[index];});row.save();
   }
-  assert.equal(verifyRootCompat(args).lanes.length,18);
+  assert.equal(verifyRootCompat(args).lanes.length,6);
 }));
 test('manifest-only passed cannot replace absent original lane evidence', () => fixture(({root,args}) => {
   const evidence=path.join(root,'compat.receipt.json');fs.writeFileSync(evidence,JSON.stringify({'legacy-root-compat':'passed'}));
@@ -143,8 +143,8 @@ test('actual YAML keeps standalone triggers, strict matrix, parallel SDK/compat 
   assert.equal(compat.jobs.lanes.strategy.matrix,'${{ fromJSON(needs.plan.outputs.matrix) }}');assert.equal(ci.jobs['package-smoke'],undefined);assert.equal(ci.jobs['package-smoke-bun'],undefined);
   const directNeeds=job=>{const needs=candidate.jobs[job].needs;return (Array.isArray(needs)?needs:[needs]).filter(Boolean);};
   const depends=(job,target)=>directNeeds(job).some(name=>name===target||depends(name,target));
-  assert.equal(rootCompatLanes().length,18);assert.equal(new Set(rootCompatLanes().map(row=>row.id)).size,18);
-  // The read-only RC preflight and SDK lookup/build must not wait for the 18 compatibility lanes.
+  assert.equal(rootCompatLanes().length,6);assert.equal(new Set(rootCompatLanes().map(row=>row.id)).size,6);
+  // The read-only RC preflight and SDK lookup/build must not wait for the compatibility lanes.
   for(const job of ['rc_prerequisites','publish_qlever_runtime_sdk','publish_qlever_local_runtime','build_qlever_macos_runtime','build_image','observe_service_sdk_source'])
     assert.equal(depends(job,'legacy_root_compat'),false,job);
   // Deployment reads nothing from the lanes, so it no longer waits for them; finalize below is their join.
@@ -216,7 +216,7 @@ test('downloaded lane evidence revalidates generated observations and rejects th
   const bytes = Buffer.from(JSON.stringify(uiObservation())); fs.writeFileSync(file, bytes);
   row.receipt.sourceAfterStatus = ' D static/app/assets/old.js\n?? static/app/assets/new.js';
   row.receipt.sourceObservation = { path: 'source-observation.json', bytes: bytes.length, sha256: digest(bytes) }; row.save();
-  assert.equal(verifyRootCompat(args).lanes.length, 18);
+  assert.equal(verifyRootCompat(args).lanes.length, 6);
   row.receipt.sourceAfterStatus += '\n M bun.lock'; row.save(); assert.throws(() => verifyRootCompat(args), /source input/);
   row.receipt.sourceAfterStatus = '?? static/app/assets/new.js'; row.save();
   fs.appendFileSync(file, ' '); assert.throws(() => verifyRootCompat(args), /hash mismatch/);
@@ -274,7 +274,7 @@ test('downloaded Windows supply uses portable archive members while retaining na
   publication.publications[0].path = 'D:\\a\\source\\registry-supply\\publication-0.original.json';
   const bytes = Buffer.from(JSON.stringify(publication)); fs.writeFileSync(publicationFile, bytes);
   row.receipt.registrySupply = { path: row.receipt.registrySupply.path, bytes: bytes.length, sha256: digest(bytes) }; row.save();
-  assert.equal(verifyRootCompat(args).lanes.length, 18);
+  assert.equal(verifyRootCompat(args).lanes.length, 6);
   normal.artifacts[0].file = '../escape.tgz';
   const changed = Buffer.from(JSON.stringify(normal)); fs.writeFileSync(normalFile, changed);
   publication.source.bytes = changed.length; publication.source.sha256 = digest(changed);

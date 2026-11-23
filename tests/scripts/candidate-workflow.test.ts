@@ -515,7 +515,7 @@ esac
     expect(runText).not.toContain('get secret xpod-rc-tls');
   });
 
-  it('runs SDK lookup/build parallel to the 18 compatibility lanes and joins them at shared-RC deployment', async () => {
+  it('runs SDK lookup/build and the shared-RC deployment parallel to the compatibility lanes', async () => {
     const workflow = await loadWorkflow();
     const jobs = workflow.jobs;
     const ancestors = (name: string, seen = new Set<string>()): Set<string> => {
@@ -528,11 +528,11 @@ esac
     expect(jobs.rc_prerequisites.needs).toEqual(['metadata']);
     expect([...ancestors('rc_prerequisites')]).not.toContain('legacy_root_compat');
     // SDK lookup/build and the image/observer chain cannot depend on the current
-    // 18-lane compatibility result; they may run while it is still in progress.
+    // compatibility result; they may run while it is still in progress.
     for (const name of ['publish_qlever_runtime_sdk', 'publish_qlever_local_runtime', 'build_image', 'observe_service_sdk_source']) {
       expect([...ancestors(name)], name).not.toContain('legacy_root_compat');
     }
-    // Deployment no longer waits for the 18 lanes (they qualify the npm package
+    // Deployment no longer waits for the lanes (they qualify the npm package
     // only); finalize_acceptance below remains their mandatory join.
     expect(jobs.deploy_and_accept.needs).toEqual(['metadata', 'build_image', 'private17_admission']);
     expect([...ancestors('deploy_and_accept')]).not.toContain('legacy_root_compat');
@@ -1712,7 +1712,7 @@ describe('service-image audit scope change', () => {
     ]);
 
     const { rootCompatLanes } = require('../../scripts/release-gate-evidence.cjs');
-    expect(rootCompatLanes()).toHaveLength(18);
+    expect(rootCompatLanes()).toHaveLength(6);
     expect(workflow.jobs.legacy_root_compat.uses).toBe('./.github/workflows/legacy-root-compat.yml');
     expect(workflow.jobs.deploy_and_accept.needs).not.toContain('legacy_root_compat');
     expect(workflow.jobs.finalize_acceptance.needs).toContain('legacy_root_compat');

@@ -278,7 +278,7 @@ describe('stable release promotion workflow', () => {
       expect(job.needs).toEqual(expect.arrayContaining([ 'promotion_guard', 'publish_npm_staging' ]));
       expect(job['continue-on-error']).toBeUndefined();
       expect(job.strategy.matrix.os).toEqual([ 'macos-15' ]);
-      expect(job.strategy.matrix['node-version']).toEqual([ 22, 24, 25 ]);
+      expect(job.strategy.matrix['node-version']).toEqual([ 24 ]);
       expect(job.env.RELEASE_VERSION).toBe('${{ needs.promotion_guard.outputs.version }}');
       expect(job.env.XPOD_PACKAGE_SMOKE_INCLUDE_OPTIONAL).toBe('true');
       expect(job.env.XPOD_QLEVER_SEMANTIC_FIXTURE_PATH).toContain('qlever-semantic-conformance.cjs');

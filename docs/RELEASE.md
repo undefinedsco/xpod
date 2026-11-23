@@ -12,15 +12,15 @@ Xpod 发布必须先经过 Release Candidate，再由 stable tag 提升同一个
 
 发布相关作业在 checkout 后执行 `scripts/install-gh-retry.sh`，把 `scripts/gh-retry-shim.sh` 放在真实 `gh` 之前：只读调用（`gh api` 的 GET、`run list/view/download`、`release list/view/download`）遇到 5xx、连接重置或超时最多试 5 次、退避 5→80 秒，失败尝试的输出丢弃；写操作原样直通。此前单次 `HTTP 502` 就会让候选汇总或发布校验整轮失败。
 
-`legacy-root-compat.yml` 独立承担完整旧服务包的 18 条兼容通道：Node/Bun 消费者 × Linux/macOS/Windows × Node 22/24/25。每条通道执行原七阶段：frozen install、平台包版本检查、完整 build、pack、包校验、消费者安装、消费者 smoke。独立 CLI 与模块 producer 的成功不能代替这些检查，也不能把失败降为可选项。
+`legacy-root-compat.yml` 独立承担完整旧服务包的 6 条兼容通道：Node/Bun 消费者 × Linux/macOS/Windows × Node 24。Node 只维护一个版本、滚动跟随 LTS：换代时整体切到新的 Active LTS，不再并行测多个大版本。每条通道执行原七阶段：frozen install、平台包版本检查、完整 build、pack、包校验、消费者安装、消费者 smoke。独立 CLI 与模块 producer 的成功不能代替这些检查，也不能把失败降为可选项。
 
-PR 和 `main` push 直接触发该工作流；`staging` push 由 `candidate.yml` 调用同一完整矩阵，避免同时再运行一份独立矩阵。RC 仍须保留同次 run 的全部 18 条通道及原始证据。
+PR 和 `main` push 直接触发该工作流；`staging` push 由 `candidate.yml` 调用同一完整矩阵，避免同时再运行一份独立矩阵。RC 仍须保留同次 run 的全部通道及原始证据。
 
 producer job 的终态判定以**保留的原始 job 记录**为准，而不是只看可能滞后的 API 头。两条路径都保留完整身份与工件校验：头为 `completed`/`success` 时保留原有成功路径；仅当头处于受支持的非终态，且 `conclusion` 与 `completed_at` 均为 null 时，才启用显式闭包证据——必须存在唯一且位于末尾的 `Complete job` 步骤（`success` 且闭合时间有效）、步骤号严格递增的唯一安全整数、所有步骤 `completed` 且结论仅为 `success`/`skipped`、normal producer 的 produce 步骤与工件上传步骤均 `success` 且按 produce -> upload -> closure 因果排序、且所有步骤窗口落在真实 start 与闭合时间之内。任何 `failure`/`cancelled`/`timed_out` 等显式终态失败即使步骤全绿也一律拒绝；部分信息保留原有有界重试，未知状态、重复闭合或跳过关键步骤不得用于闭包判定。闭包来源与闭合时间作为**显式证据**写入 receipt（`producerClosure`），fetched job 本身绝不被改写，原始 metadata 仍逐字节保留 `in_progress` 头；acquirer 与下游 custody 复用同一个共享验证器，不允许以"步骤看起来成功"替代头状态的静默 fallback。
 
 Windows 保留平台默认 shell/PATH。完整 build 产生的 UI 变化由 Vite 与验收器共用 `ui/build-targets.json` 声明输出边界：旧的 tracked 输出删除记录与本次 Rollup/publicDir 产物清单分别验证，保留完整 Git 状态；源码、锁文件和未知静态文件漂移继续阻断。不能通过忽略整个 `static/` 绕过源码检查。
 
-`candidate.yml` 通过 reusable workflow 让完整 18 条矩阵与只读 RC 前置检查并行运行；SDK 解析/构建和共享 RC 的 `deploy_and_accept` 都不等待矩阵结果（部署不读取矩阵的任何输出；macOS 托管 runner 排队曾让部署多等一个多小时），矩阵成功由 `finalize_acceptance` 强制要求。finalize 再校验 exact SHA、同次 RC run 的全部通道及原始日志/pack 摘要，并将 `compat.receipt.json` 和原件一并放入 `release-acceptance-${GITHUB_SHA}` 的 `compat/`。`release.yml` 从同一个 accepted artifact 重验 `legacy-root-compat`，不接受另一轮矩阵或手填通过标记。部分重跑按每条通道的最新实际 attempt 判定，不能退回旧的成功 attempt。
+`candidate.yml` 通过 reusable workflow 让完整矩阵与只读 RC 前置检查并行运行；SDK 解析/构建和共享 RC 的 `deploy_and_accept` 都不等待矩阵结果（部署不读取矩阵的任何输出；macOS 托管 runner 排队曾让部署多等一个多小时），矩阵成功由 `finalize_acceptance` 强制要求。finalize 再校验 exact SHA、同次 RC run 的全部通道及原始日志/pack 摘要，并将 `compat.receipt.json` 和原件一并放入 `release-acceptance-${GITHUB_SHA}` 的 `compat/`。`release.yml` 从同一个 accepted artifact 重验 `legacy-root-compat`，不接受另一轮矩阵或手填通过标记。部分重跑按每条通道的最新实际 attempt 判定，不能退回旧的成功 attempt。
 
 2026-10-15 的 [run 38750639516](https://github.com/undefinedsco/xpod/actions/runs/38750639516) 实际 checkout 为 `0b5aad17fdc2bd17b017d3d2a3119c062689ed90`，事件 head 为 `1ac0526d676e59a240a1bd3f665ea54b275d2fa3`。Node 9/9 成功（包含 Windows 22/24/25），Bun 9/9 失败，verify 阻断。Windows tar listing 和正常 UI 输出误判未再现；原 Bun registry 安装兼容阻塞仍未解决，不能将 wrapper 修复或矩阵拆分视为整体兼容/发布资格通过。具体 GNU tar/PATH 根因仍未由旧失败日志证明。
 
@@ -712,8 +712,8 @@ GHA 缓存（scope `qlever-runtime-sdk`）和"复用已有 SDK 镜像"两条增�
   既有 profile 契约不变）；
 - SDK 的 build source SHA 与当前 app consumer SHA 分开绑定：复用旧 SDK 不要求
   旧 SDK revision 等于仅 app 变化的新提交，app master 记录 SDK 自己的
-  source/run/head 与当前 app 关系；当前候选的 18 条兼容与 28 项检查与 SDK 解析
-  **并行**，其中 18 条兼容由 `finalize_acceptance` 强制要求（不再挡共享 RC 部署）、28 项检查在部署验收阶段运行，
+  source/run/head 与当前 app 关系；当前候选的兼容通道与 28 项检查与 SDK 解析
+  **并行**，其中兼容通道由 `finalize_acceptance` 强制要求（不再挡共享 RC 部署）、28 项检查在部署验收阶段运行，
   不能反过来作为 SDK 解析/构建前置。
 
 **`normal-build-v1` 明确保留与移除的证明**：保留精确 source SHA、profile/target、

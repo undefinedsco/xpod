@@ -38,7 +38,7 @@ test('locked standalone tooling runs original aggregate CLI in a clean Git scope
       new Function('require', '__dirname', 'check', prefix + '\nfixture(check);')(requireFixture, path.dirname(file), fixture => {
         const args = ['scripts/release-gate-evidence.cjs', 'verify-root-compat', '--source-sha', fixture.args.sourceSha, '--run-id', fixture.args.runId, '--archive-dir', fixture.root, '--out', path.join(fixture.root, 'compat.receipt.json')];
         const run = override => { fs.rmSync(path.join(tools.directory, 'verification.receipt.json'), { force: true }); return execute(args, { ...env, ...override }); };
-        const success = run(); assert.equal(success.status, 0, success.stdout + success.stderr); assert.equal(JSON.parse(fs.readFileSync(path.join(fixture.root, 'compat.receipt.json'))).lanes.length, 18);
+        const success = run(); assert.equal(success.status, 0, success.stdout + success.stderr); assert.equal(JSON.parse(fs.readFileSync(path.join(fixture.root, 'compat.receipt.json'))).lanes.length, 6);
         const facts = JSON.parse(fs.readFileSync(path.join(tools.directory, 'verification.receipt.json'))); assert.equal(facts.actualNode.split('.')[0], '22'); assert.equal(facts.semver.version, '7.8.5'); assert.ok(facts.semver.entry.startsWith(tools['node-path'] + path.sep));
         const raw = path.join(fixture.receipts[0].directory, fixture.receipts[0].receipt.steps[0].stdout.path); fs.appendFileSync(raw, 'tampered');
         const tampered = run(); assert.notEqual(tampered.status, 0); assert.match(tampered.stderr, /raw|binding|hash/i);

@@ -96,7 +96,7 @@ jobs:
       source-sha: ${{ needs.metadata.outputs.sourceSha }}
 
   rc_prerequisites:
-    # Read-only RC preflight: it must not wait for the 18 compatibility lanes.
+    # Read-only RC preflight: it must not wait for the compatibility lanes.
     needs: [metadata]
     runs-on: ubuntu-latest
     environment: rc
