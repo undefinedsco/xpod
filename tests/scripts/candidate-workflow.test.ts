@@ -532,9 +532,10 @@ esac
     for (const name of ['publish_qlever_runtime_sdk', 'publish_qlever_local_runtime', 'build_image', 'observe_service_sdk_source']) {
       expect([...ancestors(name)], name).not.toContain('legacy_root_compat');
     }
-    // The shared-RC mutation entry is the explicit mandatory join: a failed or
-    // skipped 18-lane matrix skips deployment, with no always/failure/continue.
-    expect(jobs.deploy_and_accept.needs).toEqual(['metadata', 'build_image', 'legacy_root_compat', 'private17_admission']);
+    // Deployment no longer waits for the 18 lanes (they qualify the npm package
+    // only); finalize_acceptance below remains their mandatory join.
+    expect(jobs.deploy_and_accept.needs).toEqual(['metadata', 'build_image', 'private17_admission']);
+    expect([...ancestors('deploy_and_accept')]).not.toContain('legacy_root_compat');
     expect(jobs.deploy_and_accept.if).toBeUndefined();
     expect(jobs.deploy_and_accept['continue-on-error']).not.toBe(true);
     expect(jobs.legacy_root_compat.if).toBeUndefined();
@@ -745,7 +746,7 @@ esac
     const runText = jobRunText(workflow, 'deploy_and_accept');
 
     expect(deploy.environment).toBe('rc');
-    expect(deploy.needs).toEqual([ 'metadata', 'build_image', 'legacy_root_compat', 'private17_admission' ]);
+    expect(deploy.needs).toEqual([ 'metadata', 'build_image', 'private17_admission' ]);
     expect(deploy.if).toBeUndefined();
     const diagnosticObserver = workflow.jobs.observe_service_sdk_source;
     expect(diagnosticObserver.name).toContain('diagnostic');
@@ -1699,7 +1700,7 @@ describe('service-image audit scope change', () => {
     for (const [ name, job ] of Object.entries(workflow.jobs)) {
       expect([(job as any).needs ?? []].flat(), name).not.toContain('observe_service_sdk_source');
     }
-    expect(workflow.jobs.deploy_and_accept.needs).toEqual(['metadata', 'build_image', 'legacy_root_compat', 'private17_admission']);
+    expect(workflow.jobs.deploy_and_accept.needs).toEqual(['metadata', 'build_image', 'private17_admission']);
     expect(workflow.jobs.finalize_acceptance.needs).toEqual([
       'metadata',
       'build_image',
@@ -1713,7 +1714,7 @@ describe('service-image audit scope change', () => {
     const { rootCompatLanes } = require('../../scripts/release-gate-evidence.cjs');
     expect(rootCompatLanes()).toHaveLength(18);
     expect(workflow.jobs.legacy_root_compat.uses).toBe('./.github/workflows/legacy-root-compat.yml');
-    expect(workflow.jobs.deploy_and_accept.needs).toContain('legacy_root_compat');
+    expect(workflow.jobs.deploy_and_accept.needs).not.toContain('legacy_root_compat');
     expect(workflow.jobs.finalize_acceptance.needs).toContain('legacy_root_compat');
     const releaseText = readFileSync(path.join(repoRoot, '.github/workflows/release.yml'), 'utf8');
     const requiredChecks = [...releaseText.matchAll(/--required-check\s+(\S+)/g)].map((match) => match[1]);
@@ -1780,7 +1781,7 @@ describe('public Release transport contract', () => {
   it('keeps build and qualification needs, read-only identity and no private fixture acquisition', async () => {
     const workflow = await loadWorkflow(); const job = workflow.jobs.deploy_and_accept;
     const gate = job.steps.find((entry: any) => entry.name === 'Require independent exact-pair Private17 admission before RC mutation');
-    expect(job.needs).toEqual(['metadata', 'build_image', 'legacy_root_compat', 'private17_admission']); expect(job.permissions.contents).toBe('read');
+    expect(job.needs).toEqual(['metadata', 'build_image', 'private17_admission']); expect(job.permissions.contents).toBe('read');
     expect(gate.env.GH_TOKEN).toBe('${{ github.token }}');
     expect(gate.env.PRIVATE17_ADMISSION_SHA256).toBe('${{ needs.private17_admission.outputs.admission_sha256 }}');
     expect(gate.run).toContain('--acquire-private17-admission'); expect(gate.run).toContain('mktemp -d');
