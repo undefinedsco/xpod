@@ -1,7 +1,12 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import {
   acquireCandidateAdmission,
+  unzipEntry,
   PRODUCER_WORKFLOW_PATH,
   StepError,
   type Candidate,
@@ -219,5 +224,20 @@ describe('candidate Private17 admission without a person in the loop', () => {
     await expect(acquireCandidateAdmission({ ...candidate, requestId: 'bad id' }, fake(state))).rejects.toBeInstanceOf(StepError);
     await expect(acquireCandidateAdmission({ ...candidate, pgImage: 'postgres:17' }, fake(state))).rejects.toThrow('invalid-pg-image');
     expect(state.dispatches).toHaveLength(0);
+  });
+
+  it('extracts entries from a real artifact archive', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'private17-zip-'));
+    try {
+      writeFileSync(path.join(dir, 'private17-admission.json'), '{"status":"ok"}');
+      writeFileSync(path.join(dir, 'proof-summary.json'), '{"proofSha256":"x"}');
+      execFileSync('zip', ['-q', 'artifact.zip', 'private17-admission.json', 'proof-summary.json'], { cwd: dir });
+      const zip = readFileSync(path.join(dir, 'artifact.zip'));
+      expect(unzipEntry(zip, 'private17-admission.json').toString()).toBe('{"status":"ok"}');
+      expect(unzipEntry(zip, 'proof-summary.json').toString()).toBe('{"proofSha256":"x"}');
+      expect(() => unzipEntry(zip, 'missing.json')).toThrow('proof-entry-missing');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
