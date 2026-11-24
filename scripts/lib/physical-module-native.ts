@@ -94,6 +94,12 @@ function stage(root: string, value: unknown): Buffer {
   }
   throw new Error('Unsupported native stage provenance kind');
 }
+const NATIVE_HEADERS = new Set(['7f454c46', 'feedface', 'cefaedfe', 'feedfacf', 'cffaedfe', 'cafebabe', 'bebafeca', 'cafebabf', 'bfbafeca']);
+/** True when the bytes carry an ELF, Mach-O or PE header that cannot run on the target. */
+export function isForeignNative(bytes: Buffer, target: string): boolean {
+  if (!NATIVE_HEADERS.has(bytes.subarray(0, 4).toString('hex')) && bytes.subarray(0, 2).toString() !== 'MZ') return false;
+  try { verifyNativeMaterialTarget(bytes, target); return false; } catch { return true; }
+}
 /** Carried material targets are separate from CLI product-platform support. No execution. */
 export function verifyNativeMaterialTarget(bytes: Buffer, target: string): void {
   function fail(): never { throw new Error('Native material format/target mismatch'); }
@@ -126,7 +132,9 @@ export function verifyNativeMaterialTarget(bytes: Buffer, target: string): void 
   if (['cafebabe', 'bebafeca', 'cafebabf', 'bfbafeca'].includes(magic)) {
     const little = magic === 'bebafeca' || magic === 'bfbafeca', wide = magic === 'cafebabf' || magic === 'bfbafeca';
     const u32 = (offset: number) => little ? bytes.readUInt32LE(offset) : bytes.readUInt32BE(offset);
-    if (target !== 'darwin-universal' || bytes.length < 8) fail();
+    // A universal binary also serves one darwin target when it carries that slice.
+    const wanted = target === 'darwin-universal' ? undefined : /^darwin-(x64|arm64)$/u.exec(target)?.[1];
+    if ((target !== 'darwin-universal' && !wanted) || bytes.length < 8) fail();
     const count = u32(4), recordSize = wide ? 32 : 20, tableEnd = 8 + count * recordSize;
     if (count < 2 || count > 16 || tableEnd > bytes.length) fail();
     const ranges: { start: number; end: number }[] = [], arches = new Set<string>();
@@ -136,7 +144,9 @@ export function verifyNativeMaterialTarget(bytes: Buffer, target: string): void 
       const start = wide ? number64(at + 8) : u32(at + 8), length = wide ? number64(at + 16) : u32(at + 12), alignment = u32(at + (wide ? 24 : 16));
       if (!arch || arches.has(arch) || start < tableEnd || !length || start + length > bytes.length || alignment > 31 || start % (2 ** alignment) || ranges.some(r => start < r.end && start + length > r.start)) fail();
       verifyNativeMaterialTarget(bytes.subarray(start, start + length), 'darwin-' + arch); arches.add(arch); ranges.push({ start, end: start + length });
-    } return;
+    }
+    if (wanted && !arches.has(wanted)) fail();
+    return;
   }
   if (bytes.subarray(0, 2).toString() === 'MZ') {
     if (bytes.length < 64) fail(); const pe = bytes.readUInt32LE(60);
