@@ -1838,6 +1838,13 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
       // unknown or mixed versions are still refused.
       {workflowSha256:'c0ed4cd1069c3a11765a677b7d115b31f31df9927f02ee681cbff0c877aa2aa6',
       jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // APPEND-ONLY: CI scopes the unit suite (scripts/ci-unit-tests.sh): the slow
+      // PGlite/runtime group moves to integration-lite and pull requests without
+      // pipeline changes run tests/scripts only where imports reach. Same jobs,
+      // permissions, branch and event; earlier identities stay selectable.
+      {workflowSha256:'371f6743bada3f50bd7248baa98680417da5b8c62a5e6149c37e8bf22259f05e',
+      jobName:()=>callerNames[0]!,
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],
     requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,

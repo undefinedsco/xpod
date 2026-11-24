@@ -568,8 +568,12 @@ jobs:
       - name: Node release and tooling tests
         run: node --test tests/scripts/*.node-test.cjs tests/scripts/*.node-test.mjs
 
+      # The slow group runs in parallel in integration-lite; see scripts/ci-unit-tests.sh.
       - name: Unit tests
-        run: bun run test:run
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: bash scripts/ci-unit-tests.sh main
 
       # The audit's N19: the Bun-only tests (tests/bun/** and every file importing bun:test)
       # are excluded from vitest, so they need their own gate or they silently rot.
@@ -609,6 +613,10 @@ jobs:
 
       - name: Build runtime artifacts
         run: bun run build:ts && bun run build:components
+
+      # Moved out of the `test` job's unit run so both required jobs finish sooner.
+      - name: Slow unit suites (PGlite RDF engine and full runtime)
+        run: bash scripts/ci-unit-tests.sh slow
 
       - name: Lite integration tests
         run: bun run test:integration:lite

@@ -96,7 +96,7 @@ jobs:
       source-sha: ${{ needs.metadata.outputs.sourceSha }}
 
   rc_prerequisites:
-    # Read-only RC preflight: it must not wait for the 18 compatibility lanes.
+    # Read-only RC preflight: it must not wait for the compatibility lanes.
     needs: [metadata]
     runs-on: ubuntu-latest
     environment: rc
@@ -460,10 +460,43 @@ jobs:
           path: ${{ runner.temp }}/service-sdk-source-observation/service-source-observation.json
           if-no-files-found: warn
 
+  private17_admission:
+    # Dispatch the private exact-pair joint admission for this candidate's own
+    # source and service image as soon as the image exists, so it runs alongside
+    # the compatibility lanes instead of waiting for a person between attempts.
+    # The digest of the transported proof is the deploy gate's authority.
+    needs: [metadata, build_image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    permissions:
+      contents: write
+    outputs:
+      admission_sha256: ${{ steps.admission.outputs.admission_sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Dispatch and transport the private exact-pair joint admission
+        id: admission
+        env:
+          GH_TOKEN: ${{ github.token }}
+          XPOD_PRO_ACTIONS_TOKEN: ${{ secrets.XPOD_PRO_ACTIONS_TOKEN }}
+          NATIVE_SOURCE_SHA: ${{ needs.metadata.outputs.sourceSha }}
+          NATIVE_SERVICE_IMAGE: ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          bun scripts/acquire-private17-candidate-admission.ts --producer-repo undefinedsco/xpod-pro \
+            --source-sha "$NATIVE_SOURCE_SHA" --installed-image "$NATIVE_SERVICE_IMAGE" \
+            --pg-image "$NATIVE_PG_IMAGE" --request-id "xpod-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
   deploy_and_accept:
-    # Mandatory shared-RC mutation join: the 18 compatibility lanes must pass
-    # before this job can mutate the shared RC. SDK lookup/build stays parallel.
-    needs: [metadata, build_image, legacy_root_compat]
+    # The compatibility lanes only qualify the npm package; deployment reads none
+    # of their outputs. They run in parallel and finalize_acceptance still requires
+    # them, so a macOS runner queue no longer holds the shared RC deployment back.
+    needs: [metadata, build_image, private17_admission]
     runs-on: ubuntu-latest
     environment: rc
     concurrency:
@@ -745,14 +778,13 @@ jobs:
           XPOD_QLEVER_LOCAL_RUNTIME_IMAGE: ${{ steps.native_runtime_binding.outputs.image }}
         run: bun run test:integration
 
-      # ROOT publishes only the sanitized proof after private exact-image acceptance.
+      # private17_admission transports the sanitized proof and hands over its digest.
       # Missing proof/authority fails before rotation. Rerun this failed job using
       # the existing build outputs; do not rebuild the dynamic candidate image.
-      # First real rerun/output retention and vars refresh remain to be verified.
       - name: Require independent exact-pair Private17 admission before RC mutation
         env:
           GH_TOKEN: ${{ github.token }}
-          PRIVATE17_ADMISSION_SHA256: ${{ vars.XPOD_PRIVATE17_ADMISSION_SHA256 }}
+          PRIVATE17_ADMISSION_SHA256: ${{ needs.private17_admission.outputs.admission_sha256 }}
           NATIVE_SOURCE_SHA: ${{ needs.metadata.outputs.sourceSha }}
           NATIVE_SERVICE_IMAGE: ghcr.io/undefinedsco/xpod@${{ needs.build_image.outputs.digest }}
         run: |
@@ -1562,6 +1594,9 @@ jobs:
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
       - uses: actions/checkout@v4
+      - name: Retry transient GitHub API failures in this job
+        # Only when the checked-out source ships the shim (older stable tags do not).
+        run: if [ -f scripts/install-gh-retry.sh ]; then bash scripts/install-gh-retry.sh; fi
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
@@ -2124,6 +2159,9 @@ jobs:
       REF_NAME: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+      - name: Retry transient GitHub API failures in this job
+        # Only when the checked-out source ships the shim (older stable tags do not).
+        run: if [ -f scripts/install-gh-retry.sh ]; then bash scripts/install-gh-retry.sh; fi
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2

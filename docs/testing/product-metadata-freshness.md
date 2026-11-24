@@ -24,7 +24,7 @@ path. Artifact body and signed redirect handling retain their existing policy.
 The acquisition tests simulate a stale run or job response when revalidation is
 absent and supply terminal originals only to the revalidated request. Existing
 queued, running, failed, wrong-attempt, wrong-source, expired, and wrong-digest
-cases continue to refuse. The complete 18-lane Node/Bun Linux/macOS/Windows matrix
+cases continue to refuse. The complete Node/Bun Linux/macOS/Windows compatibility matrix
 must still pass for the exact reviewed commit before release.
 
 The same source's CSS preview run `39794338020` failed in `validate_run` before
