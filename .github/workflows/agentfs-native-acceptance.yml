@@ -51,6 +51,14 @@ jobs:
           printf '%s  %s\n' '8e3dc89614debe66c2a6ad2313a1adb06eb37db6cd6c40d7de6f7d987f7d1afd' "$node_archive" | shasum -a 256 -c -
           tar -xzf "$node_archive" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/node-v22.21.1-darwin-x64/bin" >> "$GITHUB_PATH"
+      # The regression imports module helpers that reach the CLI source, which
+      # depends on the built workspace client (same chain as the mounted workflow).
+      - name: Build the workspace client the regression imports
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bun run --filter @undefineds.co/xpod-cli build:tools
+          bun run --filter @undefineds.co/xpod-client build
       - name: Lightweight supervisor regression
         run: python3 tests/scripts/agentfs_native_ci_test.py -v
       - name: Official export, offline rebuild, package and extracted install gate

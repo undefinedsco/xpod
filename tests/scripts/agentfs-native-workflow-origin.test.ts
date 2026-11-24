@@ -23,7 +23,7 @@ describe('AgentFS native producer workflow identity',()=>{
     expect(new Set(AGENTFS_NATIVE_WORKFLOW_SHA256S).size).toBe(AGENTFS_NATIVE_WORKFLOW_SHA256S.length);
   });
 
-  it('runs macOS natives on supported images with Bun installed before the supervisor regression',()=>{
+  it('runs macOS natives on supported images with Bun and the built client before the supervisor regression',()=>{
     const job=parse(bytes.toString('utf8')).jobs['native-macos'];
     expect(job.strategy.matrix.include.map((row:any)=>[row.target,row.runner]))
       .toEqual([['darwin-arm64','macos-15'],['darwin-x64','macos-15-intel']]);
@@ -32,5 +32,9 @@ describe('AgentFS native producer workflow identity',()=>{
     expect(bun).toBeGreaterThan(-1);
     expect(bun).toBeLessThan(names.indexOf('Lightweight supervisor regression'));
     expect(job.steps[bun].with['bun-version']).toBe('1.4.2');
+    const build=names.indexOf('Build the workspace client the regression imports');
+    expect(build).toBeGreaterThan(bun);
+    expect(build).toBeLessThan(names.indexOf('Lightweight supervisor regression'));
+    expect(job.steps[build].run).toContain('bun run --filter @undefineds.co/xpod-client build');
   });
 });

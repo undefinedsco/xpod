@@ -1489,9 +1489,10 @@ export async function observeAfsModuleProductGitHubOrigin(input: ArtifactAcquisi
 export const AGENTFS_NATIVE_WORKFLOW_SHA256S=Object.freeze([
   // CURRENT bytes: darwin-arm64 moves off the retired macos-14 hosted image to
   // macos-15, and macOS jobs install Bun 1.4.2 because the images no longer ship
-  // it. Targets, steps and gates are unchanged. The previous reviewed bytes stay
+  // it, then build the workspace client the regression imports. Targets and
+  // gates are unchanged. The previous reviewed bytes stay
   // admitted so historical runs (e.g. 42630283454) keep verifying.
-  '3cd8716a70ab5f4ce9aa340ad37851a35163a0e909410512f034eac3dc243758',
+  'f124cc03987be0cb1d0394ec838ce7a425c5daea309ca35a5917926ce86d9c47',
   '16b9b9e1fce46671f50080765c3c590daef0606a5cdf767c22fe4719ac72d310',
 ]);
 
