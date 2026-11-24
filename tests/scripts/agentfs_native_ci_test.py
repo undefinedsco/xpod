@@ -6,6 +6,7 @@ import zipfile
 import importlib.util
 import itertools
 import json
+import shutil
 import struct
 import os
 from pathlib import Path
@@ -123,6 +124,9 @@ class LinuxContainerBindingTests(unittest.TestCase):
         finally:
             self.fixture = original
 
+    # Runs where Bun exists (the macOS native jobs); the Bookworm admission is
+    # deliberately Bun-free, so it cannot evaluate this TypeScript projection.
+    @unittest.skipUnless(shutil.which('bun'), 'requires Bun; the Bookworm admission is Bun-free')
     def test_safe_export_preserves_failure_fields_and_rejects_unbounded_reason_codes(self):
         code = """import {projectReceipt} from './scripts/agentfs-native-ci/mounted/prepare-module-inputs.ts';
 const input=JSON.parse(await Bun.stdin.text());try{console.log(JSON.stringify({value:projectReceipt('linux-container-binding.json',input)}))}catch{console.log(JSON.stringify({rejected:true}))}"""
