@@ -847,7 +847,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual([(x['target'], x['runner']) for x in job['strategy']['matrix']['include']],
                          [('linux-arm64', 'ubuntu-24.04-arm'), ('linux-x64', 'ubuntu-24.04')])
         self.assertEqual([(x['target'], x['runner']) for x in workflow['jobs']['native-macos']['strategy']['matrix']['include']],
-                         [('darwin-arm64', 'macos-14'), ('darwin-x64', 'macos-15-intel')])
+                         [('darwin-arm64', 'macos-15'), ('darwin-x64', 'macos-15-intel')])
         commands = '\n'.join(step.get('run', '') for step in job['steps'])
         self.assertIn('--init', commands)
         self.assertIn('bookworm-entry.sh', commands)

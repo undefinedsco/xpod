@@ -19,7 +19,7 @@ jobs:
       matrix:
         include:
           - target: darwin-arm64
-            runner: macos-14
+            runner: macos-15
           - target: darwin-x64
             runner: macos-15-intel
     name: native (${{ matrix.target }})
@@ -36,6 +36,10 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22.21.1
+      # Hosted macOS images no longer ship Bun; the supervisor regression calls it.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.2
       # ARM retains its admitted setup-node path; Intel uses independently
       # pinned official archive bytes, never the ARM download or binary.
       - name: Pin the official Intel Node asset

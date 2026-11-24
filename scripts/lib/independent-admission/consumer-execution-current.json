@@ -941,7 +941,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "d7d56fbfb3389aa0aac67223dce2ece0400fda5377fb51ff1301e143a1bbe691"
+    "sha256": "3be3037931542ec429c8c859e1c355dd770dab60a489cd0a5d80624d5191c76f"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",
