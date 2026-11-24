@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 /** Contract regression for the applied AFS native authority.
  *
  * The four platform rows must stay bound to the ACTUAL reviewed artifacts of the
- * CURRENT (8a0d) native producer run 45357561834 (attempt 1), source 8a0d99eb…,
+ * CURRENT (d3ee) native producer run 45440938245 (attempt 3), source d3eedd0d…,
  * whose ids/digests were re-derived from the nested receipt and product-archive
  * members and independently streamed from all four original ZIPs. This pins the shape and the shared sourceKit identity
  * so a later edit cannot silently point a platform at a superseded artifact id,
@@ -22,8 +22,8 @@ describe('AFS native authority contract', () => {
 
   it('binds the reviewed native producer run and source revision', () => {
     expect(authority.schemaVersion).toBe(1);
-    expect(authority.source).toBe('8a0d99eb9818417abb8fc35d73cff2ba5f703e34');
-    expect(authority.run).toBe('45357561834');
+    expect(authority.source).toBe('d3eedd0d00870e71f6029994f14e53a1f5d6960b');
+    expect(authority.run).toBe('45440938245');
   });
 
   it('declares exactly the four platform artifacts with distinct ids', () => {
