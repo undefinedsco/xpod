@@ -94,6 +94,7 @@ STAGE_TIMEOUTS = {
     'toolchain-docs': 1500,
     'dependencies': 1500,
     'workspace-packages': 1200,
+    'supervisor-units': 900,
     'upstream': 600,
     'upstream-checkout': 180,
     'export': 1200,
@@ -598,6 +599,13 @@ def main():
             raise RuntimeError('Pinned JS runtime actual architecture mismatch')
     gate('dependencies', [bun, 'install', '--frozen-lockfile'])
     gate('workspace-packages', [bun, 'run', 'build:packages'])
+    # The consumer contract (verify_native_stage_inventory) requires every
+    # archive with generated notices to close a `supervisor-units` stage. Run the
+    # existing supervisor/case regressions once here, as a bounded gate of this
+    # producer: after the locked install and workspace build, before any native
+    # export, rebuild, package or extracted install.
+    gate('supervisor-units', [sys.executable, str(root / 'tests/scripts/agentfs_native_ci_test.py'), '-v'],
+         environment={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
     upstream = base / 'upstream'
     gate('upstream', ['git', 'clone', '--no-checkout', 'https://github.com/tursodatabase/agentfs', str(upstream)])
     gate('upstream-checkout', ['git', '-C', str(upstream), 'checkout', '--detach', UPSTREAM])

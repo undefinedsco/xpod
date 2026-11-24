@@ -617,7 +617,7 @@
   },
   {
     "path": "scripts/agentfs-native-ci/accept.py",
-    "sha256": "c79c1e76ede8f3acfd800792909b181acc0231b3cde125a16b1a6f51932a73bc"
+    "sha256": "3cc44ba2e0cd95c4c5b7a8e8a7fbffad390cf4262bf902fdb8e1f2d451e8a2a6"
   },
   {
     "path": "scripts/agentfs-native-ci/mounted/export-products.ts",
