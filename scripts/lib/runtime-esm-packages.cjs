@@ -6,12 +6,14 @@ const { resolveNativeTarget } = require('./embedded-native-cli.cjs');
 // These SDKs are loaded with native import() at request time, outside the
 // Components.js closure. Preserve ESM and real native-asset package locations.
 const RUNTIME_ESM_PACKAGES = [{
-  name: '@mariozechner/pi-coding-agent',
+  name: '@earendil-works/pi-coding-agent',
+  // Pi 1.6 replaced AuthStorage/ModelRegistry with ModelRuntime and pi-ai credentials.
   externals: ['@silvia-odwyer/photon-node'],
   // Xpod embeds the programmatic API, never the upstream interactive CLI.
   entries: {
-    'core/auth-storage.js': ['AuthStorage'],
-    'core/model-registry.js': ['ModelRegistry'],
+    // V01 requires the built artifact to report the SDK version it actually loaded.
+    'config.js': ['VERSION'],
+    'core/model-runtime.js': ['ModelRuntime'],
     'core/session-manager.js': ['SessionManager'],
     'core/settings-manager.js': ['SettingsManager'],
     'core/resource-loader.js': ['DefaultResourceLoader'],
@@ -50,9 +52,8 @@ function copyExternalPackages(names, optionalNames, nodeModulesRoot, stageRoot) 
 }
 
 async function stageRuntimeEsmPackages({ nodeModulesRoot, stageRoot, compileTarget }) {
-  // The native runtime supports macOS/Linux only. pi-tui loads Koffi solely
-  // in its Windows console-input branch; keep that guarded require external
-  // without shipping unused Windows terminal support on these targets.
+  // The native runtime supports macOS/Linux only. pi-tui is bundled into the SDK
+  // entry, and 1.6 no longer loads Koffi or a clipboard native module from its core.
   resolveNativeTarget(compileTarget);
   for (const declaration of RUNTIME_ESM_PACKAGES) {
     const directory = path.join(nodeModulesRoot, declaration.name);
@@ -69,7 +70,9 @@ async function stageRuntimeEsmPackages({ nodeModulesRoot, stageRoot, compileTarg
       outfile: path.join(target, main),
       bundle: true, platform: 'node', format: 'esm', target: 'node22', logLevel: 'silent',
       minify: true, keepNames: true,
-      external: [...declaration.externals, 'koffi', '@mariozechner/clipboard'],
+      // 1.6's SDK core imports pi-tui for terminal capability/keybinding metadata; it is
+      // bundled into the single staged entry instead of shipping the interactive UI.
+      external: [...declaration.externals],
       banner: { js: "import { createRequire as __xpodCreateRequire } from 'node:module'; const require = __xpodCreateRequire(import.meta.url);" },
     });
     // Only the SDK entry is shipped. Do not advertise the upstream interactive CLI

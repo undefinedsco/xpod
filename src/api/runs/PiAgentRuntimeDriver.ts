@@ -27,14 +27,14 @@ import type {
 } from './AgentRuntimeTypes';
 import type { RunExecutionBackend, RunExecutionInput } from './RunExecutionBackend';
 
-type PiSdk = typeof import('@mariozechner/pi-coding-agent');
+type PiSdk = typeof import('@earendil-works/pi-coding-agent');
 const xpodVersion = (JSON.parse(fs.readFileSync(path.join(PACKAGE_ROOT, 'package.json'), 'utf8')) as { version: string }).version;
-type AgentSessionEvent = import('@mariozechner/pi-coding-agent').AgentSessionEvent;
+type AgentSessionEvent = import('@earendil-works/pi-coding-agent').AgentSessionEvent;
 type CreateAgentSessionOptions = NonNullable<Parameters<PiSdk['createAgentSession']>[0]>;
 type PiTool = ReturnType<PiSdk['createCodingTools']>[number];
-type PiReadOperations = import('@mariozechner/pi-coding-agent').ReadOperations;
-type PiEditOperations = import('@mariozechner/pi-coding-agent').EditOperations;
-type PiWriteOperations = import('@mariozechner/pi-coding-agent').WriteOperations;
+type PiReadOperations = import('@earendil-works/pi-coding-agent').ReadOperations;
+type PiEditOperations = import('@earendil-works/pi-coding-agent').EditOperations;
+type PiWriteOperations = import('@earendil-works/pi-coding-agent').WriteOperations;
 type PiApi = string;
 type PiModel = {
   id: string;
@@ -132,8 +132,7 @@ type WarmRuntime = {
     model: PiModel;
   };
   thinkingLevel: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
-  authStorage: NonNullable<CreateAgentSessionOptions['authStorage']>;
-  modelRegistry: NonNullable<CreateAgentSessionOptions['modelRegistry']>;
+  modelRuntime: NonNullable<CreateAgentSessionOptions['modelRuntime']>;
   settingsManager: ReturnType<PiSdk['SettingsManager']['inMemory']>;
   resourceLoader: NonNullable<CreateAgentSessionOptions['resourceLoader']>;
   tools: PiTool[];
@@ -142,9 +141,10 @@ type WarmRuntime = {
 /**
  * Request-scoped adapter around pi's AgentSession primitives.
  *
- * Xpod restores durable conversation state into pi with replaceMessages() on
- * every run. pi owns the atomic agent loop, tools and streaming events for the
- * current invocation only; its SessionManager is not the Xpod state center.
+ * Xpod restores durable conversation state through SessionManager when each
+ * request-scoped session is created. pi owns the atomic agent loop, tools and
+ * streaming events for the current invocation only; its SessionManager is not
+ * the Xpod state center.
  */
 export class PiAgentRuntimeDriver implements RunExecutionBackend {
   private static sdkPromise?: Promise<PiSdk>;
@@ -240,6 +240,8 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
     let failed = false;
     let releaseApprovalTool: (() => void) | undefined;
     let pausedForApproval = false;
+    let settleLifecycle: (() => void) | undefined;
+    const lifecycleSettled = new Promise<void>((resolve) => { settleLifecycle = resolve; });
     const sessionHeader = `xpod-${crypto.createHash('sha256').update(input.threadId).digest('hex')}`;
     let stage: 'not_invoked' | 'model_invoked' | 'payload_prepared' | 'stream_open' = 'not_invoked';
     let api: 'openai-completions' | 'openai-responses' | 'other' = 'other';
@@ -260,10 +262,9 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
         try { this.logger.error(JSON.stringify(receipt)); } catch { /* Diagnostics cannot alter run failure semantics. */ }
       }
     };
-    let releaseLifecycleWait: (() => void) | undefined;
     const onAbort = () => {
       failed = true;
-      releaseLifecycleWait?.();
+      settleLifecycle?.();
       void session?.abort().catch(() => undefined);
       queue.close();
     };
@@ -275,7 +276,9 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
       api = runtime.piConfig.api === 'openai-completions' || runtime.piConfig.api === 'openai-responses'
         ? runtime.piConfig.api : 'other';
       credentialPresent = Boolean(runtime.piConfig.apiKey);
-      const sessionManager = this.createSessionManager(runtime.pi, input.runId, runtime.workdir);
+      const sessionManager = this.createSessionManager(
+        runtime.pi, input.runId, runtime.workdir, this.toPiMessages(input, runtime.piConfig),
+      );
       const approvalTool: NonNullable<CreateAgentSessionOptions['customTools']>[number] = {
         name: 'request_approval', label: 'Request approval',
         description: 'Pause this run and ask its owner to approve a specific action before you perform it. This tool does not execute the action. Use only when human approval is needed. After resuming, follow the persisted decision; do not request the same approval again.',
@@ -302,7 +305,7 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
           await workspace!.commit();
           completed = true;
           pausedForApproval = true;
-          releaseLifecycleWait?.();
+          settleLifecycle?.();
           const paused = new Promise<never>((_resolve, reject) => {
             const finish = () => { signal?.removeEventListener('abort', finish); reject(new Error('Run paused for owner approval')); };
             releaseApprovalTool = finish;
@@ -315,8 +318,7 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
       };
       const result = await runtime.pi.createAgentSession({
         cwd: runtime.workdir,
-        authStorage: runtime.authStorage,
-        modelRegistry: runtime.modelRegistry,
+        modelRuntime: runtime.modelRuntime,
         settingsManager: runtime.settingsManager,
         sessionManager,
         resourceLoader: runtime.resourceLoader,
@@ -325,18 +327,21 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
           'x-opencode-session': sessionHeader,
         } },
         thinkingLevel: runtime.thinkingLevel,
-        tools: runtime.tools,
-        customTools: [approvalTool],
+        // 1.6 takes a name allowlist that also filters custom tools; the executable tools
+        // (including SolidFS-backed overrides of the built-ins) are registered as custom tools.
+        tools: [ ...runtime.tools.map((tool) => tool.name), 'request_approval' ],
+        customTools: [ ...runtime.tools.map((tool) => this.toPiToolDefinition(tool)), approvalTool ],
       });
       session = result.session;
-      const originalStreamFn = session.agent.streamFn.bind(session.agent);
-      session.agent.streamFn = (model, context, options) => {
+      const originalStreamFn = session.agent.streamFunction.bind(session.agent);
+      session.agent.streamFunction = (model, context, options) => {
         stage = 'model_invoked';
-        credentialPresent = Boolean(options?.apiKey);
+        // 1.6 resolves stored credentials inside ModelRuntime; the request may carry no apiKey.
+        credentialPresent = Boolean(options?.apiKey ?? runtime.piConfig.apiKey);
         const response = originalStreamFn(model, context, { ...options,
-          onPayload: payload => {
+          onPayload: (payload) => {
             stage = 'payload_prepared';
-            return options?.onPayload?.(payload);
+            return options?.onPayload?.(payload, model);
           },
         });
         const observe = (stream: Awaited<ReturnType<typeof originalStreamFn>>) => {
@@ -352,7 +357,6 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
         return response instanceof Promise ? response.then(observe) : observe(response);
       };
       if (input.signal?.aborted) return;
-      session.agent.replaceMessages(this.toPiMessages(input, runtime.piConfig));
 
       const streamState = {
         lastAssistantText: '',
@@ -361,23 +365,16 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
       const unsubscribe = session.subscribe((event) => {
         this.projectPiEvent(event, queue, streamState);
         if (event.type === 'auto_retry_start') retryCount += 1;
-        if (event.type === 'agent_start' || event.type === 'auto_retry_end') releaseLifecycleWait?.();
+        if (event.type === 'agent_settled') settleLifecycle?.();
       });
 
       void session.prompt(input.prompt, { expandPromptTemplates: false, source: 'rpc' }).then(async () => {
-        // A recovered retry can resolve prompt before its tools and subsequent turns finish.
-        // Wait on SDK lifecycle promises; approval/cancellation closes the queue and aborts the session.
-        while (!pausedForApproval && !input.signal?.aborted && (session?.isStreaming || session?.isRetrying)) {
-          if (session?.isStreaming) {
-            await session.agent.waitForIdle();
-          } else {
-            await new Promise<void>(resolve => {
-              releaseLifecycleWait = resolve;
-              // Register before checking state so an already-started retry cannot lose its wakeup.
-              if (pausedForApproval || input.signal?.aborted || !session?.isRetrying || session.isStreaming) resolve();
-            });
-            releaseLifecycleWait = undefined;
-          }
+        // 1.6 emits agent_settled after pi will no longer continue automatically, including
+        // internal retries. A resolved prompt normally settles the run; if the session still
+        // reports activity (an older-style early resolve), wait for that terminal event rather
+        // than polling isStreaming/isRetrying. Approval/cancellation closes the queue.
+        if (session?.isIdle === false) {
+          await lifecycleSettled;
         }
         // Pi also resolves failed prompts, including errors with no message_end.
         const lastAssistant = (session?.messages ?? []).slice().reverse().find(message => message.role === 'assistant');
@@ -418,9 +415,11 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
       yield event;
     } finally {
       input.signal?.removeEventListener('abort', onAbort);
-      releaseLifecycleWait?.();
-      releaseApprovalTool?.();
+      // Abort before releasing a paused approval tool: 1.6 turns a rejected tool result into
+      // another model turn, and the abort must already be visible to stop that continuation.
       if (!completed || pausedForApproval) await session?.abort().catch(() => undefined);
+      settleLifecycle?.();
+      releaseApprovalTool?.();
       session?.dispose();
       if (!completed) {
         await workspace?.rollback().catch((error) => {
@@ -658,13 +657,18 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
   private async createWarmRuntime(pi: PiSdk, workspace: MaterializedWorkspace, config: AgentRuntimeConfig): Promise<WarmRuntime> {
     const workdir = workspace.cwd;
     const piConfig = this.resolvePiConfig(config);
-    const authStorage = pi.AuthStorage.inMemory();
-    authStorage.setRuntimeApiKey(piConfig.provider, piConfig.apiKey);
-
-    const modelRegistry = new pi.ModelRegistry(authStorage, undefined);
-    modelRegistry.registerProvider(piConfig.provider, {
+    // P1 keeps the current Gateway call path: one request-scoped in-memory credential.
+    // Per-connection CredentialStore isolation belongs to P2. No auth.json/models.json is read.
+    const credentials = new InMemoryPiCredentialStore();
+    await credentials.modify(piConfig.provider, async () => ({ type: 'api_key', key: piConfig.apiKey }));
+    const modelRuntime = await pi.ModelRuntime.create({
+      credentials,
+      modelsPath: null,
+      refreshOnCreate: false,
+      allowModelNetwork: false,
+    });
+    modelRuntime.registerProvider(piConfig.provider, {
       baseUrl: piConfig.baseUrl,
-      apiKey: piConfig.apiKey,
       api: piConfig.api,
       models: [ piConfig.model ],
     });
@@ -678,9 +682,12 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
 
     const resourceLoader = new pi.DefaultResourceLoader({
       cwd: workdir,
+      // Keep the host developer's ~/.pi/agent configuration, packages and credentials out of
+      // request-scoped sessions; the Gateway key is supplied in memory above.
+      agentDir: this.resolveAgentDir(workdir),
       settingsManager,
       systemPrompt: config.agentConfig?.systemPrompt,
-      appendSystemPrompt: config.agentConfig?.skillsContent,
+      appendSystemPrompt: config.agentConfig?.skillsContent ? [ config.agentConfig.skillsContent ] : undefined,
       noExtensions: true,
       noSkills: true,
       noPromptTemplates: true,
@@ -693,8 +700,7 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
       workdir,
       piConfig,
       thinkingLevel,
-      authStorage,
-      modelRegistry,
+      modelRuntime,
       settingsManager,
       resourceLoader,
       tools: this.resolveTools(pi, workspace, config),
@@ -1041,11 +1047,73 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
     }
   }
 
-  private createSessionManager(pi: PiSdk, runId: string, workdir: string): ReturnType<PiSdk['SessionManager']['inMemory']> {
+  private createSessionManager(
+    pi: PiSdk,
+    runId: string,
+    workdir: string,
+    history: PiMessage[],
+  ): ReturnType<PiSdk['SessionManager']['inMemory']> {
+    // 1.6 builds model context from SessionManager. History read back from the Pod must be
+    // seeded here before createAgentSession; assigning agent.state.messages would not count.
+    const seeded = history.length === 0 ? undefined : this.toSessionEntries(history);
     if (this.options.persistPiSessions) {
-      return pi.SessionManager.create(workdir, this.resolveSessionDir(runId, workdir));
+      const manager = pi.SessionManager.create(workdir, this.resolveSessionDir(runId, workdir));
+      this.appendSessionEntries(manager, history);
+      return manager;
     }
-    return pi.SessionManager.inMemory(workdir);
+    return pi.SessionManager.inMemory(workdir, undefined, seeded);
+  }
+
+  private toSessionEntries(history: PiMessage[]): NonNullable<Parameters<PiSdk['SessionManager']['inMemory']>[2]> {
+    return history.map((message, index) => ({
+      type: 'message' as const,
+      id: `xpod-history-${index}`,
+      parentId: index === 0 ? null : `xpod-history-${index - 1}`,
+      timestamp: new Date(message.timestamp).toISOString(),
+      message,
+    }));
+  }
+
+  private appendSessionEntries(
+    manager: ReturnType<PiSdk['SessionManager']['inMemory']>,
+    history: PiMessage[],
+  ): void {
+    for (const message of history) {
+      manager.appendMessage(message as Parameters<typeof manager.appendMessage>[0]);
+    }
+  }
+
+  private toPiToolDefinition(tool: PiTool): NonNullable<CreateAgentSessionOptions['customTools']>[number] {
+    // `Tool` (AgentTool) omits the prompt metadata only present on a ToolDefinition; keep it so
+    // registering the executable tool through the SDK customTools slot does not change the prompt.
+    const definition = tool as PiTool & {
+      promptSnippet?: string;
+      promptGuidelines?: readonly string[];
+      outputSchema?: object;
+      constrainedSampling?: { readonly enabled?: boolean };
+      prepareArguments?: (args: unknown) => unknown;
+      executionMode?: 'sequential' | 'parallel';
+    };
+    return {
+      name: definition.name,
+      label: definition.label,
+      description: definition.description,
+      ...(definition.promptSnippet ? { promptSnippet: definition.promptSnippet } : {}),
+      ...(definition.promptGuidelines ? { promptGuidelines: [ ...definition.promptGuidelines ] } : {}),
+      parameters: definition.parameters,
+      ...(definition.outputSchema ? { outputSchema: definition.outputSchema } : {}),
+      ...(definition.constrainedSampling !== undefined ? { constrainedSampling: definition.constrainedSampling } : {}),
+      ...(definition.prepareArguments ? { prepareArguments: definition.prepareArguments } : {}),
+      ...(definition.executionMode ? { executionMode: definition.executionMode } : {}),
+      execute: async (toolCallId, params, signal, onUpdate) =>
+        definition.execute(toolCallId, params, signal, onUpdate),
+    } as NonNullable<CreateAgentSessionOptions['customTools']>[number];
+  }
+
+  private resolveAgentDir(workdir: string): string {
+    const root = this.options.sessionRootDir ?? path.join(os.tmpdir(), 'xpod-pi-agent');
+    const hash = crypto.createHash('sha256').update(workdir).digest('hex').slice(0, 20);
+    return path.join(root, 'agent', hash);
   }
 
   private resolveSessionDir(runId: string, workdir: string): string {
@@ -1135,9 +1203,9 @@ export class PiAgentRuntimeDriver implements RunExecutionBackend {
     // Compiled Bun cannot resolve this bare specifier in its extracted runtime
     // (the Components.js adapter has the same constraint). Use the staged ESM
     // entry directly; ordinary JS installs can still resolve a hoisted package.
-    const stagedEntry = path.join(PACKAGE_ROOT, 'node_modules', '@mariozechner/pi-coding-agent', 'dist', 'index.js');
+    const stagedEntry = path.join(PACKAGE_ROOT, 'node_modules', '@earendil-works/pi-coding-agent', 'dist', 'index.js');
     PiAgentRuntimeDriver.sdkPromise = nativeImport(fs.existsSync(stagedEntry)
-      ? pathToFileURL(stagedEntry).href : '@mariozechner/pi-coding-agent');
+      ? pathToFileURL(stagedEntry).href : '@earendil-works/pi-coding-agent');
     return PiAgentRuntimeDriver.sdkPromise;
   }
 }
@@ -1203,6 +1271,57 @@ function describeAssistantFailure(message: { api?: string; provider?: string; mo
   if (safeLabel(message.model)) parts.push(`model=${safeLabel(message.model)}`);
   return ` (${parts.join(', ')})`;
 }
+
+/**
+ * Minimal request-scoped CredentialStore for the Gateway API key.
+ *
+ * pi 1.6 resolves model auth through pi-ai credentials. Writes are serialized per
+ * provider so the SDK's read-modify-write contract holds; nothing is persisted.
+ */
+class InMemoryPiCredentialStore {
+  private readonly credentials = new Map<string, PiCredential>();
+  private readonly chains = new Map<string, Promise<unknown>>();
+
+  public async read(providerId: string): Promise<PiCredential | undefined> {
+    return this.credentials.get(providerId);
+  }
+
+  public async list(): Promise<Array<{ providerId: string; type: PiCredential['type'] }>> {
+    return [ ...this.credentials ].map(([providerId, credential]) => ({ providerId, type: credential.type }));
+  }
+
+  public async modify(
+    providerId: string,
+    update: (current: PiCredential | undefined) => Promise<PiCredential | undefined>,
+  ): Promise<PiCredential | undefined> {
+    const previous = this.chains.get(providerId) ?? Promise.resolve();
+    const operation = previous.then(async () => {
+      const current = this.credentials.get(providerId);
+      const next = await update(current);
+      if (next !== undefined) {
+        this.credentials.set(providerId, next);
+      }
+      return next ?? current;
+    });
+    const tail = operation.catch((): undefined => undefined);
+    this.chains.set(providerId, tail);
+    try {
+      return await operation;
+    } finally {
+      if (this.chains.get(providerId) === tail) {
+        this.chains.delete(providerId);
+      }
+    }
+  }
+
+  public async delete(providerId: string): Promise<void> {
+    this.credentials.delete(providerId);
+  }
+}
+
+type PiCredential =
+  | { type: 'api_key'; key?: string; env?: Record<string, string> }
+  | { type: 'oauth'; refresh: string; access: string; expires: number };
 
 export const PI_AGENT_WORKER_EVENT_PREFIX = 'XPOD_AGENT_EVENT ';
 

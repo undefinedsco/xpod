@@ -33,7 +33,7 @@ test('capability manifest resolves its installed SDK instead of a different repo
 }, API_BUILD_INTEGRATION_TIMEOUT_MS);
 
 test('API native-import SDK uses declared runtime packages and their transitive closure outside the input tree', () => {
-  assert.equal(manifest.dependencies['@mariozechner/pi-coding-agent'], '^0.55.1');
+  assert.equal(manifest.dependencies['@earendil-works/pi-coding-agent'], '1.6.0');
   const root = mkdtempSync(path.join(tmpdir(), 'xpod-api-input-'));
   const output = mkdtempSync(path.join(tmpdir(), 'xpod-api-output-'));
   rmSync(output, { recursive: true });
@@ -45,11 +45,11 @@ test('API native-import SDK uses declared runtime packages and their transitive 
   try {
     put('package.json', JSON.stringify({ name: 'controlled-api', version: '1.0.0' }));
     put('LICENSE', 'controlled fixture license\n');
-    put('src/api/main.ts', "const nativeImport = new Function('specifier', 'return import(specifier)'); nativeImport('@mariozechner/pi-coding-agent').then(sdk => process.stdout.write(String(sdk.default)));\n");
+    put('src/api/main.ts', "const nativeImport = new Function('specifier', 'return import(specifier)'); nativeImport('@earendil-works/pi-coding-agent').then(sdk => process.stdout.write(String(sdk.default)));\n");
     for (const name of runtimePackages) {
-      put('node_modules/'+name+'/package.json', JSON.stringify({ name, version: '1.0.0', main: 'index.js', dependencies: name === '@mariozechner/pi-coding-agent' ? { 'sdk-leaf': '1.0.0' } : {} }));
+      put('node_modules/'+name+'/package.json', JSON.stringify({ name, version: '1.0.0', main: 'index.js', dependencies: name === '@earendil-works/pi-coding-agent' ? { 'sdk-leaf': '1.0.0' } : {} }));
       // Mature dependency libraries can use declared dynamic require paths.
-      put('node_modules/'+name+'/index.js', name === '@mariozechner/pi-coding-agent' ? "const name = 'sdk-leaf'; module.exports = require(name);\n" : 'module.exports = {};\n');
+      put('node_modules/'+name+'/index.js', name === '@earendil-works/pi-coding-agent' ? "const name = 'sdk-leaf'; module.exports = require(name);\n" : 'module.exports = {};\n');
     }
     put('node_modules/sdk-leaf/package.json', JSON.stringify({ name: 'sdk-leaf', version: '1.0.0', main: 'index.js' }));
     put('node_modules/sdk-leaf/index.js', 'module.exports = 42;\n');
@@ -82,7 +82,7 @@ test('declared dynamic SDK retains its exact identity when another version is mo
     mkdirSync(path.dirname(target), { recursive: true });
     writeFileSync(target, body);
   };
-  const sdk = '@mariozechner/pi-coding-agent';
+  const sdk = '@earendil-works/pi-coding-agent';
   const pkg = (dir: string, name: string, version: string, body: string, dependencies = {}) => {
     put(dir+'/package.json', JSON.stringify({ name, version, main: 'index.js', dependencies }));
     put(dir+'/index.js', body);
@@ -90,10 +90,10 @@ test('declared dynamic SDK retains its exact identity when another version is mo
   try {
     put('package.json', JSON.stringify({ name: 'controlled-api', version: '1.0.0' }));
     put('LICENSE', 'controlled fixture license\n');
-    put('src/api/main.ts', "const load = new Function('name', 'return import(name)'); Promise.all([load('@mariozechner/pi-coding-agent'), load('consumer-a'), load('consumer-b')]).then(values => process.stdout.write(values.map(v => v.default).join(',')));\n");
+    put('src/api/main.ts', "const load = new Function('name', 'return import(name)'); Promise.all([load('@earendil-works/pi-coding-agent'), load('consumer-a'), load('consumer-b')]).then(values => process.stdout.write(values.map(v => v.default).join(',')));\n");
     pkg('node_modules/'+sdk, sdk, '1.0.0', "module.exports = 'declared';\n");
     for (const name of ['consumer-a', 'consumer-b']) {
-      pkg('node_modules/'+name, name, '1.0.0', "module.exports = require('@mariozechner/pi-coding-agent');\n", { [sdk]: '2.0.0' });
+      pkg('node_modules/'+name, name, '1.0.0', "module.exports = require('@earendil-works/pi-coding-agent');\n", { [sdk]: '2.0.0' });
       pkg('node_modules/'+name+'/node_modules/'+sdk, sdk, '2.0.0', "module.exports = 'nested';\n");
     }
     const facts = stagePhysicalService(root, output, ['src/api/main.ts'], {

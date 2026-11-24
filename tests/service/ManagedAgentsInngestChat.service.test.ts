@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { beforeEach, describe, it, expect, vi } from 'vitest';
-import type { StreamFn } from '@mariozechner/pi-agent-core';
+import type { StreamFn } from '@earendil-works/pi-agent-core';
 import { ChatKitService } from '../../src/api/chatkit/service';
 import { InMemoryStore, type StoreContext } from '../../src/api/chatkit/store';
 import {
@@ -40,13 +40,13 @@ type TestRuntimeTool = {
 interface TestAgentSessionOptions {
   cwd?: string;
   model?: { headers?: Record<string, string> };
-  tools: TestRuntimeTool[];
-  customTools?: import('@mariozechner/pi-coding-agent').ToolDefinition[];
+  tools: string[];
+  customTools?: import('@earendil-works/pi-coding-agent').ToolDefinition[];
 }
 
 interface TestAgentSessionResult {
   session: {
-    agent: { replaceMessages: typeof replaceMessagesMock; streamFn: StreamFn };
+    agent: { streamFunction: StreamFn };
     subscribe: typeof subscribeMock;
     prompt: (prompt?: string) => Promise<void>;
     dispose: typeof disposeMock;
@@ -83,23 +83,20 @@ const {
   createCodingToolsMock,
   createReadOnlyToolsMock,
   reloadMock,
-  replaceMessagesMock,
   promptMock,
   subscribeMock,
   disposeMock,
   sessionManagerInMemoryMock,
   sessionManagerCreateMock,
-  setRuntimeApiKeyMock,
   registerProviderMock,
 } = (() => {
-  const replaceMessagesMock = vi.fn();
   const promptMock = vi.fn(async () => undefined);
   const subscribeMock = vi.fn((_handler?: (event: unknown) => void) => () => undefined);
   const disposeMock = vi.fn();
 
   const createAgentSessionMock = vi.fn(async (_options?: TestAgentSessionOptions): Promise<TestAgentSessionResult> => ({
       session: {
-        agent: { replaceMessages: replaceMessagesMock, streamFn: unusedStreamFn },
+        agent: { streamFunction: unusedStreamFn },
         subscribe: subscribeMock,
         prompt: promptMock,
         dispose: disposeMock,
@@ -114,21 +111,14 @@ const {
   ]);
   const createReadOnlyToolsMock = vi.fn(() => [{ name: 'read' }, { name: 'grep' }, { name: 'find' }, { name: 'ls' }]);
   const reloadMock = vi.fn(async () => undefined);
-  const sessionManagerInMemoryMock = vi.fn(() => ({ kind: 'memory-session' }));
+  const sessionManagerInMemoryMock = vi.fn((_cwd?: string, _options?: unknown, entries?: Array<{ message: unknown }>) => ({ kind: 'memory-session', entries }));
   const sessionManagerCreateMock = vi.fn(() => ({ kind: 'file-session' }));
-  const setRuntimeApiKeyMock = vi.fn();
   const registerProviderMock = vi.fn();
 
-  class AuthStorageMock {
-    static inMemory() {
-      return new AuthStorageMock();
+  class ModelRuntimeMock {
+    static async create() {
+      return new ModelRuntimeMock();
     }
-
-    setRuntimeApiKey = setRuntimeApiKeyMock;
-  }
-
-  class ModelRegistryMock {
-    constructor() {}
 
     registerProvider = registerProviderMock;
   }
@@ -156,9 +146,8 @@ const {
   };
 
   const piSdkMock = {
-    AuthStorage: AuthStorageMock,
     DefaultResourceLoader: DefaultResourceLoaderMock,
-    ModelRegistry: ModelRegistryMock,
+    ModelRuntime: ModelRuntimeMock,
     SessionManager: {
       inMemory: sessionManagerInMemoryMock,
       create: sessionManagerCreateMock,
@@ -199,13 +188,11 @@ const {
     createCodingToolsMock,
     createReadOnlyToolsMock,
     reloadMock,
-    replaceMessagesMock,
-    promptMock,
+      promptMock,
     subscribeMock,
     disposeMock,
     sessionManagerInMemoryMock,
     sessionManagerCreateMock,
-    setRuntimeApiKeyMock,
     registerProviderMock,
   };
 })();
@@ -353,13 +340,11 @@ describe('Managed Agents Inngest Chat backend', () => {
     createCodingToolsMock.mockClear();
     createReadOnlyToolsMock.mockClear();
     reloadMock.mockClear();
-    replaceMessagesMock.mockClear();
     promptMock.mockClear();
     subscribeMock.mockClear();
     disposeMock.mockClear();
     sessionManagerInMemoryMock.mockClear();
     sessionManagerCreateMock.mockClear();
-    setRuntimeApiKeyMock.mockClear();
     registerProviderMock.mockClear();
   });
 
@@ -2089,7 +2074,6 @@ describe('Managed Agents Inngest Chat backend', () => {
           message: expect.stringContaining('AI Connection'),
         },
       ]);
-      expect(setRuntimeApiKeyMock).not.toHaveBeenCalled();
       expect(registerProviderMock).not.toHaveBeenCalled();
       for (const [key, ambientValue] of Object.entries(ambientProviderEnv)) {
         expect(workerEnv[key]).toBeUndefined();
@@ -2140,12 +2124,15 @@ describe('Managed Agents Inngest Chat backend', () => {
     }
 
     expect(events).toEqual([]);
-    expect(setRuntimeApiKeyMock).toHaveBeenCalledWith('xpod', 'gateway-key');
     expect(registerProviderMock).toHaveBeenCalledWith('xpod', expect.objectContaining({
       baseUrl: 'http://127.0.0.1:3000/v1',
-      apiKey: 'gateway-key',
       api: 'openai-completions',
+      models: [expect.objectContaining({ id: 'linx', provider: 'xpod' })],
     }));
+    // The Gateway key is supplied through the request-scoped credential store created by the
+    // driver, not through a provider-level apiKey or the host's auth.json.
+    const registered = registerProviderMock.mock.calls.at(-1)?.[1];
+    expect(registered).not.toHaveProperty('apiKey');
   });
 
   it('restores Xpod conversation into a fresh pi session for each run', async () => {
@@ -2187,39 +2174,44 @@ describe('Managed Agents Inngest Chat backend', () => {
       }
 
       expect(events).toEqual([]);
-      expect(sessionManagerInMemoryMock).toHaveBeenCalledWith(process.cwd());
-      expect(sessionManagerCreateMock).not.toHaveBeenCalled();
-      expect(createAgentSessionMock).toHaveBeenCalledTimes(1);
-      expect(replaceMessagesMock).toHaveBeenCalledWith([
-        {
-          role: 'user',
-          content: [{ type: 'text', text: 'previous user' }],
-          timestamp: 10_000,
-        },
-        {
-          role: 'assistant',
-          content: [{ type: 'text', text: 'previous assistant' }],
-          api: 'openai-responses',
-          provider: 'xpod',
-          model: 'gpt-test',
-          usage: {
-            input: 0,
-            output: 0,
-            cacheRead: 0,
-            cacheWrite: 0,
-            totalTokens: 0,
-            cost: {
+      expect(sessionManagerInMemoryMock).toHaveBeenCalledWith(process.cwd(), undefined, [
+        expect.objectContaining({
+          type: 'message',
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: 'previous user' }],
+            timestamp: 10_000,
+          },
+        }),
+        expect.objectContaining({
+          type: 'message',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'previous assistant' }],
+            api: 'openai-responses',
+            provider: 'xpod',
+            model: 'gpt-test',
+            usage: {
               input: 0,
               output: 0,
               cacheRead: 0,
               cacheWrite: 0,
-              total: 0,
+              totalTokens: 0,
+              cost: {
+                input: 0,
+                output: 0,
+                cacheRead: 0,
+                cacheWrite: 0,
+                total: 0,
+              },
             },
+            stopReason: 'stop',
+            timestamp: 11_000,
           },
-          stopReason: 'stop',
-          timestamp: 11_000,
-        },
+        }),
       ]);
+      expect(sessionManagerCreateMock).not.toHaveBeenCalled();
+      expect(createAgentSessionMock).toHaveBeenCalledTimes(1);
       expect(promptMock).toHaveBeenCalledWith('current prompt', {
         expandPromptTemplates: false,
         source: 'rpc',
@@ -2305,7 +2297,8 @@ describe('Managed Agents Inngest Chat backend', () => {
       }
 
       expect(events).toEqual([]);
-      expect(replaceMessagesMock).toHaveBeenCalledWith([
+      const seededMessages = sessionManagerInMemoryMock.mock.calls[0][2]!.map((entry) => entry.message);
+      expect(seededMessages).toEqual([
         {
           role: 'user',
           content: [{ type: 'text', text: 'previous user' }],
@@ -2320,7 +2313,7 @@ describe('Managed Agents Inngest Chat backend', () => {
           timestamp: expect.any(Number),
         },
       ]);
-      const contextText = replaceMessagesMock.mock.calls[0][0][1].content[0].text;
+      const contextText = (seededMessages[1] as { content: Array<{ text: string }> }).content[0].text;
       expect(contextText).toContain('kind=text_chunk');
       expect(contextText).toContain('UNTRUSTED_CONTEXT');
       expect(contextText).toContain('score=0.8700');
@@ -2402,7 +2395,7 @@ describe('Managed Agents Inngest Chat backend', () => {
         },
       ]);
       expect(createCodingToolsMock).toHaveBeenCalledWith(workdir);
-      expect(sessionManagerInMemoryMock).toHaveBeenCalledWith(workdir);
+      expect(sessionManagerInMemoryMock).toHaveBeenCalledWith(workdir, undefined, undefined);
       expect(solidfs.commits).toBe(1);
       expect(solidfs.rollbacks).toBe(0);
     } finally {
@@ -2460,17 +2453,17 @@ describe('Managed Agents Inngest Chat backend', () => {
         }
         return {
           session: {
-            agent: { replaceMessages: replaceMessagesMock, streamFn: unusedStreamFn },
+            agent: { streamFunction: unusedStreamFn },
             subscribe: subscribeMock,
             prompt: async () => {
-              const writeTool = options.tools.find((tool) => tool.name === 'write');
+              const writeTool = options.customTools?.find((tool) => tool.name === 'write');
               if (!writeTool?.execute) {
                 throw new Error('Expected write tool');
               }
               await writeTool.execute('tool_write_1', {
                 path: 'after.txt',
                 content: 'created by runtime\n',
-              });
+              }, undefined, undefined, {} as never);
             },
             dispose: disposeMock,
         abort: vi.fn(async () => undefined),
@@ -2546,17 +2539,17 @@ describe('Managed Agents Inngest Chat backend', () => {
         if (!options) {
           throw new Error('Expected agent session options');
         }
-        const readTool = options.tools.find((tool) => tool.name === 'read');
+        const readTool = options.customTools?.find((tool) => tool.name === 'read');
         if (!readTool?.execute) {
           throw new Error('Expected read tool');
         }
         const executeReadTool = readTool.execute;
         return {
           session: {
-            agent: { replaceMessages: replaceMessagesMock, streamFn: unusedStreamFn },
+            agent: { streamFunction: unusedStreamFn },
             subscribe: subscribeMock,
             prompt: async () => {
-              await executeReadTool('tool_read_1', { path: 'objects/report.txt' });
+              await executeReadTool('tool_read_1', { path: 'objects/report.txt' }, undefined, undefined, {} as never);
             },
             dispose: disposeMock,
         abort: vi.fn(async () => undefined),
@@ -2618,10 +2611,10 @@ describe('Managed Agents Inngest Chat backend', () => {
     let toolSettled = false;
     const details = { target: 'https://pod.test/work/output.txt', action: 'http://www.w3.org/ns/odrl/2/write', risk: 'low', description: 'Write the approved confirmation file' };
     createAgentSessionMock.mockImplementationOnce(async (options?: TestAgentSessionOptions) => ({ session: {
-      agent: { replaceMessages: replaceMessagesMock, streamFn: unusedStreamFn }, subscribe: subscribeMock,
+      agent: { streamFunction: unusedStreamFn }, subscribe: subscribeMock,
       prompt: async () => {
         const tool = options!.customTools!.find(tool => tool.name === 'request_approval')!;
-        expect(tool.parameters.required).toEqual(expect.arrayContaining(['target', 'action', 'risk', 'description']));
+        expect((tool.parameters as { required?: string[] }).required).toEqual(expect.arrayContaining(['target', 'action', 'risk', 'description']));
         try { await tool.execute('real-pi-tool-id', details, undefined, undefined, {} as never); }
         finally { toolSettled = true; }
       },
@@ -2654,7 +2647,7 @@ describe('Managed Agents Inngest Chat backend', () => {
     let finishPrompt!: () => void;
     const abort = vi.fn(async () => { finishPrompt(); });
     createAgentSessionMock.mockImplementationOnce(async () => ({ session: {
-      agent: { replaceMessages: replaceMessagesMock, streamFn: unusedStreamFn }, subscribe: subscribeMock,
+      agent: { streamFunction: unusedStreamFn }, subscribe: subscribeMock,
       prompt: () => { started(); return new Promise<void>(resolve => { finishPrompt = resolve; }); },
       abort, dispose: disposeMock,
     } }));
@@ -2907,7 +2900,7 @@ describe('Managed Agents Inngest Chat backend', () => {
         expect(activeWorkdir).toBe(mappedWorkspacePath);
         return {
           session: {
-            agent: { replaceMessages: replaceMessagesMock, streamFn: unusedStreamFn },
+            agent: { streamFunction: unusedStreamFn },
             subscribe: subscribeMock,
             prompt: async (prompt?: string) => {
               const readmePath = path.join(activeWorkdir, 'README.md');

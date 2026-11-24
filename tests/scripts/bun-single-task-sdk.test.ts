@@ -83,27 +83,42 @@ describe('single-binary Task SDK', () => {
           }
           return result;
         } });
-        const sdk = await import(pathToFileURL(path.join(root, 'node_modules/@mariozechner/pi-coding-agent/dist/index.js')));
+        const stagedRoot = path.join(root, 'node_modules/@earendil-works/pi-coding-agent');
+        const sdk = await import(pathToFileURL(path.join(stagedRoot, 'dist/index.js')));
+        // V01: report the version the staged artifact actually loaded, not just the manifest pin.
+        const sdkVersion = sdk.VERSION ?? sdk.default?.VERSION;
+        if (sdkVersion !== '1.6.0') {
+          throw new Error('Staged SDK version mismatch: ' + sdkVersion);
+        }
         const cwd = path.join(root, 'workspace');
         for (const name of ['createCodingTools', 'createReadOnlyTools', 'createBashTool',
           'createEditTool', 'createReadTool', 'createWriteTool']) {
           if (!sdk[name](cwd)) throw new Error('Task tool factory is unavailable: ' + name);
         }
-        const authStorage = sdk.AuthStorage.inMemory();
+        const credentials = { entries: new Map(),
+          async read(id) { return this.entries.get(id); },
+          async list() { return [...this.entries].map(([providerId, credential]) => ({ providerId, type: credential.type })); },
+          async modify(id, fn) { const next = await fn(this.entries.get(id));
+            if (next !== undefined) this.entries.set(id, next); return next; },
+          async delete(id) { this.entries.delete(id); } };
+        await credentials.modify('xpod', async () => ({ type: 'api_key', key: 'fixture-only' }));
+        const modelRuntime = await sdk.ModelRuntime.create({ credentials, modelsPath: null, refreshOnCreate: false });
+        modelRuntime.registerProvider('xpod', { baseUrl: 'https://example.invalid/v1', api: 'openai-completions',
+          models: [{ id: 'fixture', name: 'fixture', provider: 'xpod', api: 'openai-completions',
+            baseUrl: 'https://example.invalid/v1', input: ['text'], reasoning: false,
+            contextWindow: 1024, maxTokens: 128, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] });
         const resourceLoader = new sdk.DefaultResourceLoader({ cwd, agentDir: path.join(root, 'agent'),
           noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true });
         await resourceLoader.reload();
-        const { session } = await sdk.createAgentSession({ cwd, authStorage, resourceLoader,
-          modelRegistry: new sdk.ModelRegistry(authStorage, path.join(root, 'agent/models.json')),
+        const { session } = await sdk.createAgentSession({ cwd, modelRuntime, resourceLoader,
           settingsManager: sdk.SettingsManager.inMemory(), sessionManager: sdk.SessionManager.inMemory(cwd),
-          tools: [], customTools: [], model: { id: 'fixture', name: 'fixture', provider: 'openai',
-            api: 'openai-completions', baseUrl: 'https://example.invalid/v1', input: ['text'], reasoning: false,
-            contextWindow: 1024, maxTokens: 128, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } } });
+          tools: [], customTools: [], model: modelRuntime.getModel('xpod', 'fixture') });
         if (!session.agent) throw new Error('Task agent session was not created');
         session.dispose();
-        console.log(JSON.stringify({ imported: true, sessionCreated: true, isolated: true }));
+        console.log(JSON.stringify({ imported: true, sessionCreated: true, isolated: true,
+          sdkVersion }));
       `], { cwd: stageRoot, encoding: 'utf8', timeout: 30_000, env: { ...process.env, NODE_PATH: '' } });
-      expect(JSON.parse(output.trim())).toEqual({ imported: true, sessionCreated: true, isolated: true });
+      expect(JSON.parse(output.trim())).toEqual({ imported: true, sessionCreated: true, isolated: true, sdkVersion: '1.6.0' });
     } finally {
       fs.rmSync(stageRoot, { recursive: true, force: true });
     }

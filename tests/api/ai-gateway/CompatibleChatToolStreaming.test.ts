@@ -1,4 +1,4 @@
-import { streamOpenAICompletions, type Model, type Tool } from '@mariozechner/pi-ai';
+import { normalizeContext, streamOpenAICompletions, type Model, type Tool } from '@earendil-works/pi-ai/compat';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ChatCompletionsFrontend } from '../../../src/api/ai-gateway/protocol/ChatCompletionsFrontend';
@@ -64,11 +64,13 @@ describe('Compatible Chat tool streaming through the Pi SDK', () => {
       baseUrl: 'https://gateway.example/v1', reasoning: false, input: ['text'],
       contextWindow: 4096, maxTokens: 512, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     };
-    const result = await streamOpenAICompletions(model, {
+    // pi-ai 1.6 carries the prompt and tool declarations in the transcript's leading
+    // system message; normalizeContext folds the shorthand Context into that shape.
+    const result = await streamOpenAICompletions(model, normalizeContext({
       messages: [{ role: 'user', content: 'Request approval.', timestamp: 0 }],
       // The runtime supplies JSON Schema directly; Pi's transport preserves that schema.
       tools: [{ name: 'request_approval', description: 'Request approval', parameters: parameters as unknown as Tool['parameters'] }],
-    }, { apiKey: 'synthetic-key' }).result();
+    }), { apiKey: 'synthetic-key' }).result();
 
     expect(result.stopReason).toBe('toolUse');
     expect(result.content).toEqual([{ type: 'toolCall', id: 'call_approval', name: 'request_approval', arguments: approval }]);
