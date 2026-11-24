@@ -13,8 +13,10 @@
  * verifies the proof's full contents (source, images, runner, fixtures, cleanup) independently.
  */
 import { createHash } from 'node:crypto';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
 export const PUBLIC_REPO = 'undefinedsco/xpod';
 export const PRODUCER_WORKFLOW = 'qlever-installed-image-conformance.yml';
@@ -271,10 +273,18 @@ function createGitHubClient(fetchImpl: typeof fetch = fetch): GitHubClient {
   };
 }
 
-function unzipEntry(zip: Buffer, entry: string): Buffer {
-  const result = spawnSync('unzip', ['-p', '-', entry], { input: zip, maxBuffer: PROOF_MAX_BYTES * 2 });
-  if (result.error || result.status !== 0 || !result.stdout?.length) throw new StepError('private17-producer', 'proof-entry-missing');
-  return result.stdout;
+/** Info-ZIP `unzip` cannot read an archive from stdin, so the archive goes through an owned temp file. */
+export function unzipEntry(zip: Buffer, entry: string): Buffer {
+  const dir = mkdtempSync(path.join(process.env.RUNNER_TEMP || tmpdir(), 'private17-proof-'));
+  try {
+    const archive = path.join(dir, 'proof.zip');
+    writeFileSync(archive, zip, { mode: 0o600 });
+    const result = spawnSync('unzip', ['-p', archive, entry], { maxBuffer: PROOF_MAX_BYTES * 2 });
+    if (result.error || result.status !== 0 || !result.stdout?.length) throw new StepError('private17-producer', 'proof-entry-missing');
+    return result.stdout;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 function argValue(flag: string): string {
