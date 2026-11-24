@@ -31,7 +31,8 @@ mutation of the RC environment. Concretely:
 
 1. pre-Kubernetes 17+6 conformance and exact-image pull against `NATIVE_PG_IMAGE`;
 2. full integration against the same PG17 candidate;
-3. Private17 admission and namespace pull preflight;
+3. Private17 admission (produced by the candidate's own `private17_admission`
+   job, see `joint-installed-admission.md`) and namespace pull preflight;
 4. RC-only PG render, quiescence, bootstrap Job, readiness;
 5. runtime Secret, gateway ConfigMap and the single final app apply.
 

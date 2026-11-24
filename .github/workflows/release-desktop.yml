@@ -63,6 +63,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Retry transient GitHub API failures in this job
+        # Only when the checked-out source ships the shim (older stable tags do not).
+        run: if [ -f scripts/install-gh-retry.sh ]; then bash scripts/install-gh-retry.sh; fi
       - name: Validate tag, accepted candidate and production promotion
         id: guard
         run: |
@@ -109,6 +112,9 @@ jobs:
         with:
           ref: ${{ needs.desktop_guard.outputs.source_sha }}
           fetch-depth: 0
+      - name: Retry transient GitHub API failures in this job
+        # Only when the checked-out source ships the shim (older stable tags do not).
+        run: if [ -f scripts/install-gh-retry.sh ]; then bash scripts/install-gh-retry.sh; fi
 
       - uses: oven-sh/setup-bun@v2
         with:
