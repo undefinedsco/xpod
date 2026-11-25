@@ -1850,7 +1850,7 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
       // `test` job becomes `checks`; a new `test` job gates on both so the required
       // check is unchanged. The publication caller jobs, permissions, branch and
       // event are untouched; earlier identities stay selectable.
-      {workflowSha256:'a4822dc83c261176fd3031232a6eadec97dab287ca133592cc4c0ed41737d00b',
+      {workflowSha256:'0e6a6ef0ec7a2b7482e8d55066fc9ccc755ac64431175eb866c21edce9869ae1',
       jobName:()=>callerNames[0]!,
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],
     requiredBranch:'staging',
