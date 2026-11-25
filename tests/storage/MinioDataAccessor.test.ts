@@ -82,3 +82,49 @@ describe('MinioDataAccessor', () => {
     expect(client.removeObject).toHaveBeenCalledWith('bucket', 'alice/public/.container');
   });
 });
+
+describe('MinioDataAccessor transient write failures', () => {
+  const identifier = { path: 'https://id.example/alice/private/note.txt' };
+  const refused = () => Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+
+  function metadataOf(length: number): RepresentationMetadata {
+    const metadata = new RepresentationMetadata(identifier);
+    metadata.contentType = 'text/plain';
+    metadata.contentLength = length;
+    return metadata;
+  }
+
+  it('repeats a small buffered write after a dropped connection with the same bytes', async() => {
+    const accessor = createAccessor();
+    client.putObject
+      .mockRejectedValueOnce(new AggregateError([ refused(), refused() ]))
+      .mockResolvedValueOnce(undefined);
+
+    await accessor.writeDocument(identifier, guardStream(Readable.from([ 'he', 'llo' ])), metadataOf(5));
+
+    expect(client.putObject).toHaveBeenCalledTimes(2);
+    expect(client.putObject.mock.calls[1][2]).toEqual(Buffer.from('hello'));
+    expect(client.putObject.mock.calls[1][1]).toBe(client.putObject.mock.calls[0][1]);
+  });
+
+  it('does not repeat an S3 error answer', async() => {
+    const accessor = createAccessor();
+    client.putObject.mockRejectedValueOnce(Object.assign(new Error('AccessDenied'), { code: 'AccessDenied' }));
+
+    await expect(accessor.writeDocument(identifier, guardStream(Readable.from([ 'x' ])), metadataOf(1)))
+      .rejects.toThrow('AccessDenied');
+    expect(client.putObject).toHaveBeenCalledTimes(1);
+  });
+
+  it('streams a body of unknown length once without buffering', async() => {
+    const accessor = createAccessor();
+    const metadata = new RepresentationMetadata(identifier);
+    metadata.contentType = 'text/plain';
+    client.putObject.mockRejectedValueOnce(refused());
+
+    await expect(accessor.writeDocument(identifier, guardStream(Readable.from([ 'x' ])), metadata))
+      .rejects.toThrow('ECONNREFUSED');
+    expect(client.putObject).toHaveBeenCalledTimes(1);
+    expect(Buffer.isBuffer(client.putObject.mock.calls[0][2])).toBe(false);
+  });
+});

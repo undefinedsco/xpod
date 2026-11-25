@@ -35,6 +35,20 @@ import type {
   MetadataRecord
 } from '@solid/community-server';
 
+/** Bodies up to this size are buffered so a write can be repeated after a dropped connection. */
+const RETRYABLE_BODY_BYTES = 16 * 1024 * 1024;
+const WRITE_ATTEMPTS = 3;
+const NETWORK_ERROR_CODES = new Set([ 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'EAI_AGAIN' ]);
+
+/** A connection-level failure (including Node's multi-address AggregateError), not an S3 answer. */
+function isTransientNetworkError(error: unknown): boolean {
+  if (error instanceof AggregateError) {
+    return error.errors.length > 0 && error.errors.every(isTransientNetworkError);
+  }
+  const code = (error as { code?: unknown } | undefined)?.code;
+  return typeof code === 'string' && NETWORK_ERROR_CODES.has(code);
+}
+
 export class MinioDataAccessor implements DataAccessor {
   protected readonly logger = getLoggerFor(this);
   protected readonly resourceMapper: FileIdentifierMapper;
@@ -191,13 +205,11 @@ export class MinioDataAccessor implements DataAccessor {
     const link = await this.resourceMapper.mapUrlToFilePath(identifier, false);
     const itemMetadata = this.encodeMetadata(link, metadata);
     try {
-      await this.client.putObject(
-        this.bucketName,
-        this.objectName(url),
-        data,
-        metadata.contentLength,
-        itemMetadata || undefined,
-      );
+      // A stream is consumed by the first attempt; a small declared body is buffered so the
+      // idempotent same-key PUT can be repeated if the connection to the object store drops.
+      const length = metadata.contentLength;
+      const body = length !== undefined && length <= RETRYABLE_BODY_BYTES ? await this.readBody(data) : data;
+      await this.putObject(this.objectName(url), body, length, itemMetadata || undefined, identifier.path);
       this.logDuration('writeDocument', identifier.path, started);
     } catch (error) {
       this.logger.error(`Error writing document: ${identifier.path} ${error}`)
@@ -217,14 +229,44 @@ export class MinioDataAccessor implements DataAccessor {
     const started = Date.now();
     const url = new URL(identifier.path)
     const link = await this.resourceMapper.mapUrlToFilePath(identifier, false);
-    await this.client.putObject(
-      this.bucketName,
+    await this.putObject(
       this.containerObjectName(url),
       Buffer.from(''),
       metadata.contentLength,
       this.encodeMetadata(link, metadata) || undefined,
+      identifier.path,
     );
     this.logDuration('writeContainer', identifier.path, started);
+  }
+
+  /** PUT an object, repeating a buffered body after a transient connection failure. */
+  private async putObject(
+    objectName: string,
+    body: Buffer | Readable,
+    size: number | undefined,
+    itemMetadata: object | undefined,
+    path: string,
+  ): Promise<void> {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        await this.client.putObject(this.bucketName, objectName, body, size, itemMetadata);
+        return;
+      } catch (error) {
+        if (!Buffer.isBuffer(body) || attempt >= WRITE_ATTEMPTS || !isTransientNetworkError(error)) {
+          throw error;
+        }
+        this.logger.warn(`Retrying object write after a connection failure (attempt ${attempt}): ${path}`);
+        await new Promise<void>((resolve) => setTimeout(resolve, 200 * attempt));
+      }
+    }
+  }
+
+  private async readBody(data: Readable): Promise<Buffer> {
+    const chunks: Buffer[] = [];
+    for await (const chunk of data) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    return Buffer.concat(chunks);
   }
 
   /**
