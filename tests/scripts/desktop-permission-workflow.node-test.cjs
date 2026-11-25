@@ -204,12 +204,12 @@ test('staging candidates retain a fixed workflow RC lock through desktop and cle
   assert.equal(workflow.concurrency.group, 'xpod-rc-candidate');
 });
 
-test('PR CI runs all Node release and tooling suites before the unit suite', () => {
-  const steps = read('ci.yml').jobs.test.steps;
-  const nodeTests = steps.findIndex(step => step.run === 'node --test tests/scripts/*.node-test.cjs tests/scripts/*.node-test.mjs');
-  const unitTests = steps.findIndex(step => step.run === 'bash scripts/ci-unit-tests.sh main');
-  assert.ok(nodeTests >= 0);
-  assert.ok(unitTests > nodeTests);
+test('PR CI runs all Node release and tooling suites and every unit shard under the required test check', () => {
+  const { jobs } = read('ci.yml');
+  assert.ok(jobs.checks.steps.some(step => step.run === 'node --test tests/scripts/*.node-test.cjs tests/scripts/*.node-test.mjs'));
+  assert.ok(jobs.unit.steps.some(step => step.run === 'bash scripts/ci-unit-tests.sh main ${{ matrix.shard }}/3'));
+  assert.deepEqual(jobs.unit.strategy.matrix.shard, [1, 2, 3]);
+  assert.deepEqual(jobs.test.needs, ['checks', 'unit']);
 });
 
 // ---- RC410 final wiring: clean-source API preparation + artifact custody ----
