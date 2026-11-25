@@ -8,6 +8,7 @@ import {
   AcceptanceError,
   assertBuiltinModels,
   assertChatNonce,
+  retryTransientUpstream,
   assertEmptyScopeAsk,
   assertEmptyScopeSelect,
   assertNoSecretMaterial,
@@ -700,5 +701,35 @@ describe('RC matrix grant ordering (real matrixCheck)', () => {
     expect(order).toContain('grant:HEAD');
     expect(order.indexOf('grant:HEAD')).toBeGreaterThan(order.indexOf('createRoom'));
     expect(inviteCalls).toEqual([]);
+  });
+});
+
+describe('retryTransientUpstream', () => {
+  const answers = (statuses: number[]) => {
+    const queue = [...statuses];
+    return vi.fn(async () => ({ status: queue.shift()! }));
+  };
+  const sleep = vi.fn(async () => {});
+
+  it('retries a transient upstream status and returns the first real answer', async () => {
+    const request = answers([503, 429, 200]);
+    const { result, attempts } = await retryTransientUpstream(request, { sleep });
+    expect(result.status).toBe(200);
+    expect(attempts).toBe(3);
+    expect(sleep).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns a non-transient failure at once so the caller still fails', async () => {
+    const request = answers([401, 200]);
+    const { result, attempts } = await retryTransientUpstream(request, { sleep });
+    expect(result.status).toBe(401);
+    expect(attempts).toBe(1);
+  });
+
+  it('stops after the attempt limit with the last transient status', async () => {
+    const request = answers([503, 503, 503, 200]);
+    const { result, attempts } = await retryTransientUpstream(request, { sleep, attempts: 3 });
+    expect(result.status).toBe(503);
+    expect(attempts).toBe(3);
   });
 });
