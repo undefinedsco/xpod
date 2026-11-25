@@ -1845,6 +1845,13 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
       // permissions, branch and event; earlier identities stay selectable.
       {workflowSha256:'371f6743bada3f50bd7248baa98680417da5b8c62a5e6149c37e8bf22259f05e',
       jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // APPEND-ONLY: the unit suite runs as three `unit` shards and the former
+      // `test` job becomes `checks`; a new `test` job gates on both so the required
+      // check is unchanged. The publication caller jobs, permissions, branch and
+      // event are untouched; earlier identities stay selectable.
+      {workflowSha256:'0e6a6ef0ec7a2b7482e8d55066fc9ccc755ac64431175eb866c21edce9869ae1',
+      jobName:()=>callerNames[0]!,
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],
     requiredBranch:'staging',
     jobName:()=>callerNames[0]!,jobNames:()=>callerNames,

@@ -18,7 +18,9 @@ test('workflow route is isolated from ordinary CI and prepares without publish t
  const fs=require('node:fs'),yaml=require('yaml');
  const ci=yaml.parse(fs.readFileSync('.github/workflows/ci.yml','utf8'));
  const publication=yaml.parse(fs.readFileSync('.github/workflows/independent-publication.yml','utf8'));
- for(const job of ['test','integration-lite','bun-runtime','integration-full'])assert.equal(ci.jobs[job].if,"${{ github.event_name != 'workflow_dispatch' }}");
+ for(const job of ['checks','unit','integration-lite','bun-runtime','integration-full'])assert.equal(ci.jobs[job].if,"${{ github.event_name != 'workflow_dispatch' }}");
+ // The required `test` gate also reports when a needed job failed, still never on a dispatch.
+ assert.equal(ci.jobs.test.if,"${{ always() && github.event_name != 'workflow_dispatch' }}");
  assert.equal(ci.concurrency['cancel-in-progress'],"${{ github.event_name != 'workflow_dispatch' }}");
  assert.equal(ci.jobs['independent-publication'].needs,'publication-control');
  assert.equal(ci.jobs['independent-publication'].uses,'./.github/workflows/independent-publication.yml');
