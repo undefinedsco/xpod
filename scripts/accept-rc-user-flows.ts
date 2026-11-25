@@ -325,6 +325,27 @@ export async function boundedPoll<T>(options: BoundedPollOptions<T>): Promise<{ 
   }
 }
 
+/** Upstream availability statuses: a rate limit or an unavailable model provider, not an Xpod defect. */
+const TRANSIENT_UPSTREAM_STATUSES = new Set([429, 502, 503, 504]);
+
+/**
+ * Repeat a request while it answers with a transient upstream status, up to `attempts` times with a
+ * growing pause. Any other status (success or a real failure) returns at once, so the caller still
+ * asserts the final answer; the attempt count is reported as evidence.
+ */
+export async function retryTransientUpstream<T extends { status: number }>(
+  request: () => Promise<T>,
+  options: { attempts?: number; delayMs?: number; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<{ result: T; attempts: number }> {
+  const limit = options.attempts ?? 3;
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  for (let attempts = 1; ; attempts += 1) {
+    const result = await request();
+    if (!TRANSIENT_UPSTREAM_STATUSES.has(result.status) || attempts >= limit) return { result, attempts };
+    await sleep((options.delayMs ?? 5_000) * attempts);
+  }
+}
+
 function initialEvidence(baseUrl: URL): RcUserFlowsEvidence {
   const checks = Object.fromEntries(RC_USER_FLOW_CHECKS.map((name) => [name, { ok: false, detail: 'not run' }])) as
     Record<RcUserFlowCheckName, RcUserFlowCheck>;
@@ -460,7 +481,8 @@ async function modelsChatCheck(alice: Login, baseUrl: URL): Promise<RcUserFlowCh
   const chat: Array<Record<string, unknown>> = [];
   for (const model of ['linx', 'linx-lite'] as const) {
     const nonce = `XPOD_RC_${randomUUID().replace(/-/gu, '').toUpperCase()}`;
-    const result = await readJson(alice.session.authenticatedFetch, new URL('v1/chat/completions', baseUrl), {
+    // The built-in models reach a real upstream provider; a momentary 503 there must not fail the RC.
+    const { result, attempts } = await retryTransientUpstream(() => readJson(alice.session.authenticatedFetch, new URL('v1/chat/completions', baseUrl), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({
@@ -470,9 +492,9 @@ async function modelsChatCheck(alice: Login, baseUrl: URL): Promise<RcUserFlowCh
         temperature: 0,
         stream: false,
       }),
-    }, `POST /v1/chat/completions (${model})`, 90_000);
+    }, `POST /v1/chat/completions (${model})`, 90_000));
     const matched = assertChatNonce(result.status, result.payload, model, nonce);
-    chat.push({ model, status: result.status, ...matched });
+    chat.push({ model, status: result.status, attempts, ...matched });
   }
 
   return {
