@@ -3402,8 +3402,8 @@ const RC399_SDK117_GROUP:GitHubSourceBindingGroup=Object.freeze({...RC398_SDK116
  * is derived by current-program-definition; do not copy its checkout digest
  * here. Published producer bindings and historical groups remain unchanged. */
 const SDK118_CURRENT_SOURCE_HASHES:Readonly<Record<string,string>>=Object.freeze({
-  // The current consumer follows the scoped unit suite (scripts/ci-unit-tests.sh).
-  '.github/workflows/ci.yml':'371f6743bada3f50bd7248baa98680417da5b8c62a5e6149c37e8bf22259f05e',
+  // The current consumer follows the sharded unit suite (CI `unit` matrix).
+  '.github/workflows/ci.yml':'a4822dc83c261176fd3031232a6eadec97dab287ca133592cc4c0ed41737d00b',
   'scripts/check-candidate-service-sdk-source.ts':'65ea2f5aec1c07cfce6ca591b4941790c567ec790870d257095ae96577864f85',
 });
 const rebindSdk118CurrentRow=(row:GitHubSourceBinding):GitHubSourceBinding=>

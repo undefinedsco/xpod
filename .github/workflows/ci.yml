@@ -48,7 +48,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
-  test:
+  checks:
     if: ${{ github.event_name != 'workflow_dispatch' }}
     # Pin the documented Ubuntu 24.04 native toolchain environment.
     runs-on: ubuntu-24.04
@@ -568,13 +568,6 @@ jobs:
       - name: Node release and tooling tests
         run: node --test tests/scripts/*.node-test.cjs tests/scripts/*.node-test.mjs
 
-      # The slow group runs in parallel in integration-lite; see scripts/ci-unit-tests.sh.
-      - name: Unit tests
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: bash scripts/ci-unit-tests.sh main
-
       # The audit's N19: the Bun-only tests (tests/bun/** and every file importing bun:test)
       # are excluded from vitest, so they need their own gate or they silently rot.
       - name: Bun-only tests
@@ -590,6 +583,134 @@ jobs:
           name: account-layout-${{ github.sha }}
           path: .test-data/account-web-layout/
           include-hidden-files: true
+
+  # The unit suite is a third of required CI time; three shards run it in parallel
+  # and the `test` job below gates on all of them, so the required check is unchanged.
+  unit:
+    if: ${{ github.event_name != 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      # The Git-history immutability tests read real commits (9d02/2406/19fe).
+      # A default shallow checkout cannot resolve them, so this job needs full
+      # history. Only this existing step changes; no test is skipped.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: bun install --frozen-lockfile
+
+
+      # The first Python discovery imports the new owned-window cases, which
+      # instantiate the real native SdkLeaseSet. Build the canonical helper and
+      # its compiler/header prerequisites before that discovery.
+      - name: Install the two reviewed scoped-PCH compilers when absent
+        # Bound compiler downloads so stalled mirrors fail promptly.
+        timeout-minutes: 10
+        run: |
+          set -eu
+          missing=0
+          for pkg in g++-12 gcc-12 clang-19 cmake ninja-build; do
+            dpkg -s "$pkg" >/dev/null 2>&1 || missing=1
+          done
+          # Use the runner-configured signed Ubuntu sources so apt can fail over
+          # across its mirrors; no custom mirror or source/key rewrite.
+          if [ "$missing" -eq 1 ]; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends \
+              g++-12 gcc-12 clang-19 cmake ninja-build
+          fi
+          g++-12 --version | head -1
+          clang++-19 --version | head -1
+          cmake --version | head -1
+          ninja --version
+
+      - name: Require both reviewed compilers and tools
+        run: |
+          set -eu
+          for cxx in g++-12 clang++-19; do
+            if ! command -v "$cxx" >/dev/null 2>&1; then
+              echo "::error::required reviewed compiler missing: $cxx"
+              exit 1
+            fi
+          done
+          for tool in cmake ninja; do
+            if ! command -v "$tool" >/dev/null 2>&1; then
+              echo "::error::required tool missing: $tool"
+              exit 1
+            fi
+          done
+          g++-12 --version | head -1
+          clang++-19 --version | head -1
+
+      - name: Install interpreter-matched C headers for the native gate
+        run: |
+          set -eu
+          PY=/usr/bin/python3
+          VER=$($PY -c 'import sys;print("%d.%d"%sys.version_info[:2])')
+          INC=$($PY -c 'import sysconfig;print(sysconfig.get_paths()["include"])')
+          echo "interpreter: $($PY --version)  version=$VER  include=$INC"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends "python${VER}-dev" clang
+          test -f "$INC/Python.h"
+
+      - name: Build canonical SDK native lease helper for the required gate
+        run: |
+          sudo -E env PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -B qlever/scripts/native/build_native_helper.py \
+            qlever/scripts/native/lease_sweep_ext.c qlever/scripts/native --cc gcc-12
+
+      - name: Install ripgrep differential oracle
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
+          rg --version
+
+      - name: Build workspace packages
+        run: bun run build:packages
+
+      - name: Build Components artifacts
+        run: bun run build:components
+
+      - name: Build UI artifacts
+        run: bun run build:ui
+
+      # Chromium must be installed before the unit suite: tests/scripts/rc-light-web-browser.test.ts
+      # launches a real Chromium, and the Account layout regression reuses the same install.
+      - name: Install Chromium for browser-backed unit and layout regressions
+        run: bunx playwright install --with-deps chromium
+
+      # The slow group runs in parallel in integration-lite; see scripts/ci-unit-tests.sh.
+      - name: Unit tests
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: bash scripts/ci-unit-tests.sh main ${{ matrix.shard }}/3
+
+  # Required check `test`: the native gates and remaining suites (`checks`) and
+  # every unit shard must all pass.
+  test:
+    if: ${{ always() && github.event_name != 'workflow_dispatch' }}
+    needs: [checks, unit]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require checks and every unit shard
+        env:
+          CHECKS: ${{ needs.checks.result }}
+          UNIT: ${{ needs.unit.result }}
+        run: |
+          echo "checks=$CHECKS unit=$UNIT"
+          [ "$CHECKS" = success ] && [ "$UNIT" = success ]
 
   integration-lite:
     if: ${{ github.event_name != 'workflow_dispatch' }}

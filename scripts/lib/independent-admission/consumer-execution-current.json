@@ -941,7 +941,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "d7d56fbfb3389aa0aac67223dce2ece0400fda5377fb51ff1301e143a1bbe691"
+    "sha256": "09cbc31e620fec64643acd2a0fc4396053904dcb827ad3efc45a7d807bfefa0f"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",
@@ -1221,7 +1221,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-origin-policy.ts",
-    "sha256": "e6524b647a422a4864826009f0f6e72f9c282c5d64c151529f0622c8d585958a"
+    "sha256": "705530c4cbfb2622327669a4a39c95618198a1bbc21402fe29b92eab770fda98"
   },
   {
     "path": "scripts/lib/independent-admission/qlever-sdk-originals.ts",
@@ -2033,7 +2033,7 @@
   },
   {
     "path": ".github/workflows/ci.yml",
-    "sha256": "371f6743bada3f50bd7248baa98680417da5b8c62a5e6149c37e8bf22259f05e"
+    "sha256": "a4822dc83c261176fd3031232a6eadec97dab287ca133592cc4c0ed41737d00b"
   },
   {
     "path": "qlever/tests/test_sdk90_metadata_open.py",
