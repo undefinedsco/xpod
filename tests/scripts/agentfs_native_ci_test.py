@@ -6,6 +6,7 @@ import zipfile
 import importlib.util
 import itertools
 import json
+import shutil
 import struct
 import os
 from pathlib import Path
@@ -123,6 +124,9 @@ class LinuxContainerBindingTests(unittest.TestCase):
         finally:
             self.fixture = original
 
+    # Runs where Bun exists (the macOS native jobs); the Bookworm admission is
+    # deliberately Bun-free, so it cannot evaluate this TypeScript projection.
+    @unittest.skipUnless(shutil.which('bun'), 'requires Bun; the Bookworm admission is Bun-free')
     def test_safe_export_preserves_failure_fields_and_rejects_unbounded_reason_codes(self):
         code = """import {projectReceipt} from './scripts/agentfs-native-ci/mounted/prepare-module-inputs.ts';
 const input=JSON.parse(await Bun.stdin.text());try{console.log(JSON.stringify({value:projectReceipt('linux-container-binding.json',input)}))}catch{console.log(JSON.stringify({rejected:true}))}"""
@@ -847,7 +851,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual([(x['target'], x['runner']) for x in job['strategy']['matrix']['include']],
                          [('linux-arm64', 'ubuntu-24.04-arm'), ('linux-x64', 'ubuntu-24.04')])
         self.assertEqual([(x['target'], x['runner']) for x in workflow['jobs']['native-macos']['strategy']['matrix']['include']],
-                         [('darwin-arm64', 'macos-14'), ('darwin-x64', 'macos-15-intel')])
+                         [('darwin-arm64', 'macos-15'), ('darwin-x64', 'macos-15-intel')])
         commands = '\n'.join(step.get('run', '') for step in job['steps'])
         self.assertIn('--init', commands)
         self.assertIn('bookworm-entry.sh', commands)
