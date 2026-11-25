@@ -54,9 +54,44 @@ describe('provision-scope', () => {
   });
 
   afterEach(() => {
+    window.xpodDesktop = undefined;
     unregisterLocalProvisionResolver();
     vi.unstubAllGlobals();
     window.history.replaceState(null, '', '/');
+  });
+
+  test('prepares the Cloud identity through Account fetch and Local storage through the host capability', async () => {
+    const provisionCode = makeProvisionCode({ spUrl: 'https://node.example/', spDomain: 'node.example', serviceToken: 'test-token' });
+    const request = vi.fn(async () => ({ status: 201, body: { provisionReceipt: 'test-receipt' } }));
+    window.xpodDesktop = { provisioning: { request } } as NonNullable<typeof window.xpodDesktop>;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({ webId: cloudWebId })));
+    await expect(prepareProvisionedPod(fetchMock, 'alice', provisionCode, cloudProfile)).resolves.toEqual({
+      provisionCode, provisionReceipt: 'test-receipt', preparedWebId: cloudWebId,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe(cloudProfile.profileUrl);
+    expect(request).toHaveBeenCalledWith({ provisionCode, path: '/provision/pods', body: { podName: 'alice', webId: cloudWebId } });
+  });
+
+  test('reads Local ownership through the host while preserving canonical storage identifiers', async () => {
+    const provisionCode = makeProvisionCode({ spUrl: 'https://node.example/', spDomain: 'node.example', serviceToken: 'test-token' });
+    const request = vi.fn(async () => ({ status: 200, body: { entries: [{ webId: cloudWebId, storageUrl: 'https://node.example/alice/' }] } }));
+    window.xpodDesktop = { provisioning: { request } } as NonNullable<typeof window.xpodDesktop>;
+    const fetchMock = vi.fn();
+    await expect(lookupProvisionScopedWebIds(fetchMock, [cloudWebId], provisionCode)).resolves.toEqual([{
+      webId: cloudWebId, storageUrl: 'https://node.example/alice/', podUrl: undefined,
+    }]);
+    expect(request).toHaveBeenCalledWith({ provisionCode, path: '/provision/webids', body: { webIds: [cloudWebId] } });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test('does not fall back to a public origin after the host rejects a Local operation', async () => {
+    const provisionCode = makeProvisionCode({ spUrl: 'https://node.example/', serviceToken: 'test-token' });
+    const request = vi.fn(async () => { throw new Error('Local pairing does not belong to this device'); });
+    window.xpodDesktop = { provisioning: { request } } as NonNullable<typeof window.xpodDesktop>;
+    const fetchMock = vi.fn();
+    await expect(lookupProvisionScopedWebIds(fetchMock, [cloudWebId], provisionCode)).rejects.toThrow('does not belong');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   test('queries the local Xpod route while keeping the Cloud canonical storage root', async () => {

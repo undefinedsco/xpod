@@ -13,6 +13,9 @@ contextBridge.exposeInMainWorld('xpodDesktop', {
     showDataDirectory() { return ipcRenderer.invoke('xpod:show-data-directory') },
     selectDataDirectory() { return ipcRenderer.invoke('xpod:select-data-directory') },
   },
+  provisioning: {
+    request(input: unknown) { return ipcRenderer.invoke('xpod:provision-request', input) },
+  },
   onApprovalDecision(decide: (input: { approvalId: string; decision: 'approved' | 'rejected' }) => void): () => void {
     const listener = (_event: import('electron').IpcRendererEvent, input: unknown) => {
       if (!input || typeof input !== 'object') return

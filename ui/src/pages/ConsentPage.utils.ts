@@ -111,7 +111,7 @@ export async function fetchOidcCancelRedirectLocation(options: OidcCancelRedirec
 export async function resolveOidcCancelRedirectLocation(res: Response): Promise<string> {
   const json = await res.json().catch(() => null) as unknown;
   if (!res.ok) {
-    throw consentResponseError(json, readResponseMessage(json) || `Authorization cancellation failed (${res.status}).`);
+    throw consentResponseError(json, readResponseMessage(json) || `Authorization cancellation failed (${res.status}).`, res.status);
   }
 
   const bodyLocation = isRecord(json) && typeof json.location === 'string' ? json.location.trim() : '';
@@ -123,7 +123,18 @@ export async function resolveOidcCancelRedirectLocation(res: Response): Promise<
   return location;
 }
 
-export function consentResponseError(data: unknown, fallback: string): Error {
+export function isConsentLoginRecoveryMessage(message: string | null): boolean {
+  return message === xpodConsentErrors.expiredInteraction || message === xpodConsentErrors.invalidProvisionScope;
+}
+
+export function consentResponseError(data: unknown, fallback: string, status?: number): Error {
+  // An invalid/expired Local operation cannot be renewed by rereading the
+  // same interaction. Only the originating application can refresh its scope.
+  // Never render server text or turn this failure into an empty Cloud picker.
+  if (status === 400 && isRecord(data)
+    && data.errorCode === 'H400' && data.message === 'Invalid or expired provisionCode.') {
+    return new Error(xpodConsentErrors.invalidProvisionScope);
+  }
   if (isRecord(data) && (
     data.errorCode === 'E0002'
     || data.message === 'Invalid OIDC interaction'
