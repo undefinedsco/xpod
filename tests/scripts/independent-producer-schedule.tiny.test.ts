@@ -68,8 +68,10 @@ describe('independent module producer scheduling', () => {
   it('does not remove any mandatory service qualification gate', () => {
     const ci = load('ci.yml');
     expect(ci.on.push.branches).toEqual(['main', 'staging']);
-    expect(ci.jobs.test.if).toBe("${{ github.event_name != 'workflow_dispatch' }}");
-    for (const name of ['integration-lite', 'bun-runtime', 'integration-full']) {
+    // The required `test` check gates on the remaining checks and every unit shard.
+    expect(ci.jobs.test.if).toBe("${{ always() && github.event_name != 'workflow_dispatch' }}");
+    expect(ci.jobs.test.needs).toEqual(['checks', 'unit']);
+    for (const name of ['checks', 'unit', 'integration-lite', 'bun-runtime', 'integration-full']) {
       expect(ci.jobs[name].if).toBe("${{ github.event_name != 'workflow_dispatch' }}");
     }
     const candidate = load('candidate.yml');

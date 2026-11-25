@@ -11,33 +11,43 @@
  *   - everything under `tests/bun/**`, and
  *   - every file outside it that imports `bun:test`.
  *
- * Each discovered file runs sequentially in its own Bun process, so no single process keeps every
- * file's context alive at once. Discovery, `--isolate`, assertions and per-test budgets are unchanged.
+ * Each discovered file runs in its own Bun process, so no single process keeps every file's context
+ * alive at once. Up to one process per CPU runs at a time (`--jobs N` overrides); each file's output
+ * is buffered and printed whole when it finishes, so logs never interleave. Discovery, `--isolate`,
+ * assertions and per-test budgets are unchanged.
  *
- * Usage: bun scripts/run-bun-tests.ts [--list]
+ * Usage: bun scripts/run-bun-tests.ts [--list] [--jobs N]
  */
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { availableParallelism } from 'node:os';
 import path from 'node:path';
 
 const ROOT = path.resolve(import.meta.dir, '..');
 const { collectBunOnlyTests } = createRequire(import.meta.url)('./bun-test-discovery.cjs') as { collectBunOnlyTests(root: string): string[] };
 
-type Outcome = { code: number | null; signal: NodeJS.Signals | null; error?: string };
+type Outcome = { code: number | null; signal: NodeJS.Signals | null; error?: string; output: Buffer[] };
 
 /** Run one already-discovered file in a fresh Bun process and settle exactly once. */
-function runFile(file: string): Promise<Outcome> {
+function runFile(file: string, jobs: number): Promise<Outcome> {
   return new Promise<Outcome>((resolve) => {
     let settled = false;
-    const settle = (outcome: Outcome): void => {
+    const output: Buffer[] = [];
+    const settle = (outcome: Omit<Outcome, 'output'>): void => {
       if (settled) {
         return;
       }
       settled = true;
-      resolve(outcome);
+      resolve({ ...outcome, output });
     };
     // The absolute path is passed verbatim: a bare relative filter could match another file.
-    const child = spawn(process.execPath, ['test', '--isolate', file], { cwd: ROOT, stdio: 'inherit' });
+    // Bun's 5 s default timeout only exists to catch hangs; sharing the CPUs with other files
+    // must not turn a slow-but-finishing test into a failure. Explicit per-test budgets still apply.
+    const timeout = jobs > 1 ? ['--timeout', '30000'] : [];
+    const child = spawn(process.execPath, ['test', '--isolate', ...timeout, file], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
+    // Both streams share one buffer so the file's log keeps its original order.
+    child.stdout.on('data', (chunk: Buffer) => output.push(chunk));
+    child.stderr.on('data', (chunk: Buffer) => output.push(chunk));
     // Settle after the child has closed.
     child.on('close', (code, signal) => settle({ code, signal }));
     child.on('error', (error) => settle({ code: null, signal: null, error: error.message }));
@@ -59,30 +69,42 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
 
-  console.log(`running ${files.length} Bun-only test file(s) with bun test`);
+  const jobsIndex = argv.indexOf('--jobs');
+  const jobs = jobsIndex === -1 ? availableParallelism() : Number(argv[jobsIndex + 1]);
+  if (!Number.isSafeInteger(jobs) || jobs < 1) {
+    console.error('--jobs requires a positive integer');
+    return 1;
+  }
+
+  console.log(`running ${files.length} Bun-only test file(s) with bun test, ${jobs} at a time`);
   const failed: string[] = [];
-  for (const file of files) {
-    const relative = path.relative(ROOT, file);
-    console.log(`\n=== ${relative}`);
-    const outcome = await runFile(file);
+  const report = (relative: string, outcome: Outcome): void => {
+    process.stdout.write(`\n=== ${relative}\n`);
+    for (const chunk of outcome.output) {
+      process.stdout.write(chunk);
+    }
     if (outcome.error !== undefined) {
       // A startup failure is a gate failure, never a silent skip.
       console.error(`failed to start bun test for ${relative}: ${outcome.error}`);
       failed.push(relative);
-      continue;
-    }
-    if (outcome.signal !== null) {
+    } else if (outcome.signal !== null) {
       console.error(`${relative} was terminated by ${outcome.signal}`);
       failed.push(relative);
-      continue;
-    }
-    if (outcome.code !== 0) {
+    } else if (outcome.code !== 0) {
       // A completed nonzero child is an ordinary test failure: keep going, as `bun test` without
       // `--bail` does, so later files still run and every failure is reported.
       console.error(`${relative} exited with code ${String(outcome.code)}`);
       failed.push(relative);
     }
-  }
+  };
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < files.length) {
+      const file = files[next++];
+      report(path.relative(ROOT, file), await runFile(file, jobs));
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(jobs, files.length) }, worker));
 
   if (failed.length > 0) {
     console.error(`\n${failed.length} of ${files.length} Bun-only test file(s) failed:`);
