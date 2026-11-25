@@ -104,6 +104,9 @@ test('the appended tuples are exactly two genuine slices each and the deltas are
   // This generation extends the controlled-API producer admission, which moves the
   // phase policy module itself.
   'scripts/lib/independent-admission/module-source-phases.ts',
+  // The artifact download deadline scales with the exact archive size, so a
+  // multi-GiB module product is no longer cut off by a fixed minute.
+  'scripts/acquire-independent-product-input.ts',
   'package.json','bun.lock']);
  // No role is added or dropped by the append, only the reviewed rows move.
  expect(tailSecondary.map(row=>row.path)).toEqual(priorSecondary.map(row=>row.path));

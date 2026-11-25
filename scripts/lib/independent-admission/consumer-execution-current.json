@@ -613,7 +613,7 @@
   },
   {
     "path": "scripts/acquire-independent-product-input.ts",
-    "sha256": "f64f46e85a4fe7bfb8d2404fd4e5b7047be7a7be6af21294e1d661d5be29a921"
+    "sha256": "9e64a96b0b11d429ac7602160d36fed21c72839ae1cae1527d8b2884ad236f0f"
   },
   {
     "path": "scripts/agentfs-native-ci/accept.py",
