@@ -53,6 +53,6 @@ test('a shard selects its vitest slice of every invocation and tolerates an empt
   assert.deepEqual(scope('main', { shard: '2/3' }), [`run test:run --shard=2/3 --passWithNoTests --exclude {${slow}}`]);
   const calls = scope('main', { event: 'pull_request', changed: 'src/api/x.ts', shard: '1/3' });
   assert.equal(calls[0], `run test:run --shard=1/3 --passWithNoTests --exclude {${slow},tests/scripts/**}`);
-  assert.match(calls[1], /^run test:run --shard=1\/3 --passWithNoTests --changed [0-9a-f]{40} --passWithNoTests tests\/scripts$/);
+  assert.match(calls[1], /^run test:run --shard=1\/3 --changed [0-9a-f]{40} --passWithNoTests tests\/scripts$/);
   assert.throws(() => scope('main', { shard: '0/3' }));
 });

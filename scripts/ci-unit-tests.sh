@@ -15,10 +15,12 @@ set -euo pipefail
 
 mode="${1:?usage: ci-unit-tests.sh main [i/n] | slow}"
 shard=()
+allow_empty=()
 if [ -n "${2:-}" ]; then
   [[ "$2" =~ ^[1-9][0-9]*/[1-9][0-9]*$ ]] || { echo "invalid shard: $2" >&2; exit 64; }
+  shard=(--shard="$2")
   # A shard may receive no file of a narrow selection; the other shards still gate it.
-  shard=(--shard="$2" --passWithNoTests)
+  allow_empty=(--passWithNoTests)
 fi
 slow_filters=(tests/storage/rdf/PostgresRdf tests/runtime/XpodRuntime.integration.test.ts)
 # vitest takes a single --exclude, so the globs are joined into one brace pattern.
@@ -38,9 +40,10 @@ if [ "${EVENT_NAME:-}" = pull_request ] && [ -n "${BASE_SHA:-}" ] \
 fi
 
 if ! "$scoped"; then
-  exec bun run test:run ${shard[@]+"${shard[@]}"} --exclude "{$slow_excludes}"
+  exec bun run test:run ${shard[@]+"${shard[@]}"} ${allow_empty[@]+"${allow_empty[@]}"} --exclude "{$slow_excludes}"
 fi
 
 echo "No pipeline files changed: tests/scripts runs only where the change reaches it." >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
-bun run test:run ${shard[@]+"${shard[@]}"} --exclude "{$slow_excludes,tests/scripts/**}"
+bun run test:run ${shard[@]+"${shard[@]}"} ${allow_empty[@]+"${allow_empty[@]}"} --exclude "{$slow_excludes,tests/scripts/**}"
+# vitest rejects a repeated --passWithNoTests, so this run never adds allow_empty.
 bun run test:run ${shard[@]+"${shard[@]}"} --changed "$BASE_SHA" --passWithNoTests tests/scripts
