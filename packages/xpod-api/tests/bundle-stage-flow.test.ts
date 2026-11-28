@@ -7,7 +7,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { buildApiBundleProducts, bundleFile } from '../scripts/bundle-products';
-import { prepareApiBundleStage, attachApiSourcekit, verifyApiStageMaterials } from '../scripts/bundle-stage';
+import { prepareApiBundleStage, attachApiSourcekit, verifyApiStageMaterials, apiSourceMaterialsRoot } from '../scripts/bundle-stage';
 import { staticSourcePaths, apiStaticProductRoots, materializeApiStaticProducts } from '../scripts/static-material';
 import { stagePhysicalService } from '../../../scripts/lib/physical-module-stage';
 import { packPhysicalModule } from '../../../scripts/lib/physical-module-archive';
@@ -43,7 +43,10 @@ test('normal API bundle stage and archive callbacks require strict receipts, sta
     assert(fs.existsSync(stage+'/dist/PiAgentRuntimeWorker.mjs'));
     assert.throws(()=>verifyApiStageMaterials(root,build,stage),/ENOENT/);
     attachApiSourcekit(root,stage,plan);verifyApiStageMaterials(root,build,stage);
-    const sourceIndex=JSON.parse(fs.readFileSync(stage+'/provenance/sourcekits/source-kit.json','utf8'));assert(!sourceIndex.files.some((row:any)=>row.path.includes('/.test-data/')||row.path.endsWith('/.env.local')));
+    // The source kit sits beside the package; the runtime package keeps only its record.
+    assert(!fs.existsSync(stage+'/provenance/sourcekits'));
+    assert.equal(JSON.parse(fs.readFileSync(stage+'/provenance/api-source-materials.json','utf8')).kit.location,'source-materials');
+    const sourceIndex=JSON.parse(fs.readFileSync(apiSourceMaterialsRoot(stage)+'/sourcekits/source-kit.json','utf8'));assert(!sourceIndex.files.some((row:any)=>row.path.includes('/.test-data/')||row.path.endsWith('/.env.local')));
     fs.writeFileSync(stage+'/source/unapproved.tmp','not approved');assert.throws(()=>verifyApiStageMaterials(root,build,stage),/Unapproved/);fs.unlinkSync(stage+'/source/unapproved.tmp');
     const canonicalSource=stage+'/source/src/api/main.ts',canonicalSourceBytes=fs.readFileSync(canonicalSource);fs.appendFileSync(canonicalSource,'drift');assert.throws(()=>verifyApiStageMaterials(root,build,stage),/drifted staged API source/);fs.writeFileSync(canonicalSource,canonicalSourceBytes);
     fs.writeFileSync(stage+'/NOTICE','controlled original fixture');fs.mkdirSync(stage+'/provenance/terms');fs.writeFileSync(stage+'/provenance/terms/index.json',JSON.stringify({schemaVersion:1,status:'original-material-collection',legalClearance:false,entries:[]}));

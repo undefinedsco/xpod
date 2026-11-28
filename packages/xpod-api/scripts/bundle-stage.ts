@@ -134,16 +134,25 @@ function sourcekitOriginalPackages(roots: ApiSourceRoot[], kit: ApiSourcekit) {
   });
 }
 
-export function attachApiSourcekit(root: string, stage: string, plan: ReturnType<typeof prepareApiBundleStage>): void {
+/**
+ * Source materials sit beside the package, not inside it (docs/module-publication-v2.md §4):
+ * the runtime package only records where the source kit is and its digest, and the kit is
+ * published separately with the release.
+ */
+export function apiSourceMaterialsRoot(stage: string): string {
+  return path.join(path.dirname(path.resolve(stage)), 'source-materials');
+}
+
+export function attachApiSourcekit(root: string, stage: string, plan: ReturnType<typeof prepareApiBundleStage>, materials = apiSourceMaterialsRoot(stage)): void {
   const roots = apiOriginalSourceRoots(root, plan);
-  const {kit, budget} = writeApiSourcekit(path.join(stage, 'provenance/sourcekits'), roots, apiStageExpandedBytes(stage));
+  const {kit, budget} = writeApiSourcekit(path.join(materials, 'sourcekits'), roots, apiStageExpandedBytes(stage));
   const originalPackages = sourcekitOriginalPackages(roots, kit);
   const missingNamedOriginalTerms = originalPackages.filter(row => !row.namedTerms.length).map(row => ({name: row.name, version: row.version}));
-  const binding = {archive: path.relative(stage, kit.archive).replaceAll('\\', '/'), index: path.relative(stage, kit.index).replaceAll('\\', '/'), sha256: kit.sha256};
+  const binding = {location: 'source-materials', archive: path.relative(materials, kit.archive).replaceAll('\\', '/'), index: path.relative(materials, kit.index).replaceAll('\\', '/'), sha256: kit.sha256};
   writeFileSync(path.join(stage, 'provenance/api-source-materials.json'), JSON.stringify({schemaVersion: 1, role: 'source-only', kit: binding, budget, originalPackages, missingNamedOriginalTerms, roots: sourceRootBindings(root, roots), publishReady: false, noticeAudit: 'pending', nativeAudit: 'pending'}, null, 2) + '\n', {flag: 'wx'});
 }
 
-export function verifyApiStageMaterials(root: string, build: string, stage: string, requireCompleteTerms = false): void {
+export function verifyApiStageMaterials(root: string, build: string, stage: string, requireCompleteTerms = false, materials = apiSourceMaterialsRoot(stage)): void {
   const plan = prepareApiBundleStage(root, build);
   for (const file of plan.files) if (hash(readFileSync(path.join(stage, file.destination))) !== file.sha256) throw new Error('Staged API bundle material drift');
   for (const asset of plan.staticProducts.assets) if (hash(readFileSync(path.join(stage, asset.path))) !== asset.sha256) throw new Error('Staged API static asset drift');
@@ -151,8 +160,9 @@ export function verifyApiStageMaterials(root: string, build: string, stage: stri
   if (record.schemaVersion !== 1 || record.role !== 'source-only' || record.publishReady !== false || record.noticeAudit !== 'pending' || record.nativeAudit !== 'pending') throw new Error('API source material role mismatch');
   const roots = apiOriginalSourceRoots(root, plan);
   const expectedRoots = sourceRootBindings(root, roots);
-  if (JSON.stringify(record.roots) !== JSON.stringify(expectedRoots) || record.kit?.archive !== 'provenance/sourcekits/originals.tgz' || record.kit?.index !== 'provenance/sourcekits/source-kit.json') throw new Error('API original source root binding drift');
-  const kit: ApiSourcekit = {archive: path.join(stage, record.kit.archive), index: path.join(stage, record.kit.index), sha256: record.kit.sha256};
+  if (JSON.stringify(record.roots) !== JSON.stringify(expectedRoots) || record.kit?.location !== 'source-materials'
+    || record.kit?.archive !== 'sourcekits/originals.tgz' || record.kit?.index !== 'sourcekits/source-kit.json') throw new Error('API original source root binding drift');
+  const kit: ApiSourcekit = {archive: path.join(materials, record.kit.archive), index: path.join(materials, record.kit.index), sha256: record.kit.sha256};
   const runtime = apiStageExpandedBytes(stage);
   verifyApiSourcekits([kit], runtime);
   verifyApiSourcekitRoots(kit, roots, runtime);
