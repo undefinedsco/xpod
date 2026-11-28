@@ -10,6 +10,7 @@ import {
 } from 'undici/index.js';
 import {
   DEFAULT_PROVIDER_HTTP_TIMEOUT_MS,
+  DEFAULT_PROVIDER_STREAM_IDLE_TIMEOUT_MS,
   PROVIDER_ERROR_BODY_LIMIT_BYTES,
   defaultProviderAddressResolver,
   isProviderAddressUnsafe,
@@ -70,7 +71,7 @@ type ProviderConnectOptions = Parameters<ProviderConnector>[0];
 type ProviderConnectCallback = Parameters<ProviderConnector>[1];
 
 interface PreparedProviderRequest {
-  fetch: (input: Parameters<typeof fetch>[0], init?: RequestInit, onBodyFinish?: () => void) => Promise<Response>;
+  fetch: (input: Parameters<typeof fetch>[0], init?: RequestInit, onBodyFinish?: () => void, onBodyActivity?: () => void) => Promise<Response>;
   dispatcher: UndiciDispatcher;
 }
 
@@ -192,6 +193,7 @@ export class ProviderHttpTransport {
   private readonly fetch: typeof fetch;
   private readonly resolver: ProviderAddressResolver;
   private readonly timeoutMs: number;
+  private readonly streamTimeoutMs: number;
   private readonly allowedPrivateOrigins: ReadonlySet<string>;
   private readonly systemProxy?: string;
 
@@ -201,6 +203,7 @@ export class ProviderHttpTransport {
     this.fetch = options.fetch ?? (process.versions.bun ? undiciFetch as unknown as typeof fetch : fetch);
     this.resolver = options.resolver ?? defaultProviderAddressResolver;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_PROVIDER_HTTP_TIMEOUT_MS;
+    this.streamTimeoutMs = options.timeoutMs ?? DEFAULT_PROVIDER_STREAM_IDLE_TIMEOUT_MS;
     this.allowedPrivateOrigins = new Set((options.allowedPrivateOrigins ?? []).map((value) => new URL(value).origin));
     this.systemProxy = normalizeProviderProxyUrl(options.systemProxy);
   }
@@ -283,7 +286,7 @@ export class ProviderHttpTransport {
     headers.set('Content-Type', 'application/json');
     headers.set('Authorization', `Bearer ${options.apiKey}`);
 
-    const { signal, cleanup } = createProviderRequestSignal(options.signal, this.timeoutMs);
+    const { signal, cleanup, resetTimeout } = createProviderRequestSignal(options.signal, this.streamTimeoutMs);
     let response: Response;
     try {
       response = await request.fetch(options.url, {
@@ -292,16 +295,15 @@ export class ProviderHttpTransport {
         body: JSON.stringify(options.body),
         signal,
         redirect: 'manual',
-      }, cleanup);
+      }, cleanup, resetTimeout);
     } catch (error) {
       cleanup();
       await closeProviderDispatcher(request.dispatcher);
       throw error;
     }
-    if (process.versions.bun && response.ok && response.body) {
+    if (response.ok && response.body) {
       return response;
     }
-    if (!process.versions.bun) cleanup();
 
     if (!response.ok) {
       try {
@@ -318,6 +320,7 @@ export class ProviderHttpTransport {
     }
 
     cleanup();
+    await closeProviderDispatcher(request.dispatcher);
     return response;
   }
 
@@ -337,7 +340,7 @@ export class ProviderHttpTransport {
       headers.set('Authorization', `Bearer ${options.apiKey}`);
     }
 
-    const { signal, cleanup } = createProviderRequestSignal(options.signal, this.timeoutMs);
+    const { signal, cleanup, resetTimeout } = createProviderRequestSignal(options.signal, this.streamTimeoutMs);
     try {
       const response = await request.fetch(options.url, {
         method: 'POST',
@@ -345,7 +348,7 @@ export class ProviderHttpTransport {
         body: JSON.stringify(options.body),
         signal,
         redirect: 'manual',
-      });
+      }, cleanup, resetTimeout);
 
       if (!response.ok) {
         throw await providerResponseError(response);
@@ -435,7 +438,7 @@ export class ProviderHttpTransport {
       : createPinnedAgent(targetResolution, resolver);
     return {
       dispatcher,
-      fetch: async (input, init, onBodyFinish) => {
+      fetch: async (input, init, onBodyFinish, onBodyActivity) => {
         if (pinProxyTarget && normalizedProxy) {
           // A proxy must connect to the checked IP, not resolve the original name
           // again. Retain the origin identity for HTTP and TLS inside the tunnel.
@@ -444,10 +447,12 @@ export class ProviderHttpTransport {
           const address = stripIpv6Brackets(target.addresses[0]!.address);
           pinnedUrl.hostname = isIP(address) === 6 ? `[${address}]` : address;
           const response = await this.fetch(pinnedUrl.href, { ...init, dispatcher } as any);
-          return process.versions.bun ? bindProviderResponseSignal(response, init?.signal, dispatcher, onBodyFinish) : response;
+          return process.versions.bun || onBodyActivity
+            ? bindProviderResponseSignal(response, init?.signal, dispatcher, onBodyFinish, onBodyActivity) : response;
         }
         const response = await this.fetch(input, { ...init, dispatcher } as any);
-        return process.versions.bun ? bindProviderResponseSignal(response, init?.signal, dispatcher, onBodyFinish) : response;
+        return process.versions.bun || onBodyActivity
+          ? bindProviderResponseSignal(response, init?.signal, dispatcher, onBodyFinish, onBodyActivity) : response;
       },
     };
   }
@@ -475,8 +480,12 @@ function bindProviderResponseSignal(
   signal: AbortSignal | null | undefined,
   dispatcher: UndiciDispatcher,
   onFinish?: () => void,
+  onActivity?: () => void,
 ): Response {
   if (!response.body || !signal) return response;
+  // Streaming requests have an idle deadline, not a total generation deadline.
+  // Count raw bytes (including SSE comments/partial events) as activity.
+  if (response.ok) onActivity?.();
   const reader = response.body.getReader();
   let abort: () => void;
   const cleanup = () => {
@@ -515,6 +524,7 @@ function bindProviderResponseSignal(
           controller.close();
           reader.releaseLock();
         } else {
+          if (response.ok && value.byteLength > 0) onActivity?.();
           controller.enqueue(value);
         }
       } catch (error) {
@@ -534,9 +544,17 @@ function stripIpv6Brackets(value: string): string {
 function createProviderRequestSignal(
   upstreamSignal: AbortSignal | undefined,
   timeoutMs: number,
-): { signal: AbortSignal; cleanup: () => void } {
+): { signal: AbortSignal; cleanup: () => void; resetTimeout: () => void } {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(new Error('provider_request_timeout')), timeoutMs);
+  let active = true;
+  let timeout: ReturnType<typeof setTimeout>;
+  const resetTimeout = () => {
+    clearTimeout(timeout);
+    if (active && !controller.signal.aborted) {
+      timeout = setTimeout(() => controller.abort(new Error('provider_request_timeout')), timeoutMs);
+    }
+  };
+  resetTimeout();
   const abortFromUpstream = () => controller.abort(upstreamSignal?.reason);
   if (upstreamSignal?.aborted) {
     abortFromUpstream();
@@ -545,7 +563,9 @@ function createProviderRequestSignal(
   }
   return {
     signal: controller.signal,
+    resetTimeout,
     cleanup: () => {
+      active = false;
       clearTimeout(timeout);
       upstreamSignal?.removeEventListener('abort', abortFromUpstream);
     },

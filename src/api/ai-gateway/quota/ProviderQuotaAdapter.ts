@@ -14,6 +14,7 @@ import type { CredentialVault, ProviderSecret } from '../credentials/CredentialV
 import type { ProviderRegistry } from '../providers/ProviderRegistry';
 import { QuotaCapabilityRegistry, type QuotaHandlerCapability } from './QuotaCapabilityRegistry';
 import { ProviderHttpTransport } from '../../service/provider-http-transport';
+import { parseRetryAfter } from '../../service/provider-retry-after';
 
 export type QuotaSnapshotStatus = 'available' | 'unsupported' | 'error';
 
@@ -722,6 +723,7 @@ export function errorQuotaSnapshot(
     metadata?: Record<string, unknown>;
   },
 ): NormalizedQuotaSnapshot {
+  const retryAt = parseRetryAfter(input.retryAfter, input.now);
   return {
     credential: input.credential,
     status: 'error',
@@ -735,7 +737,7 @@ export function errorQuotaSnapshot(
       ...(input.status === 429 ? {
         cooldown: {
           reason: 'rate_limited',
-          ...(retryAfterSeconds(input.retryAfter) !== undefined ? { retryAfterSeconds: retryAfterSeconds(input.retryAfter) } : {}),
+          ...(retryAt ? { retryAfterSeconds: Math.ceil((retryAt.getTime() - input.now.getTime()) / 1000) } : {}),
         },
       } : {}),
     },
@@ -839,21 +841,6 @@ export function decimalAmount(value: unknown): {
 
 export function normalizeProvider(provider: string): string {
   return provider.trim().toLowerCase();
-}
-
-function retryAfterSeconds(value: string | null | undefined): number | undefined {
-  if (!value) {
-    return undefined;
-  }
-  const seconds = Number(value);
-  if (Number.isFinite(seconds)) {
-    return seconds;
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return undefined;
-  }
-  return Math.max(0, Math.ceil((date.getTime() - Date.now()) / 1000));
 }
 
 function quotaRefreshKey(input: {

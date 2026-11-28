@@ -63,7 +63,10 @@ function router(input: {
 } = {}): ModelRouter {
   return new ModelRouter({
     registry: input.registry ?? createDefaultProviderRegistry(),
-    affinityStore: new InMemorySessionAffinityStore({ secret: AFFINITY_SECRET }),
+    affinityStore: new InMemorySessionAffinityStore({
+      secret: AFFINITY_SECRET,
+      now: () => input.now ?? new Date('2026-07-23T00:00:00.000Z'),
+    }),
     credentials: async() => input.credentials ?? [],
     selectionRepository: input.selections
       ? { listActiveSelections: async() => input.selections! }
@@ -607,6 +610,78 @@ describe('ModelRouter', () => {
       code: 'credential_unavailable',
       status: 403,
     });
+  });
+
+  it('round robins concurrent requests within the best priority tier and isolates routing pools', async () => {
+    const modelRouter = router({ credentials: [
+      credential({ id: 'b', provider: 'openai', models: ['gpt-5', 'gpt-4.1'] }),
+      credential({ id: 'a', provider: 'openai', models: ['gpt-5', 'gpt-4.1'] }),
+      credential({ id: 'fallback', provider: 'openai', models: ['gpt-5'], priority: 200 }),
+      credential({ id: 'disabled', provider: 'openai', models: ['gpt-5'], enabled: false }),
+    ] });
+    const input = { webId: WEB_ID, deployment: 'local', model: 'gpt-5' };
+    const routes = await Promise.all(Array.from({ length: 9 }, () => modelRouter.route(input)));
+    expect(routes.map((route) => route.credential.id)).toEqual(['a', 'b', 'a', 'b', 'a', 'b', 'a', 'b', 'a']);
+    for (const isolated of [
+      { ...input, webId: OTHER_WEB_ID }, { ...input, deployment: 'cloud' }, { ...input, model: 'gpt-4.1' },
+    ]) {
+      expect((await modelRouter.route(isolated)).credential.id).toBe('a');
+    }
+    expect((await modelRouter.route(input)).credential.id).toBe('b');
+    expect((await modelRouter.route(input, new Set(['a', 'b']))).credential.id).toBe('fallback');
+  });
+
+  it('continues rotation when credential membership is removed, re-added or reordered', async () => {
+    let memberIds = ['a', 'b', 'c'];
+    const modelRouter = new ModelRouter({
+      registry: createDefaultProviderRegistry(),
+      affinityStore: new InMemorySessionAffinityStore({ secret: AFFINITY_SECRET }),
+      credentials: async() => memberIds.map((id) => credential({ id, provider: 'openai', models: ['gpt-5'] })),
+    });
+    const input = { webId: WEB_ID, deployment: 'local', model: 'gpt-5' };
+
+    expect((await modelRouter.route(input)).credential.id).toBe('a');
+    // The cursor holder disappears; the next call must not get stuck on a stale id.
+    memberIds = ['b', 'c'];
+    expect((await modelRouter.route(input)).credential.id).toBe('b');
+    // Re-adding an earlier id must not reset the cursor back to it.
+    memberIds = ['a', 'b', 'c'];
+    expect((await modelRouter.route(input)).credential.id).toBe('c');
+    // A single surviving member is selected even though it sorts before the cursor.
+    memberIds = ['a'];
+    expect((await modelRouter.route(input)).credential.id).toBe('a');
+    // Candidate array order does not drive the cursor; sorted id order does.
+    memberIds = ['c', 'b'];
+    expect((await modelRouter.route(input)).credential.id).toBe('b');
+  });
+
+  it('balances new conversations while retaining affinity and keeping explicit pins out of rotation', async () => {
+    const modelRouter = router({ credentials: ['a', 'b'].map((id) =>
+      credential({ id, provider: 'openai', models: ['gpt-5'] })) });
+    const input = { webId: WEB_ID, deployment: 'local', model: 'gpt-5' };
+    const first = { ...input, conversationId: 'first' };
+    const second = { ...input, conversationId: 'second' };
+    expect((await modelRouter.route(first)).credential.id).toBe('a');
+    expect((await modelRouter.route(first)).credential.id).toBe('a');
+    expect((await modelRouter.route({ ...input, explicitCredentialId: 'a' })).credential.id).toBe('a');
+    expect((await modelRouter.route(second)).credential.id).toBe('b');
+    expect((await modelRouter.route(second)).credential.id).toBe('b');
+    expect((await modelRouter.route(input)).credential.id).toBe('a');
+  });
+
+  it('skips cooling connections and includes them again at their exact recovery time', async () => {
+    const now = new Date('2026-07-23T00:00:00.000Z');
+    const modelRouter = router({ now, credentials: ['a', 'b'].map((id) =>
+      credential({ id, provider: 'openai', models: ['gpt-5'] })) });
+    const input = { webId: WEB_ID, deployment: 'local', model: 'gpt-5' };
+    expect((await modelRouter.route(input)).credential.id).toBe('a');
+    await modelRouter.recordCooldown({ ...input, credentialId: 'a', until: new Date(now.getTime() + 600_000) });
+    now.setTime(now.getTime() + 599_999);
+    expect((await modelRouter.route(input)).credential.id).toBe('b');
+    expect((await modelRouter.route(input)).credential.id).toBe('b');
+    now.setTime(now.getTime() + 1);
+    expect((await modelRouter.route(input)).credential.id).toBe('a');
+    expect((await modelRouter.route(input)).credential.id).toBe('b');
   });
 
   it('honors explicit healthy credentials and disables failover for them', async () => {

@@ -10,6 +10,7 @@ import {
   ToolArgumentTracker,
 } from '../types';
 import { type ProviderSseEvent, ProviderHttpTransport } from '../../service/provider-http-transport';
+import { retryAfterFromError } from '../../service/provider-retry-after';
 import type { ProviderDescriptor, ProviderModelDescriptor } from './ProviderRegistry';
 
 export interface ProviderRuntimeCredential {
@@ -102,8 +103,7 @@ export abstract class BaseProviderRuntimeAdapter implements ProviderRuntimeAdapt
     const status = typeof (error as { status?: unknown })?.status === 'number'
       ? (error as { status: number }).status
       : 502;
-    const headers = (error as { headers?: Headers })?.headers;
-    const retryAfter = headers?.get('Retry-After') ?? headers?.get('retry-after') ?? undefined;
+    const retryAfter = retryAfterFromError(error);
     const body = typeof (error as { body?: unknown })?.body === 'string'
       ? redactSecret((error as { body: string }).body, secret)
       : undefined;

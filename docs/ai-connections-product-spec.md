@@ -359,6 +359,37 @@ the user from the first moment, including the flow where the user enters their o
   the submitted `DEFAULT_API_KEY`), and the client never follows a redirect while that key is on
   the request.
 
+### Connection selection and rate limiting
+
+Automatic routing uses round robin among healthy, enabled, model-compatible connections
+at the best available priority. New conversations and requests without a conversation ID
+advance the rotation; an existing conversation keeps its usable connection. Explicit
+connection selection remains pinned. Cursors are isolated by deployment, WebID, provider,
+model and priority; they are bounded and local to each Gateway process, and reset on restart.
+This provides rotation rather than globally coordinated or quota-weighted balancing.
+
+A rate-limited connection enters cooldown until the upstream `Retry-After` delta-seconds
+or HTTP-date. Missing or invalid hints use 60 seconds; zero or past dates permit immediate
+eligibility for later requests. Cooldown is enforced by routing and recorded in credential
+health. Before the first response event, the current request can fail over to another
+eligible connection, without waiting for cooldown. Once output starts, errors terminate
+the response rather than switching connections mid-generation. Recovery times written
+only in unstructured error prose are not interpreted.
+
+### Provider transport deadlines
+
+Buffered JSON and raw HTTP requests retain a 30-second total deadline. Streaming
+requests (`postSse` and `postStream`) allow five minutes until response headers,
+then a five-minute idle deadline renewed by each nonempty body chunk. SSE comments
+and partial events count as activity, so an active generation may run longer than
+five minutes, including reasoning pauses longer than 30 seconds. A stalled stream still aborts, and caller cancellation remains active
+through body consumption. Completion, early consumer exit, and cancellation release
+the timer, abort listener, and per-request dispatcher on both Node and Bun.
+
+Regression coverage lives in `tests/api/service/provider-stream-timeout.test.ts`
+and the real Bun/TLS/proxy fixture used by
+`tests/runtime/provider-http-transport.test.ts`.
+
 ## Login And Session Model
 
 AI Connections has one login entry: the host-owned WebID login through the
