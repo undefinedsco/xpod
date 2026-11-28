@@ -3,8 +3,8 @@
  * SYNTHETIC contract tests.
  *
  * The CLI17 catalogue (and the sibling policies) freeze their tuples at the
- * accepted 0.4.31 staging bytes. SEVEN captures live here: three version-bearing
- * manifests, three historical test-file originals, and one historical production
+ * accepted 0.4.31 staging bytes. EIGHT captures live here: three version-bearing
+ * manifests, the old API manifest, three historical test-file originals, and one historical production
  * helper original. Together they cover exactly the paths whose live checkout bytes
  * legitimately differ from those frozen rows, because an ordinary version bump
  * changes the manifests, later commits edit the tests, and later work edits the
@@ -37,11 +37,12 @@ const FROZEN_DIR = path.dirname(fileURLToPath(import.meta.url))
  */
 const REPO_ROOT = path.dirname(path.dirname(path.dirname(path.dirname(FROZEN_DIR))))
 
-/** Three version-bearing manifests whose live bytes move on every version bump. */
+/** Accepted manifests read by historical catalogue tests. */
 const FROZEN_MANIFESTS: ReadonlySet<string> = new Set([
   'package.json',
   'bun.lock',
   'desktop/package.json',
+  'packages/xpod-api/package.json',
 ])
 
 /**

@@ -1,3 +1,4 @@
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 import{currentProgramSdkConsumerGroups}from'../../scripts/lib/independent-admission/current-program-definition';
 import{test,expect}from'bun:test';import{readFileSync}from'node:fs';import{createHash}from'node:crypto';
 import before from'../fixtures/independent-admission/pre-api23-sdk43-whole-hashes.original.json';
@@ -13,7 +14,8 @@ const digest=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest(
 test('API23 SDK43 preserve the actual 38f complete history and bind every current executed byte',()=>{
  expect(before.base).toBe('38f37d14bc44ebe0068a206b82cbc22ffaf30b5a');expect(Object.values(before.hashes).reduce((n,rows)=>n+rows.length,0)).toBe(224);
  for(const[name,groups]of Object.entries({api,sdk,consumer,ci})){const old=before.hashes[name as keyof typeof before.hashes];expect(groups.slice(0,old.length).map(digest)).toEqual(old);}
- expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);for(const row of [...current,...api[api.length-1]!.sourceBindings,...currentProgramSdkConsumerGroups().at(-1)!.selectors,...currentProgramSdkConsumerGroups().at(-1)!.sourceBindings])expect(createHash('sha256').update(readTrackedSource(row.path)).digest('hex')).toBe(row.sha256);
+ expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);for (const row of current) expect(shaCurrentApiDependencyBinding(import.meta.dir + '/../..', row.path)).toBe(row.sha256);
+ for(const row of [...api[api.length-1]!.sourceBindings,...currentProgramSdkConsumerGroups().at(-1)!.selectors,...currentProgramSdkConsumerGroups().at(-1)!.sourceBindings])expect(createHash('sha256').update(readTrackedSource(row.path)).digest('hex')).toBe(row.sha256);
  const reads:string[]=[];expect(controlledApiSourceRecipe(name=>{reads.push(name);return readTrackedSource(name);},api[api.length-1]!.selectors[0]!.sha256,'linux-arm64').rows).toBe(API_SERVICE_BUILD_SOURCE_BINDINGS);expect(reads).toContain('scripts/lib/physical-module-archive.ts');
 });
 for(const[name,groups]of Object.entries({api,sdk,consumer,ci}))for(const[index,group]of groups.entries())test(`${name} actual complete source recipe ${index+1} selects only its own tuple and refuses missing evidence`,()=>{

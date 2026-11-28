@@ -1,3 +1,4 @@
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 import{currentProgramSdkConsumerGroups}from'../../scripts/lib/independent-admission/current-program-definition';
 import fs from 'node:fs';import{createHash}from'node:crypto';import{test,expect}from'bun:test';
 import before from'../fixtures/independent-admission/pre-stopped-resize-whole-groups.original.json';
@@ -9,7 +10,8 @@ const sha=(value:Buffer|string)=>createHash('sha256').update(value).digest('hex'
 test('SDK42 preserves all 219 actual prior whole recipes and binds the exact stopped resize/complete source closure',()=>{
  for(const[name,values]of Object.entries(groups)){const old=before.hashes[name as keyof typeof before.hashes];for(let i=0;i<old.length;i++)expect(sha(JSON.stringify(values[i]))).toBe(old[i]!);}
 
- for(const row of [...current,...currentProgramSdkConsumerGroups().at(-1)!.selectors,...currentProgramSdkConsumerGroups().at(-1)!.sourceBindings])expect(sha(readTrackedSource(row.path))).toBe(row.sha256);
+ for (const row of current) expect(shaCurrentApiDependencyBinding(import.meta.dir + '/../..', row.path)).toBe(row.sha256);
+ for(const row of [...currentProgramSdkConsumerGroups().at(-1)!.selectors,...currentProgramSdkConsumerGroups().at(-1)!.sourceBindings])expect(sha(readTrackedSource(row.path))).toBe(row.sha256);
  expect(sdk[41]!.sourceBindings.find(row=>row.path==='qlever/scripts/sdk-generated-vma-originals.py')!.sha256).toBe('25e6eebc35cc7447588785bfaa5eca0e26c588b841e4e9db17e92f6ccdbb4854');
  expect(api[20]!.sourceBindings.find(row=>row.path==='packages/xpod-api/scripts/sourcekit-producer.ts')!.sha256).toBe('393f3a9b1eccd47b8b7d20954e02a267e69afd79135afab6bf2305f53644119a');
 });

@@ -1,3 +1,4 @@
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 import {test,expect} from 'bun:test';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -45,7 +46,7 @@ test('new SDK20 pairs only the three actual kernel-reviewed authority files whil
  const latest=SDK[19]!,previous=SDK[18]!;
  const changed=latest.sourceBindings.filter(row=>previous.sourceBindings.find(old=>old.path===row.path)?.sha256!==row.sha256);
  expect(changed.map(row=>row.path).sort()).toEqual(['qlever/scripts/sdk-generation-multiprocess-bindings.py','qlever/scripts/sdk-ptrace-execution.py','qlever/scripts/sdk-tool-provider-originals.py']);
- for(const row of current)expect(hash(readTrackedSource(path.join(root,row.path)))).toBe(row.sha256);
+ for (const row of current) expect(shaCurrentApiDependencyBinding(import.meta.dir + '/../..', row.path)).toBe(row.sha256);
  for(const role of latest.secondarySelectors??[]){const old=previous.secondarySelectors!.find(row=>row.path===role.path)!;if(old.sha256!==role.sha256){const mixed=observed(latest);mixed.set(sourceBindingKey(role),old.sha256);expect(()=>selectGitHubSourceBindingGroup(SDK,mixed)).toThrow();}}
  expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
  const controller=CONSUMER.find(group=>current.every(row=>group.sourceBindings.some(binding=>binding.path===row.path&&binding.sha256===row.sha256)))!;

@@ -1,3 +1,4 @@
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 /** RC389 registration guard: the AUTHORITATIVE all-history anchors plus the CURRENT
  *  clone shape. Every historical constant below is the whole-array JSON.stringify hash
  *  captured from the PRE-METADATA dd7 baseline; no private path or 26 MB fixture is
@@ -165,7 +166,9 @@ test('RC389: only the NEW CURRENT generation binds live disk and self-selects',(
    const grp=groups[index]!;
    for(const row of rowsOf(grp)){
     if(row.ref==='run-head')continue;
-    expect(row.sha256).toBe(disk(row.path));
+    const hashOnDisk = name === 'consumer' || name === 'ci'
+      ? shaCurrentApiDependencyBinding(import.meta.dir + '/../..', row.path) : disk(row.path);
+    expect(row.sha256).toBe(hashOnDisk);
    }
    // Exercise the complete production family: frozen history remains in the resolver
    // and the new generation must be uniquely selected without trimming competitors.
@@ -218,7 +221,7 @@ test('current canonical preserves the published order and appends the Undici pat
  expect(canonical.at(-2).path).toBe('patches/comunica-undici-entry.cjs');
  for(const row of canonical){
   expect(Object.keys(row).sort()).toEqual(['path','sha256']);
-  expect(row.sha256).toBe(disk(row.path));
+  expect(row.sha256).toBe(shaCurrentApiDependencyBinding(import.meta.dir + '/../..', row.path));
  }
 });
 

@@ -33,7 +33,7 @@
   },
   {
     "path": "bun.lock",
-    "sha256": "b7fa5ccb7ea73679a345aeafafa0dfe2a03c119d721d31abab3c02e82a483808"
+    "sha256": "07f1433671422a2a051969c156c69680417a905d18d55e900b859944b9982882"
   },
   {
     "path": "desktop/package.json",
@@ -45,7 +45,7 @@
   },
   {
     "path": "package.json",
-    "sha256": "5b22bfea56abce62244dcb9930446a68d91cfd684b31c99c770081eaa24536c1"
+    "sha256": "fa36a3c40b8ab296e4c87d649044c9cfdeaacdcd88b6e6f85f60fcf4aeb2c67f"
   },
   {
     "path": "packages/ai-connections-runtime/package.json",
@@ -97,7 +97,7 @@
   },
   {
     "path": "packages/xpod-api/package.json",
-    "sha256": "ce111f505757cbb813e70237d7fec59ae496eb1b7f6661d57be1203cd4709a60"
+    "sha256": "6ed35b557070534f9b3562503407d0a0bf852b12c97a64303f5e1fcb6c3c699b"
   },
   {
     "path": "packages/xpod-api/scripts/build.ts",
@@ -941,7 +941,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/github-origin.ts",
-    "sha256": "6f8c825c28513dd13827142f5849f11b5dbd59c0cc0b4c07734030c1e5304e55"
+    "sha256": "59c9b663f1abff5f7da77846018e453949c417c95739c9011d62448c4a3ba42a"
   },
   {
     "path": "scripts/lib/independent-admission/github-source-binding-groups.ts",
@@ -1057,7 +1057,7 @@
   },
   {
     "path": "scripts/lib/independent-admission/module-source-phases.ts",
-    "sha256": "c666324e9c0f22d5854d9dfa681720642f2a7eca27a7e0d9973dbb4091da6637"
+    "sha256": "6bf07db399e1c0d3aa2515c8f8e3edc80e5c3fab5853035f3a9ab793542542d4"
   },
   {
     "path": "scripts/lib/independent-admission/native-admission-requirements.ts",

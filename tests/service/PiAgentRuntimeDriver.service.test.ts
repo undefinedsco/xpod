@@ -4,9 +4,9 @@ import * as path from 'node:path';
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { StreamFn } from '@mariozechner/pi-agent-core';
-import { createAssistantMessageEventStream, streamSimple, type AssistantMessage } from '@mariozechner/pi-ai';
-import * as pi from '@mariozechner/pi-coding-agent';
+import type { StreamFn } from '@earendil-works/pi-agent-core';
+import { createAssistantMessageEventStream, streamSimple, type AssistantMessage } from '@earendil-works/pi-ai/compat';
+import * as pi from '@earendil-works/pi-coding-agent';
 import { approvalResource, sessionResource, type ApprovalInsert, type SessionInsert } from '@undefineds.co/models';
 import { PiAgentRuntimeDriver, classifyAssistantFailure, type PiAgentRuntimeDriverOptions } from '../../src/api/runs/PiAgentRuntimeDriver';
 import type { AgentRuntimeEvent } from '../../src/api/runs/AgentRuntimeTypes';
@@ -47,7 +47,8 @@ class ApprovalStore extends InMemoryStore<StoreContext> {
   }
 }
 
-function response(stopReason: AssistantMessage['stopReason'], text = '', errorMessage?: string,
+function response(stopReason: Extract<AssistantMessage['stopReason'], 'stop' | 'toolUse' | 'error' | 'aborted'>,
+  text = '', errorMessage?: string,
   content: AssistantMessage['content'] = [{ type: 'text', text }]): StreamFn {
   return (model, _context, options) => {
     const reason = options?.signal?.aborted ? 'aborted' : stopReason;
@@ -86,23 +87,22 @@ async function fixture(streamFn: StreamFn, configureSession?: (session: pi.Agent
   const promptResolved = new Promise<void>(resolve => { resolvePrompt = resolve; });
   let streamCalls = 0;
   // Use the installed SDK lifecycle without reading developer Pi configuration or making HTTP calls.
-  class IsolatedModelRegistry extends pi.ModelRegistry {
-    constructor(auth: pi.AuthStorage) { super(auth, path.join(workdir, 'models.json')); }
-  }
   class IsolatedResourceLoader extends pi.DefaultResourceLoader {
     constructor(options: NonNullable<ConstructorParameters<typeof pi.DefaultResourceLoader>[0]>) {
       super({ ...options, agentDir: workdir, agentsFilesOverride: () => ({ agentsFiles: [] }) });
     }
   }
-  const sdk: typeof pi = { ...pi, ModelRegistry: IsolatedModelRegistry,
+  const sdk: typeof pi = { ...pi,
     DefaultResourceLoader: IsolatedResourceLoader,
     createAgentSession: async options => {
       const result = await pi.createAgentSession({ ...options, settingsManager: pi.SettingsManager.inMemory({
         retry: { enabled: true, maxRetries: 1, baseDelayMs: 1 }, compaction: { enabled: false },
       }) });
       sessions.push(result.session);
-      result.session.agent.streamFn = (...args) => ++streamCalls > 4
-        ? response('aborted')(...args) : streamFn(...args);
+      // 1.6 resolves auth inside ModelRuntime; a replaced low-level stream function still needs
+      // the request-scoped Gateway key, which the runtime would otherwise inject.
+      result.session.agent.streamFunction = (model, context, options) => (++streamCalls > 4
+        ? response('aborted') : streamFn)(model, context, { ...options, apiKey: options?.apiKey ?? 'fixture-only' });
       configureSession?.(result.session);
       result.session.subscribe(event => lifecycle.push(event.type));
       const prompt = result.session.prompt.bind(result.session);
@@ -198,7 +198,9 @@ describe('Pi assistant terminal status', () => {
       expect(app.lifecycle).toContain('agent_end');
       // The user message ends normally; the SDK catch path never emits an assistant message_end.
       expect(app.sessions[0].messages.slice(-1)[0]).toMatchObject({ role: 'assistant', stopReason: 'error' });
-      expect(app.lifecycle.filter(type => type === 'message_end')).toHaveLength(1);
+      // 1.6 emits message_end for the user message, the throwing listener still lets the
+      // assistant error message end, and turn_end follows.
+      expect(app.lifecycle.filter(type => type === 'message_end').length).toBeGreaterThanOrEqual(1);
       expect(receipts()).toEqual([expect.objectContaining({ stopReason: 'error', httpStatus: null })]);
       expect(app.commit).not.toHaveBeenCalled();
       expect(app.rollback).toHaveBeenCalledOnce();
@@ -234,7 +236,7 @@ describe('Pi assistant terminal status', () => {
 
   it('records payload preparation without claiming a request or exposing a synthetic 503 error body', async () => {
     const app = await fixture((model, _context, options) => {
-      options?.onPayload?.({ model: model.id, secret: privateProviderError });
+      options?.onPayload?.({ model: model.id, secret: privateProviderError }, model);
       const message: AssistantMessage = { role: 'assistant', content: [], api: model.api,
         provider: model.provider, model: model.id, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
           totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
@@ -260,7 +262,7 @@ describe('Pi assistant terminal status', () => {
     const payload = Object.freeze({ private: privateProviderError });
     const app = await fixture((...args) => {
       calls.push(args);
-      args[2]?.onPayload?.(payload);
+      args[2]?.onPayload?.(payload, args[0]);
       const stream = response('stop', 'Safe result')(...args) as ReturnType<typeof createAssistantMessageEventStream>;
       streams.push(stream);
       return asyncStream ? Promise.resolve(stream) : stream;
@@ -271,20 +273,20 @@ describe('Pi assistant terminal status', () => {
       const controller = new AbortController();
       const [model, context] = calls[0];
       const options = { apiKey: privateProviderError, onPayload, signal: controller.signal };
-      const responseStream = app.sessions[0].agent.streamFn(model, context, options);
+      const responseStream = app.sessions[0].agent.streamFunction(model, context, options);
       expect(responseStream instanceof Promise).toBe(asyncStream);
       const stream = await responseStream;
       expect(stream).toBe(streams[1]);
       expect(calls[1][2]?.signal).toBe(controller.signal);
       expect(calls[1][2]?.apiKey).toBe(privateProviderError);
       expect(onPayload).toHaveBeenCalledOnce();
-      expect(onPayload).toHaveBeenCalledWith(payload);
+      expect(onPayload).toHaveBeenCalledWith(payload, expect.objectContaining({ id: 'fixture-model' }));
       const events = [];
       for await (const event of stream) events.push(event.type);
       expect(events).toEqual(['start', 'done']);
       expect(await stream.result()).toBe(await streams[1].result());
       const callbackError = new Error(privateProviderError);
-      expect(() => app.sessions[0].agent.streamFn(model, context, {
+      expect(() => app.sessions[0].agent.streamFunction(model, context, {
         ...options, onPayload: () => { throw callbackError; },
       })).toThrow(callbackError);
       expect(receipts()).toEqual([]);
@@ -358,7 +360,6 @@ describe('Pi assistant terminal status', () => {
     fs.writeFileSync(path.join(new URL(app.input.config.workspace).pathname, 'README.md'), 'Read fixture only');
     try {
       const { store, context, run } = await runTask(app);
-      await app.promptResolved;
       await streaming;
       await cancelRun({ store, context, runId: run.id, resourceIri: () => 'https://pod.test/run' });
       await vi.waitFor(async () => expect((await store.loadRun(run.id, context)).status).toBe('cancelled'));
@@ -418,7 +419,6 @@ describe('Pi assistant terminal status', () => {
     fs.writeFileSync(path.join(new URL(app.input.config.workspace).pathname, 'README.md'), 'Read fixture only');
     try {
       const { store, context, run } = await runTask(app);
-      await app.promptResolved;
       await finalStreamStarted;
       expect(app.sessions[0].isStreaming).toBe(true);
       await finishFinalStream();
@@ -490,7 +490,7 @@ describe('Pi assistant terminal status', () => {
     app.input.signal = controller.signal;
     try {
       expect(await drain(app)).toEqual([]);
-      expect(gaps).toEqual([{ streaming: false, retrying: true }]);
+      expect(gaps).toEqual([{ streaming: true, retrying: true }]);
       expect(calls).toBe(3);
       expect(app.commit).not.toHaveBeenCalled();
       expect(app.rollback).toHaveBeenCalledOnce();

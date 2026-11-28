@@ -28,6 +28,7 @@ import {currentProgramSdkConsumerGroups, currentProgramLinuxConsumerGroups} from
 import {CLI_SOURCE_VERSION_GROUPS as cli} from '../../scripts/lib/independent-admission/source-rules';
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
 import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 
 
 const ROOT = path.resolve(import.meta.dir, '../..');
@@ -271,16 +272,18 @@ test('CURRENT source catalogue counts and actual declared bindings close indepen
     CURRENT_SOURCE_GROUP_COUNTS.current,
   ]);
   const digest = (name: string) => createHash('sha256').update(readTrackedSource(path.join(ROOT, name))).digest('hex');
-  // The frozen axes above stay byte-exact history; live-disk verification follows
-  // the CURRENT program definition, whose only moving row is the workflow.
-  for (const rows of Object.values({api, sdk: currentProgramSdkConsumerGroups(), consumer, ci,
+  const currentDigest = (name: string) => shaCurrentApiDependencyBinding(ROOT, name);
+  // SDK workflow projection still inherits the published dependency originals.
+  // The current consumer recipes instead bind the checkout's API dependencies.
+  for (const [kind, rows] of Object.entries({api, sdk: currentProgramSdkConsumerGroups(), consumer, ci,
     linux: currentProgramLinuxConsumerGroups(), cli})) {
     const group = rows[rows.length - 1]!;
+    const readDigest = kind === 'consumer' || kind === 'ci' ? currentDigest : digest;
     const g = group as any;
     for (const row of [...(g.selectors ?? []), ...(g.secondarySelectors ?? []),
       ...(g.secondarySelectorStages ?? []).flat(), ...(g.sourceBindings ?? [])]) {
-      expect(digest(row.path)).toBe(row.sha256);
+      expect(readDigest(row.path)).toBe(row.sha256);
     }
   }
-  for (const row of current) expect(digest(row.path)).toBe(row.sha256);
+  for (const row of current) expect(currentDigest(row.path)).toBe(row.sha256);
 });

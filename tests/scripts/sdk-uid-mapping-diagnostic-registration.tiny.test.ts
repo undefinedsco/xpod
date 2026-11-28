@@ -1,3 +1,4 @@
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 import{currentProgramSdkConsumerGroups}from'../../scripts/lib/independent-admission/current-program-definition';
 import {test,expect} from 'bun:test';
 import {readFileSync} from 'node:fs';
@@ -17,7 +18,9 @@ test('SDK33 preserves every SDK32/API18 complete original tree and binds its act
  // API29/CLI unchanged; the SDK80 append adds one whole group per family.
  const groups={api,sdk,consumer,ci};
  for(const name of Object.keys(groups) as (keyof typeof groups)[])for(let i=0;i<before.groups[name].length;i++)expect(sha(JSON.stringify(groups[name][i]))).toBe(before.groups[name][i]!);
- expect(current.length).toBe(CURRENT_CANONICAL_SOURCE_ROWS);for(const row of [...current,...currentProgramSdkConsumerGroups().at(-1)!.sourceBindings])expect(sha(read(row.path))).toBe(row.sha256);
+ expect(current.length).toBe(CURRENT_CANONICAL_SOURCE_ROWS);
+ for (const row of current) expect(shaCurrentApiDependencyBinding(import.meta.dir + '/../..', row.path)).toBe(row.sha256);
+ for(const row of [...currentProgramSdkConsumerGroups().at(-1)!.sourceBindings])expect(sha(read(row.path))).toBe(row.sha256);
  const workflow=read('.github/workflows/qlever-readonly-normal-job.yml').toString(),pins=JSON.parse(workflow.match(/^          pins=(.*)$/mu)![1]!) as Record<string,string>;expect(Object.keys(pins).length).toBe(21);for(const [p,h] of Object.entries(pins))expect(sha(read(p))).toBe(h);
  const policyPath='scripts/lib/independent-admission/consumer-observer-policy.ts';expect(read(policyPath).length<1000000).toBe(true);const content=read(policyPath).toString('base64').match(/.{1,60}/gu)!.join('\n')+'\n';expect(Buffer.byteLength(JSON.stringify({type:'file',path:policyPath,encoding:'base64',content}))<=2*1024**2).toBe(true);
 });

@@ -1,3 +1,4 @@
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 import {test,expect} from 'bun:test';
 import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
@@ -18,7 +19,8 @@ test('API18 preserves all SDK31 complete historical groups and binds actual runt
  const root=fileURLToPath(new URL('../../',import.meta.url));expect(current.length).toBe(CURRENT_CANONICAL_SOURCE_ROWS);// CURRENT alias follows the newest reviewed tuple: API33 adds exactly ONE owned CJS row
  // (the historical API32 tuple keeps its own 82 rows and frozen whole hash).
  expect(API_SERVICE_BUILD_SOURCE_BINDINGS.length).toBe(83);
- for(const row of [...current,...API_SERVICE_BUILD_SOURCE_BINDINGS])expect(sha(readTrackedSource(join(root,row.path)))).toBe(row.sha256);
+ for (const row of current) expect(shaCurrentApiDependencyBinding(import.meta.dir + '/../..', row.path)).toBe(row.sha256);
+ for(const row of [...API_SERVICE_BUILD_SOURCE_BINDINGS])expect(sha(readTrackedSource(join(root,row.path)))).toBe(row.sha256);
 });
 // Keep every historical tuple and missing-role assertion in its own bounded test.
 for(const [name,groups] of Object.entries({api,sdk,consumer,ci}))for(const [index,group] of groups.entries())

@@ -8,7 +8,7 @@ It is **not** RC419.
 Status of these bytes: **accepted source bytes**, not a published release asset.
 Stable `v0.4.31` had not been published when the capture was taken.
 
-## SEVEN captures, one reason
+## EIGHT captures, one reason
 
 Every capture below exists because a FROZEN catalogue row owns that path's bytes,
 while the live checkout has legitimately moved on. Nothing else is captured.
@@ -19,6 +19,7 @@ Captured at development time from the public repository:
 git show 4194795915ac5f956cd593131647ece7049be24d:package.json
 git show 4194795915ac5f956cd593131647ece7049be24d:bun.lock
 git show 4194795915ac5f956cd593131647ece7049be24d:desktop/package.json
+git show 4194795915ac5f956cd593131647ece7049be24d:packages/xpod-api/package.json
 git show 4194795915ac5f956cd593131647ece7049be24d:tests/scripts/candidate-producer-attempt-binding.test.ts
 git show 4194795915ac5f956cd593131647ece7049be24d:tests/scripts/candidate-producer-attempt.tiny.test.ts
 git show 4194795915ac5f956cd593131647ece7049be24d:tests/scripts/controller-helper-admission.test.ts
@@ -68,6 +69,13 @@ Proof of capture fidelity (development time, public data):
 $ git show 4194795915...:scripts/workspace-package-payload.cjs | sha256sum
 058c6f633ed805cf0af2f5f3ebac1cfd1706c8ed106da2f16766dde4a20c145a
 ```
+
+### 8. Historical API dependency manifest
+
+The accepted API catalogue owns the original `packages/xpod-api/package.json`
+with SHA-256 `ce111f505757cbb813e70237d7fec59ae496eb1b7f6661d57be1203cd4709a60`.
+Historical tests read the accepted bytes after the Pi dependency migration.
+The current API manifest and lock are verified independently.
 
 ## Scope
 

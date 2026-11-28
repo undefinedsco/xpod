@@ -1,3 +1,4 @@
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 import {test,expect} from 'bun:test';
 import {createHash} from 'node:crypto';
 import fs from 'node:fs';
@@ -106,12 +107,13 @@ test('the frozen f803 snapshot is the published canonical bytes and the moving c
 });
 
 test('the current canonical binds actual disk bytes and re-hashes only rows that genuinely moved', () => {
-  for (const row of [...current, ...CONTROLLER_POLICY_BINDINGS]) expect(sha(row.path)).toBe(row.sha256);
+  for (const row of current) expect(shaCurrentApiDependencyBinding(import.meta.dir + '/../..', row.path)).toBe(row.sha256);
+  for (const row of [...CONTROLLER_POLICY_BINDINGS]) expect(sha(row.path)).toBe(row.sha256);
   const frozenRows: {path: string; sha256: string}[] = JSON.parse(readTrackedSource(path.join(ROOT, SNAPSHOT), 'utf8'));
   const moved = frozenRows.filter(row => row.sha256 !== current.find(next => next.path === row.path)!.sha256).map(row => row.path);
   // Every moved row is a genuinely registered source row whose ACTUAL disk bytes
   // differ from the frozen f803 value; no row may move without a real byte change.
-  for (const movedPath of moved) expect(sha(movedPath)).toBe(current.find(row => row.path === movedPath)!.sha256);
+  for (const movedPath of moved) expect(shaCurrentApiDependencyBinding(ROOT, movedPath)).toBe(current.find(row => row.path === movedPath)!.sha256);
   // The ORM 0.3.26 facts themselves must be re-bound in the current canonical.
   for (const required of ['bun.lock', 'package.json',
     'scripts/lib/independent-admission/afs-verifier-patch-originals.ts',
@@ -162,7 +164,7 @@ test('the appended consumer/CI tails bind every ORM 0.3.26 fact and keep the 0.3
       'scripts/lib/independent-admission/afs-verifier-patch-originals.ts']) {
       const row = rows.find(candidate => candidate.path === required);
       if (!row) throw new Error(required + ' must be bound by the appended tail');
-      expect(sha(required)).toBe(row.sha256);
+      expect(shaCurrentApiDependencyBinding(ROOT, required)).toBe(row.sha256);
     }
     // The 0.3.25 row is a retained historical fact, not a relabel of 0.3.26.
     // The 26 patch appears exactly once per role: primary (disambiguation) and

@@ -15,6 +15,7 @@ import {CSS_SOURCE_PARENT_VERSIONS} from '../../scripts/lib/independent-admissio
 const HISTORICAL_CSS_PRODUCER = '9bc6411c30e8f96402f39b80acf9e8af27350bfde84d0ec6d4e5f8eb04a05da4';
 import {CURRENT_CANONICAL_SOURCE_ROWS, completeObserved} from './source-binding-group.fixture';
 import historicalWhole from '../fixtures/independent-admission/sdk86-historical-whole-hashes.json';
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 import { shaFrozenTracked } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 
 const ROOT = path.resolve(import.meta.dirname, '../..');
@@ -266,7 +267,7 @@ it('the canonical holds the current canonical physical originals matching the li
   const rows = JSON.parse(readFileSync(path.join(ROOT, 'scripts/lib/independent-admission/consumer-execution-current.json'), 'utf8')) as { path: string; sha256: string }[];
   expect(rows).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
   expect(new Set(rows.map(r => r.path)).size).toBe(CURRENT_CANONICAL_SOURCE_ROWS);
-  for (const row of rows) expect(sha(row.path), row.path).toBe(row.sha256);
+  for (const row of rows) expect(shaCurrentApiDependencyBinding(ROOT, row.path), row.path).toBe(row.sha256);
   expect(LINUX).toHaveLength(SDK.length + 1);
   expect(LINUX.some((g: any) => whole(g) === whole(SDK[SDK.length - 1]))).toBe(true);
 });

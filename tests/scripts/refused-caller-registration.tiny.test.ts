@@ -1,3 +1,4 @@
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 import {test,expect} from 'bun:test';
 import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
@@ -110,7 +111,7 @@ test('the appended tuples are exactly two genuine slices each and the deltas are
   'package.json','bun.lock']);
  // No role is added or dropped by the append, only the reviewed rows move.
  expect(tailSecondary.map(row=>row.path)).toEqual(priorSecondary.map(row=>row.path));
- expect(tailSecondary).toEqual(priorSecondary.map(row=>rebound.has(row.path)?{...row,sha256:sha(row.path)}:row));
+ expect(tailSecondary).toEqual(priorSecondary.map(row=>rebound.has(row.path)?{...row,sha256:shaCurrentApiDependencyBinding(ROOT, row.path)}:row));
  expect(ci[ci.length-2]!.secondarySelectors).toEqual(tailSecondary);
  const controller=tailSecondary.filter(row=>row.path===CONTROLLER_POLICY_PATH);
  expect(controller).toHaveLength(1);
@@ -189,7 +190,7 @@ test('the canonical path/hash closure still holds and the frozen 9d02 snapshot i
  // never lists itself).
  expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
  expect(new Set(current.map(row=>row.path)).size).toBe(current.length);
- for(const row of current)expect(createHash('sha256').update(disk(row.path)).digest('hex')).toBe(row.sha256);
+ for (const row of current) expect(shaCurrentApiDependencyBinding(import.meta.dir + '/../..', row.path)).toBe(row.sha256);
  const snapshot=blob('scripts/lib/independent-admission/consumer-execution-current.json');
  expect(createHash('sha256').update(snapshot).digest('hex')).toBe(published.canonical.sha256);
  expect(disk('scripts/lib/independent-admission/consumer-execution-9d02b2d-snapshot.json').equals(snapshot)).toBe(true);

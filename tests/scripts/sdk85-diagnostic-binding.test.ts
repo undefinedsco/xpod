@@ -17,6 +17,7 @@ import {it,expect} from 'vitest';
 import {QLEVER_SDK_EXECUTION_GROUPS as SDK,QLEVER_LINUX_EXECUTION_GROUPS as LINUX} from '../../scripts/lib/independent-admission/qlever-sdk-origin-policy';
 import {selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import {CURRENT_CANONICAL_SOURCE_ROWS, completeObserved} from './source-binding-group.fixture';
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 import { shaFrozenTracked } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 
 const ROOT=path.resolve(import.meta.dirname,'../..');
@@ -93,7 +94,7 @@ it('historical prefixes and the current canonical physical originals still bind 
   const rows=JSON.parse(readFileSync(path.join(ROOT,'scripts/lib/independent-admission/consumer-execution-current.json'),'utf8')) as {path:string;sha256:string}[];
   expect(rows).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
   expect(new Set(rows.map(r=>r.path)).size).toBe(CURRENT_CANONICAL_SOURCE_ROWS);
-  for(const row of rows) expect(sha(row.path),row.path).toBe(row.sha256);
+  for(const row of rows) expect(shaCurrentApiDependencyBinding(ROOT, row.path), row.path).toBe(row.sha256);
   expect(rows.find(r=>r.path===HELPER)!.sha256).toBe(sha(HELPER));
   // the regression leaf is a policy-owned mandatory role, not a canonical row
   expect(rows.some(r=>r.path===LEAF)).toBe(false);

@@ -7,9 +7,11 @@ import {CI_CONSUMER_SOURCE_GROUPS,CONSUMER_SOURCE_GROUPS} from '../../scripts/li
 import {selectGitHubSourceBindingGroup,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import {CURRENT_SOURCE_GROUP_COUNTS,completeObserved} from './source-binding-group.fixture';
 import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 
 const sha=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const disk=(p:string)=>createHash('sha256').update(readTrackedSource(p)).digest('hex');
+const currentDisk=(p:string)=>shaCurrentApiDependencyBinding(import.meta.dir + '/../..', p);
 const PUBLISHED_CI=baseline.ci.aggregates as readonly string[];
 const PUBLISHED_CONSUMER=baseline.consumer.aggregates as readonly string[];
 const ORIGIN='scripts/lib/independent-admission/github-origin.ts';
@@ -115,7 +117,7 @@ test('every non-run-head row of the CURRENT pair CI223/CI224 equals real source 
       // CI195..CI208 pairs, EVERY row - including github-origin.ts, the policy
       // self-row and the canonical row - must equal today's disk. There is no
       // fixed product-origin pin left in the current pair.
-      expect(row.sha256).toBe(disk(row.path));
+      expect(row.sha256).toBe(currentDisk(row.path));
     }
   }
 });
@@ -154,7 +156,10 @@ test('consumer101 and CI205/CI206 are FROZEN whole-group history, not live',()=>
 test('real resolver picks CI224 for current bytes and refuses an old-origin mix',()=>{
   const last=CI_CONSUMER_SOURCE_GROUPS.at(-1)!;
   const current=new Map(completeObserved(CI_CONSUMER_SOURCE_GROUPS,last) as Map<string,string>);
-  for(const key of [...current.keys()]) current.set(key,disk(key.split(':').slice(1).join(':')));
+  for (const key of current.keys()) {
+    const file = key.slice(key.indexOf(':') + 1);
+    current.set(key, currentDisk(file));
+  }
   expect(selectGitHubSourceBindingGroup(CI_CONSUMER_SOURCE_GROUPS,current)).toBe(last);
 
   const mixed=new Map(completeObserved(CI_CONSUMER_SOURCE_GROUPS,last));

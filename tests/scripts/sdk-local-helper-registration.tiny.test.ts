@@ -1,3 +1,4 @@
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 import {CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
 import {test,expect} from 'bun:test';import fs from 'node:fs';import path from 'node:path';import {createHash} from 'node:crypto';
 import current from '../../scripts/lib/independent-admission/consumer-execution-current.json';
@@ -10,7 +11,7 @@ test('canonical current closure binds physical role bytes and published history 
  // Runtime consumers read THIS canonical file, not a test fixture.
  expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
  const seen=new Set<string>();
- for(const row of current){expect(seen.has(row.path)).toBe(false);seen.add(row.path);expect(hash(readTrackedSource(path.resolve(import.meta.dir,'../..',row.path)))).toBe(row.sha256);}
+ for(const row of current){expect(seen.has(row.path)).toBe(false);seen.add(row.path);expect(shaCurrentApiDependencyBinding(import.meta.dir + '/../..', row.path)).toBe(row.sha256);}
  // Published historical groups are unchanged; new groups are appended and unique.
  expect(c.length>=75).toBe(true);expect(ci.length>=148).toBe(true);
  expect(new Set(c.map(g=>JSON.stringify(g))).size).toBe(c.length);
@@ -18,7 +19,7 @@ test('canonical current closure binds physical role bytes and published history 
 });
 test('local helper complete-tuple implementation has one atomic controller tree and no future original fetch',()=>{
  expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);expect(c).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.consumer);expect(ci).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.ci);
- for(const row of current)expect(hash(readTrackedSource(path.resolve(import.meta.dir,'../..',row.path)))).toBe(row.sha256);
+ for (const row of current) expect(shaCurrentApiDependencyBinding(import.meta.dir + '/../..', row.path)).toBe(row.sha256);
  expect(current.some(row=>row.path==='scripts/lib/independent-admission/sdk-controller-helper-groups.ts')).toBe(true);
  for(const groups of [c,ci])for(const group of groups){const observed=new Map(group.selectors.map(row=>[key(row),row.sha256]));for(const role of secondary(groups,observed)){const original=[...group.selectors,...group.sourceBindings,...group.secondarySelectors??[]].find(row=>key(row)===key(role));expect(original).toBeDefined();observed.set(key(role),original!.sha256);}expect(select(groups,observed)).toBe(group);}
 });

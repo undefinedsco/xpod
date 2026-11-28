@@ -30,6 +30,7 @@ import {CLI_SOURCE_VERSION_GROUPS as CLI} from '../../scripts/lib/independent-ad
 import {selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import {decodeCatalog} from './sdk-helper-catalog.fixture';
 import {CURRENT_CANONICAL_SOURCE_ROWS, CURRENT_HELPER_GROUP_COUNTS, CURRENT_OBSERVER_GROUPS, CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 import { shaFrozenTracked } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 
 const ROOT=path.resolve(import.meta.dirname,'../..');
@@ -193,7 +194,7 @@ it('the live canonical binds the current canonical physical originals with no se
   const rows=JSON.parse(readFileSync(path.join(ROOT,'scripts/lib/independent-admission/consumer-execution-current.json'),'utf8')) as {path:string;sha256:string}[];
   expect(rows).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
   expect(new Set(rows.map(r=>r.path)).size).toBe(CURRENT_CANONICAL_SOURCE_ROWS);
-  for(const row of rows) expect(sha(row.path),row.path).toBe(row.sha256);
+  for(const row of rows) expect(shaCurrentApiDependencyBinding(ROOT, row.path), row.path).toBe(row.sha256);
   expect(rows.filter(r=>r.path==='scripts/lib/independent-admission/consumer-execution-current.json')).toHaveLength(0);
   expect(rows.filter(r=>r.path==='scripts/lib/independent-admission/consumer-observer-policy.ts')).toHaveLength(0);
   expect(rows.find(r=>r.path===TOOL)!.sha256).toBe(SDK[SDK.length-1]!.sourceBindings.find(r=>r.path===TOOL)!.sha256);

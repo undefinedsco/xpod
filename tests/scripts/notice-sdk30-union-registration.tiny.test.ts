@@ -1,3 +1,4 @@
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 import {CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
 import {test,expect} from 'bun:test';import fs from 'node:fs';import path from 'node:path';import {createHash} from 'node:crypto';
 import parents from '../fixtures/independent-admission/notice-sdk30-parent-whole.original.json';
@@ -11,7 +12,7 @@ test('SDK30 and Notice fork whole originals both survive before the single actua
  // RC383 appends consumer100 for the queued-run state fix.
  expect(c).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.consumer);expect(ci).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.ci);expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
  for(const [groups,prior]of [[c,parents.sdk30Consumer],[ci,parents.sdk30CI],[c,parents.noticeConsumer],[ci,parents.noticeCI]]as const){const all=new Set(groups.map(hash));for(const sha of prior)expect(all.has(sha)).toBe(true);}
- for(const row of current)expect(createHash('sha256').update(readTrackedSource(path.resolve(import.meta.dir,'../..',row.path))).digest('hex')).toBe(row.sha256);
+ for (const row of current) expect(shaCurrentApiDependencyBinding(import.meta.dir + '/../..', row.path)).toBe(row.sha256);
  // The Notice joint recipe, the subsequent SDK31 recipe AND the ORM 0.3.26 joint
  // tail each remain complete: every published parent hash is still present.
  // Frozen 0d parents stay unchanged; only the genuine post-0d tails are appended:

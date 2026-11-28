@@ -135,3 +135,21 @@ describe('API declaration ownership proposal, not installer proof',()=>{
   for(const [path,manifest] of [['',root],['packages/xpod-api',api]] as const)for(const kind of ['dependencies','devDependencies','optionalDependencies','peerDependencies'])expect(lock.workspaces[path][kind]??{}).toEqual(manifest[kind]??{});
  });
 });
+
+it('locks the current Pi SDK at 1.6.0 in both application manifests and the API runtime graph', () => {
+  const sdk = '@earendil-works/pi-coding-agent';
+  const manifestPaths = ['package.json', 'packages/xpod-api/package.json'] as const;
+  const liveLock = JSONC.parse(readFileSync('bun.lock', 'utf8'));
+  for (const file of manifestPaths) {
+    const live = JSON.parse(readFileSync(file, 'utf8'));
+    const prior = current(file);
+    const { '@mariozechner/pi-coding-agent': historicalPi, ...unchanged } = prior.dependencies;
+    expect(historicalPi).toBe('^0.55.1');
+    expect(live.dependencies).toEqual({ ...unchanged, [sdk]: '1.6.0' });
+    const workspace = file === 'package.json' ? '' : 'packages/xpod-api';
+    expect(liveLock.workspaces[workspace].dependencies).toEqual(live.dependencies);
+  }
+  for (const pkg of [sdk, '@earendil-works/pi-ai', '@earendil-works/pi-agent-core']) {
+    expect(liveLock.packages[pkg][0]).toBe(pkg + '@1.6.0');
+  }
+});

@@ -1,3 +1,4 @@
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 import {completeObserved} from './source-binding-group.fixture';
 import {describe,it,expect} from 'bun:test';
 import {readFileSync} from 'node:fs';
@@ -14,7 +15,8 @@ const hash=(path:string)=>createHash('sha256').update(readTrackedSource(pathReso
 const observed=(group:any)=>new Map([...group.selectors,...group.secondarySelectors??[]].map((row:any)=>[sourceBindingKey(row),row.sha256]));
 describe('API normal workspace lifecycle atomic registration',()=>{
  it('all actual candidate source and controller originals match, including shared runtime closure',()=>{
-  for(const row of [...API_SERVICE_BUILD_SOURCE_BINDINGS,...current,...CONTROLLER_POLICY_BINDINGS])expect(hash(row.path)).toBe(row.sha256);
+  for (const row of current) expect(shaCurrentApiDependencyBinding(import.meta.dir + '/../..', row.path)).toBe(row.sha256);
+  for(const row of [...API_SERVICE_BUILD_SOURCE_BINDINGS,...CONTROLLER_POLICY_BINDINGS])expect(hash(row.path)).toBe(row.sha256);
   for(const role of ['scripts/prepare-package-manifest.cjs','scripts/platform-binaries.cjs','scripts/lib/api-install-selection.cjs','scripts/lib/api-producer-graph.ts','scripts/api-producer-dependencies.cjs','scripts/check-api-producer-dependency-state.ts','scripts/lib/api-scoped-dependency-state.ts'])expect(API_SERVICE_BUILD_SOURCE_BINDINGS.some(row=>row.path===role)).toBe(true);
  });
  it('retains each old API group and selects only the complete new source tuple',()=>{

@@ -1,3 +1,4 @@
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 import {currentProgramSdkConsumerGroups} from '../../scripts/lib/independent-admission/current-program-definition';
 import {test,expect} from 'bun:test';import fs from 'node:fs';import path from 'node:path';import {createHash} from 'node:crypto';
 import before from '../fixtures/independent-admission/sdk28-before-source-groups.original.json';
@@ -9,6 +10,6 @@ import { readTrackedSource } from '../fixtures/independent-admission/cli17-accep
 const sha=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 test('SDK28 object identity protocol preserves every complete SDK27/API/controller original recipe',()=>{
  for(const[name,groups]of Object.entries({sdk,consumer,ci})){const old=before[name as keyof typeof before];for(let i=0;i<old.length;i++)expect(sha(groups[i])).toBe(old[i]);}
- expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);for(const row of current)expect(createHash('sha256').update(readTrackedSource(path.resolve(import.meta.dir,'../..',row.path))).digest('hex')).toBe(row.sha256);
+ expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);for (const row of current) expect(shaCurrentApiDependencyBinding(import.meta.dir + '/../..', row.path)).toBe(row.sha256);
  const last=currentProgramSdkConsumerGroups().at(-1)!;for(const row of [...last.selectors,...last.sourceBindings])expect(createHash('sha256').update(readTrackedSource(path.resolve(import.meta.dir,'../..',row.path))).digest('hex')).toBe(row.sha256);
 });

@@ -1,3 +1,4 @@
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 import preSdk47 from '../fixtures/independent-admission/pre-sdk47-api-originals.original.json';
 import{preServicePackOriginal}from'./pre-service-pack-api-originals';
 import preCompression from '../fixtures/independent-admission/pre-compression-api-originals.json';
@@ -21,7 +22,8 @@ test('stage fifth original and index guards add an atomic source tree while all 
  // API29 unchanged; the SDK80 append adds one whole group per consumer family.
  expect(groups).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.api);expect(c).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.consumer);expect(ci).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.ci);expect(tcb).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);expect(current).toHaveLength(75);
  expect(current.filter(row=>previous.find(old=>old.path===row.path)?.sha256!==row.sha256).map(row=>row.path).sort()).toEqual([stage,role].sort());
- for(const row of [...API_SERVICE_BUILD_SOURCE_BINDINGS,...tcb])expect(sha(read(row.path))).toBe(row.sha256);
+ for (const row of tcb) expect(shaCurrentApiDependencyBinding(import.meta.dir + '/../..', row.path)).toBe(row.sha256);
+ for(const row of [...API_SERVICE_BUILD_SOURCE_BINDINGS])expect(sha(read(row.path))).toBe(row.sha256);
  expect(groups.find(g=>'name' in g&&g.name==='root-minimal-website-source-projection')!.sourceBindings).toBe(previous);
  for(const group of groups){const primary=new Map(group.selectors.map(row=>[key(row),row.sha256]));const roles=secondary(groups,primary);expect(roles.some(row=>row.path===role)).toBe(group.selectors.some(row=>row.path==='scripts/api-module-producer.py'&&row.sha256===producer));for(const binding of roles){const original=group.sourceBindings.find(row=>key(row)===key(binding));expect(original).toBeDefined();primary.set(key(binding),original!.sha256);}expect(select(groups,primary)).toBe(group);}
  expect(controlledApiSourceRecipe(legacyRead,producer,'linux-arm64').rows).toBe(current);expect(controlledApiSourceRecipe(old,producer,'linux-arm64').rows).toBe(previous);

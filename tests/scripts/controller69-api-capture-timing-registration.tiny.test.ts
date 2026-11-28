@@ -1,3 +1,4 @@
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 import {test,expect} from 'bun:test';
 import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
@@ -19,7 +20,8 @@ test('Controller69 preserves all 281 exact pre-timing complete recipes and binds
  // Frozen recipes above remain history. Live-disk rows come from the CURRENT
  // program definition's derived tail, whose only moving row is the workflow.
  const liveSdk=currentProgramSdkConsumerGroups().at(-1)!;
- for(const row of [...current,...actualApi,...liveSdk.selectors,...liveSdk.sourceBindings])expect(sha(readTrackedSource(row.path))).toBe(row.sha256);
+ for (const row of current) expect(shaCurrentApiDependencyBinding(import.meta.dir + '/../..', row.path)).toBe(row.sha256);
+ for(const row of [...actualApi,...liveSdk.selectors,...liveSdk.sourceBindings])expect(sha(readTrackedSource(row.path))).toBe(row.sha256);
  expect(api.at(-1)!.sourceBindings).toBe(actualApi);
 });
 test('Controller69 complete current recipe rejects every absent or mixed mandatory role',()=>{

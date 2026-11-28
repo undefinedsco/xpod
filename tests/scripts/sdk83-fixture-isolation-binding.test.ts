@@ -30,6 +30,7 @@ import {CLI_SOURCE_VERSION_GROUPS as CLI} from '../../scripts/lib/independent-ad
 import {selectGitHubSourceBindingGroup,secondaryGitHubSourceBindingSelectors,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import {decodeCatalog} from './sdk-helper-catalog.fixture';
 import {CURRENT_CANONICAL_SOURCE_ROWS, CURRENT_HELPER_GROUP_COUNTS, CURRENT_OBSERVER_GROUPS, CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 import { shaFrozenTracked } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 
 const ROOT=path.resolve(import.meta.dirname,'../..');
@@ -173,7 +174,7 @@ it('the live canonical binds the current canonical physical originals with no se
   const rows=JSON.parse(readFileSync(path.join(ROOT,CANONICAL_JSON),'utf8')) as {path:string;sha256:string}[];
   expect(rows).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
   expect(new Set(rows.map(r=>r.path)).size).toBe(CURRENT_CANONICAL_SOURCE_ROWS);
-  for(const row of rows) expect(sha(row.path),row.path).toBe(row.sha256);
+  for(const row of rows) expect(shaCurrentApiDependencyBinding(ROOT, row.path), row.path).toBe(row.sha256);
   expect(rows.filter(r=>r.path===CANONICAL_JSON)).toHaveLength(0);
   expect(rows.filter(r=>r.path===CONSUMER_POLICY)).toHaveLength(0);
   expect(rows.find(r=>r.path===FIXTURE)!.sha256).toBe(sha(FIXTURE));
@@ -197,7 +198,7 @@ it('the current consumer/CI tails bind the final policy and canonical bytes',()=
     expect(role(group,CANONICAL_JSON)).toEqual([sha(CANONICAL_JSON)]);
     expect(role(group,FIXTURE)).toEqual([sha(FIXTURE)]);
     expect(new Set(role(group,SDK_POLICY))).toEqual(new Set([sha(SDK_POLICY)]));
-    for(const row of group.sourceBindings) expect(sha(row.path),row.path).toBe(row.sha256);
+    for(const row of group.sourceBindings) expect(shaCurrentApiDependencyBinding(ROOT, row.path), row.path).toBe(row.sha256);
   }
   // the accepted SDK82 tails stay frozen literals, never the live files
   for(const group of [CONSUMER[97],CI[192],CI[193]] as any[]){

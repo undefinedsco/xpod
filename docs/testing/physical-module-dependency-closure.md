@@ -6,7 +6,7 @@
 
 TypeScript 与 JavaScript 中间文件都必须被递归检查。JavaScript 保持原来的模块格式和扩展名；检查用的 CommonJS 转换不得覆盖原始 ESM 文件。规范源码的非字面量 require 无法据此得到确定闭包，打包应明确报错。第三方原始运行包仍按照自身 manifest 收集传递依赖，不禁止其合法动态 require。
 
-API 的 native dynamic import 可以不出现在 bundle metafile 中。Pi SDK 的实际加载位于 `src/api/runs/PiAgentRuntimeDriver.ts`，因此 `@mariozechner/pi-coding-agent` 必须进入 API package.json 的 dependencies；现有 stage 从该声明读取 runtimePackages，不能另外维护第二张目录。依赖约束沿用已有 `^0.55.1`，不因此升级已锁版本。Inngest 与 ACP 的原声明和原生材料门禁继续适用。
+API 的 native dynamic import 可以不出现在 bundle metafile 中。Pi SDK 的实际加载位于 `src/api/runs/PiAgentRuntimeDriver.ts`，因此 `@earendil-works/pi-coding-agent` 必须进入 API package.json 的 dependencies；现有 stage 从该声明读取 runtimePackages，不能另外维护第二张目录。P1 起依赖约束为精确 `1.6.0`，单文件 stage 额外断言实际加载的版本。Inngest 与 ACP 的原声明和原生材料门禁继续适用。
 
 CSS 持有 QLever 的启动、原生输入与关闭生命周期。CSS 使用 AFS 的协议/存储 adapter 属于合法运行依赖，不能通过删除实际依赖制造隔离；AFS 客户端 helper/native 的分发闭包须另外验收。CLI 不得因下载或启动模块而安装 CSS/API 或 AFS 原生运行载荷。
 

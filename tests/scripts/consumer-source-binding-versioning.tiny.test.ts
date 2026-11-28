@@ -1,3 +1,4 @@
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 import {test,expect} from 'bun:test';
 import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
@@ -609,7 +610,7 @@ test('current canonical has one unique row per path, covers the new collector, a
   }
   // The canonical verifier row tracks the CURRENT verifier, not the historical SDK94 pin.
   expect(rows.get(VERIFIER)).toBe(disk(VERIFIER));
-  for(const value of currentCanonical)expect({path:value.path,sha256:disk(value.path)}).toEqual(value);
+  for(const value of currentCanonical)expect({path:value.path,sha256:shaCurrentApiDependencyBinding(ROOT, value.path)}).toEqual(value);
   // The ordinary local-runtime workflow is a bound group row, never a canonical
   // controller row: it is admitted through the SDK95 recipe instead.
   expect(rows.has(LOCAL_RUNTIME)).toBe(false);

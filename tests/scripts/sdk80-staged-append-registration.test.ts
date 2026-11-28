@@ -17,6 +17,7 @@ import {CLI_SOURCE_VERSION_GROUPS as CLI} from '../../scripts/lib/independent-ad
 import {selectGitHubSourceBindingGroup,acquireOwnedSecondaryBindings,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import {decodeCatalog} from './sdk-helper-catalog.fixture';
 import {CURRENT_CANONICAL_SOURCE_ROWS} from './source-binding-group.fixture';
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 import { shaFrozenTracked } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 
 const ROOT=path.resolve(import.meta.dirname,'../..');
@@ -118,7 +119,7 @@ it('the canonical binds actual bytes and never a self hash',()=>{
   const canonical=JSON.parse(readFileSync(path.join(ROOT,'scripts/lib/independent-admission/consumer-execution-current.json'),'utf8')) as {path:string;sha256:string}[];
   expect(canonical).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
   expect(new Set(canonical.map(r=>r.path)).size).toBe(canonical.length);
-  for(const row of canonical) expect(DISK(row.path),row.path).toBe(row.sha256);
+  for(const row of canonical) expect(shaCurrentApiDependencyBinding(ROOT, row.path), row.path).toBe(row.sha256);
   // a snapshot file is a MEMBER, and nothing claims its own hash
   // the live canonical must NOT contain a row hashing itself
   expect(canonical.filter(r=>r.path==='scripts/lib/independent-admission/consumer-execution-current.json')).toHaveLength(0);
