@@ -34,7 +34,7 @@ describe('module release provenance read-back', () => {
     expect(problems({ ref: 'refs/heads/feature' })).toEqual(['provenance ref is refs/heads/feature']);
     expect(problems({ path: '.github/workflows/other.yml' })).toEqual(['provenance workflow is .github/workflows/other.yml']);
     expect(problems({ commit: 'c'.repeat(40) })).toEqual([`provenance commit is ${'c'.repeat(40)}`]);
-    expect(problems({ run: '999' })[0]).toStartWith('provenance run is');
+    expect(problems({ run: '999' })[0]).toMatch(/^provenance run is /);
     expect(problems({ digest: 'd'.repeat(128) })).toEqual(['provenance subject does not match the package digest']);
   });
 });
