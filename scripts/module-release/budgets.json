@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "unpackedMiB": {
+    "client": 16,
+    "cli": 96,
+    "afs": 160,
+    "css": 520,
+    "api": 360
+  }
+}

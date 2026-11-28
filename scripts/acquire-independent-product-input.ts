@@ -320,8 +320,11 @@ async function acquireProductInput(input: ArtifactAcquisitionInput, output: stri
     if (legacy) createRequire(import.meta.url)('./lib/legacy-root-artifact-context.cjs').verifyContext(input, metadata, legacyJobs);
     let url = endpoint(`actions/artifacts/${input.artifactId}/zip`);
     let response: Response | undefined;
+    // The signal also bounds the body stream, so a fixed minute cannot carry a
+    // multi-GiB module archive; allow a minute plus 4 MiB/s of the exact size.
+    const downloadSignal = AbortSignal.timeout(60_000 + Math.ceil(artifact.size_in_bytes / (4 * 1024 * 1024)) * 1000);
     for (let redirects = 0; redirects <= 3; redirects++) {
-      response = await transport(url, { ...(new URL(url).hostname === 'api.github.com' ? { headers } : {}), redirect: 'manual', signal: AbortSignal.timeout(60_000) });
+      response = await transport(url, { ...(new URL(url).hostname === 'api.github.com' ? { headers } : {}), redirect: 'manual', signal: downloadSignal });
       if (![301, 302, 303, 307, 308].includes(response.status)) break;
       const location = response.headers.get('location');
       await response.body?.cancel();

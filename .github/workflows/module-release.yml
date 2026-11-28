@@ -1,0 +1,197 @@
+name: Module release
+
+# Module publication v2 (docs/module-publication-v2.md): build from staging, check the
+# package, install and start it, publish with npm provenance to `next`, read it back
+# from the registry, then optionally promote to `latest` and tag `<module>-v<version>`.
+# `check` mode stops after the install check and never publishes.
+on:
+  workflow_dispatch:
+    inputs:
+      module:
+        description: Module to release
+        required: true
+        type: choice
+        options: [cli]
+      mode:
+        description: check builds and verifies only; publish also publishes to next
+        required: true
+        type: choice
+        options: [check, publish]
+        default: check
+      promote:
+        description: After the registry read-back passes, move latest and push the module tag
+        required: true
+        type: boolean
+        default: false
+
+concurrency:
+  group: module-release-${{ inputs.module }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      cli_version: ${{ steps.versions.outputs.cli }}
+      client_version: ${{ steps.versions.outputs.client }}
+    steps:
+      - name: Require staging
+        run: test "$GITHUB_REF" = refs/heads/staging || { echo "::error::module releases build only from staging"; exit 1; }
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The existing CLI/client producer: isolated build tree, frozen build lock, packed tarballs.
+      - name: Build and pack CLI and client
+        env:
+          EVENT_HEAD_SHA: ${{ github.sha }}
+        run: node scripts/check-cli-publication.cjs
+      - name: Collect tarballs
+        id: versions
+        run: |
+          set -euo pipefail
+          mkdir -p dist/module-release
+          cp .test-data/cli-publication-preparation/cli.tgz .test-data/cli-publication-preparation/client.tgz dist/module-release/
+          for role in cli client; do
+            version="$(tar -xzOf "dist/module-release/$role.tgz" package/package.json | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0,"utf8")).version)')"
+            echo "$role=$version" >> "$GITHUB_OUTPUT"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: module-release-${{ inputs.module }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/module-release/
+          if-no-files-found: error
+
+  check:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: module-release-${{ inputs.module }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/module-release
+      - name: Package checks
+        run: |
+          set -euo pipefail
+          bun scripts/module-release/check-package.ts dist/module-release/client.tgz --module client --out reports/client
+          bun scripts/module-release/check-package.ts dist/module-release/cli.tgz --module cli --out reports/cli
+      - name: Clean install and start under Bun and Node
+        run: bun scripts/module-release/install-check.ts --cli dist/module-release/cli.tgz --client dist/module-release/client.tgz --runtimes bun,node --out reports/install
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: module-release-${{ inputs.module }}-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: reports/
+
+  publish:
+    needs: [build, check]
+    if: ${{ inputs.mode == 'publish' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # id-token signs the npm provenance statement; only this job holds it and the token.
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v4
+        with:
+          name: module-release-${{ inputs.module }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/module-release
+      # Client first: the CLI depends on the exact client version.
+      - name: Publish to next with provenance
+        run: |
+          set -euo pipefail
+          for role in client cli; do
+            tarball="dist/module-release/$role.tgz"
+            name="$(tar -xzOf "$tarball" package/package.json | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0,"utf8")).name)')"
+            version="$(tar -xzOf "$tarball" package/package.json | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0,"utf8")).version)')"
+            local_integrity="sha512-$(openssl dgst -sha512 -binary "$tarball" | base64 -w0)"
+            published="$(npm view "$name@$version" dist.integrity 2>/dev/null || true)"
+            if [ -n "$published" ]; then
+              # A version is immutable: the same bytes are already there, or this is an error.
+              [ "$published" = "$local_integrity" ] || { echo "::error::$name@$version already published with different contents"; exit 1; }
+              echo "$name@$version already published with identical contents"
+              continue
+            fi
+            npm publish "$tarball" --provenance --access public --tag next
+          done
+
+  verify:
+    needs: [build, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: module-release-${{ inputs.module }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/module-release
+      - name: Read back from the registry
+        env:
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          EXPECTED_SHA: ${{ github.sha }}
+          EXPECTED_RUN: ${{ github.run_id }}
+        run: bun scripts/module-release/verify-published.ts dist/module-release/client.tgz dist/module-release/cli.tgz --out dist/registry
+      - name: Install the registry copies and start under Bun and Node
+        run: bun scripts/module-release/install-check.ts --cli dist/registry/cli.tgz --client dist/registry/client.tgz --runtimes bun,node --out reports/registry-install
+
+  promote:
+    needs: [build, verify]
+    if: ${{ inputs.mode == 'publish' && inputs.promote }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      CLI_VERSION: ${{ needs.build.outputs.cli_version }}
+      CLIENT_VERSION: ${{ needs.build.outputs.client_version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Move latest
+        run: |
+          set -euo pipefail
+          npm dist-tag add "@undefineds.co/xpod-client@$CLIENT_VERSION" latest
+          npm dist-tag add "@undefineds.co/xpod-cli@$CLI_VERSION" latest
+      - name: Tag the released commit
+        run: gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/cli-v$CLI_VERSION" -f sha="$GITHUB_SHA"

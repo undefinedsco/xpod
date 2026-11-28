@@ -237,7 +237,34 @@ export async function acquireCandidateAdmission(candidate: Candidate, deps: Depe
   return { digest, runId, reused: false };
 }
 
-function createGitHubClient(fetchImpl: typeof fetch = fetch): GitHubClient {
+const READ_ATTEMPTS = 4;
+
+/**
+ * GET once more after a GitHub 5xx/429 or a dropped connection. Only reads are repeated: a
+ * repeated dispatch or upload would act twice, so writes still fail on their first error.
+ */
+async function readWithRetry(
+  request: () => Promise<Response>,
+  sleep: (ms: number) => Promise<void>,
+): Promise<Response> {
+  for (let attempt = 1; ; attempt += 1) {
+    let response: Response | undefined;
+    try {
+      response = await request();
+    } catch (error) {
+      if (attempt >= READ_ATTEMPTS) throw error;
+    }
+    if (response && response.status < 500 && response.status !== 429) return response;
+    if (response && attempt >= READ_ATTEMPTS) return response;
+    await response?.body?.cancel();
+    await sleep(2_000 * 2 ** (attempt - 1));
+  }
+}
+
+export function createGitHubClient(
+  fetchImpl: typeof fetch = fetch,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+): GitHubClient {
   const headers = (token: string, accept: string): Record<string, string> => ({
     authorization: `Bearer ${token}`,
     accept,
@@ -246,18 +273,19 @@ function createGitHubClient(fetchImpl: typeof fetch = fetch): GitHubClient {
   });
   return {
     async json<T>(token: string, method: string, path: string, body?: unknown): Promise<T | undefined> {
-      const response = await fetchImpl(`https://api.github.com${path}`, {
+      const send = () => fetchImpl(`https://api.github.com${path}`, {
         method,
         headers: { ...headers(token, 'application/vnd.github+json'), ...(body ? { 'content-type': 'application/json' } : {}) },
         ...(body ? { body: JSON.stringify(body) } : {}),
       });
+      const response = method === 'GET' ? await readWithRetry(send, sleep) : await send();
       if (response.status === 404) return undefined;
       if (!response.ok) throw new StepError('private17-github', `http-${response.status}`);
       return response.status === 204 ? undefined : await response.json() as T;
     },
     async bytes(token: string, url: string, accept: string): Promise<Buffer> {
       // Redirects to signed storage URLs drop the Authorization header (cross-origin).
-      const response = await fetchImpl(url, { headers: headers(token, accept), redirect: 'follow' });
+      const response = await readWithRetry(() => fetchImpl(url, { headers: headers(token, accept), redirect: 'follow' }), sleep);
       if (!response.ok) throw new StepError('private17-github', `http-${response.status}`);
       return Buffer.from(await response.arrayBuffer());
     },
