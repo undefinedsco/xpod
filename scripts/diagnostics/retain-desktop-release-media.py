@@ -22,8 +22,20 @@ import subprocess
 import sys
 import zipfile
 
-PRODUCER_WORKFLOW = ".github/workflows/release-desktop.yml"
-PRODUCER_JOB = "Build macOS desktop release"
+# Exactly TWO authoritative producer shapes are accepted, each with the event it
+# can actually carry. Anything else stays fail-closed.
+#   1. direct dispatch/call of release-desktop.yml -> unprefixed job name
+#   2. release.yml calling it for a stable tag push -> caller-prefixed job name
+PRODUCER_SHAPES = {
+    ".github/workflows/release-desktop.yml": {
+        "events": ("workflow_dispatch", "workflow_call"),
+        "job": "Build macOS desktop release",
+    },
+    ".github/workflows/release.yml": {
+        "events": ("push",),
+        "job": "Release macOS desktop / Build macOS desktop release",
+    },
+}
 PACKAGING_STEP = "Build DMG and ZIP"
 PAYLOAD_STEP = "Verify packaged version and native runtime payload"
 ACCEPTANCE_STEP = "Accept actual stable packaged desktop permissions and operations"
@@ -222,7 +234,8 @@ def main():
     run = gh_json("api", "repos/%s/actions/runs/%s" % (repository, run_id))
     if run is None:
         fail("producer_run_unreadable")
-    if run.get("path") != PRODUCER_WORKFLOW:
+    shape = PRODUCER_SHAPES.get(str(run.get("path")))
+    if shape is None:
         fail("producer_wrong_workflow")
     if run.get("head_branch") != tag:
         fail("producer_wrong_branch")
@@ -230,7 +243,8 @@ def main():
         fail("producer_wrong_sha")
     if run.get("status") != "completed":
         fail("producer_not_completed")
-    if run.get("event") not in ("workflow_dispatch", "workflow_call"):
+    # The event must be one this exact workflow shape can actually produce.
+    if run.get("event") not in shape["events"]:
         fail("producer_wrong_origin")
     attempt = run.get("run_attempt")
     if not isinstance(attempt, int) or attempt < 1:
@@ -251,7 +265,7 @@ def main():
     if not isinstance(pages, list):
         fail("producer_jobs_unparsable")
     jobs = [job for page in pages for job in (page.get("jobs") or [])]
-    producers = [job for job in jobs if job.get("name") == PRODUCER_JOB]
+    producers = [job for job in jobs if job.get("name") == shape["job"]]
     if len(producers) != 1:
         fail("producer_job_not_unique")
     producer = producers[0]
