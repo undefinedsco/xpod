@@ -10,6 +10,7 @@ import {registryConsumerArtifactName} from '../../scripts/lib/independent-admiss
 import {CI_CONSUMER_SOURCE_GROUPS,CONSUMER_SOURCE_GROUPS,CALLABLE_PUBLICATION_WORKFLOW_SHA,STAGING_CHECKED_PUBLICATION_WORKFLOW_SHA} from '../../scripts/lib/independent-admission/consumer-observer-policy';
 import {selectGitHubSourceBindingGroup,sourceBindingKey} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import { readTrackedSource } from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
+import { readCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 const root=path.resolve(import.meta.dir,'../..');
 // Current repository originals are source API fixtures, never a real GitHub run.
 const integration=process.env.XPOD_ORIGIN_SOURCE_FIXTURE??root;
@@ -25,7 +26,10 @@ async function scenario(stage:'prepublish'|'postpublish',change:{event?:string;b
   const endpoint=new URL(String(value)).pathname.replace('/repos/undefinedsco/xpod/','');let body:any;
   if(endpoint==='actions/runs/5/attempts/1')body={id:5,run_attempt:1,head_sha:source,repository:{full_name:'undefinedsco/xpod'},head_repository:{full_name:'undefinedsco/xpod'},status:change.status??'in_progress',conclusion:change.conclusion===undefined?null:change.conclusion,event:change.event??'workflow_dispatch',head_branch:change.branch??'staging',workflow_id:7,path:'.github/workflows/ci.yml'};
   else if(endpoint==='actions/workflows/7')body={id:7,path:'.github/workflows/ci.yml'};
-  else if(endpoint.startsWith('contents/')){const name=endpoint.slice(9);let data=readTrackedSource(path.join(overrides.has(name)?root:integration,name));if(change.legacyWorkflow&&name==='.github/workflows/independent-publication.yml'){
+  else if(endpoint.startsWith('contents/')){
+   const name=endpoint.slice(9);
+   let data=readCurrentApiDependencyBinding(overrides.has(name)?root:integration,name);
+   if(change.legacyWorkflow&&name==='.github/workflows/independent-publication.yml'){
     const block=`      - name: Require exact staging ancestry before installing or executing source
         env:
           SOURCE_SHA: \${{ inputs.source_sha }}
