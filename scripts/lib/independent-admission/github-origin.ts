@@ -1486,6 +1486,16 @@ export async function observeAfsModuleProductGitHubOrigin(input: ArtifactAcquisi
   });
 }
 
+export const AGENTFS_NATIVE_WORKFLOW_SHA256S=Object.freeze([
+  // CURRENT bytes: darwin-arm64 moves off the retired macos-14 hosted image to
+  // macos-15, and macOS jobs install Bun 1.4.2 because the images no longer ship
+  // it, then build the workspace client the regression imports. Targets and
+  // gates are unchanged. The previous reviewed bytes stay
+  // admitted so historical runs (e.g. 42630283454) keep verifying.
+  'f124cc03987be0cb1d0394ec838ce7a425c5daea309ca35a5917926ce86d9c47',
+  '16b9b9e1fce46671f50080765c3c590daef0606a5cdf767c22fe4719ac72d310',
+]);
+
 /** Observes the existing four-target native producer using the same issuer.
  * This hash reviews the workflow transport boundary only. It does not admit
  * native build inputs, binaries, ABI or a containing module's source revision. */
@@ -1495,7 +1505,10 @@ export async function observeAgentFsNativeGitHubOrigin(input: ArtifactAcquisitio
   const linux = target.startsWith('linux-');
   const observation = await observeGitHubOrigin(input, options, {
     workflowPath: '.github/workflows/agentfs-native-acceptance.yml',
-    workflowSha256: '16b9b9e1fce46671f50080765c3c590daef0606a5cdf767c22fe4719ac72d310',
+    workflowSha256: AGENTFS_NATIVE_WORKFLOW_SHA256S[0],
+    reviewedWorkflowVersions:AGENTFS_NATIVE_WORKFLOW_SHA256S.slice(1).map(workflowSha256=>({
+      workflowSha256,jobName:()=>`native (${target}${linux ? ', bookworm' : ''})`,
+    })),
     events: ['push', 'workflow_dispatch', 'pull_request'], target,
     artifactNames: row => [`agentfs-native-${target}-${row.sourceSha}`],
     jobName: () => `native (${target}${linux ? ', bookworm' : ''})`,
@@ -1844,6 +1857,13 @@ export async function observeProductConsumerGitHubOrigin(input:ArtifactAcquisiti
       // pipeline changes run tests/scripts only where imports reach. Same jobs,
       // permissions, branch and event; earlier identities stay selectable.
       {workflowSha256:'371f6743bada3f50bd7248baa98680417da5b8c62a5e6149c37e8bf22259f05e',
+      jobName:()=>callerNames[0]!,
+      sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS},
+      // APPEND-ONLY: the unit suite runs as three `unit` shards and the former
+      // `test` job becomes `checks`; a new `test` job gates on both so the required
+      // check is unchanged. The publication caller jobs, permissions, branch and
+      // event are untouched; earlier identities stay selectable.
+      {workflowSha256:'0e6a6ef0ec7a2b7482e8d55066fc9ccc755ac64431175eb866c21edce9869ae1',
       jobName:()=>callerNames[0]!,
       sourceBindingGroups:CI_CONSUMER_SOURCE_GROUPS}],
     requiredBranch:'staging',

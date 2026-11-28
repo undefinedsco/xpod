@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   acquireCandidateAdmission,
+  createGitHubClient,
   unzipEntry,
   PRODUCER_WORKFLOW_PATH,
   StepError,
@@ -239,5 +240,38 @@ describe('candidate Private17 admission without a person in the loop', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('Private17 GitHub reads ride out transient GitHub errors', () => {
+  const sleep = async () => {};
+  const respond = (statuses: Array<number | Error>) => {
+    const queue = [...statuses];
+    const calls: string[] = [];
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      calls.push(init?.method ?? 'GET');
+      const next = queue.shift()!;
+      if (next instanceof Error) throw next;
+      return new Response(next === 200 ? '{"ok":true}' : 'x', { status: next });
+    }) as typeof fetch;
+    return { fetchImpl, calls };
+  };
+
+  it('repeats a GET after 500, 502 and a dropped connection', async () => {
+    const { fetchImpl, calls } = respond([500, 502, new TypeError('fetch failed'), 200]);
+    const client = createGitHubClient(fetchImpl, sleep);
+    expect(await client.json('t', 'GET', '/repos/x')).toEqual({ ok: true });
+    expect(calls).toHaveLength(4);
+  });
+
+  it('gives up on a GET after four 5xx answers', async () => {
+    const { fetchImpl } = respond([503, 503, 503, 503]);
+    await expect(createGitHubClient(fetchImpl, sleep).json('t', 'GET', '/repos/x')).rejects.toThrow('http-503');
+  });
+
+  it('never repeats a write such as a workflow dispatch', async () => {
+    const { fetchImpl, calls } = respond([500, 204]);
+    await expect(createGitHubClient(fetchImpl, sleep).json('t', 'POST', '/repos/x/dispatches', {})).rejects.toThrow('http-500');
+    expect(calls).toEqual(['POST']);
   });
 });
