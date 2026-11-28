@@ -31,6 +31,15 @@ const PERMISSIVE = new Set(['MIT', 'ISC', 'Apache-2.0', 'BSD-2-Clause', 'BSD-3-C
 const SOURCE_OFFER = new Set(['LGPL-2.1', 'LGPL-2.1-only', 'LGPL-2.1-or-later', 'LGPL-3.0', 'LGPL-3.0-only',
   'LGPL-3.0-or-later', 'MPL-2.0', 'EPL-2.0']);
 
+const RELEASE_REPOSITORY = 'https://github.com/undefinedsco/xpod';
+
+/** Normalise the npm `repository` field the way the registry compares it with provenance. */
+export function repositoryUrl(repository: unknown): string | undefined {
+  const raw = typeof repository === 'string' ? repository : (repository as { url?: unknown } | undefined)?.url;
+  if (typeof raw !== 'string' || !raw.trim()) return undefined;
+  return raw.trim().replace(/^git\+/, '').replace(/^git:\/\//, 'https://').replace(/\.git$/, '').replace(/\/$/, '');
+}
+
 export interface CheckReport {
   package: string; version: string; module: ReleaseModule; target?: string;
   ok: boolean; failures: string[];
@@ -107,6 +116,8 @@ export function checkPackage(tarball: string, module: ReleaseModule, target: str
     if (!portable && !MODULE_TARGETS.some(row => `${row.platform}-${row.arch}` === target)) failures.push(`unsupported target: ${target}`);
     if (manifest.name !== expectedName) failures.push(`package name ${manifest.name} is not ${expectedName}`);
     if (typeof manifest.version !== 'string' || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(manifest.version)) failures.push('package version is not exact SemVer');
+    // npm rejects a provenance publish whose repository does not name the signing repository.
+    if (repositoryUrl(manifest.repository) !== RELEASE_REPOSITORY) failures.push(`repository.url must name ${RELEASE_REPOSITORY}`);
 
     const files = walk(root);
     for (const file of files) {

@@ -56,12 +56,18 @@ jobs:
         env:
           EVENT_HEAD_SHA: ${{ github.sha }}
         run: node scripts/check-cli-publication.cjs
+      # The stamp step reads and writes tarballs with the repository's tar library.
+      - run: bun install --frozen-lockfile
       - name: Collect tarballs
         id: versions
         run: |
           set -euo pipefail
           mkdir -p dist/module-release
-          cp .test-data/cli-publication-preparation/cli.tgz .test-data/cli-publication-preparation/client.tgz dist/module-release/
+          # npm needs repository.url for a provenance publish; written into the packed
+          # manifest only, so the producer's source manifests stay byte-identical.
+          for role in cli client; do
+            bun scripts/module-release/stamp-repository.ts ".test-data/cli-publication-preparation/$role.tgz" "dist/module-release/$role.tgz" --directory "packages/xpod-$role"
+          done
           for role in cli client; do
             version="$(tar -xzOf "dist/module-release/$role.tgz" package/package.json | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0,"utf8")).version)')"
             echo "$role=$version" >> "$GITHUB_OUTPUT"
