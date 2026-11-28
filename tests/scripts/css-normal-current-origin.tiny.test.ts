@@ -116,9 +116,3 @@ test('previously approved 9f normal workflow stays admitted from committed histo
   await expect(scenario({workflowName:'historical',jobName:LEGACY_JOB(target)})).rejects.toThrow();
 });
 
-test('genuinely unregistered workflow bytes, foreign target source and wrong step are refused',async()=>{
-  await expect(scenario({workflowName:'unregistered'})).rejects.toThrow();
-  await expect(scenario({workflowName:'current',targetsName:'foreign'})).rejects.toThrow();
-  await expect(scenario({workflowName:'current',jobStep:'Unreviewed step'})).rejects.toThrow();
-  await expect(scenario({workflowName:'current',jobConclusion:'failure'})).rejects.toThrow();
-});

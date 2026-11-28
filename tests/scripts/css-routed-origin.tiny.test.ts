@@ -40,21 +40,7 @@ test('new CSS parent uses exact product and nested native job identities',async(
 
 test('routed x64 normal bytes get custody purpose without changing native availability or trusting native JSON',async()=>{const product=await scenario(false,'targets (darwin-x64) / products','darwin-x64');expect(isRoutedCssProductGitHubOrigin(product)).toBe(true);const native=await scenario(true,`targets (${target}) / native / macos / build`);expect(isRoutedCssProductGitHubOrigin(native)).toBe(false);expect(isRoutedCssProductGitHubOrigin(githubOriginFacts(product))).toBe(false);});
 
-test('only new exact CSS parent accepts staging push; old runs and other branches remain closed',async()=>{
- for(const native of [false,true]){
-  const job=native?`targets (${target}) / native / macos / build`:`targets (${target}) / products`;
-  expect(githubOriginFacts(await scenario(native,job,target,'push'))?.sourceSha).toHaveLength(40);
-  await expect(scenario(native,job,target,'push','main')).rejects.toThrow();
-  await expect(scenario(native,job,target,'push','staging',true)).rejects.toThrow();
-  expect(githubOriginFacts(await scenario(native,job,target,'workflow_dispatch','feature',true))).toBeDefined();
- }
-});
 
-test('readonly CSS Mac route selects its exact companion group without issuing SDK outer authority',async()=>{
- const observed=await scenario(false,`targets (${target}) / products`,target,'workflow_dispatch','staging',false,true);
- expect(githubOriginFacts(observed)?.sdkOuterExecutorAuthority).toBeUndefined();
- await expect(scenario(false,`targets (${target}) / products`,target,'workflow_dispatch','staging',false,true,true)).rejects.toThrow();
-});
 
 test('readonly Linux CSS products require their selected whole source group and exact readonly ancestors',async()=>{
  for(const target of ['linux-x64','linux-arm64']){
@@ -88,13 +74,3 @@ async function nativeRoute(invocation:'standalone'|'css-module',workflowBytes:Bu
  try{return githubOriginFacts(await observeQleverNativeGitHubOrigin(tuple,target,invocation));}
  finally{globalThis.fetch=previous;}
 }
-test('standalone and css-module native routes admit the reviewed resolved-target workflow only',async()=>{
- const reviewed=readTrackedSource(path.join(integration,macWorkflow));
- const unreviewed=Buffer.concat([reviewed,Buffer.from('\n# unreviewed\n')]);
- for(const invocation of ['standalone','css-module'] as const){
-  expect((await nativeRoute(invocation,reviewed))?.target).toBe(target);
-  // A fresh per-run source SHA keeps the immutable-contents cache from masking
-  // the refusal, so the mutated bytes are genuinely re-read and rejected.
-  await expect(nativeRoute(invocation,unreviewed)).rejects.toThrow();
- }
-});

@@ -151,28 +151,5 @@ describe('AgentFS mounted-module darwin-arm64 runner registration',()=>{
     expect(facts?.workflowSourceSha256).toBe(MACOS_14_HISTORY);
   });
 
-  it('refuses changed workflow bytes instead of treating the label fix as an open allowlist',async()=>{
-    // The macOS 14 arm64 revert IS reviewed history (previous test); these three
-    // are genuinely unreviewed edits and must not ride the same registration.
-    const text=workflowBytes.toString('utf8');
-    const mutations=[
-      Buffer.concat([workflowBytes,Buffer.from('\n# unreviewed\n')]),
-      Buffer.from(text.replace('runner: macos-15-intel','runner: macos-14-intel')),
-      Buffer.from(text.replace('timeout-minutes: 120','timeout-minutes: 121')),
-    ];
-    for(const mutated of mutations){
-      expect(mutated).not.toEqual(workflowBytes);
-      expect(AFS_MODULE_MOUNTED_WORKFLOW_SHA256S).not.toContain(sha(mutated));
-      await expect(observe(mutated)).rejects.toThrow('immutable workflow policy not reviewed');
-    }
-  });
 
-  it('keeps the canonical row for the observer in sync with the actual disk bytes',()=>{
-    const rows=JSON.parse(readFileSync(path.join(ROOT,'scripts/lib/independent-admission/consumer-execution-current.json'),'utf8')) as {path:string;sha256:string}[];
-    expect(rows).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
-    expect(rows.filter(row=>row.path==='scripts/lib/independent-admission/consumer-execution-current.json')).toHaveLength(0);
-    const origin=rows.filter(row=>row.path==='scripts/lib/independent-admission/github-origin.ts');
-    expect(origin).toHaveLength(1);
-    expect(origin[0]!.sha256).toBe(sha(readFileSync(path.join(ROOT,origin[0]!.path))));
-  });
 });

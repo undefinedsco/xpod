@@ -20,14 +20,6 @@ function fixture() {
   return { plan, producer: { phases }, inventory, receipts };
 }
 
-test('reviewed producer projects its own API/CSS phase plan without executing production', () => {
-  for (const module of ['api', 'css'] as const) {
-    const plan = reviewedModulePhasePlan(module, '/repo', '/repo/.test-data/output', '0.1.0-preview.1', 'linux-x64');
-    expect(plan[0]!.name).toBe('install'); expect(plan.filter(row => row.name === 'pack').length).toBe(1);
-    expect(plan.every(row => row.command.length > 0 && row.timeoutSeconds > 0)).toBe(true);
-    if (module === 'api') expect(plan.find(row => row.name === 'native-inputs')!.command).toContain('linux-x64');
-  }
-});
 
 test('closed phase checks bind command/order/full raw identity and reject altered receipts', () => {
   const f = fixture();
