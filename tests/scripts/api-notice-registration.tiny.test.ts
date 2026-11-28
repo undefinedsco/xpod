@@ -1,3 +1,4 @@
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 import {test,expect} from 'bun:test';import fs from 'node:fs';import path from 'node:path';import {createHash} from 'node:crypto';import {execFileSync} from 'node:child_process';import {pathToFileURL} from 'node:url';
 import before from '../fixtures/independent-admission/notice-api17-prior-source-groups.original.json';
 import {API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS as api,API_SERVICE_BUILD_SOURCE_BINDINGS} from '../../scripts/lib/independent-admission/github-origin';
@@ -12,7 +13,7 @@ import {createPhasePlanFixture} from '../fixtures/independent-admission/cli17-ac
 const root=path.resolve(import.meta.dir,'../..'),read=(name:string)=>readTrackedSource(path.join(root,name)),sha=(raw:Buffer|string)=>createHash('sha256').update(raw).digest('hex');
 test('Notice API17 closes its executed wrapper/imports and preserves every SDK29 and earlier API/controller whole tree',()=>{
  for(const[name,groups]of Object.entries({api,sdk,consumer,ci})){const prior=before[name as keyof typeof before];for(let i=0;i<prior.length;i++)expect(sha(JSON.stringify(groups[i]))).toBe(prior[i]);}
- expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);for(const row of current)expect(sha(read(row.path))).toBe(row.sha256);
+ expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);for (const row of current) expect(shaCurrentApiDependencyBinding(import.meta.dir + '/../..', row.path)).toBe(row.sha256);
  // CURRENT alias follows the newest reviewed tuple (API33 adds exactly ONE owned CJS row);
  // the published API32 tuple keeps its own 82 rows and its frozen whole hash.
  expect(API_SERVICE_BUILD_SOURCE_BINDINGS).toHaveLength(83);for(const row of API_SERVICE_BUILD_SOURCE_BINDINGS)expect(sha(read(row.path))).toBe(row.sha256);

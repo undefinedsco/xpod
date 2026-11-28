@@ -1,3 +1,4 @@
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 /**
  * Immutable ab94021 published-slice regression.
  *
@@ -72,7 +73,7 @@ test('the live canonical binds every actual row byte and retains every old membe
   for (const row of snapshot) expect(byPath.has(row.path)).toBe(true);
   // Every current row must match the real bytes on disk (never a stale claim).
   for (const row of current as {path: string; sha256: string}[]) {
-    expect(sha(readTrackedSource(path.join(ROOT, row.path)))).toBe(row.sha256);
+    expect(shaCurrentApiDependencyBinding(ROOT, row.path)).toBe(row.sha256);
   }
   // The append only adds members; it never drops below the published count.
   expect((current as unknown[]).length).toBeGreaterThanOrEqual(snapshot.length);

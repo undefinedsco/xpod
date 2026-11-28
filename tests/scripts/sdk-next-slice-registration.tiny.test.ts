@@ -1,3 +1,4 @@
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 /**
  * Next-SDK-slice registration regression.
  *
@@ -300,7 +301,11 @@ test('the appended groups bind the actual frozen body and real module bytes', ()
         // manifest excludes its own row; those declared values are anchors, not
         // current disk bytes.
         if (POLICY_OR_CANONICAL.has((row as any).path)) continue;
-        expect(sha(read((row as any).path))).toBe((row as any).sha256);
+        const bindingPath = (row as any).path as string;
+        const hashOnDisk = name === 'consumer' || name === 'ci'
+          ? shaCurrentApiDependencyBinding(import.meta.dir + '/../..', bindingPath)
+          : sha(read(bindingPath));
+        expect(hashOnDisk).toBe((row as any).sha256);
       }
       expect(rows(group).length).toBeGreaterThan(0);
     }
@@ -383,7 +388,7 @@ test('the live canonical binds every actual row of the final combined tree', () 
     ['qlever/tests/test_qlever_phase_syscall_diagnostics.py', 'f1313057c7279617335f603aea19a5087dff6be0a99e4352910be76ac7e08f3f'],
     ['qlever/tests/test_qlever_phase_syscall_wiring.py', '37ced068c0473b965676c888aaac8e1e9535769cf895ee018ccf0a283c012be8'],
   ] as const) expect(current.find((r) => r.path === p)!.sha256).toBe(h);
-  for (const row of current) expect(sha(read(row.path))).toBe(row.sha256);
+  for (const row of current) expect(shaCurrentApiDependencyBinding(import.meta.dir + '/../..', row.path)).toBe(row.sha256);
   const body = current.find((r) => r.path === BODY)!;
   expect(body.sha256).toBe('e7809ce84224c25cf36623cebc2933031e035011f2792530b668b5e554f4377e');
   expect(current.find((r) => r.path === 'qlever/scripts/sdk-original-chunk-store.py')!.sha256)

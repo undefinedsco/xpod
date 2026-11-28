@@ -1,3 +1,4 @@
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 import {currentProgramSdkConsumerGroups} from '../../scripts/lib/independent-admission/current-program-definition';
 import {sourceBindingKey as key,selectGitHubSourceBindingGroup as select} from '../../scripts/lib/independent-admission/github-source-binding-groups';
 import {CURRENT_CANONICAL_SOURCE_ROWS, completeObserved,observedSecondaryBindings} from './source-binding-group.fixture';
@@ -10,7 +11,7 @@ import { readTrackedSource } from '../fixtures/independent-admission/cli17-accep
 const sha=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 test('SDK30 authority entry diagnostics preserve every complete SDK29/API/controller original recipe',()=>{
  for(const[name,groups]of Object.entries({sdk,consumer,ci})){const old=before[name as keyof typeof before];for(let i=0;i<old.length;i++)expect(sha(groups[i])).toBe(old[i]);}
- expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);for(const row of current)expect(createHash('sha256').update(readTrackedSource(path.resolve(import.meta.dir,'../..',row.path))).digest('hex')).toBe(row.sha256);
+ expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);for (const row of current) expect(shaCurrentApiDependencyBinding(import.meta.dir + '/../..', row.path)).toBe(row.sha256);
  const last=currentProgramSdkConsumerGroups().at(-1)!;for(const row of [...last.selectors,...last.sourceBindings])expect(createHash('sha256').update(readTrackedSource(path.resolve(import.meta.dir,'../..',row.path))).digest('hex')).toBe(row.sha256);
 });
 

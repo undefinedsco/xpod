@@ -1,3 +1,4 @@
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 import{currentProgramSdkConsumerGroups}from'../../scripts/lib/independent-admission/current-program-definition';
 import{test,expect}from'bun:test';import fs from'node:fs';import path from'node:path';import{createHash}from'node:crypto';
 import before from'../fixtures/independent-admission/sdk31-before-source-groups.original.json';
@@ -11,7 +12,8 @@ const root=path.resolve(import.meta.dir,'../..'),read=(p:string)=>readTrackedSou
 test('SDK31 preserves complete SDK1–30, API17 and both Notice parent histories before appending its exact controller tree',()=>{
  for(const[name,groups]of Object.entries({sdk,consumer,ci})){const prior=before[name as 'sdk'|'consumer'|'ci'];for(let i=0;i<prior.length;i++)expect(hash(groups[i])).toBe(prior[i]);}
  expect(hash(api)).toBe(before.api);expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);expect(new Set(current.map(r=>r.path)).size).toBe(current.length);
- for(const row of [...current,...currentProgramSdkConsumerGroups().at(-1)!.selectors,...currentProgramSdkConsumerGroups().at(-1)!.sourceBindings])expect(createHash('sha256').update(read(row.path)).digest('hex')).toBe(row.sha256);
+ for (const row of current) expect(shaCurrentApiDependencyBinding(import.meta.dir + '/../..', row.path)).toBe(row.sha256);
+ for(const row of [...currentProgramSdkConsumerGroups().at(-1)!.selectors,...currentProgramSdkConsumerGroups().at(-1)!.sourceBindings])expect(createHash('sha256').update(read(row.path)).digest('hex')).toBe(row.sha256);
  for(const name of['sdk-kernel-probe-controller.py','sdk-kernel-policy-probe.py'])expect(current.some(row=>row.path==='qlever/scripts/'+name)).toBe(true);
 });
 test('actual primary and own mandatory-role secondary originals uniquely select every complete old and new group',()=>{

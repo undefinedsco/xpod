@@ -1,3 +1,4 @@
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 import{currentProgramSdkConsumerGroups}from'../../scripts/lib/independent-admission/current-program-definition';
 import{test,expect}from'bun:test';import{createHash}from'node:crypto';import{readFileSync}from'node:fs';
 import before from'../fixtures/independent-admission/pre-sdk45-whole-hashes.original.json';
@@ -9,6 +10,7 @@ test('SDK45 preserves all actual173 whole groups and binds failure-only model by
  expect(before.base).toBe('17341efd99fbd8afb957e6a0c21be8b4f59ab35e');expect(Object.values(before.hashes).reduce((n,rows)=>n+rows.length,0)).toBe(233);
 
  for(const[name,groups]of Object.entries({api,sdk,consumer,ci})){const old=before.hashes[name as keyof typeof before.hashes];expect(groups.slice(0,old.length).map(hash)).toEqual(old);}
- for(const row of [...current,...currentProgramSdkConsumerGroups().at(-1)!.selectors,...currentProgramSdkConsumerGroups().at(-1)!.sourceBindings])expect(createHash('sha256').update(readTrackedSource(row.path)).digest('hex')).toBe(row.sha256);
+ for (const row of current) expect(shaCurrentApiDependencyBinding(import.meta.dir + '/../..', row.path)).toBe(row.sha256);
+ for(const row of [...currentProgramSdkConsumerGroups().at(-1)!.selectors,...currentProgramSdkConsumerGroups().at(-1)!.sourceBindings])expect(createHash('sha256').update(readTrackedSource(row.path)).digest('hex')).toBe(row.sha256);
  const policy=readTrackedSource('scripts/lib/independent-admission/consumer-observer-policy.ts');expect(policy.byteLength<1024*1024).toBe(true);const content=policy.toString('base64').match(/.{1,60}/gu)!.join('\n')+'\n';expect(Buffer.byteLength(JSON.stringify({type:'file',size:policy.byteLength,encoding:'base64',content}))<=2*1024*1024).toBe(true);
 });

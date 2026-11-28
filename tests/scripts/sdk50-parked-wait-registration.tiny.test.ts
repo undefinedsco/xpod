@@ -1,3 +1,4 @@
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 import{currentProgramSdkConsumerGroups}from'../../scripts/lib/independent-admission/current-program-definition';
 import {test,expect} from 'bun:test';
 import {readFileSync} from 'node:fs';
@@ -16,7 +17,8 @@ test('SDK50 preserves all 255 exact Git44ab complete recipes and binds current 4
  expect(Object.values(before.hashes).reduce((sum,rows)=>sum+rows.length,0)).toBe(255);
 
  for(const [name,values] of Object.entries({api,sdk,consumer,ci})){const old=before.hashes[name as keyof typeof before.hashes];expect(values.slice(0,old.length).map(row=>sha(JSON.stringify(row)))).toEqual(old);}
- for(const row of [...current,...actualApi,...currentProgramSdkConsumerGroups().at(-1)!.selectors,...currentProgramSdkConsumerGroups().at(-1)!.sourceBindings])expect(sha(readTrackedSource(row.path))).toBe(row.sha256);
+ for (const row of current) expect(shaCurrentApiDependencyBinding(import.meta.dir + '/../..', row.path)).toBe(row.sha256);
+ for(const row of [...actualApi,...currentProgramSdkConsumerGroups().at(-1)!.selectors,...currentProgramSdkConsumerGroups().at(-1)!.sourceBindings])expect(sha(readTrackedSource(row.path))).toBe(row.sha256);
  expect(api.at(-1)!.sourceBindings).toBe(actualApi);
 });
 test('SDK50 complete current recipe rejects every absent or mixed mandatory role',()=>{

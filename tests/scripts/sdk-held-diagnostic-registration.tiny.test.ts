@@ -1,3 +1,4 @@
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 import {currentProgramSdkConsumerGroups} from '../../scripts/lib/independent-admission/current-program-definition';
 import {test,expect} from 'bun:test';import {createHash} from 'node:crypto';import fs from 'node:fs';import path from 'node:path';
 import previous from '../fixtures/independent-admission/sdk27-before-source-groups.original.json';
@@ -9,6 +10,6 @@ import { readTrackedSource } from '../fixtures/independent-admission/cli17-accep
 const hash=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 test('SDK27 adds diagnostic scope while preserving every complete old private source recipe and controller anchor',()=>{
  for(const [name,groups]of Object.entries({sdk,consumer,ci})){const old=previous[name as keyof typeof previous];for(let i=0;i<old.length;i++)expect(hash(groups[i])).toBe(old[i]);}
- expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);for(const row of current)expect(createHash('sha256').update(readTrackedSource(path.resolve(import.meta.dir,'../..',row.path))).digest('hex')).toBe(row.sha256);
+ expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);for (const row of current) expect(shaCurrentApiDependencyBinding(import.meta.dir + '/../..', row.path)).toBe(row.sha256);
  const latest=currentProgramSdkConsumerGroups().at(-1)!;for(const row of [...latest.selectors,...latest.sourceBindings])expect(createHash('sha256').update(readTrackedSource(path.resolve(import.meta.dir,'../..',row.path))).digest('hex')).toBe(row.sha256);
 });

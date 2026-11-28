@@ -1336,6 +1336,29 @@ export const API_SERVICE_BUILD_SOURCE_BINDINGS=apiRc393Tuple.sourceBindings;
 
 export const API_WORKSPACE_SOURCE_GROUPS=Object.freeze(API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS.filter(group=>group.sourceBindings.some(row=>row.path==='scripts/lib/api-scoped-dependency-state.ts')));
 
+/** Pi 1.6 on the current staging manifests. The root manifest and lock already
+ * separate this tuple from every older API product; the remaining originals
+ * are checked after selecting the complete reviewed tuple. */
+const PI_1_6_API_ORIGINALS: Readonly<Record<string, string>> = Object.freeze({
+  'bun.lock': '07f1433671422a2a051969c156c69680417a905d18d55e900b859944b9982882',
+  'desktop/package.json': 'b0a3aab072d2de8bfc6aaec7e1e0b2d6bb14fa90e2b05b51052b509c8e5d5f74',
+  'package.json': 'fa36a3c40b8ab296e4c87d649044c9cfdeaacdcd88b6e6f85f60fcf4aeb2c67f',
+  'packages/xpod-api/package.json': '6ed35b557070534f9b3562503407d0a0bf852b12c97a64303f5e1fcb6c3c699b',
+  'scripts/workspace-package-payload.cjs': '9ec1ee6f47d5ae69126dbfe71b46ef37bb63cfcdedc6ed5247aeec17e56cc345',
+});
+function rebindPi16ApiOriginal(row: GitHubSourceBinding): GitHubSourceBinding {
+  const replacement = PI_1_6_API_ORIGINALS[row.path];
+  return replacement === undefined ? row : Object.freeze({ ...row, sha256: replacement });
+}
+const apiPi16Tuple = Object.freeze({
+  ...apiRc393Tuple,
+  name: 'api-pi-1-6',
+  secondarySelectors: Object.freeze(apiRc393Tuple.secondarySelectors.map(rebindPi16ApiOriginal)),
+  sourceBindings: Object.freeze(apiRc393Tuple.sourceBindings.map(rebindPi16ApiOriginal)),
+});
+export const API_PRODUCT_WORKSPACE_SOURCE_GROUPS = Object.freeze([...API_WORKSPACE_SOURCE_GROUPS, apiPi16Tuple]);
+
+
 
 
 
@@ -1423,7 +1446,7 @@ export async function observeModuleProductGitHubOrigin(input: ArtifactAcquisitio
     artifactNames: coordinates => [`${module}-module-products-${target}-${coordinates.sourceSha}-${coordinates.runId}-${coordinates.runAttempt}`],
     jobName: () => `products (${target})`,
     // The old reviewed workflow used GitHub's implicit matrix display name.
-    reviewedWorkflowVersions: [...(module==='api'?[{workflowSha256:API_NORMAL_SCHEDULED_WORKFLOW_SHA,jobName:()=>`products (${target})`,sourceBindingGroups:API_WORKSPACE_SOURCE_GROUPS},{workflowSha256:'db6ca21afa33d572f24a92e96c88f425d1bf46a86d966a55be4c10de4d812263',jobName:()=>`products (${target})`,sourceBindingGroups:API_WORKSPACE_SOURCE_GROUPS},{workflowSha256:'2db71cbf4f6f46a433c397866585374d91b76c89bf79f173b5aae181dc2087b6',jobName:()=>`products (${target})`,sourceBindingGroups:API_WORKSPACE_SOURCE_GROUPS},{workflowSha256:'04f75d2913e3b6b504cf547d8ba17d1c0011a0a563f42ff708f4ba3f10978153',jobName:()=>`products (${target})`,sourceBindingGroups:API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS},{workflowSha256:'b7a91e8c0b61f8a80a3de2c6c93e78f1d2f9637a741bff7ac2592882ba0c831e',jobName:()=>`products (${target})`,sourceBindings:API_CONTROLLED_SOURCE_BINDINGS},{workflowSha256:'c4aa6b7ea6e384adab1e517a903e50d574c8afb2eb92d8c54dc919320652c5b0',jobName:()=>`products (${target})`}]:[]), { workflowSha256: policies[module].previousShortWorkflowSha256, jobName: () => `products (${target})`,
+    reviewedWorkflowVersions: [...(module==='api'?[{workflowSha256:API_NORMAL_SCHEDULED_WORKFLOW_SHA,jobName:()=>`products (${target})`,sourceBindingGroups:API_PRODUCT_WORKSPACE_SOURCE_GROUPS},{workflowSha256:'db6ca21afa33d572f24a92e96c88f425d1bf46a86d966a55be4c10de4d812263',jobName:()=>`products (${target})`,sourceBindingGroups:API_WORKSPACE_SOURCE_GROUPS},{workflowSha256:'2db71cbf4f6f46a433c397866585374d91b76c89bf79f173b5aae181dc2087b6',jobName:()=>`products (${target})`,sourceBindingGroups:API_WORKSPACE_SOURCE_GROUPS},{workflowSha256:'04f75d2913e3b6b504cf547d8ba17d1c0011a0a563f42ff708f4ba3f10978153',jobName:()=>`products (${target})`,sourceBindingGroups:API_CONTROLLED_DESCRIPTOR_SOURCE_GROUPS},{workflowSha256:'b7a91e8c0b61f8a80a3de2c6c93e78f1d2f9637a741bff7ac2592882ba0c831e',jobName:()=>`products (${target})`,sourceBindings:API_CONTROLLED_SOURCE_BINDINGS},{workflowSha256:'c4aa6b7ea6e384adab1e517a903e50d574c8afb2eb92d8c54dc919320652c5b0',jobName:()=>`products (${target})`}]:[]), { workflowSha256: policies[module].previousShortWorkflowSha256, jobName: () => `products (${target})`,
       sourceBindings: [{ path: 'scripts/module-product-targets.ts', sha256: '35b8752237d620981b1848d6d8876dfac3c1da14509e77358e7f961ca256cf96' }] },
       { workflowSha256: policies[module].legacyWorkflowSha256, jobName: () => `products (${Object.values(row).join(', ')})`,
         sourceBindings: [{ path: 'scripts/module-product-targets.ts', sha256: '35b8752237d620981b1848d6d8876dfac3c1da14509e77358e7f961ca256cf96' }] },

@@ -1,3 +1,4 @@
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 import {CURRENT_CANONICAL_SOURCE_ROWS, completeObserved,observedSecondaryBindings} from './source-binding-group.fixture';
 import {test,expect} from 'bun:test';
 import fs from 'node:fs';
@@ -23,7 +24,8 @@ test('readonly SDK21 adds a complete producer group and preserves all 9b64 histo
  expect(publishedGroup.sourceBindings.find(row=>row.path==='.github/workflows/publish-qlever-local-runtime.yml')?.sha256).toBe('cf6822cf0c8c204267f959a8b233daa144d4dcbbc394d02ff706a3c29a397715');
  expect(publishedGroup.sourceBindings.find(row=>row.path==='scripts/lib/independent-admission/qlever-sdk-normal-build.ts')?.sha256).toBe('b2fa80d50edf78347eb83416d93255a43a8c0054e66f2476743f975a07aec69a');
  const currentGroup=currentProgramSdkConsumerGroups().at(-1)!;expect(S).toHaveLength(93);expect(currentGroup).not.toBe(publishedGroup);
- for(const row of [...currentGroup.selectors,...currentGroup.sourceBindings,...current])expect(sha(readTrackedSource(path.join(root,row.path)))).toBe(row.sha256);
+ for (const row of current) expect(shaCurrentApiDependencyBinding(import.meta.dir + '/../..', row.path)).toBe(row.sha256);
+ for(const row of [...currentGroup.selectors,...currentGroup.sourceBindings])expect(sha(readTrackedSource(path.join(root,row.path)))).toBe(row.sha256);
  expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
 });
 test('real primary then shared secondary resolver rejects missing and changed roles across all historical and current trees',()=>{

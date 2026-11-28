@@ -1,3 +1,4 @@
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 import {CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
 import {API_SERVICE_BUILD_SOURCE_BINDINGS} from '../../scripts/lib/independent-admission/github-origin';
 import {test,expect} from 'bun:test';
@@ -18,7 +19,8 @@ test('Node public tool input adds one complete exact tuple and preserves compres
  expect(groups).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.api);expect(consumers).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.consumer);expect(ci).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.ci);expect(tcb).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
  expect(groups.find(g=>'name' in g&&g.name==='root-minimal-compressed-original-retention')!.sourceBindings).toBe(old);expect(groups.find(g=>'name' in g&&g.name==='root-minimal-node-public-tool-input')!.sourceBindings).toBe(prior);
  expect(prior.filter(row=>old.find(previous=>previous.path===row.path)?.sha256!==row.sha256).map(row=>row.path).sort()).toEqual(['packages/xpod-api/scripts/inngest-controlled-build-policy.json','scripts/lib/inngest-controlled-build.py','scripts/lib/module-source-materials.py']);
- for(const row of [...API_SERVICE_BUILD_SOURCE_BINDINGS,...tcb])expect(sha(read(row.path))).toBe(row.sha256);
+ for (const row of tcb) expect(shaCurrentApiDependencyBinding(import.meta.dir + '/../..', row.path)).toBe(row.sha256);
+ for(const row of [...API_SERVICE_BUILD_SOURCE_BINDINGS])expect(sha(read(row.path))).toBe(row.sha256);
  const actual=groups.find(g=>'name' in g&&g.name==='root-minimal-node-public-tool-input')!;
  const facts=new Map([...actual.selectors,...actual.secondarySelectors??[]].map(row=>[key(row),row.sha256]));expect(select(groups,facts)).toBe(actual);
  for(const row of actual.secondarySelectors??[]){const wrong=new Map(facts);wrong.delete(key(row));expect(()=>select(groups,wrong)).toThrow();const mixed=new Map(facts);mixed.set(key(row),old.find(previous=>previous.path===row.path)!.sha256);if(mixed.get(key(row))!==facts.get(key(row)))expect(()=>select(groups,mixed)).toThrow();}

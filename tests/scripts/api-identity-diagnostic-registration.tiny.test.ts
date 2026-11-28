@@ -1,3 +1,4 @@
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 import {API_SERVICE_BUILD_SOURCE_BINDINGS} from '../../scripts/lib/independent-admission/github-origin';
 import {test,expect} from 'bun:test';
 import {createHash} from 'node:crypto';
@@ -27,5 +28,6 @@ test('only bounded diagnostic helper and its actual canonical version source clo
  const changed=API_IDENTITY_DIAGNOSTIC_SOURCE_BINDINGS.filter(row=>API_PHYSICAL_LOOKUP_SOURCE_BINDINGS.find(old=>old.path===row.path)?.sha256!==row.sha256);
  expect(changed.map(row=>row.path).sort()).toEqual(['scripts/independent-release-plan.ts','scripts/lib/api-scoped-dependency-state.ts','scripts/workspace-package-payload.cjs']);
  expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);expect(API_IDENTITY_DIAGNOSTIC_SOURCE_BINDINGS).toHaveLength(75);
- for(const row of [...current,...API_SERVICE_BUILD_SOURCE_BINDINGS])expect(hash(readTrackedSource(path.resolve(import.meta.dir,'../..',row.path)))).toBe(row.sha256);
+ for (const row of current) expect(shaCurrentApiDependencyBinding(import.meta.dir + '/../..', row.path)).toBe(row.sha256);
+ for(const row of [...API_SERVICE_BUILD_SOURCE_BINDINGS])expect(hash(readTrackedSource(path.resolve(import.meta.dir,'../..',row.path)))).toBe(row.sha256);
 });

@@ -14,7 +14,7 @@ import recipeFixture from '../fixtures/independent-admission/controlled-linux-v1
 import {readFileSync} from 'node:fs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
-import {controlledApiSourceRecipe,moduleSourcePhasePolicy} from '../../scripts/lib/independent-admission/module-source-phases';
+import {controlledApiSourceRecipe,moduleSourcePhasePolicy,reviewedModulePhasePlan} from '../../scripts/lib/independent-admission/module-source-phases';
 import {createPhasePlanFixture} from '../fixtures/independent-admission/cli17-accepted-419/phase-plan-fixture';
 import {readFrozenTracked} from '../fixtures/independent-admission/cli17-accepted-419/frozen-metadata';
 // Historical/synthetic tuples pin the CLI17 generation, whose only mutable rows
@@ -85,6 +85,21 @@ describe('one reviewed API parent recipe',()=>{
   for(const value of [{sourceKind:'other',retainedByteCeiling:1},{sourceKind:'xpod-controlled-inngest-build-v1',retainedByteCeiling:sourceMaterialBytes+1}])expect(()=>reviewedModulePhasePlan('api','/r','/o','1.2.3','linux-arm64',value,workspace)).toThrow();
   expect(()=>reviewedModulePhasePlan('api','/r','/o','1.2.3','windows-x64',{...scope,retainedByteCeiling:1},workspace)).toThrow();
   }finally{fixture.cleanup();}
+ });
+ it('projects the current Pi API recipe from checkout bytes without admitting a mixed recipe',()=>{
+  const readCurrent = (name: string) => readFileSync(path.resolve(process.cwd(), name));
+  for (const target of ['linux-arm64', 'linux-x64', 'darwin-arm64', 'darwin-x64']) {
+   const recipe = controlledApiSourceRecipe(readCurrent, producer, target);
+   expect(recipe.rows).toHaveLength(83);
+   const plan = reviewedModulePhasePlan('api', '/r', '/o', '1.2.3', target, scope, workspace);
+   expect(plan).toHaveLength(23);
+   const command = plan.find(row => row.name === 'inngest-controlled-acquire')!.command;
+   expect(command[command.indexOf('--target') + 1]).toBe(target);
+  }
+  for (const changed of ['bun.lock', 'packages/xpod-api/package.json']) {
+   const mixed = (name: string) => name === changed ? read(name) : readCurrent(name);
+   expect(() => controlledApiSourceRecipe(mixed, producer, 'linux-arm64')).toThrow('complete source recipe');
+  }
  });
  it('rejects an UNREVIEWED or MIXED API source tuple read through the production reader',()=>{
   // The 0bcd workaround substituted package.json/check-dependency-state.ts so the

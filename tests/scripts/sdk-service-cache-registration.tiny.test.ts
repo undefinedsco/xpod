@@ -1,3 +1,4 @@
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 import{currentProgramSdkConsumerGroups}from'../../scripts/lib/independent-admission/current-program-definition';
 import {test,expect} from 'bun:test';import fs from 'node:fs';import path from 'node:path';import {createHash} from 'node:crypto';
 import {CURRENT_SOURCE_GROUP_COUNTS} from './source-binding-group.fixture';
@@ -11,7 +12,7 @@ import { readTrackedSource } from '../fixtures/independent-admission/cli17-accep
 import{CURRENT_CANONICAL_SOURCE_ROWS, completeObserved,observedSecondaryBindings}from'./source-binding-group.fixture';
 const hash=(b:string|Buffer)=>createHash('sha256').update(b).digest('hex'),root=path.resolve(import.meta.dir,'../..');
 test('cache and exact service COPY fix preserve all SDK1–24/API16 whole recipes and every prior controller source set',()=>{
- expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);for(const row of current)expect(hash(readTrackedSource(path.join(root,row.path)))).toBe(row.sha256);
+ expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);for (const row of current) expect(shaCurrentApiDependencyBinding(import.meta.dir + '/../..', row.path)).toBe(row.sha256);
  // SDK79 published 79 groups; the SDK80 append adds exactly one, so 80 now.
  expect(sdk).toHaveLength(CURRENT_SOURCE_GROUP_COUNTS.sdk);expect(JSON.parse(JSON.stringify(sdk.slice(0,24)))).toEqual(before.sdk);expect(JSON.parse(JSON.stringify(api.slice(0,16)))).toEqual(before.api);
  for(const[groups,old]of[[c,before.c],[ci,before.ci]]as const)for(const prior of old)expect(groups.filter(g=>JSON.stringify(g.selectors)===JSON.stringify(prior.selectors)&&hash(JSON.stringify(g.sourceBindings))===prior.sourceBindingsSha256)).toHaveLength(1);

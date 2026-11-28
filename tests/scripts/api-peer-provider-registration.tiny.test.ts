@@ -1,3 +1,4 @@
+import { shaCurrentApiDependencyBinding } from '../helpers/current-api-dependency-binding';
 import {test,expect} from 'bun:test';
 import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
@@ -13,7 +14,8 @@ test('peer registration preserves the diagnostic tuple and binds only the two ac
  expect(groups.find(group=>'name' in group&&group.name==='root-minimal-physical-peer-provider')!.sourceBindings).toBe(next);
  expect(next.filter(row=>before.find(old=>old.path===row.path)?.sha256!==row.sha256).map(row=>row.path).sort()).toEqual(['scripts/check-api-producer-dependency-state.ts','scripts/lib/api-scoped-dependency-state.ts']);
  expect(next).toHaveLength(75);expect(current).toHaveLength(CURRENT_CANONICAL_SOURCE_ROWS);
- for(const row of [...actual,...current])expect(hash(readTrackedSource(path.resolve(import.meta.dir,'../..',row.path)))).toBe(row.sha256);
+ for (const row of current) expect(shaCurrentApiDependencyBinding(import.meta.dir + '/../..', row.path)).toBe(row.sha256);
+ for(const row of [...actual])expect(hash(readTrackedSource(path.resolve(import.meta.dir,'../..',row.path)))).toBe(row.sha256);
 });
 test('every old API tuple still selects; new peer tuple rejects missing and mixed mandatory helper bytes',()=>{
  for(const group of groups){const facts=new Map(group.selectors.map(row=>[sourceBindingKey(row),row.sha256]));
