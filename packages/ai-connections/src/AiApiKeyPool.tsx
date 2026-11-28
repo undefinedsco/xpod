@@ -65,6 +65,7 @@ export function AiApiKeyPool({
   }) => Promise<void>
   onUpdateCredential?: (credential: AiProviderCredentialSummary, patch: {
     apiKey?: string
+    offeringId?: string
     label?: string
     enabled?: boolean
     priority?: number
@@ -86,8 +87,12 @@ export function AiApiKeyPool({
    * none, so that toolbar shows no browser button at all.
    */
   const browserMethod = authorizationMethodsForOffering(offering).find((method) => !isApiKeyMethod(method))
-  const [createOfferingId, setCreateOfferingId] = useState(offering.id)
+  const [createOfferingId, setCreateOfferingId] = useState(initialEditing?.offeringId ?? offering.id)
   const formOffering = createOfferings.find((item) => item.id === createOfferingId) ?? offering
+  const formOfferings = initialEditing
+    ? createOfferings.filter((item) => item.id === initialEditing.offeringId
+      || item.credentialMigrationFrom?.includes(initialEditing.offeringId ?? ''))
+    : createOfferings
   const [showKey, setShowKey] = useState(false)
   const [formMode, setFormMode] = useState<'create' | 'edit' | undefined>(initialEditing ? 'edit' : initialCreate && onCreateApiKeyCredential ? 'create' : undefined)
   const [editingCredential, setEditingCredential] = useState<AiProviderCredentialSummary | undefined>(initialEditing)
@@ -173,6 +178,7 @@ export function AiApiKeyPool({
       try {
         await onUpdateCredential(editingCredential, {
           ...(poolApiKey.trim() ? { apiKey: poolApiKey.trim() } : {}),
+          ...(formOffering.id !== editingCredential.offeringId ? { offeringId: formOffering.id } : {}),
           label: poolLabel.trim() || undefined,
           baseUrl: poolBaseUrl.trim() || undefined,
           ...(proxyChanged ? { proxyUrl: normalizedProxyUrl } : {}),
@@ -254,14 +260,14 @@ export function AiApiKeyPool({
 
       {formMode ? (
         <div className="space-y-2 rounded-lg border border-border/50 bg-muted/10 p-3">
-          {formMode === 'create' && createOfferings.length > 1 ? (
+          {formOfferings.length > 1 ? (
             <label className="block space-y-1 text-xs text-muted-foreground">
               <span>套餐 / 区域</span>
               <NativeSelect aria-label={`${definition.name} 套餐 / 区域`} value={createOfferingId}
                 disabled={busy || disabled || saving}
                 onChange={(event) => { setCreateOfferingId(event.target.value); setPoolFormError(undefined) }}
                 className="h-9">
-                {createOfferings.map((item) => <option key={item.id} value={item.id}>{offeringTitle(item)}</option>)}
+                {formOfferings.map((item) => <option key={item.id} value={item.id}>{offeringTitle(item)}</option>)}
               </NativeSelect>
             </label>
           ) : null}
@@ -297,7 +303,7 @@ export function AiApiKeyPool({
                 data-lpignore="true"
                 data-1p-ignore
                 aria-label={`${definition.name} Base URL 输入`}
-                placeholder={offeringEndpoint(formMode === 'edit' ? offering : formOffering) || definition.defaultBaseUrl || '默认服务地址'}
+                placeholder={offeringEndpoint(formOffering) || definition.defaultBaseUrl || '默认服务地址'}
                 value={poolBaseUrl}
                 onChange={(event) => setPoolBaseUrl(event.target.value)}
                 className="font-mono text-xs"

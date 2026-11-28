@@ -272,7 +272,8 @@ export interface AiProviderOffering {
   consoleUrl?: string
   subscriptionUrl?: string
   endpoints?: Array<{ protocol: string; baseUrl: string; region?: string; supportsDeveloperMessages?: boolean }>
-  modelDiscovery?: { strategy: string; path: string; endpointProtocol: string }
+  credentialMigrationFrom?: string[]
+  modelDiscovery?: { strategy: string; path: string; baseUrl?: string; endpointProtocol: string }
   quota?: { strategy: string; url: string }
   usagePolicyUrl?: string
   region?: string
@@ -327,6 +328,8 @@ export interface CreateApiKeyCredentialInput {
 }
 
 export interface UpdateProviderCredentialInput {
+  /** Explicit API-key offering selection; omission preserves the current offering. */
+  offeringId?: string
   /** Nonempty replacement only; omission preserves the existing secret. */
   apiKey?: string
   expectedVersion: number

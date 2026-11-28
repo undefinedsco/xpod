@@ -409,7 +409,7 @@ describe('ProviderRegistry provider catalog', () => {
     const registry = createDefaultProviderRegistry();
     const custom = registry.requireProduct('custom');
 
-    expect(custom.offerings.map((offering) => ({
+    expect(custom.offerings.filter((offering) => offering.quota.strategy === 'unsupported').map((offering) => ({
       id: offering.id,
       kind: offering.kind,
       authModes: offering.authModes,
@@ -538,4 +538,13 @@ describe('ProviderRegistry deployment provider set', () => {
     expect(registry.listProvidedProviders('local').map((provider) => provider.id))
       .toEqual(['openai', 'anthropic', 'kimi', 'bailian', 'deepseek', 'zhipu', 'ollama', 'custom']);
   });
+});
+
+it('declares Go quota and a separate models address without changing ordinary custom offerings', () => {
+  const registry = createDefaultProviderRegistry();
+  const offering = registry.getOffering('custom', 'opencode-go')!;
+  expect(offering.endpoints[0].baseUrl).toBe('https://opencode.ai/inference/go/openai/v1');
+  expect(offering.modelDiscovery.baseUrl).toBe('https://opencode.ai/inference/go/v1');
+  expect(offering.upstream.find((item) => item.capability === 'quota')).toMatchObject({ protocol: 'usage-percent-windows', options: { url: 'https://opencode.ai/inference/go/v1/usage', windows: { rolling: 'five-hour', weekly: 'weekly', monthly: 'monthly' } } });
+  expect(registry.getOffering('custom', 'openai-compatible')!.upstream.some((item) => item.protocol === 'usage-percent-windows')).toBe(false);
 });

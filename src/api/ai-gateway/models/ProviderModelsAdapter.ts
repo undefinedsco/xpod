@@ -263,7 +263,7 @@ function resolveOfferingDiscoveryTarget(
     ? [endpoint.baseUrl, ...safeBaseUrls.filter((baseUrl) => !siblingBaseUrls.has(baseUrl))]
     : safeBaseUrls;
   return {
-    baseUrl: resolveSafeModelsBaseUrl(
+    baseUrl: offering?.modelDiscovery.baseUrl ?? resolveSafeModelsBaseUrl(
       credential.baseUrl,
       endpoint?.baseUrl ?? defaultBaseUrl,
       allowedBaseUrls,

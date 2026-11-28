@@ -1623,3 +1623,19 @@ describe('XpodAiConnectionsPodStore', () => {
     expect(customDocument).not.toContain('#');
   });
 });
+
+it('switches an owned compatible credential to Go without rewriting its secret or model rows', async () => {
+  const id = 'credentials.ttl#custom-kept';
+  const original = { id, provider: 'providers/custom-kept.ttl#this', service: 'ai', authMode: 'apiKey', status: 'active', keyVersion: '4', offeringId: 'openai-compatible', accountLabel: 'Kept', encryptedSecret: 'opaque-secret-preserved', baseUrl: 'https://opencode.ai/inference/go/openai/v1', metadata: { offeringId: 'openai-compatible', enabled: true, health: 'healthy', priority: 7 } };
+  let row = { ...original };
+  const database = { init: vi.fn(), findById: vi.fn(async () => row), updateById: vi.fn(async (_table, _id, patch) => (row = { ...row, ...patch })) };
+  const store = createXpodAiConnectionsPodStore({ database: database as never, podUrl: POD_URL, webId: WEB_ID });
+  const updated = await store.updateProviderCredential!('custom', id, { expectedVersion: 4, offeringId: 'opencode-go' });
+  expect(updated).toMatchObject({ id, offeringId: 'opencode-go', version: 5, baseUrl: original.baseUrl, priority: 7 });
+  expect(row.encryptedSecret).toBe(original.encryptedSecret);
+  expect(database.updateById).toHaveBeenCalledTimes(1);
+  expect(database.updateById.mock.calls[0][0]).toBe(credentialResource);
+  await expect(store.updateProviderCredential!('custom', id, { expectedVersion: 4, offeringId: 'opencode-go' })).rejects.toThrow('credential_version_conflict');
+  await expect(store.updateProviderCredential!('custom', id, { expectedVersion: 5, offeringId: 'anthropic-compatible' })).rejects.toThrow('invalid_credential_offering');
+  expect(database.updateById).toHaveBeenCalledTimes(1);
+});

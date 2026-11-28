@@ -81,6 +81,7 @@ import {
   ClaudeSubscriptionQuotaAdapter,
   CodexSubscriptionQuotaAdapter,
   DeepSeekQuotaAdapter,
+  DeclaredUsageQuotaAdapter,
   KimiQuotaAdapter,
   KimiCodeSubscriptionQuotaAdapter,
   OpenAiQuotaAdapter,
@@ -553,6 +554,7 @@ export function registerCommonServices(
         providerRegistry: cradle.gatewayProviderRegistry,
         adapters: [
           new UnsupportedQuotaAdapter(),
+          new DeclaredUsageQuotaAdapter({ providerRegistry: cradle.gatewayProviderRegistry, transport: cradle.providerHttpTransport }),
           new CodexSubscriptionQuotaAdapter({ transport: cradle.providerHttpTransport }),
           new OpenAiQuotaAdapter(),
           new ClaudeSubscriptionQuotaAdapter({ transport: cradle.providerHttpTransport }),

@@ -84,6 +84,7 @@ export function AiConnectDialog({
   onDisconnect: (credential?: AiProviderCredentialSummary) => void
   onUpdateCredential?: (credential: AiProviderCredentialSummary, patch: {
     apiKey?: string
+    offeringId?: string
     label?: string
     enabled?: boolean
     priority?: number
@@ -179,7 +180,7 @@ export function AiConnectDialog({
               {supportsApiKey && authorizationOfferingId ? <p className="text-sm text-muted-foreground">请在控制台创建 API Key，再返回此处填写；无需等待网页授权。</p> : null}
               {supportsApiKey ? <AiApiKeyPool key={`${offering.id}:${editing?.id ?? ''}`}
                 definition={definition} offering={offering} status={status}
-                createOfferings={[offering]} initialCreate={!editing}
+                createOfferings={editing ? apiOfferings : [offering]} initialCreate={!editing}
                 credentials={credentials} initialEditing={editing?.offeringId === offering.id ? editing : undefined}
                 onCloseEdit={controller.close} onSavingChange={controller.setSaving}
                 attempt={offeringAttempt ?? (!attemptOfferingId && !attempt?.offeringId && attempt?.mode === 'browserAssistedApiKey' ? attempt : undefined)}

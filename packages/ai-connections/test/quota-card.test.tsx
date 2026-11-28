@@ -103,7 +103,7 @@ describe('AiQuotaCard', () => {
     expect(screen.getByText('尚未检查')).toBeTruthy()
     rerender(<AiQuotaCard {...props} compact paused quota={{ ...quota, status: 'unsupported' }} />)
     expect(screen.getByText('已停用 · 不参与全部刷新')).toBeTruthy()
-    expect(screen.getByText('官方额度接口不支持')).toBeTruthy()
+    expect(screen.getByText('当前连接尚未接入额度查询')).toBeTruthy()
     expect((screen.getByRole('button', { name: /^刷新 / }) as HTMLButtonElement).disabled).toBe(false)
     rerender(<AiQuotaCard {...props} compact quota={{ ...quota, status: 'error' }} />)
     expect(screen.getByRole('alert').textContent).toBe('额度查询失败')

@@ -12,6 +12,7 @@ import {
   ClaudeSubscriptionQuotaAdapter,
   CodexSubscriptionQuotaAdapter,
   DeepSeekQuotaAdapter,
+  DeclaredUsageQuotaAdapter,
   InMemoryQuotaSnapshotRepository,
   KimiQuotaAdapter,
   KimiCodeSubscriptionQuotaAdapter,
@@ -735,6 +736,9 @@ describe('ProviderQuotaAdapters', () => {
     const networkCalls: string[] = [];
     const fetch = jsonFetch((url) => {
       networkCalls.push(url);
+      if (url === 'https://opencode.ai/inference/go/v1/usage') {
+        return { body: { usage: { rolling: { status: 'ok', percent: 10, resetsAt: '2026-08-10T05:00:00Z' }, weekly: { status: 'ok', percent: 20, resetsAt: '2026-08-17T00:00:00Z' }, monthly: { status: 'ok', percent: 30, resetsAt: '2026-09-01T00:00:00Z' } } } };
+      }
       if (url === 'https://chatgpt.com/backend-api/wham/usage') {
         return {
           body: {
@@ -777,8 +781,11 @@ describe('ProviderQuotaAdapters', () => {
       }
       throw new Error(`Unexpected quota fixture URL: ${url}`);
     });
+    const goTransport = new (await import('../../../src/api/service/provider-http-transport')).ProviderHttpTransport();
+    vi.spyOn(goTransport, 'getJson').mockImplementation(async (request) => { const response = await fetch(request.url); return response.json(); });
     const adapters = [
       new UnsupportedQuotaAdapter(),
+      new DeclaredUsageQuotaAdapter({ providerRegistry: registry, transport: goTransport }),
       new CodexSubscriptionQuotaAdapter({ fetch }),
       new OpenAiQuotaAdapter(),
       new ClaudeSubscriptionQuotaAdapter({ fetch }),
@@ -816,6 +823,7 @@ describe('ProviderQuotaAdapters', () => {
       'ollama/local',
       'custom/openai-compatible',
       'custom/anthropic-compatible',
+      'custom/opencode-go',
     ];
     const supported = new Map<string, {
       authMode: 'apiKey' | 'deviceCodeOAuth';
@@ -823,6 +831,7 @@ describe('ProviderQuotaAdapters', () => {
       source: string;
       expectedAdapter: string;
     }>([
+      ['custom/opencode-go', { authMode: 'apiKey', secret: { type: 'apiKey', apiKey: 'go-key' }, source: 'https://opencode.ai/inference/go/v1/usage', expectedAdapter: 'DeclaredUsageQuotaAdapter' }],
       ['openai/official-subscription', {
         authMode: 'deviceCodeOAuth',
         secret: { type: 'deviceCodeOAuth', accessToken: 'openai-oauth-token' },
@@ -901,6 +910,7 @@ describe('ProviderQuotaAdapters', () => {
       'https://api.kimi.com/coding/v1/usages',
       'https://api.moonshot.ai/v1/users/me/balance',
       'https://api.deepseek.com/user/balance',
+      'https://opencode.ai/inference/go/v1/usage',
     ]);
   });
 

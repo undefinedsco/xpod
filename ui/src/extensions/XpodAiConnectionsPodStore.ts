@@ -17,6 +17,7 @@ import {
 } from '@undefineds.co/models';
 import {
   CUSTOM_DEFAULT_OFFERINGS,
+  canChangeCredentialOffering,
   credentialOfferingMetadata,
   customCompatibilityValue,
   defaultOfferingFor,
@@ -347,10 +348,17 @@ export function createXpodAiConnectionsPodStore(
         || typeof values.apiKey !== 'string' || !values.apiKey.trim())) {
         throw new Error('invalid_api_key_replacement');
       }
+      const nextOffering = values.offeringId === undefined ? undefined
+        : providerOfferings(normalizedProvider).find((offering) => offering.id === values.offeringId && offering.authModes?.includes('apiKey'));
+      if (values.offeringId !== undefined && (summary.authMode !== 'apiKey' || !nextOffering
+        || !canChangeCredentialOffering(normalizedProvider, summary.offeringId!, nextOffering.id))) {
+        throw new Error('invalid_credential_offering');
+      }
       const replaceKey = values.apiKey !== undefined
         && parsePlaintextSecret(input, normalizedProvider, credentialId, current.encryptedSecret)?.apiKey !== values.apiKey;
       const metadata = {
         ...objectValue(current.metadata),
+        ...(nextOffering ? { offeringId: nextOffering.id } : {}),
         ...(values.priority === undefined ? {} : { priority: values.priority }),
         ...(values.enabled === undefined ? {} : { enabled: values.enabled }),
         ...(values.baseUrl === undefined ? {} : { baseUrl: values.baseUrl }),
@@ -358,6 +366,7 @@ export function createXpodAiConnectionsPodStore(
         ...(replaceKey ? { health: 'unknown' } : {}),
       };
       const patch = {
+        ...(nextOffering ? { offeringId: nextOffering.id } : {}),
         ...(values.label === undefined ? {} : { accountLabel: values.label, label: values.label }),
         ...(values.baseUrl === undefined ? {} : { baseUrl: values.baseUrl }),
         ...(values.proxyUrl === undefined ? {} : { proxyUrl: normalizeProxyUrl(values.proxyUrl) }),

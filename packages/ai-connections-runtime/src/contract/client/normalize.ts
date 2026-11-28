@@ -405,6 +405,8 @@ function parseProviderOffering(value: unknown): AiProviderOffering | undefined {
     consoleUrl: stringValue(value.consoleUrl),
     subscriptionUrl: stringValue(value.subscriptionUrl),
     endpoints: arrayValue(value.endpoints, parseOfferingEndpoint),
+    credentialMigrationFrom: Array.isArray(value.credentialMigrationFrom)
+      ? value.credentialMigrationFrom.filter((item): item is string => typeof item === 'string') : undefined,
     modelDiscovery: parseOfferingModelDiscovery(value.modelDiscovery),
     quota: parseOfferingQuota(value.quota),
     usagePolicyUrl: stringValue(value.usagePolicyUrl),
@@ -464,7 +466,7 @@ function parseOfferingModelDiscovery(value: unknown): AiProviderOffering['modelD
   const strategy = stringValue(value.strategy)
   const path = stringValue(value.path)
   const endpointProtocol = stringValue(value.endpointProtocol)
-  return strategy && path && endpointProtocol ? { strategy, path, endpointProtocol } : undefined
+  return strategy && path && endpointProtocol ? { strategy, path, endpointProtocol, ...(stringValue(value.baseUrl) ? { baseUrl: stringValue(value.baseUrl) } : {}) } : undefined
 }
 
 function parseOfferingQuota(value: unknown): AiProviderOffering['quota'] | undefined {
