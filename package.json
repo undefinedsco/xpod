@@ -219,7 +219,9 @@
     "react-router-dom": "^6.22.3",
     "tailwind-merge": "^3.5.0",
     "semver": "catalog:api-producer",
-    "@types/semver": "catalog:api-producer"
+    "@types/semver": "catalog:api-producer",
+    "yauzl": "catalog:api-producer",
+    "@types/yauzl": "catalog:api-producer"
   },
   "dependencies": {
     "@comunica/actor-query-result-serialize-sparql-json": "catalog:api-producer",
@@ -363,7 +365,9 @@
       "undici": "7.29.0",
       "winston": "^3.17.0",
       "winston-daily-rotate-file": "^5.0.0",
-      "winston-transport": "4.9.0"
+      "winston-transport": "4.9.0",
+      "yauzl": "2.10.0",
+      "@types/yauzl": "2.10.3"
     }
   }
 }
