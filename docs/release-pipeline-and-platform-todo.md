@@ -30,6 +30,7 @@
 - [ ] RC 用户流 `rc-browser-consent` 偶发计数为 0（页面侧计数器在同意页出现前没装上就记 0，按设计 fail-closed），重跑可过；需要让计数器在导航前安装到位（2026-11-28，run 46119636112 第 1 次）
 - [ ] pi 1.6 升级（e24d54d88）后 `pi-coding-agent` 不再依赖 `extract-zip`，API 产出的 `notices` 阶段因间接依赖 `yauzl` 消失而失败（staging RC 46174499559 桌面构建、API 产物 46172942298）；#246 显式声明 `yauzl`。教训：改依赖的 PR 应跑一次 API 产物构建
 - [ ] `owned-mode-command-input.node-test.cjs`「a short-lived same-group descendant drains naturally」偶发失败（本地 3 次失败 1 次），时序相关
+- [ ] QLever `test_qlever_audit_site_diagnostic` 的 `NativeAuditTimer.test_real_owned_timer_keeps_primary_and_nonlease_closing` 偶发失败（`summary()` 返回 None；依赖 0.9 秒真实计时窗口，CI 负载高时时序相关；2026-11-28，#247 第 1 次）
 - [ ] RC 70 分钟的关键路径是 macOS 桌面构建（3→57 分钟）加桌面验收（57→69）；部署、三模式验收、Private17 那条链 55 分钟已结束。桌面构建里「从干净源码产出 API 能力」占 27 分钟（各阶段分散：打包 4.3、Inngest 输入 4、stage 3 分钟等，没有单点可砍）。结构性办法是按「可选组件」方向让桌面不再内置 API 模块、改为按需下载，RC 可省约 27 分钟；属于产品方向变更，待确认
 - [ ] CI 工具链从 Node 22 统一到 24，`engines` 改为单一 LTS（约 35 处；对 npm 用户是破坏性变化，单独 PR）
 - [ ] 决定是否把 Mac mini 注册为自托管 runner，专供桌面构建和验收，不再占 GitHub 的 5 个 macOS 名额
