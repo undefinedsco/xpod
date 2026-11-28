@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, mkdirSync, copyFileSync, renameSync, writeFileSync, readFileSync, readdirSync, rmSync, symlinkSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
-import { verifyPhysicalNativeMaterials, verifyNativeMaterialTarget, isForeignNative, physicalNativeInventory, type NativeFile, type NativeMaterialBinding } from '../../../scripts/lib/physical-module-native';
+import { verifyPhysicalNativeMaterials, verifyNativeMaterialTarget, isForeignNative, declaresForeignLibc, physicalNativeInventory, type NativeFile, type NativeMaterialBinding } from '../../../scripts/lib/physical-module-native';
 const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 function elf(arm = false) { const b = Buffer.alloc(64); b.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1]); b.writeUInt16LE(2, 16); b.writeUInt32LE(1, 20); b.writeUInt16LE(arm ? 183 : 62, 18); b.writeUInt16LE(64, 52); return b; }
 function mach(arm = false) { const b = Buffer.alloc(32); b.writeUInt32LE(0xfeedfacf, 0); b.writeUInt32LE(arm ? 0x0100000c : 0x01000007, 4); b.writeUInt32LE(2, 12); return b; }
@@ -42,6 +42,12 @@ test('universal binaries serve the darwin targets they carry and foreign natives
   assert.throws(() => verifyNativeMaterialTarget(fat(), 'linux-arm64'), /target mismatch/u);
   for (const [bytes, foreign] of [[mach(true), false], [fat(), false], [mach(), true], [elf(true), true], [pe(true), true],
     [Buffer.from('0061736d01000000', 'hex'), false], [Buffer.from('#!/bin/sh\n'), false]] as Array<[Buffer, boolean]>) assert.equal(isForeignNative(bytes, 'darwin-arm64'), foreign);
+});
+test('linux targets are glibc: packages declaring only other libcs are foreign there', () => {
+  assert.equal(declaresForeignLibc({ libc: ['musl'] }, 'linux-x64'), true);
+  assert.equal(declaresForeignLibc({ libc: ['glibc'] }, 'linux-x64'), false);
+  assert.equal(declaresForeignLibc({}, 'linux-x64'), false);
+  assert.equal(declaresForeignLibc({ libc: ['musl'] }, 'darwin-arm64'), false);
 });
 test('controlled actual closed raw observations bind binary/source/patch/terms/toolchain, not release readiness', () => {
   const f = fixture(); try { const result = verifyPhysicalNativeMaterials(f.root, { materialsRoot: f.materialsRoot }); assert.equal(result.binaries.length, 1); assert.equal(result.status, 'material-integrity-verified'); assert.equal(result.externalAdmission, 'pending'); assert.equal('publishReady' in result, false); const reorder = (ref: NativeFile): NativeFile => ({ sizeBytes: ref.sizeBytes, sha256: ref.sha256, path: ref.path }); f.binding.binary = reorder(f.binding.binary); f.binding.sourceKit = reorder(f.binding.sourceKit); f.binding.terms = f.binding.terms.map(reorder); f.binding.compilerBindings[0].file = reorder(f.binding.compilerBindings[0].file); const receipt = JSON.parse(readFileSync(path.join(f.materialsRoot, f.binding.nativeReceipt.path), 'utf8')); receipt.engine = { commit: receipt.engine.commit, repository: receipt.engine.repository }; f.binding.nativeReceipt = f.put(f.binding.nativeReceipt.path, receipt); f.index(); assert.equal(verifyPhysicalNativeMaterials(f.root, { materialsRoot: f.materialsRoot }).binaries.length, 1); } finally { rmSync(f.owned, { recursive: true, force: true }); }

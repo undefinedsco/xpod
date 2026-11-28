@@ -96,9 +96,16 @@ function stage(root: string, value: unknown): Buffer {
 }
 const NATIVE_HEADERS = new Set(['7f454c46', 'feedface', 'cefaedfe', 'feedfacf', 'cffaedfe', 'cafebabe', 'bebafeca', 'cafebabf', 'bfbafeca']);
 /** True when the bytes carry an ELF, Mach-O or PE header that cannot run on the target. */
+export function isNativeBinary(bytes: Buffer): boolean {
+  return NATIVE_HEADERS.has(bytes.subarray(0, 4).toString('hex')) || bytes.subarray(0, 2).toString() === 'MZ';
+}
 export function isForeignNative(bytes: Buffer, target: string): boolean {
-  if (!NATIVE_HEADERS.has(bytes.subarray(0, 4).toString('hex')) && bytes.subarray(0, 2).toString() !== 'MZ') return false;
+  if (!isNativeBinary(bytes)) return false;
   try { verifyNativeMaterialTarget(bytes, target); return false; } catch { return true; }
+}
+/** Linux module targets are glibc; a package that declares only other libcs cannot load there. */
+export function declaresForeignLibc(manifest: { libc?: unknown }, target: string): boolean {
+  return target.startsWith('linux-') && Array.isArray(manifest.libc) && !manifest.libc.includes('glibc');
 }
 /** Carried material targets are separate from CLI product-platform support. No execution. */
 export function verifyNativeMaterialTarget(bytes: Buffer, target: string): void {

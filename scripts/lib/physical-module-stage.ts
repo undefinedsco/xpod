@@ -1,5 +1,5 @@
 import {preparePhysicalNativePlacements,type PhysicalNativePlacement} from './physical-module-native-placement';
-import { isForeignNative } from './physical-module-native';
+import { declaresForeignLibc, isForeignNative, isNativeBinary } from './physical-module-native';
 import { moduleDefinition, modulePackageName } from '../../packages/xpod-cli/src/module-catalog';
 import { valid as validSemVer, satisfies } from 'semver';
 import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
@@ -247,13 +247,13 @@ export function stagePhysicalService(repoRoot: string, output: string, inputs: s
   const facts: Array<{name:string;version:string;files:number;path:string}>=[];
   const copyPackage = (root: string, destination: string, ancestors: Map<string,string>) => {
     const {manifest,dependencies}=packages.get(root)!;
-    const inventory=[],foreign=[];
+    const inventory=[],foreign=[],foreignLibc=declaresForeignLibc(manifest,nativeTarget);
     for (const f of files(root)) {
       const relative=path.relative(root,f),to=path.join(destination,relative),replacement=nativePlacements.copy(path.relative(output,to).replaceAll('\\','/'),to);
       if(replacement)inventory.push({path:relative,...replacement});
-      // Prebuilt natives for other platforms cannot load here; the installed
+      // Prebuilt natives for other platforms or libcs cannot load here; the installed
       // consumer and admission both reject them, so they never enter the product.
-      else {const b=readFileSync(f);if(isForeignNative(b,nativeTarget)){foreign.push({path:relative,bytes:b.length,sha256:hash(b)});continue;}mkdirSync(path.dirname(to),{recursive:true});copyFileSync(f,to);chmodSync(to,lstatSync(f).mode & 0o777);inventory.push({path:relative,bytes:b.length,sha256:hash(b),mode:lstatSync(f).mode&0o777});}
+      else {const b=readFileSync(f);if(foreignLibc?isNativeBinary(b):isForeignNative(b,nativeTarget)){foreign.push({path:relative,bytes:b.length,sha256:hash(b)});continue;}mkdirSync(path.dirname(to),{recursive:true});copyFileSync(f,to);chmodSync(to,lstatSync(f).mode & 0o777);inventory.push({path:relative,bytes:b.length,sha256:hash(b),mode:lstatSync(f).mode&0o777});}
     }
     const location=path.relative(output,destination).replaceAll('\\','/');
     facts.push({name:manifest.name,version:manifest.version,files:inventory.length,path:location});
