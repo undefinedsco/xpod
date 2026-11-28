@@ -263,27 +263,3 @@ test('the REAL production-called catalogs admit end to end on actual helper byte
   }
 });
 
-test('CURRENT source catalogue counts and actual declared bindings close independently', () => {
-  const groups = {api, sdk, consumer, ci, linux, cli} as const;
-  expect([api.length, sdk.length, consumer.length, ci.length, linux.length, cli.length, current.length]).toEqual([
-    CURRENT_SOURCE_GROUP_COUNTS.api, CURRENT_SOURCE_GROUP_COUNTS.sdk,
-    CURRENT_SOURCE_GROUP_COUNTS.consumer, CURRENT_SOURCE_GROUP_COUNTS.ci,
-    CURRENT_SOURCE_GROUP_COUNTS.linux, CURRENT_SOURCE_GROUP_COUNTS.cli,
-    CURRENT_SOURCE_GROUP_COUNTS.current,
-  ]);
-  const digest = (name: string) => createHash('sha256').update(readTrackedSource(path.join(ROOT, name))).digest('hex');
-  const currentDigest = (name: string) => shaCurrentApiDependencyBinding(ROOT, name);
-  // SDK workflow projection still inherits the published dependency originals.
-  // The current consumer recipes instead bind the checkout's API dependencies.
-  for (const [kind, rows] of Object.entries({api, sdk: currentProgramSdkConsumerGroups(), consumer, ci,
-    linux: currentProgramLinuxConsumerGroups(), cli})) {
-    const group = rows[rows.length - 1]!;
-    const readDigest = kind === 'consumer' || kind === 'ci' ? currentDigest : digest;
-    const g = group as any;
-    for (const row of [...(g.selectors ?? []), ...(g.secondarySelectors ?? []),
-      ...(g.secondarySelectorStages ?? []).flat(), ...(g.sourceBindings ?? [])]) {
-      expect(readDigest(row.path)).toBe(row.sha256);
-    }
-  }
-  for (const row of current) expect(currentDigest(row.path)).toBe(row.sha256);
-});

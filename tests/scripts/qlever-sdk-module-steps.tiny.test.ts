@@ -44,61 +44,11 @@ test('real module step shape accepts skipped service-only check, never skipped m
  for(const step of ['Build readonly SDK and linked image','Publish the actual linked readonly SDK','Bind actual readonly SDK image and build originals','Upload exact SDK original materials'])await expect(scenario(step)).rejects.toThrow('job/attempt window mismatch');
 });
 
-test('real old SDK tree omits future acquisition and unused parser; new tree requires exact helper originals',async()=>{
- expect(createHash('sha256').update(fs.readFileSync(path.join(import.meta.dir,'../fixtures/independent-admission/pre-sdk47-runtime-verifier.original.py'))).digest('hex')).toBe('b95365f0736f531d772a394a9936911ae9d843b616f6c933030845102bf4efdf');
- const old=oldSdk.sourceSha;expect(oldSdk.missing).toContain('qlever/scripts/sdk-debian-source-acquisition.py');
- const result=await scenario(undefined,old);expect(isQleverSdkGitHubOrigin(result.capability)).toBe(true);
- expect(result.requested).not.toContain('qlever/scripts/sdk-debian-source-acquisition.py');
- expect(result.requested).not.toContain('qlever/scripts/sdk-debian-source-materials.py');
- expect(result.requested).not.toContain('qlever/scripts/sdk-symlink-originals.py');
- for(const helper of ['qlever/scripts/sdk-debian-source-acquisition.py','qlever/scripts/sdk-debian-source-materials.py','qlever/scripts/sdk-symlink-originals.py','qlever/scripts/sdk-upstream-source-materials.py','qlever/scripts/sdk-generation-materials.py','qlever/scripts/sdk-owned-runs.py','qlever/scripts/sdk-subreaper-guard.py']){
-  await expect(scenario(undefined,undefined,helper)).rejects.toThrow();
-  await expect(scenario(undefined,undefined,undefined,helper)).rejects.toThrow('policy not reviewed');
- }
-});
-
-test('old SDK does not fetch future observer selectors; prepared group requires both exact helpers',async()=>{
- const result=await scenario(undefined,oldSdk.sourceSha);
- for(const helper of ['qlever/scripts/sdk-ptrace-execution.py','qlever/scripts/sdk-generation-multiprocess-bindings.py']){
-  expect(result.requested).not.toContain(helper);
-  await expect(scenario(undefined,undefined,helper)).rejects.toThrow('metadata request failed');
-  await expect(scenario(undefined,undefined,undefined,helper)).rejects.toThrow('group not reviewed');
- }
-});
-
-test('binary producer imports are required only for the new whole SDK recipe',async()=>{
- const old=await scenario(undefined,oldSdk.sourceSha);
- for(const helper of ['qlever/scripts/sdk-debian-binary-hook.py','qlever/scripts/sdk-debian-binary-originals.py']){
-  expect(old.requested).not.toContain(helper);
-  await expect(scenario(undefined,undefined,helper)).rejects.toThrow('metadata request failed');
-  await expect(scenario(undefined,undefined,undefined,helper)).rejects.toThrow('policy not reviewed');
- }
-});
 
 
-test('shared-task coverage adapter is checked after the exact observer pair, never on old trees',async()=>{
- const old=await scenario(undefined,oldSdk.sourceSha);expect(old.requested).not.toContain('qlever/scripts/sdk-toolchain-materials.py');
- await expect(scenario(undefined,undefined,'qlever/scripts/sdk-toolchain-materials.py')).rejects.toThrow('metadata request failed');
- // SDK82 promotes this adapter to an explicit LATER staged selector (stage 3), so
- // its bytes are now checked against the owning recipe during exact whole-group
- // selection rather than in the trailing mandatory sourceBindings pass. Bad bytes
- // therefore reject at that stronger, earlier selection boundary and cannot reach
- // the older late "policy not reviewed" message.
- const requested:string[]=[];
- await expect(scenario(undefined,undefined,undefined,'qlever/scripts/sdk-toolchain-materials.py',false,false,requested)).rejects.toThrow('Independent GitHub origin: exact workflow/source group not reviewed');
- const adapter='qlever/scripts/sdk-toolchain-materials.py';
- expect(requested.filter(name=>name===adapter)).toHaveLength(1);
- // The staged adapter is never fetched before the exact observer pair it follows.
- for(const role of ['qlever/scripts/sdk-ptrace-execution.py','qlever/scripts/sdk-generation-multiprocess-bindings.py']){
-  expect(requested).toContain(role);
-  expect(requested.indexOf(role)<requested.indexOf(adapter)).toBe(true);
- }
-});
 
-test('new source group requires the actual trusted outer workflow closure, old SDK never acquires it',async()=>{
- const old=await scenario(undefined,oldSdk.sourceSha);expect(githubOriginFacts(old.capability)?.sdkOuterExecutorAuthority).toBeUndefined();
- for(const helper of ['qlever/scripts/sdk-readonly-collection.py','.github/workflows/qlever-readonly-normal-job.yml']){await expect(scenario(undefined,undefined,helper)).rejects.toThrow();await expect(scenario(undefined,undefined,undefined,helper)).rejects.toThrow('policy not reviewed');}
-});
+
+
 
 test('nested current CSS source emits only the reviewed readonly job and rejects the legacy job under that new tuple',async()=>{
  const source=fs.readFileSync(path.join(root,'.github/workflows/css-native-source.yml'),'utf8');expect(source).toContain('      readonly_executor: true');

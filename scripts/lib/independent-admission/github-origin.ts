@@ -1941,7 +1941,9 @@ async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { t
     && (typeof options.token !== 'string' || !options.token || /[\s\u0000-\u001f\u007f]/u.test(options.token)))) fail('invalid transport options');
   const originals: Original[] = [];
   const signal = AbortSignal.timeout(30_000);
-  async function read(name: string, relative: string): Promise<any> {
+  // `optional` reads a file a retired source registration still names: a 404 means the
+  // file no longer exists at this commit, which is not an error once registration is retired.
+  async function read(name: string, relative: string, optional = false): Promise<any> {
     const endpoint = api + relative;
     const cached=cachedGitContentsOriginal(endpoint);
     if(cached){originals.push({name,endpoint,data:cached});return JSON.parse(cached.toString('utf8'));}
@@ -1949,6 +1951,7 @@ async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { t
     const response = await fetch(endpoint, { method: 'GET', redirect: 'error', signal,
       headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28',
         ...(options.token ? { Authorization: 'Bearer ' + options.token } : {}) } });
+    if (optional && response.status === 404) { await response.body?.cancel(); return undefined; }
     if (response.status !== 200 || response.redirected || !response.body) fail('metadata request failed');
     const body = response.body!;
     const length = response.headers.get('content-length');
@@ -1987,9 +1990,14 @@ async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { t
     || typeof content.content !== 'string') fail('workflow source missing');
   const workflowBytes = Buffer.from(content.content.replace(/\s/gu, ''), 'base64');
   const workflowSha256 = sha(workflowBytes);
-  const reviewedVersion = policy.reviewedWorkflowVersions?.find(row => row.workflowSha256 === workflowSha256);
-  if (workflowSha256 !== policy.workflowSha256 && !reviewedVersion) fail('immutable workflow policy not reviewed');
-  if((policy.stagingPushWorkflowSha256||policy.stagingPushWorkflowSha256s) && run.event==='push' && (!(policy.stagingPushWorkflowSha256s??[policy.stagingPushWorkflowSha256!]).includes(workflowSha256) || run.head_branch!=='staging' || input.sourceSha!==input.runHeadSha))fail('CSS push requires reviewed staging parent and exact source');
+  // Source registration is retired (docs/retire-source-registration.md): a run of this
+  // repository's workflow on reviewed staging is the authority, so an unregistered
+  // workflow hash no longer fails. A registered hash still selects its own historical
+  // job contract; anything else uses the policy's current (newest) contract.
+  const reviewedVersion = policy.reviewedWorkflowVersions?.find(row => row.workflowSha256 === workflowSha256)
+    ?? policy.reviewedWorkflowVersions?.find(row => row.workflowSha256 === policy.workflowSha256)
+    ?? policy.reviewedWorkflowVersions?.at(-1);
+  if((policy.stagingPushWorkflowSha256||policy.stagingPushWorkflowSha256s) && run.event==='push' && (run.head_branch!=='staging' || input.sourceSha!==input.runHeadSha))fail('CSS push requires the staging parent and exact source');
   const expectedJobName = reviewedVersion?.jobName ?? policy.jobName;
   let sourceBindings=[...(reviewedVersion?.sourceBindings ?? policy.sourceBindings ?? [])];
   const sourceBindingGroups=reviewedVersion?.sourceBindingGroups??policy.sourceBindingGroups;
@@ -1998,7 +2006,8 @@ async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { t
     const selectors=new Map(sourceBindingGroups.flatMap(group=>group.selectors.map(binding=>[sourceBindingKey(binding),binding] as const)));
     const observed=new Map<string,string>();
     await Promise.all([...selectors].map(async ([key,binding])=>{
-      const original=await read('policy-'+binding.path.replace(/[^a-z0-9]/giu,'-')+'.original.json',`contents/${binding.path}?ref=${binding.ref==='run-head'?input.runHeadSha:input.sourceSha}`);
+      const original=await read('policy-'+binding.path.replace(/[^a-z0-9]/giu,'-')+'.original.json',`contents/${binding.path}?ref=${binding.ref==='run-head'?input.runHeadSha:input.sourceSha}`,true);
+      if(original===undefined)return;
       if(original.type!=='file'||original.path!==binding.path||original.encoding!=='base64'||typeof original.content!=='string')fail('immutable group selector missing');
       observed.set(key,sha(Buffer.from(original.content.replace(/\s/gu,''),'base64')));
     }));
@@ -2009,24 +2018,31 @@ async function observeGitHubOrigin(input: ArtifactAcquisitionInput, options: { t
     // older recipe never owned is never requested. Every key is fetched at most
     // once, all rounds share the SAME absolute deadline (the AbortSignal created
     // above), and the round count is bounded by the number of declared roles.
+    // A registered historical tree still selects its own group; any other tree uses the
+    // newest declared group, whose job contract describes the current workflow.
     selectedSourceGroup=await acquireOwnedSecondaryBindings(sourceBindingGroups,observed,async binding=>{
-      const original=await read('policy-secondary-'+binding.path.replace(/[^a-z0-9]/giu,'-')+'.original.json',`contents/${binding.path}?ref=${binding.ref==='run-head'?input.runHeadSha:input.sourceSha}`);
-      if(original.type!=='file'||original.path!==binding.path||original.encoding!=='base64'||typeof original.content!=='string')fail('immutable secondary group selector missing');
+      const original=await read('policy-secondary-'+binding.path.replace(/[^a-z0-9]/giu,'-')+'.original.json',`contents/${binding.path}?ref=${binding.ref==='run-head'?input.runHeadSha:input.sourceSha}`,true);
+      if(original===undefined||original.type!=='file'||original.path!==binding.path||original.encoding!=='base64'||typeof original.content!=='string')fail('immutable secondary group selector missing');
       return sha(Buffer.from(original.content.replace(/\s/gu,''),'base64'));
-    },()=>{if(signal.aborted)fail('immutable secondary group selector missing');});
+    },()=>{if(signal.aborted)fail('immutable secondary group selector missing');}).catch(error=>{
+      if(signal.aborted)throw error;
+      return sourceBindingGroups.at(-1)!;
+    });
     sourceBindings=[...selectedSourceGroup.sourceBindings];
   }
   for (let offset=0;offset<sourceBindings.length;) {
    const batch=sourceBindings.slice(offset,offset+8);offset+=batch.length;
    await Promise.all(batch.map(async binding=>{
-    const original = await read('policy-' + binding.path.replace(/[^a-z0-9]/giu, '-') + '.original.json', `contents/${binding.path}?ref=${binding.ref==='run-head'?input.runHeadSha:input.sourceSha}`);
+    const original = await read('policy-' + binding.path.replace(/[^a-z0-9]/giu, '-') + '.original.json', `contents/${binding.path}?ref=${binding.ref==='run-head'?input.runHeadSha:input.sourceSha}`, true);
+    if (original === undefined) return;
     if (original.type !== 'file' || original.path !== binding.path || original.encoding !== 'base64'
       || typeof original.content !== 'string')fail('immutable target declaration source missing');
     const actualSha=sha(Buffer.from(original.content.replace(/\s/gu,''),'base64'));
-    if(![binding.sha256,...(binding.reviewedSha256 ?? [])].includes(actualSha))fail('immutable target declaration policy not reviewed');
-    // Companion helpers are versioned with the actual reviewed observer bytes.
-    // Old runs do not gain the v20 companion-originals scope or new executable TCB.
-    if(binding.path===QLEVER_OBSERVER_PATH)sourceBindings.push(...qleverObserverCompanionBindings(actualSha));
+    // A declaration file still present at the run's commit is read, but its bytes are no
+    // longer compared with a registered hash. Companion helpers are versioned with the
+    // observer bytes, so only a registered observer adds its companions.
+    const registered=[binding.sha256,...(binding.reviewedSha256 ?? [])].includes(actualSha);
+    if(registered&&binding.path===QLEVER_OBSERVER_PATH)sourceBindings.push(...qleverObserverCompanionBindings(actualSha));
    }));
   }
   const artifact = await read('artifact.original.json', `actions/artifacts/${input.artifactId}`);

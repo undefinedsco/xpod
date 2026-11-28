@@ -54,7 +54,7 @@ function serve(over:{run?:any;producer?:any;artifact?:any;ancestors?:any[]}={}){
     if(rel.startsWith('contents/')){
       const name=decodeURIComponent(rel.slice('contents/'.length).split('?')[0]!);
       const file=path.join(ROOT,name);
-      if(!fs.existsSync(file))throw Error('unexpected contents fixture '+name);
+      if(!fs.existsSync(file))return new Response('{"message":"Not Found"}',{status:404});
       return new Response(JSON.stringify({type:'file',path:name,encoding:'base64',
         content:readTrackedSource(file).toString('base64')}));
     }

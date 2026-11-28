@@ -87,7 +87,7 @@ function serve(g:ReturnType<typeof graph>,zip?:Buffer){
    return new Response(JSON.stringify({total_count:3,jobs:[...g.ancestors,g.producer]}));
   if(relative.startsWith('contents/')){
    const name=decodeURIComponent(relative.slice('contents/'.length).split('?')[0]!);
-   if(!fs.existsSync(path.join(ROOT,name)))throw Error('unexpected contents fixture '+name);
+   if(!fs.existsSync(path.join(ROOT,name)))return new Response('{"message":"Not Found"}',{status:404});
    return new Response(JSON.stringify({type:'file',path:name,encoding:'base64',
     content:readTrackedSource(path.join(ROOT,name)).toString('base64')}));
   }

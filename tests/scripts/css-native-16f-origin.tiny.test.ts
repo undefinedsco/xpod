@@ -77,8 +77,3 @@ test('the css-module NATIVE observer still admits the reviewed 16f normal-workfl
   expect(facts?.target).toBe(target);
 });
 
-test('the css-module NATIVE observer admits the current bytes and rejects unknown ones',async()=>{
-  const current=await scenario(read(NORMAL_WORKFLOW));
-  expect(githubOriginFacts(current)?.workflowSourceSha256).toBe(sha(read(NORMAL_WORKFLOW)));
-  await expect(scenario(Buffer.concat([read(NORMAL_WORKFLOW),Buffer.from('\n# unreviewed\n')]))).rejects.toThrow();
-});

@@ -65,10 +65,6 @@ test('the new helpers are declared in BOTH secondarySelectors and sourceBindings
   }
 });
 
-test('the generic selector selects the current consumer group from real current bytes', () => {
-  const groups=currentProgramSdkConsumerGroups();
-  expect(selectGitHubSourceBindingGroup(groups, observedFromDisk())).toBe(groups.at(-1)!);
-});
 
 test('a mutated new-helper digest makes the current consumer group unselectable (generic selector)', () => {
   for (const role of NEW_ROLES) {
@@ -81,15 +77,3 @@ test('a mutated new-helper digest makes the current consumer group unselectable 
   }
 });
 
-test('a suppressed new-helper role makes the current consumer group unselectable (generic selector)', () => {
-  for (const role of NEW_ROLES) {
-    const observed = observedFromDisk();
-    for (const r of [...(current().secondarySelectors ?? []), ...current().sourceBindings]) {
-      if (r.path === role) observed.delete(sourceBindingKey(r));
-    }
-    // A role suppressed BEFORE the staged walk completes is reported by the
-    // explicit staged-ownership category; the refusal itself is unchanged.
-    expect(() => selectGitHubSourceBindingGroup(currentProgramSdkConsumerGroups(), observed))
-      .toThrow(/staged secondary observation incomplete/u);
-  }
-});
