@@ -2,11 +2,6 @@
   "name": "@undefineds.co/xpod-cli",
   "version": "0.1.0-preview.2",
   "description": "Xpod command-line client with on-demand capability modules",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/undefinedsco/xpod.git",
-    "directory": "packages/xpod-cli"
-  },
   "license": "MIT",
   "type": "module",
   "bin": {
