@@ -49,6 +49,7 @@
     "rdf-data-factory": "catalog:api-producer",
     "rdf-parse": "catalog:api-producer",
     "semver": "catalog:api-producer",
+    "yauzl": "catalog:api-producer",
     "sparqljs": "catalog:api-producer",
     "typescript": "5.5",
     "undici": "catalog:api-producer",
