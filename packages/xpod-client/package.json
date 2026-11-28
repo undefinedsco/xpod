@@ -2,6 +2,11 @@
   "name": "@undefineds.co/xpod-client",
   "version": "0.1.0-preview.1",
   "description": "Shared Xpod authentication and Pod HTTP runtime client",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/undefinedsco/xpod.git",
+    "directory": "packages/xpod-client"
+  },
   "license": "MIT",
   "type": "module",
   "files": [

@@ -14,7 +14,7 @@ function elf() { const b = Buffer.alloc(64); b.set([0x7f, 0x45, 0x4c, 0x46, 2, 1
 function fat() { const b = Buffer.alloc(112); b.writeUInt32BE(0xcafebabe, 0); b.writeUInt32BE(2, 4); for (let i = 0; i < 2; i++) { const at = 8 + i * 20; b.writeUInt32BE(i ? 0x0100000c : 0x01000007, at); b.writeUInt32BE(48 + i * 32, at + 8); b.writeUInt32BE(32, at + 12); mach(Boolean(i)).copy(b, 48 + i * 32); } return b; }
 
 /** Pack a module tarball whose xpodModule inventory describes exactly `files` unless told otherwise. */
-function pack(files: Record<string, string | Buffer>, options: { name?: string; skipInventory?: string; license?: string } = {}) {
+function pack(files: Record<string, string | Buffer>, options: { name?: string; skipInventory?: string; license?: string; repository?: unknown } = {}) {
   const dir = mkdtempSync(path.join(base, 'pkg-'));
   const root = path.join(dir, 'package');
   const rows = [];
@@ -28,6 +28,7 @@ function pack(files: Record<string, string | Buffer>, options: { name?: string; 
   }
   writeFileSync(path.join(root, 'package.json'), JSON.stringify({
     name: options.name ?? '@undefineds.co/xpod-api-darwin-arm64', version: '1.2.3',
+    repository: 'repository' in options ? options.repository : { type: 'git', url: 'git+https://github.com/undefinedsco/xpod.git', directory: 'packages/xpod-api' },
     xpodModule: { schemaVersion: 1, id: 'api', cliApiVersion: 1, platform: 'darwin', arch: 'arm64', entry: 'dist/entry.mjs', files: rows },
   }));
   const tarball = path.join(dir, 'module.tgz');
@@ -69,6 +70,13 @@ describe('module release package check', () => {
     const report = checkPackage(lgpl.tarball, 'api', 'darwin-arm64', lgpl.out);
     expect(report.failures).toEqual([]);
     expect(report.sourceOffer).toEqual([{ name: 'dep', version: '1.0.0', license: 'LGPL-3.0-or-later' }]);
+  });
+
+  it('rejects a package whose repository would fail the npm provenance check', () => {
+    const missing = pack({ 'dist/entry.mjs': 'export {}' }, { repository: undefined });
+    expect(checkPackage(missing.tarball, 'api', 'darwin-arm64', missing.out).failures).toContain('repository.url must name https://github.com/undefinedsco/xpod');
+    const other = pack({ 'dist/entry.mjs': 'export {}' }, { repository: 'https://github.com/someone/fork' });
+    expect(checkPackage(other.tarball, 'api', 'darwin-arm64', other.out).failures).toContain('repository.url must name https://github.com/undefinedsco/xpod');
   });
 
   it('rejects a package whose name does not match the module target', () => {
